@@ -4,6 +4,7 @@
 #include "graphics/GraphicsInstances.h"
 
 #include "core/SourcePreviewDemand.h"
+#include "core/SourceSheetPlan.h"
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesHoldEpisodeLog.h"
 #include "compositor/TilesPlanAnimation.h"
@@ -695,6 +696,9 @@ class MediaCore {
   // current activeSpeakerId. Reuses the same source-id conventions as the
   // program plan so resolveLayers/frameForParticipant match the same frames.
   [[nodiscard]] modules::CompositorRenderPlan buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+  // Sources Phase 2 (S6): the source sheet plan for this tick's frames (cell N = slot N+1),
+  // annotated with bus health, dropout held (a monitoring surface), per-source grades on.
+  [[nodiscard]] modules::CompositorRenderPlan buildSourceSheetPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
   void submitIsolatedMonitorTick(const modules::CompositorRenderPlan& renderPlan,
       const std::vector<modules::VideoFrame>& videoFrames, int64_t sequence);
   // Builds the per-tile rect list (geometry + role + tally + label) for the
@@ -1018,6 +1022,9 @@ class MediaCore {
   int64_t lastProducedFrameNumber_ = 0;
   std::string lastProgramTextureIdentity_;
   RenderedProgramSources renderedProgramSources_;
+  // The same attribution for the Preview plan the core last BUILT for a render (Sources
+  // Phase 2, Task 6): the shell's PVW tally reads it instead of its own Preview routes.
+  RenderedProgramSources renderedPreviewSources_;
   // Whether `programFrame.sceneId` is currently attributed to a delivery, and how
   // long it has been since one advanced. See RenderedSceneAttributionPolicy — the
   // buffered path used to keep asserting the last attribution forever.
@@ -1546,6 +1553,10 @@ class MediaCore {
     std::string participantId;
     std::string captureDeviceId;
     std::string mediaAssetId;
+    // Additive (Sources Phase 2, Task 5): a media slot's file, so a still that only the
+    // wall shows is decoded. Windows sends neither; empty keeps the route-only behaviour.
+    std::string mediaAssetPath;
+    std::string mediaAssetKind;
     int slot = 0;
     std::string label;
   };
@@ -1588,6 +1599,14 @@ class MediaCore {
   // configured). Their sum is the policy's monitorCycleCostNs.
   int64_t lastMultiviewPassNs_ = 0;
   int64_t lastPreviewPassNs_ = 0;
+  // S6 source sheet (non-isolated compositors, i.e. Metal): published as `sourceSheet`.
+  struct SourceSheetState {
+    bool active = false;
+    modules::ProgramFrameSharedTexture texture;
+    std::vector<SourceSheetCell> cells;
+  };
+  SourceSheetState sourceSheet_;
+  int64_t lastSourceSheetPassNs_ = 0;
   // Published preview identity, held across shed ticks — the same reason as
   // lastMultiviewTexture_ above: the program frame is rebuilt every tick, and a
   // skipped composite must never publish an EMPTY preview handle.

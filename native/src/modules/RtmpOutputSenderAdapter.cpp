@@ -42,6 +42,7 @@
 
 #if !defined(_WIN32)
 #include "modules/PosixExecutableLocator.h"
+#include "modules/PosixChildProcess.h"
 #endif
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
@@ -269,6 +270,12 @@ bool hasRtmpHostAndPath(const std::string& url) {
   return true;
 }
 
+#if !defined(_WIN32)
+// macOS's system root certificates as PEM (Linux distributions differ; a
+// missing file leaves rtmps on ffmpeg's default and is visible in the args log).
+constexpr const char* kSystemTlsCaBundle = "/etc/ssl/cert.pem";
+#endif
+
 std::string validateRtmpSettings(const OutputDestinationSettings& settings) {
   const std::string protocol = lowercaseAscii(settings.protocol);
   if (protocol != "rtmp" && protocol != "rtmps") {
@@ -412,11 +419,14 @@ std::filesystem::path currentExecutableDirectory() {
 }
 
 std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
-#if defined(_WIN32)
-  constexpr const char* executableName = "ffmpeg.exe";
+#if !defined(_WIN32)
+  // One POSIX order for the sender and ingest; the bundled copy beside the
+  // core beats PATH and Homebrew (PosixExecutableLocator.h, resolveFfmpeg).
+  posix_exec::FfmpegSearch search;
+  search.configuredDirectory = configuredBinDirectory;
+  return posix_exec::resolveFfmpeg(search);
 #else
-  constexpr const char* executableName = "ffmpeg";
-#endif
+  constexpr const char* executableName = "ffmpeg.exe";
   std::vector<std::filesystem::path> candidates;
   if (!configuredBinDirectory.empty()) {
     candidates.emplace_back(std::filesystem::path(configuredBinDirectory) / executableName);
@@ -438,21 +448,12 @@ std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
       return candidate.string();
     }
   }
-#if defined(_WIN32)
   char resolved[MAX_PATH] = {};
   if (SearchPathA(nullptr, executableName, nullptr, MAX_PATH, resolved, nullptr) > 0) {
     return resolved;
   }
-#else
-  // PATH, then the Homebrew/MacPorts bin dirs: a Finder/Dock launch inherits
-  // launchd's PATH, which never contains them (PosixExecutableLocator.h).
-  if (auto found = posix_exec::findOnPathThenFallbacks(
-          executableName, std::getenv("PATH"), posix_exec::defaultFfmpegFallbackDirectories());
-      !found.empty()) {
-    return found;
-  }
-#endif
   return {};
+#endif
 }
 
 RuntimeProbe probeFfmpegRuntime(const std::string& configuredBinDirectory) {
@@ -1211,9 +1212,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       }
     }
 #else
-    if (ffmpegPid_ > 0) {
-      ::kill(ffmpegPid_, SIGTERM);
-    }
+    // The whole group: the guard forwards too, but a group signal reaches the
+    // ffmpeg directly even if the guard is wedged.
+    std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
+    posix_child::signalGroup(ffmpegPid_, SIGTERM);
 #endif
   }
 
@@ -1579,6 +1581,11 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     config.h264Profile = compatibility.videoCodec == "h264" ? configuredH264Profile_ : "auto";
     config.bFrames = configuredBFrames_;
     config.endpoint = configuredEndpoint_;
+#if !defined(_WIN32)
+    // The bundled ffmpeg's static OpenSSL has no default trust store, so an
+    // rtmps:// stream would accept any certificate. macOS ships its roots here.
+    if (std::filesystem::exists(kSystemTlsCaBundle)) config.tlsCaFile = kSystemTlsCaBundle;
+#endif
     if (protocol_.container == "flv") {
       if (const char* tap = std::getenv("COREVIDEO_QA_RTMP_TAP_PATH")) {
         const std::string path(tap);
@@ -1970,13 +1977,15 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       }
     }
 
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    // Video read end -> child stdin (fd 0); /dev/null -> stdout. stderr goes
-    // to a temp log (published in the start event, Windows parity) — without
-    // it an ingest rejection and a blocked pipe are indistinguishable.
-    posix_spawn_file_actions_adddup2(&actions, videoPipe[0], 0);
-    posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
+    // P1 (mac streaming Phase 2): every descriptor here is close-on-exec, so no
+    // other child the core starts (Zoom engine, plugin host, a sibling sender)
+    // inherits this child's pipe ends; posix_child::spawn hands the child
+    // exactly the descriptors named below.
+    for (int fd : {videoPipe[0], videoPipe[1], audioPipe[0], audioPipe[1]}) {
+      if (fd >= 0) ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+    // stderr goes to a temp log (published in the start event, Windows parity) -
+    // without it an ingest rejection and a blocked pipe are indistinguishable.
     ffmpegStderrPath_.clear();
     {
       const char* tempDir = ::getenv("TMPDIR");
@@ -1989,18 +1998,14 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
                  ".log";
       ffmpegStderrPath_ = logPath;
     }
-    posix_spawn_file_actions_addopen(&actions, 2, ffmpegStderrPath_.c_str(),
-                                     O_WRONLY | O_CREAT | O_TRUNC, 0644);
     std::string audioInputArg = "pipe:0";
+    posix_child::SpawnRequest request;
+    request.executable = ffmpegExecutable_;
+    request.stderrPath = ffmpegStderrPath_.string();
+    request.fds.push_back({videoPipe[0], 0});  // video read end -> child stdin
     if (activeAudioPresent_) {
-      // Audio read end -> child fd 3 (referenced as pipe:3).
-      posix_spawn_file_actions_adddup2(&actions, audioPipe[0], 3);
+      request.fds.push_back({audioPipe[0], 3});  // audio read end -> child fd 3 (pipe:3)
       audioInputArg = "pipe:3";
-    }
-    // Close our write ends in the child.
-    posix_spawn_file_actions_addclose(&actions, videoPipe[1]);
-    if (activeAudioPresent_) {
-      posix_spawn_file_actions_addclose(&actions, audioPipe[1]);
     }
 
     const std::string argString = buildFfmpegArguments(width, height, audioInputArg, videoInputPixelFormat);
@@ -2010,43 +2015,54 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       static bool s_loggedArgs = false;
       if (!s_loggedArgs) {
         s_loggedArgs = true;
-        ::corevideo::core::nativeLogf("[rtmp] ffmpeg %s\n", argString.c_str());
+        // Never the raw URL: it carries the stream key / SRT passphrase.
+        const std::string logged = redactFfmpegInvocation(argString, configuredEndpoint_, redactedSenderEndpoint(),
+                                                          configuredStreamKey_, configuredPassphrase_,
+                                                          configuredStreamId_);
+        ::corevideo::core::nativeLogf("[rtmp] ffmpeg %s\n", logged.c_str());
       }
     }
-    std::vector<std::string> tokens = tokenizeArguments(argString);
-    std::vector<char*> argv;
-    argv.reserve(tokens.size() + 2);
-    argv.push_back(const_cast<char*>(ffmpegExecutable_.c_str()));
-    for (auto& token : tokens) {
-      argv.push_back(const_cast<char*>(token.c_str()));
-    }
-    argv.push_back(nullptr);
+    request.arguments = tokenizeArguments(argString);
 
-    pid_t pid = 0;
-    const int spawnResult = posix_spawn(&pid, ffmpegExecutable_.c_str(), &actions, nullptr, argv.data(), environ);
-    posix_spawn_file_actions_destroy(&actions);
+    // Through corevideo-child-guard: ffmpeg dies with the core even on SIGKILL,
+    // and leads its own process group so interrupt/stop reach guard and child.
+    const auto spawned = posix_child::spawn(request);
     ::close(videoPipe[0]);
     if (activeAudioPresent_) {
       ::close(audioPipe[0]);
     }
-    if (spawnResult != 0) {
+    if (spawned.pid <= 0) {
       ::close(videoPipe[1]);
       if (activeAudioPresent_) {
         ::close(audioPipe[1]);
       }
       sender_.status = "failed";
-      sender_.warning = std::string("Failed to start FFmpeg process: ") + std::strerror(spawnResult);
+      sender_.warning = std::string("Failed to start FFmpeg process: ") + std::strerror(spawned.error);
       sender_.destinationHealth = "failed";
       sender_.lastResultCode = "ffmpeg-start-failed";
       sender_.lastError = sender_.warning;
       return false;
     }
+    if (!spawned.guarded) {
+      static bool s_loggedUnguarded = false;
+      if (!s_loggedUnguarded) {
+        s_loggedUnguarded = true;
+        ::corevideo::core::nativeLogf(
+            "[rtmp] corevideo-child-guard not found beside the core: ffmpeg runs unguarded and can outlive a killed core\n");
+      }
+    }
+    const pid_t pid = spawned.pid;
+    ffmpegGuarded_ = spawned.guarded;
+    sender_.childGuarded = spawned.guarded;
 
     // Avoid SIGPIPE killing us when FFmpeg exits; writes return EPIPE instead.
     ::signal(SIGPIPE, SIG_IGN);
     ffmpegStdinFd_ = videoPipe[1];
     ffmpegAudioFd_ = activeAudioPresent_ ? audioPipe[1] : -1;
-    ffmpegPid_ = pid;
+    {
+      std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
+      ffmpegPid_ = pid;
+    }
     ffmpegRunning_ = true;
     if (useGpuDirect_) activateGpuVideoMuxInput();
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
@@ -2061,6 +2077,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
               ",\"audioSampleRate\":" + std::to_string(activeAudioPresent_ ? activeAudioSampleRate_ : 0) +
               ",\"videoInputPixelFormat\":" + jsonString(videoInputPixelFormat) +
               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) +
+              ",\"childGuard\":" + std::string(ffmpegGuarded_ ? "true" : "false") +
               ",\"ffmpegStderrPath\":" + jsonString(ffmpegStderrPath_.string()) + "}");
     return true;
 #endif
@@ -2924,21 +2941,25 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) {
       return false;
     }
-    if (ffmpegPid_ > 0) {
-      int status = 0;
-      const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
-      if (result == ffmpegPid_) {
-        ffmpegPid_ = 0;
-        sender_.lastResultCode = "ffmpeg-exited";
-        std::string exitDetail = "FFmpeg process exited before accepting program frames.";
-        if (WIFEXITED(status)) {
-          exitDetail = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
-        } else if (WIFSIGNALED(status)) {
-          exitDetail = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
-        }
-        sender_.lastError = describeFfmpegSenderFailure(exitDetail, ffmpegStderrTail());
-        return false;  // FFmpeg exited
+    int status = 0;
+    bool exited = false;
+    {
+      std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
+      if (ffmpegPid_ > 0 && ::waitpid(ffmpegPid_, &status, WNOHANG) == ffmpegPid_) {
+        ffmpegPid_ = 0;   // reaped: nothing may signal this pid again
+        exited = true;
       }
+    }
+    if (exited) {
+      sender_.lastResultCode = "ffmpeg-exited";
+      std::string exitDetail = "FFmpeg process exited before accepting program frames.";
+      if (WIFEXITED(status)) {
+        exitDetail = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
+      } else if (WIFSIGNALED(status)) {
+        exitDetail = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
+      }
+      sender_.lastError = describeFfmpegSenderFailure(exitDetail, ffmpegStderrTail());
+      return false;  // FFmpeg exited
     }
     const auto& videoBytes = videoFrameBytes(frame);
     // BOUNDARY EVIDENCE (one-shot): ffmpeg is told `-s WxH -pix_fmt <fmt>` and
@@ -3216,35 +3237,32 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       ::close(ffmpegAudioFd_);
       ffmpegAudioFd_ = -1;
     }
-    if (ffmpegPid_ > 0) {
+    pid_t stopping = 0;
+    {
+      // Detach first: from here interrupt() sees no child, so it can never
+      // signal this pid after the reap below lets the kernel recycle it.
+      std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
+      stopping = ffmpegPid_;
+      ffmpegPid_ = 0;
+    }
+    if (stopping > 0) {
       // Closing the pipes signals EOF; give FFmpeg a brief chance to flush, then
       // terminate and reap. A second child cannot start while the old one lives.
       int status = 0;
       bool reaped = false;
       for (int attempt = 0; attempt < 50; ++attempt) {
-        const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
-        if (result == ffmpegPid_ || result < 0) {
+        const pid_t result = ::waitpid(stopping, &status, WNOHANG);
+        if (result == stopping || result < 0) {
           reaped = true;
           break;
         }
         ::usleep(10000);
       }
       if (!reaped) {
-        ::kill(ffmpegPid_, SIGTERM);
-        for (int attempt = 0; attempt < 50; ++attempt) {
-          const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
-          if (result == ffmpegPid_ || result < 0) {
-            reaped = true;
-            break;
-          }
-          ::usleep(10000);
-        }
-        if (!reaped) {
-          ::kill(ffmpegPid_, SIGKILL);
-          while (::waitpid(ffmpegPid_, &status, 0) < 0 && errno == EINTR) {}
-        }
+        // SIGTERM then SIGKILL to the PROCESS GROUP (guard + ffmpeg): killing
+        // only the guard would orphan an ffmpeg that ignores SIGTERM.
+        posix_child::stopGroup(stopping, std::chrono::milliseconds(500), &status);
       }
-      ffmpegPid_ = 0;
     }
 #endif
     ffmpegRunning_ = false;
@@ -3442,7 +3460,13 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
 #else
   int ffmpegStdinFd_ = -1;
   int ffmpegAudioFd_ = -1;
-  pid_t ffmpegPid_ = 0;
+  // Review finding 7: interrupt() runs on another thread. A pid may be
+  // signalled ONLY while it is known unreaped, so every read for kill() and
+  // every successful reap + clear happen under this lock. It is never held
+  // across a sleep: the stop path detaches the pid under it, then reaps.
+  mutable std::mutex ffmpegPidMutex_;
+  pid_t ffmpegPid_ = 0;          // the child guard's pid (= process group) when guarded
+  bool ffmpegGuarded_ = false;
 #endif
   // GPU-direct encode (#521 slice 1). When chosen at process start, the compositor's
   // dedicated keyed-mutex encoder texture is fed to the MF hardware MFT for the sent

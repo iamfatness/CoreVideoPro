@@ -1,47 +1,28 @@
 // Stream-key storage. House rule: never persist a secret plaintext — the
 // Windows shell DPAPI-encrypts the RTMP key (prefs S4); the mac analogue is
 // a Keychain generic-password item. The prefs file only ever stores the URL.
+// Stored through the shared KeychainStore; the item name is unchanged so a key
+// saved by an older build is still found.
 
 import Foundation
-import Security
 
 enum StreamKeychain {
     private static let service = "us.iamfatness.corevideopro.stream-key"
     private static let account = "rtmp"
+    /// The SRT destination's passphrase (mac streaming Phase 2, D1): same
+    /// service, its own account, never in ShellPrefs.
+    static let srtPassphraseAccount = "srt-passphrase"
 
-    static func load() -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
-              let key = String(data: data, encoding: .utf8)
-        else { return "" }
-        return key
+    static func store(account: String = StreamKeychain.account) -> KeychainStore {
+        KeychainStore(service: service, account: account)
     }
 
-    static func save(_ key: String) {
-        let base: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        if key.isEmpty {
-            SecItemDelete(base as CFDictionary)
-            return
-        }
-        let payload = Data(key.utf8)
-        let update: [String: Any] = [kSecValueData as String: payload]
-        let status = SecItemUpdate(base as CFDictionary, update as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = base
-            add[kSecValueData as String] = payload
-            SecItemAdd(add as CFDictionary, nil)
-        }
+    static func load(account: String = StreamKeychain.account) -> String {
+        store(account: account).readString() ?? ""
+    }
+
+    /// An empty key deletes the item.
+    static func save(_ key: String, account: String = StreamKeychain.account) {
+        store(account: account).writeString(key)
     }
 }

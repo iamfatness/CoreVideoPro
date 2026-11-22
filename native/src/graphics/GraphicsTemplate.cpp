@@ -13,6 +13,8 @@
 #include <windows.h>
 #include <dwrite.h>
 #include "compositor/ComPtrLite.h"
+#elif !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL
+#include "graphics/GraphicsTextCoreText.h"
 #endif
 
 namespace corevideo::graphics {
@@ -174,6 +176,12 @@ TextSize measureText(const std::string& text, const std::string& font, double si
       SUCCEEDED(factory->CreateTextLayout(value.data(), UINT32(value.size()), format.get(),
           float(wrapWidth), 8192.f, layout.put())) && SUCCEEDED(layout->GetMetrics(&metrics)))
     return {metrics.widthIncludingTrailingWhitespace, metrics.lineCount};
+#elif !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL
+  // The Metal twin: Core Text through the same resolver (owner's substitution
+  // table, bundled Selawik) and line breaker the CoreTextOverlayRaster draws
+  // with, so layout and pixels agree (Metal graphics backend G2).
+  const auto measured = measureGraphicsText(text, font, size, weight, wrapWidth, wrap);
+  return {measured.width, measured.lines};
 #else
   (void)font; (void)weight;
 #endif
@@ -569,7 +577,7 @@ GraphicsLayerMotion GraphicsLayerMotion::read(const Json& value) {
   motion.type = string("type", "");
   const bool slide = motion.type == "slide", grow = motion.type == "grow", rise = motion.type == "rise";
   const bool cut = motion.type == "cut";
-  need(cut || slide || grow || rise || motion.type == "fade" || motion.type == "wipe" || motion.type == "pop", error);
+  need(isGraphicsMotionType(motion.type), error);
   motion.easing = string("easing", "ease-out");
   need(motion.easing == "linear" || motion.easing == "ease-in" ||
       motion.easing == "ease-out" || motion.easing == "ease-in-out", error);

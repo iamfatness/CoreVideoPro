@@ -21,6 +21,8 @@ struct Script {
   int failAfter = -1;           // take() returns Failed after this many samples
   bool stallAfterLast = false;  // Pending forever instead of EndOfStream
   int failingReader = 0;        // the Nth reader opened (1-based) fails on its first take; 0 = none
+  bool noVideoTrack = false;    // the asset opens and has no video track (an audio bed)
+  bool gpuSamples = false;      // samples carry a GPU image and NO CPU bytes (the Mac zero-copy reader)
   int64_t duration100ns = 10 * kFrame;
 };
 // Audio script (Task 6). Fixture invariants (rule 1): 48 kHz interleaved stereo;
@@ -45,6 +47,8 @@ struct Shared {
   std::vector<int64_t> audioStarts100ns;
   const int64_t* nowMs = nullptr;  // the rig's clock
 };
+// A GPU image whose `generation` carries the sample's colour byte (index + 1).
+struct TaggedGpuImage final : GpuVideoFrame {};
 int timecodeMs(float sample) { return static_cast<int>(std::lround(sample * 4096.f)) - 1; }
 class FakeAudioReader final : public IClipAudioReader {
  public:
@@ -68,6 +72,7 @@ class FakeAudioReader final : public IClipAudioReader {
     frame_ += count;
     return ClipReadStatus::Ready;
   }
+  int64_t duration100ns() const override { return static_cast<int64_t>(s_->audio.seconds) * 10'000'000; }
  private:
   std::shared_ptr<Shared> s_;
   int64_t frame_ = 0, readyAtMs_ = 0;
@@ -81,12 +86,19 @@ class FakeReader final : public IClipVideoReader {
   ~FakeReader() override { s_->destroyed += 1; }
   ClipReadStatus take(ClipVideoSample& out, std::string& error) override {
     if (pending_ < s_->script.pendingBeforeFirst) { ++pending_; return ClipReadStatus::Pending; }
+    if (s_->script.noVideoTrack) return ClipReadStatus::NoVideoTrack;
     if (s_->script.failingReader != 0 && ordinal_ == s_->script.failingReader) { error = "transient open failure"; return ClipReadStatus::Failed; }
     if (s_->script.failAfter >= 0 && next_ >= s_->script.failAfter) { error = "decode error"; return ClipReadStatus::Failed; }
     if (next_ >= s_->script.samples)
       return s_->script.stallAfterLast ? ClipReadStatus::Pending : ClipReadStatus::EndOfStream;
     out.width = 4; out.height = 2;
-    out.bgra = std::make_shared<std::vector<uint8_t>>(4u * 2u * 4u, static_cast<uint8_t>(next_ + 1));
+    if (s_->script.gpuSamples) {
+      auto gpu = std::make_shared<TaggedGpuImage>();
+      gpu->width = 4; gpu->height = 2; gpu->generation = static_cast<uint64_t>(next_ + 1);  // the colour-byte scheme
+      out.gpu = std::move(gpu);
+    } else {
+      out.bgra = std::make_shared<std::vector<uint8_t>>(4u * 2u * 4u, static_cast<uint8_t>(next_ + 1));
+    }
     out.pts100ns = next_ * kFrame; out.duration100ns = kFrame;
     ++next_; s_->takesReady += 1;
     return ClipReadStatus::Ready;
@@ -528,4 +540,98 @@ TEST(MediaClipDecoder, ALoopWhoseReopenAlsoFailsSaysSoAndStops) {
   const auto held = decoder.pollMediaFrames(clip(false, true), 1'000);
   ASSERT_EQ(held.size(), 1u);
   EXPECT_EQ(held.front().frameId, 3) << "the last frame stays on air";
+}
+
+// N3 (plan 2026-11-21 Task 1). An audio bed: the asset opens and has no video
+// track. That is not an open failure, so nothing warns; its picture is a fully
+// transparent frame, so a layer carrying it draws nothing over the scene.
+TEST(MediaClipDecoder, AnAudioOnlyAssetIsATransparentPictureWithNoWarning) {
+  Script video; video.noVideoTrack = true;
+  Rig rig(video);
+  int64_t firstId = -1;
+  for (int i = 0; i < 10; ++i) {
+    const bool playing = i >= 5;  // a cue poster first, then rolling
+    const auto frames = rig.d->pollMediaFrames(clip(playing), 1'000 + i * 20);
+    ASSERT_EQ(frames.size(), 1u) << "poll " << i;
+    const auto& f = frames.front();
+    ASSERT_TRUE(f.hasPixels());
+    EXPECT_EQ(f.pixelWidth, 2); EXPECT_EQ(f.pixelHeight, 2);
+    for (const auto byte : *f.pixels) ASSERT_EQ(byte, 0) << "every byte transparent black";
+    if (firstId < 0) firstId = f.frameId;
+    EXPECT_EQ(f.frameId, firstId) << "one picture for the asset's whole life";
+    EXPECT_EQ(f.participantId, "media:clip");
+    EXPECT_TRUE(rig.d->warnings().empty()) << "poll " << i << ": " << (rig.d->warnings().empty() ? "" : rig.d->warnings().front());
+  }
+  EXPECT_FALSE(rig.d->mediaHasVideo());
+  EXPECT_EQ(rig.s->opened, 1) << "no track is learned once, never re-opened per poll";
+}
+
+TEST(MediaClipDecoder, AVideoClipStillReportsThatItHasVideo) {
+  Rig rig;
+  (void)rig.next(clip(true));
+  EXPECT_TRUE(rig.d->mediaHasVideo());
+}
+
+TEST(MediaClipDecoder, AnAudioOnlyClipEndsWhenItsAudioEndsAndALoopNeverDoes) {
+  // Fixture: 1 s of audio (AudioScript.seconds = 1), no video track.
+  Script video; video.noVideoTrack = true;
+  AudioScript audio; audio.seconds = 1;
+  for (const bool loop : {false, true}) {
+    Rig rig(video, audio);
+    const auto request = clip(true, loop);
+    rig.d->syncMediaClock(request, 1'000);
+    int lastHeardMs = -1;
+    bool endedBeforeLastWindow = false;
+    for (rig.now = 1'000; rig.now <= 2'400; rig.now += 20) {
+      (void)rig.d->prefetchMediaVideo(request, rig.now);
+      for (const auto& w : rig.d->pollMediaAudioFrames(request, rig.now)) {
+        for (size_t i = 0; i < w.pcm.size(); i += 2) {
+          if (w.pcm[i] != 0.f) lastHeardMs = (std::max)(lastHeardMs, timecodeMs(w.pcm[i]));
+        }
+      }
+      if (rig.d->mediaEnded() && lastHeardMs < 990) endedBeforeLastWindow = true;
+    }
+    EXPECT_EQ(rig.d->mediaDurationMs(), 1000) << "loop=" << loop << ": the audio track is the duration";
+    if (!loop) {
+      EXPECT_GE(lastHeardMs, 990) << "the whole second was heard";
+      // CONFIRMATORY (rule 8): the decoder can only see its reader's end while
+      // short of a window, and emits that tail in the same poll, so this holds
+      // by construction; the owner-level tail is judged by
+      // MediaTransports.AnAudioOnlyBedOutlivesTheNoNewFrameBackstop.
+      EXPECT_FALSE(endedBeforeLastWindow) << "ended only after the last window was handed over";
+      EXPECT_TRUE(rig.d->mediaEnded());
+    } else {
+      EXPECT_FALSE(rig.d->mediaEnded()) << "a loop never ends";
+    }
+    EXPECT_TRUE(rig.d->warnings().empty());
+  }
+}
+
+// N4 (plan 2026-11-21 Task 4). A reader that hands over a GPU image and no CPU
+// bytes (the Mac zero-copy reader) produces frames that carry that image and
+// no pixels, through every row: cue poster, roll, pause hold.
+TEST(MediaClipDecoder, AGpuSampleBecomesAGpuFrameWithNoCpuPixels) {
+  Script video; video.gpuSamples = true;
+  Rig rig(video);
+  const auto tag = [](const VideoFrame& f) { return f.gpuPixels ? static_cast<int>(f.gpuPixels->generation) : -1; };
+  const auto poster = rig.d->pollMediaFrames(clip(false), 1'000);
+  ASSERT_EQ(poster.size(), 1u) << "a GPU-only cue poster was dropped";
+  EXPECT_TRUE(poster[0].hasGpuPixels());
+  EXPECT_FALSE(poster[0].hasPixels());
+  EXPECT_EQ(tag(poster[0]), 1) << "the poster is sample 0";
+  EXPECT_EQ(rig.d->pollMediaFrames(clip(false), 1'010).size(), 1u) << "the held poster is re-served";
+  const auto rolled = rig.next(clip(true));
+  EXPECT_EQ(tag(rolled.frame), 2) << "rolling continues from sample 1";
+  EXPECT_EQ(rolled.frame.width, 4);
+  // Pause on the DIRECT-poll path (the path whose paused branch serves a held
+  // frame; on the prefetch path the owner holds its own presented frame).
+  rig.now = 1'200;
+  const auto onAir = rig.d->pollMediaFrames(clip(true), rig.now);  // presents by media time
+  ASSERT_EQ(onAir.size(), 1u);
+  EXPECT_TRUE(onAir[0].hasGpuPixels());
+  rig.d->syncMediaClock(clip(false), rig.now);
+  const auto held = rig.d->pollMediaFrames(clip(false), rig.now + 50);
+  ASSERT_EQ(held.size(), 1u) << "a paused GPU-only clip lost its on-air frame";
+  EXPECT_EQ(held[0].frameId, onAir[0].frameId);
+  EXPECT_EQ(tag(held[0]), tag(onAir[0]));
 }

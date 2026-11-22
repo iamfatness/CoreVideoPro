@@ -577,3 +577,60 @@ TEST(StillMediaFrameCache, WicReportsMissingFileAsUnreadable) {
   EXPECT_FALSE(decoder->fileVersion("C:\\definitely\\not\\a\\real\\file.png").has_value());
 }
 #endif  // _WIN32
+
+// Sources Phase 2 plan, Task 5 (S4): a still that sits in a Show Input slot is on the
+// multiview wall even when no scene routes it. The still cache used to be fed only from
+// scene routes (syncStillMediaDesired), so a wall-only media tile had no picture. The
+// multiview entry now carries mediaAssetPath/mediaAssetKind (additive; Windows sends
+// neither and is unaffected). FIXTURE: one still with a path, one still WITHOUT a path, and
+// one clip; only the first may reach the cache. A clip is never decoded for the wall (D10:
+// it has transport state the wall does not own).
+TEST(StillMediaFrameCache, AStillOnlyTheMultiviewShowsIsDecodedAndOnTheBus) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  auto decoder = std::make_unique<FakeStillDecoder>();
+  auto* fake = decoder.get();
+  mediaCore.setStillImageDecoderForTest(std::move(decoder));
+
+  const auto source = [](const std::string& id, const std::string& kind, const std::string& path, int slot) {
+    corevideo::rpc::Json::Object entry{{"sourceId", "media:" + id}, {"kind", "media"}, {"mediaAssetId", id},
+                                       {"mediaAssetKind", kind}, {"slot", slot}, {"label", id}};
+    if (!path.empty()) entry.emplace("mediaAssetPath", path);
+    return corevideo::rpc::Json(entry);
+  };
+  const corevideo::rpc::Json::Object layout{
+      {"type", "set-multiview-layout"}, {"canvasWidth", 1920}, {"canvasHeight", 1080},
+      {"sources", corevideo::rpc::Json::Array{
+                      source("logo-1", "slate", "/assets/logo.png", 0),
+                      source("logo-2", "slate", "", 1),
+                      source("clip-1", "stinger", "/assets/open.mp4", 2),
+                  }}};
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{layout});
+  ASSERT_NE(mediaCore.stillMediaCacheForTest(), nullptr);
+  ASSERT_TRUE(mediaCore.stillMediaCacheForTest()->waitForIdle(5000));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{layout});  // a tick ingests it
+
+  EXPECT_EQ(fake->decodesFor("/assets/logo.png"), 1) << "the wall-only still is decoded once";
+  EXPECT_EQ(fake->decodesFor("/assets/open.mp4"), 0) << "a clip is never decoded as a still";
+  EXPECT_EQ(fake->decodeCount, 1) << "nothing else reached the decoder (the path-less entry included)";
+
+  const auto state = mediaCore.sessionState();
+  bool onBus = false;
+  for (const auto& s : state.get("sources")->asArray()) {
+    if (s.getString("sourceId") == "media:logo-1") onBus = s.getString("kind") == "still";
+  }
+  EXPECT_TRUE(onBus) << "the still is a bus source the multiview tile draws from";
+
+  // The slot is emptied: the wall no longer names it, so it is no longer desired.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-multiview-layout"}, {"canvasWidth", 1920}, {"canvasHeight", 1080},
+      {"sources", corevideo::rpc::Json::Array{}}}});
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  bool stillThere = false;
+  // Bind the snapshot first: a range-for over a temporary's member would read it
+  // after it is destroyed (C++20 does not extend the temporary; TSan caught it).
+  const auto after = mediaCore.sessionState();
+  for (const auto& s : after.get("sources")->asArray()) {
+    if (s.getString("sourceId") == "media:logo-1") stillThere = true;
+  }
+  EXPECT_FALSE(stillThere) << "an unassigned still leaves the bus";
+}

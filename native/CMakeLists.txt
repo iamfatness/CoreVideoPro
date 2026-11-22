@@ -203,17 +203,33 @@ add_library(corevideo_native
 if(APPLE)
   target_sources(corevideo_native PRIVATE
     src/compositor/MetalCompositorAdapter.mm
+    src/compositor/CoreTextOverlayRaster.mm
+    src/compositor/MetalPixelBufferTextures.mm
+    src/compositor/MetalGradePreview.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm)
   set_source_files_properties(
     src/compositor/MetalCompositorAdapter.mm
+    src/compositor/CoreTextOverlayRaster.mm
+    src/compositor/MetalPixelBufferTextures.mm
+    src/compositor/MetalGradePreview.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  # Core Text font resolution + measurement for native graphics (plain C++).
+  target_sources(corevideo_native PRIVATE src/graphics/GraphicsTextCoreText.cpp)
+  # Bundled graphics fonts (Selawik for Segoe UI; native/resources/graphics-fonts/
+  # SOURCE.md) ride beside every macOS build's executables in GraphicsFonts/,
+  # exactly where the .app keeps them beside the core
+  # (Contents/Resources/GraphicsFonts, scripts/make-macos-shell-bundle.sh).
+  file(GLOB COREVIDEO_GRAPHICS_FONT_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/graphics-fonts/*.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/graphics-fonts/OFL.txt")
+  file(COPY ${COREVIDEO_GRAPHICS_FONT_FILES} DESTINATION "${CMAKE_BINARY_DIR}/GraphicsFonts")
   # StillMediaFrameCache decodes stills via ImageIO on Apple (WIC analogue);
   # it compiles on every config, so the frameworks link unconditionally here.
   target_link_libraries(corevideo_native PUBLIC
@@ -310,7 +326,7 @@ if(COREVIDEO_WITH_METAL)
     message(FATAL_ERROR "COREVIDEO_WITH_METAL supports the macOS Metal adapter only.")
   endif()
   target_link_libraries(corevideo_native PUBLIC
-    "-framework Metal" "-framework Foundation" "-framework IOSurface")
+    "-framework Metal" "-framework Foundation" "-framework IOSurface" "-framework CoreVideo")
 endif()
 
 if(COREVIDEO_WITH_AVF_ENCODER)
@@ -320,8 +336,10 @@ if(COREVIDEO_WITH_AVF_ENCODER)
   if(NOT APPLE)
     message(FATAL_ERROR "COREVIDEO_WITH_AVF_ENCODER supports the macOS adapter only.")
   endif()
+  # Accelerate: vImage scales a Program frame whose size differs from the
+  # writer's (scale, never crop — O2).
   target_link_libraries(corevideo_native PUBLIC
-    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework Accelerate")
 endif()
 
 if(COREVIDEO_WITH_AVF_MEDIA_DECODER)
@@ -332,7 +350,8 @@ if(COREVIDEO_WITH_AVF_MEDIA_DECODER)
     message(FATAL_ERROR "COREVIDEO_WITH_AVF_MEDIA_DECODER supports the macOS adapter only.")
   endif()
   target_link_libraries(corevideo_native PUBLIC
-    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox")
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox"
+    "-framework CoreImage")
 endif()
 
 if(COREVIDEO_WITH_COREAUDIO)
@@ -682,6 +701,15 @@ endif()
 add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
+# POSIX child lifetime (mac streaming Phase 2, P1): every ffmpeg child runs
+# under this guard, which kills it when the core's lifeline pipe closes, even
+# on SIGKILL of the core (modules/PosixChildProcess.h). Ships beside the core;
+# building the core always builds it.
+if(NOT WIN32)
+  add_executable(corevideo-child-guard child-guard/main.cpp)
+  add_dependencies(corevideo-native corevideo-child-guard)
+endif()
+
 # macOS virtual camera e2e feeder (roadmap M9.2, Task 7): feeds red NV12
 # through SinkVirtualCameraPublisher + the real CMIO sink. Built on demand by
 # scripts/macos-vcam-e2e.sh, never by default, never shipped.
@@ -992,11 +1020,19 @@ if(BUILD_TESTING)
     tests/EngineIpcShmNameTest.cpp
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
+    tests/GraphicsFontResolverTest.cpp
+    tests/GraphicsTextMeasureTest.cpp
     tests/MetalSourceGradePixelTest.cpp
+    tests/MetalGradeLutPixelTest.cpp
+    tests/MetalGradePreviewTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp
     tests/MacCaptureSupportTest.cpp
     tests/AvfCaptureArrivalTest.cpp
+    tests/MacCaptureLivenessTest.cpp
+    tests/SubscriptionEvidenceLinesTest.cpp
+    tests/RenderedPreviewSourcesTest.cpp
+    tests/SourceSheetPlanTest.cpp
     tests/AvfProgramTailTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
@@ -1070,6 +1106,16 @@ if(BUILD_TESTING)
     target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
     set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   endif()
+  if(COREVIDEO_WITH_METAL AND NOT COREVIDEO_STUB)
+    # CoreTextOverlayRaster full-resolution pixel tests (ObjC++: they read the
+    # prepared MTLTexture back). This file also replaces global operator new
+    # with a malloc pass-through that counts only on a thread that arms it.
+    target_sources(corevideo-native-tests PRIVATE tests/MetalOverlayRasterTest.mm)
+    set_source_files_properties(tests/MetalOverlayRasterTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # Zero-copy IOSurface media frames into the Metal compositor (N4).
+    target_sources(corevideo-native-tests PRIVATE tests/MetalZeroCopyTest.mm)
+    set_source_files_properties(tests/MetalZeroCopyTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  endif()
   if(COREVIDEO_WITH_AVF_MEDIA_DECODER AND NOT COREVIDEO_STUB)
     # Real AVFoundation decode against fixtures written at test time.
     target_sources(corevideo-native-tests PRIVATE tests/AvfMediaFixtures.mm tests/AvfMediaDecoderTest.cpp
@@ -1129,6 +1175,14 @@ if(BUILD_TESTING)
   # resolves ffmpeg on its own unchanged path, so the test is not built there.
   if(NOT WIN32)
     target_sources(corevideo-native-tests PRIVATE tests/PosixExecutableLocatorTest.cpp)
+    # P1: the real guard plus a probe child / stand-in core (never shipped).
+    add_executable(corevideo-posix-child-probe tests/PosixChildProbe.cpp)
+    target_include_directories(corevideo-posix-child-probe PRIVATE src)
+    target_sources(corevideo-native-tests PRIVATE tests/PosixChildProcessTest.cpp)
+    target_compile_definitions(corevideo-native-tests PRIVATE
+      COREVIDEO_CHILD_GUARD_PATH="$<TARGET_FILE:corevideo-child-guard>"
+      COREVIDEO_POSIX_CHILD_PROBE_PATH="$<TARGET_FILE:corevideo-posix-child-probe>")
+    add_dependencies(corevideo-native-tests corevideo-child-guard corevideo-posix-child-probe)
   endif()
   # The sink helper's process half exists only in the macOS virtual-camera build.
   if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)

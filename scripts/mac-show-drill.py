@@ -457,9 +457,22 @@ def main():
     parser.add_argument("--media", action="store_true",
                         help="put a 1080p60 clip and a looping 1080p30 video background on Program "
                              "and gate their decode/presentation rates")
+    parser.add_argument("--grade-previews", type=int, default=0,
+                        help="open N private grade-preview editors over stdio for the whole run (Metal G5; max 3)")
+    parser.add_argument("--scopes", action="store_true",
+                        help="with --grade-previews: also demand the three scopes (Metal G6)")
     parser.add_argument("--source-grades", action="store_true",
                         help="after configure, apply a per-source grade (warm-film, exposure +2) to every "
                              "wall participant (query-source-grade, then set-source-grade) and gate as usual")
+    parser.add_argument("--lower-third", action="store_true",
+                        help="keep a legacy lower third on Program for the whole run: new text every "
+                             "second (a fresh overlay raster preparation each time) and a hide/re-show "
+                             "every five seconds, so the render tick is measured with the overlay "
+                             "raster cycling (Metal graphics backend G1, spec 7.4)")
+    parser.add_argument("--source-preview-demand", action="store_true",
+                        help="hold the Sources tab's preview-demand lease (renewed every poll, as the "
+                             "shell renews it every second) so the core renders the source sheet "
+                             "(sources Phase 2, S6), then gate that the sheet was actually rendered")
     parser.add_argument("--ffmpeg", default=None,
                         help="ffmpeg bin dir or exe for --media fixtures "
                              "(default: COREVIDEO_FFMPEG_BIN_DIR, then PATH)")
@@ -577,6 +590,27 @@ def main():
         if participants and accepted == 0:
             failures.append("--source-grades: no per-source grade was accepted, so the run proved nothing")
 
+    # Private grade previews (grading Phase 2, Task 10): the requests the Mac shell's
+    # GradePreviewSession sends — one full set-grade-preview per editor, then a renewOnly every
+    # 500 ms (below) — so the run measures Program with N editors open on the shared GPU.
+    preview_editors = []
+    if args.grade_previews:
+        participants = [str(101 + i) for i in range(max(1, args.load))]
+        for i in range(min(3, args.grade_previews)):
+            editor = {"instanceId": f"drill-editor-{i}", "sourceId": participants[i % len(participants)], "revision": 1}
+            answer = core.request(dict(editor, type="set-grade-preview", enabled=True, scopesEnabled=args.scopes,
+                                       scopesOriginal=False, histogramMode=1, waveformMode=1, scopeView=0,
+                                       compareOriginal=False,
+                                       scopeRoi={"enabled": False, "x": 0, "y": 0, "width": 1, "height": 1,
+                                                 "revision": 0, "shape": "rectangle"},
+                                       grade={"lut": "warm-film", "exposure": 2, "contrast": 0,
+                                              "saturation": 0, "temperature": 0}), step="grade-preview") or {}
+            if answer.get("accepted"):
+                preview_editors.append(editor)
+            else:
+                print(f"GRADE-PREVIEW {editor['instanceId']}: refused ({answer.get('error') or answer})")
+        print(f"GRADE-PREVIEW {len(preview_editors)} editors open (scopes {'on' if args.scopes else 'off'})")
+
     # 2. Operator traffic at the cadence the shell produces, for the whole run:
     #    2Hz snapshot syncs plus scene re-cues, while the render loop is live.
     start = time.time()
@@ -591,8 +625,22 @@ def main():
             solo = "mv-solo-a" if tick % 10 == 0 else "mv-solo-b"
             response = step("recue", [{"type": "set-preview-scene", "sceneId": solo,
                                        "routes": [route("solo-0")]}], elapsed)
+        elif args.lower_third:
+            # Every poll tick (2 Hz) carries the overlay; the text changes once a
+            # second and every fifth second the lower third is taken out, so the
+            # raster both re-prepares and builds in/out under load.
+            second = tick // 2
+            shown = second % 5 != 4
+            response = step("lower-third", [{"type": "set-overlay-asset",
+                                             "overlayId": "overlay:lower-third",
+                                             "enabled": shown,
+                                             "text": f"DRILL GUEST {second}",
+                                             "title": "CoreVideo show drill"}], elapsed)
         else:
-            response = step("poll", [], elapsed)
+            response = step("poll", [{"type": "set-source-preview-demand", "enabled": True}]
+                            if args.source_preview_demand else [], elapsed)
+        for editor in preview_editors:
+            core.request(dict(editor, type="set-grade-preview", renewOnly=True), step="grade-preview-renew")
         # Both ends of the operator-traffic window, for the --media block. The
         # first sample is taken one second in so a cold decoder open is not
         # counted against the steady rate.
@@ -628,6 +676,18 @@ def main():
 
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
+    if preview_editors:
+        ready = [e for e in core.events if e.get("type") == "grade-preview" and e.get("status") == "ready"
+                 and (e.get("texture") or {}).get("iosurfaceId")]
+        scoped = [e for e in ready if ((e.get("scopes") or {}).get("texture") or {}).get("iosurfaceId")]
+        diag = snapshot.get("gradePreview") or {}
+        print(f"GRADE-PREVIEW ready events {len(ready)} (with scopes {len(scoped)}); worker submitted="
+              f"{diag.get('submitted')} completed={diag.get('completed')} superseded={diag.get('superseded')} "
+              f"failed={diag.get('failed')} lastWorkMs={diag.get('lastWorkMs')}")
+        if not ready:
+            failures.append("--grade-previews: no ready grade-preview surface arrived, so the run proved nothing")
+        if args.scopes and not scoped:
+            failures.append("--scopes: no scope surface arrived, so the run proved nothing")
     if args.source_grades:
         rows = snapshot.get("sourceGrades") or []
         print(f"GRADE end of run: {sum(1 for r in rows if r.get('active'))}/{len(rows)} "
@@ -793,6 +853,27 @@ def main():
             failures.extend("media: " + failure for failure in media_failures)
         else:
             print("PASS media sources held their rates with no decoder restart")
+
+    # Sources Phase 2 (S6): the monitor shed state is the judge of the sheet's cost, so it is
+    # printed on every run (demand on AND off) for the A/B; with demand on, a sheet that was
+    # never rendered means the run measured nothing.
+    shed = (snapshot.get("realtimeEvidence") or {}).get("monitorShed") or {}
+    print(f"MONITOR SHED divisor={shed.get('divisor')} level={shed.get('level')} "
+          f"entered={shed.get('enteredCount')} shedTicks={shed.get('shedTicks')} "
+          f"lastReason={shed.get('lastReason')}")
+    # The sheet is judged on the LAST operator-window poll: the lease is 3 s, and the record
+    # segment after the window renews nothing, so the final snapshot has (correctly) let it go.
+    sheet = (media_last or {}).get("sourceSheet") or {}
+    sheet_texture = sheet.get("texture") or {}
+    live_cells = sum(1 for cell in sheet.get("cells", []) if cell.get("state") in ("live", "held"))
+    print(f"SOURCE SHEET active={sheet.get('active')} surface={sheet_texture.get('iosurfaceId')} "
+          f"frame={sheet_texture.get('frameNumber')} liveCells={live_cells}")
+    if args.source_preview_demand:
+        if sheet.get("active") and live_cells > 0:
+            print("PASS source sheet rendered under the demand lease")
+        else:
+            failures.append(f"--source-preview-demand: no source sheet with a live cell "
+                            f"(active={sheet.get('active')}, liveCells={live_cells}); the run measured nothing")
 
     multiview = snapshot.get("multiviewSharedTexture") or {}
     roles = {tile.get("role") for tile in multiview.get("tiles", [])}

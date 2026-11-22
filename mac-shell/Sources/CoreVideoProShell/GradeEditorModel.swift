@@ -2,6 +2,7 @@
 // editor window, at most three (the Windows rule). Every send goes through SourceGradeStore,
 // which keeps one apply in flight per source; nothing here talks to the core directly.
 
+import CoreGraphics
 import Foundation
 
 @MainActor
@@ -54,18 +55,56 @@ final class GradeEditorModel: ObservableObject, Identifiable {
 
     static let draftStatus = "Draft — Apply Live sends this grade to the show."   // VM.Advanced.cs:75
     static let adjustmentLimitText = "A grade can contain up to eight adjustments." // :119
-    static let laterEditingNotice = "Curves and LUT editing arrive in a later update."  // D9
+    /// GradeAdjustmentControl.cs:46, with Command in place of Ctrl (spec §5.4).
+    static let curveHelp = "Click to add; drag to shape. Home/End selects an endpoint; ⌘+arrows selects a point. "
+        + "Arrows adjust by 0.1%; Shift by 1%. Delete removes an interior point. Endpoints move vertically. Linear interpolation."
+    static let curveChannels = ["Master", "Red", "Green", "Blue"]
+    static let maxCubeFileBytes = 2_000_000                       // ColorGradeEditorWindow.Advanced.cs:97
+
+    // G3 (Phase 2 Task 2): the curve channel being edited and its selected point.
+    @Published var curveChannel = 0 { didSet { if curveChannel != oldValue { curveSelection = -1 } } }
+    @Published private(set) var curveSelection = -1
+
+    // ── G5/G6 (Phase 2 Task 8): the private preview, Compare and scopes ─────
+    /// This editor's preview instance (Windows: one per editor window).
+    let previewInstanceId = GradeOperation.newId()
+    /// Bumped by every change the preview must show (Windows RequestPreview).
+    @Published private(set) var previewRevision: Int64 = 1
+    @Published var compareOriginal = false { didSet { if compareOriginal != oldValue { requestPreview() } } }
+    @Published var scopesEnabled = false { didSet { if scopesEnabled != oldValue { requestPreview() } } }
+    @Published var scopesOriginal = false { didSet { if scopesOriginal != oldValue { requestPreview() } } }
+    @Published var histogramMode = 1 { didSet { if histogramMode != oldValue { requestPreview() } } }   // 0 Luma, 1 RGB overlay
+    @Published var waveformMode = 1 { didSet { if waveformMode != oldValue { requestPreview() } } }     // 0 Luma, 1 RGB overlay, 2 RGB parade
+    @Published var scopeView = 0 { didSet { if scopeView != oldValue { requestPreview() } } }           // 0 all, 1 hist, 2 wave, 3 vector
+    @Published private(set) var scopeRoi = GradeScopeRoi()
+    @Published private(set) var previewStatus: String
+    @Published private(set) var previewSurfaceId: UInt32 = 0
+    @Published private(set) var scopeStatus = GradeEditorModel.scopesHiddenText
+    @Published private(set) var scopeSurfaceId: UInt32 = 0
+    @Published private(set) var previewSupported: Bool
+    private(set) var previewSession: GradePreviewSession?
+
+    static let scopesHiddenText = "Scopes hidden."
+    static let reconnectingText = "Native preview reconnecting."              // GradePreviewCoordinator.cs:100
+    static let preparingText = "Preparing native grading preview"             // VM.cs:107
+    static let scopeCaptions = ["HISTOGRAM · 0–255", "WAVEFORM · 0–100%", "VECTORSCOPE · 75%"]   // CGE:31-33
+    static let histogramModes = ["Luma", "RGB overlay"]
+    static let waveformModes = ["Luma", "RGB overlay", "RGB parade"]
+    static let scopeViews = ["All scopes", "Histogram", "Waveform", "Vectorscope"]
 
     /// Set by AppModel: "Apply and Done" closes the editor through it.
     var onClose: (() -> Void)?
     private let store: SourceGradeStore
 
     init(sourceId: String, sourceName: String, binding: String,
-         seed: SourceColorGrade, draftNotice: String?, store: SourceGradeStore) {
+         seed: SourceColorGrade, draftNotice: String?, store: SourceGradeStore,
+         previewSupported: Bool = false, previewSend: ((JSONObject) async throws -> JSONObject)? = nil) {
         self.sourceId = sourceId
         self.sourceName = sourceName
         self.binding = binding
         self.store = store
+        self.previewSupported = previewSupported
+        previewStatus = previewSupported ? Self.preparingText : Self.previewNotice
         lut = seed.lut
         exposure = seed.exposure
         contrast = seed.contrast
@@ -77,6 +116,197 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         // A saved Zoom grade is a DRAFT until Apply Live confirms the binding (Grading.cs:87-90).
         liveEditing = draftNotice == nil
         status = draftNotice ?? Self.initialStatus
+        if let previewSend {
+            let session = GradePreviewSession(instanceId: previewInstanceId, sourceId: sourceId, draft: captureDraft(),
+                                              send: previewSend, register: { [store] in try await store.registerDocument($0) })
+            session.onFailure = { [weak self] text in self?.previewUnavailable(text) }
+            previewSession = session
+        }
+    }
+
+    /// GradePreviewCoordinator.CaptureDraft: scopes are demanded only while the panel is expanded.
+    private func captureDraft() -> GradePreviewDraft {
+        GradePreviewDraft(revision: previewRevision, grade: currentGrade, scopesEnabled: advancedExpanded && scopesEnabled,
+                          scopesOriginal: scopesOriginal, histogramMode: histogramMode, waveformMode: waveformMode,
+                          compareOriginal: compareOriginal, scopeView: scopeView, roi: scopeRoi)
+    }
+
+    /// Windows RequestPreview: a new revision carrying the current draft.
+    func requestPreview() {
+        previewRevision += 1
+        previewSession?.draft = captureDraft()
+    }
+
+    func setPreviewSupported(_ supported: Bool) {
+        guard supported != previewSupported else { return }
+        previewSupported = supported
+        if previewSurfaceId == 0 { previewStatus = supported ? Self.preparingText : Self.previewNotice }
+    }
+
+    /// A new core generation (GradePreviewCoordinator.OnHealth): the old surfaces died with it.
+    func previewCoreReset() {
+        previewSession?.coreReset()
+        previewSurfaceId = 0; scopeSurfaceId = 0
+        previewStatus = Self.reconnectingText
+        if advancedExpanded && scopesEnabled { scopeStatus = "Preparing native scopes; no measurement available." }
+    }
+
+    func closePreview() { previewSession?.close(); previewSession = nil }
+
+    // ── G7 (Phase 2 Task 9): region of interest, ColorGradeEditorViewModel.Roi.cs ──
+    /// Set by AppModel after seeding: persists the region per person (ScopePreferences.cs:19-22).
+    var onScopeRoiChanged: ((GradeScopeRoi) -> Void)?
+    /// "Show ROI guide (editor only)" (Roi.cs:35-36).
+    @Published var scopeRoiGuideVisible = true
+    /// The armed drawing tool ("rectangle" / "circle"), nil = Select / move (ScopeRoiControl.DrawingShape).
+    @Published var roiDrawingShape: String?
+
+    /// ArmRoi (ColorGradeEditorWindow.Roi.cs:41-45): drawing needs the scopes on and the panel open.
+    func armRoi(_ shape: String?) {
+        if shape != nil { setAdvancedExpanded(true); scopesEnabled = true }
+        scopeRoiGuideVisible = true
+        roiDrawingShape = shape
+    }
+
+    /// OnRoiNumberChanged (ColorGradeEditorWindow.Roi.cs:30-39): one precision slider moved
+    /// (0 left, 1 top, 2 width, 3 height); a circle follows the axis that moved, round in pixels.
+    func setRoiNumber(_ axis: Int, _ value: Double) {
+        var roi = scopeRoi
+        switch axis {
+        case 0: roi.x = value
+        case 1: roi.y = value
+        case 2: roi.width = value
+        default: roi.height = value
+        }
+        if roi.shape == "circle", previewPixelWidth > 0, previewPixelHeight > 0 {
+            let diameter = axis == 3 ? roi.height * Double(previewPixelHeight) : roi.width * Double(previewPixelWidth)
+            roi = ScopeRoiGeometry.circleSize(roi, diameter: diameter, source: (previewPixelWidth, previewPixelHeight))
+        }
+        setScopeRoi(roi)
+    }
+
+    /// RoiToolHint (Roi.cs:22-24).
+    var roiToolHint: String {
+        if let shape = roiDrawingShape { return "Drag to draw a \(shape) over the subject. Escape cancels." }
+        return scopeRoi.enabled
+            ? "Drag inside to move; drag a handle to resize. Scopes measure the selection; grading affects the whole source."
+            : "Choose a shape, then drag over the subject to measure its scopes."
+    }
+
+    var scopeRegionLabel: String {
+        guard scopeRoi.enabled else { return "Full frame" }
+        func pct(_ v: Double) -> String { String(format: "%.1f%%", v * 100) }
+        return "\(scopeRoi.shape == "circle" ? "Circle" : "Rectangle") ROI · \(pct(scopeRoi.x)), \(pct(scopeRoi.y)) · "
+            + "\(pct(scopeRoi.width)) × \(pct(scopeRoi.height)) · selection \(scopeRoi.revision)"
+    }
+
+    /// Roi.cs:30-34: turning the region on from full frame centres it.
+    var scopeRoiEnabled: Bool {
+        get { scopeRoi.enabled }
+        set {
+            var next = scopeRoi; next.enabled = newValue
+            if newValue && !scopeRoi.enabled && scopeRoi.width == 1 && scopeRoi.height == 1 {
+                next = GradeScopeRoi(enabled: true, x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+            }
+            setScopeRoi(next)
+        }
+    }
+
+    /// Roi.cs:38-45: a new selection revision only for a real, valid change.
+    func setScopeRoi(_ roi: GradeScopeRoi) {
+        var candidate = roi; candidate.revision = 0
+        var current = scopeRoi; current.revision = 0
+        guard roi.isValid, candidate != current else { return }
+        candidate.revision = scopeRoi.revision + 1
+        scopeRoi = candidate
+        scopeStatus = "Updating scope region; waiting for matching native measurement."
+        requestPreview()
+        onScopeRoiChanged?(candidate)
+    }
+
+    /// The preview texture's pixel size: the ROI overlay's source geometry. Kept across a moment
+    /// with no texture so a gesture in flight can finish (ColorGradeEditorWindow.Roi.cs:16-19).
+    @Published private(set) var previewPixelWidth = 0
+    @Published private(set) var previewPixelHeight = 0
+
+    /// RefreshRoi (Roi.cs:9-13): a circle stays round in pixels when the picture's shape changes.
+    func observePreviewSize(width: Int, height: Int) {
+        guard width > 0, height > 0 else { return }
+        if width != previewPixelWidth { previewPixelWidth = width }
+        if height != previewPixelHeight { previewPixelHeight = height }
+        if scopeRoi.shape == "circle", abs(scopeRoi.width * Double(width) - scopeRoi.height * Double(height)) > 0.01 {
+            setScopeRoi(ScopeRoiGeometry.circleSize(scopeRoi, diameter: scopeRoi.width * Double(width), source: (width, height)))
+        }
+    }
+
+    func resetScopeRoi() { setScopeRoi(GradeScopeRoi(enabled: true, x: 0.25, y: 0.25, width: 0.5, height: 0.5)) }
+    func clearScopeRoi() { setScopeRoi(GradeScopeRoi()) }
+
+    private func previewUnavailable(_ reason: String) {
+        previewStatus = "Native preview unavailable: \(reason)"
+        previewSurfaceId = 0
+    }
+
+    /// ObserveNativePreview (ColorGradeEditorViewModel.cs:89-125) for an IOSurface.
+    func observePreview(_ event: JSONObject) {
+        guard event["instanceId"] as? String == previewInstanceId, event["sourceId"] as? String == sourceId,
+              (event["revision"] as? NSNumber)?.int64Value == previewRevision else { return }
+        let status = event["status"] as? String ?? "unavailable"
+        let reason = event["reason"] as? String ?? ""
+        let epoch = (event["sourceEpoch"] as? NSNumber)?.uint64Value ?? 0
+        observeScopes(event, epoch: epoch)
+        var label: String
+        switch status {
+        case "ready": label = compareOriginal ? "Original source — monitor comparison only" : "Native graded source"
+        case "stale": label = "Source is not advancing — last native image held"
+        case "held": label = "Source unavailable — last native image held"
+        case "preparing": label = Self.preparingText
+        default: label = "Native preview unavailable: \(reason)"
+        }
+        if status == "held" || status == "stale" {
+            let age = ((event["sourceAgeMs"] as? NSNumber)?.doubleValue ?? 0) / 1000
+            label += " · source unchanged " + String(format: "%.1f", age) + "s"
+        }
+        previewStatus = label
+        let surface = ((event["texture"] as? JSONObject)?["iosurfaceId"] as? NSNumber)?.uint32Value ?? 0
+        guard ["ready", "held", "stale"].contains(status), surface != 0 else { previewSurfaceId = 0; return }
+        previewSurfaceId = surface
+        let texture = event["texture"] as? JSONObject
+        observePreviewSize(width: (texture?["width"] as? NSNumber)?.intValue ?? 0,
+                           height: (texture?["height"] as? NSNumber)?.intValue ?? 0)
+        if status == "ready" || status == "held" { store.observePreviewEpoch(sourceId: sourceId, epoch: epoch) }
+    }
+
+    /// ObserveScopes (ColorGradeEditorViewModel.Advanced.cs:47-62): show a measurement only when it
+    /// answers exactly this draft: region, revision, epoch, original/graded and view.
+    private func observeScopes(_ event: JSONObject, epoch: UInt64) {
+        guard advancedExpanded, scopesEnabled else { scopeStatus = Self.scopesHiddenText; scopeSurfaceId = 0; return }
+        let s = event["scopes"] as? JSONObject
+        let texture = s?["texture"] as? JSONObject
+        let surface = (texture?["iosurfaceId"] as? NSNumber)?.uint32Value ?? 0
+        func int(_ key: String) -> Int { (s?[key] as? NSNumber)?.intValue ?? 0 }
+        guard let s, scopeRoi.matchesMeasurement(GradeScopeRoi(json: s["roi"] as? JSONObject)),
+              (s["revision"] as? NSNumber)?.int64Value == previewRevision,
+              (s["sourceEpoch"] as? NSNumber)?.uint64Value == epoch,
+              s["original"] as? Bool == scopesOriginal, int("view") == scopeView,
+              (texture?["width"] as? NSNumber)?.intValue == 1536, (texture?["height"] as? NSNumber)?.intValue == 512,
+              surface != 0
+        else {
+            scopeSurfaceId = 0
+            scopeStatus = s?["status"] as? String == "unavailable" ? "Native scopes unavailable; no measurement available."
+                : "Preparing native scopes; no measurement available."
+            return
+        }
+        let region = scopeRoi.enabled
+            ? "\(scopeRoi.shape == "circle" ? "Circle" : "Rectangle") ROI \(int("roiPixelWidth"))×\(int("roiPixelHeight")) at \(int("roiPixelX")),\(int("roiPixelY"))"
+            : "Full frame"
+        let age = ((s["sourceAgeMs"] as? NSNumber)?.doubleValue ?? 0) / 1000
+        let grouping = NumberFormatter(); grouping.numberStyle = .decimal; grouping.locale = Locale(identifier: "en_US")
+        let count = grouping.string(from: NSNumber(value: int("sampleCount"))) ?? "\(int("sampleCount"))"
+        scopeStatus = "\(scopesOriginal ? "Original" : "Graded") · \(region) · \(s["status"] as? String ?? "") · unchanged "
+            + String(format: "%.1f", age) + "s · sample \(int("sampleWidth"))×\(int("sampleHeight")) (\(count) pixels) · "
+            + "Rec.709 SDR assumed · waveform 0–100% · vectorscope 75% targets"
+        scopeSurfaceId = surface
     }
 
     /// After any control change: one undo step (per gesture), then, when live, the store sends
@@ -86,6 +316,7 @@ final class GradeEditorModel: ObservableObject, Identifiable {
     private func edited(clearing: Bool) {
         clearRequested = clearing
         rememberEdit()
+        requestPreview()
         guard liveEditing else { return }
         Task { _ = await send() }
     }
@@ -129,13 +360,61 @@ final class GradeEditorModel: ObservableObject, Identifiable {
     func setAdvancedExpanded(_ on: Bool) {
         advancedExpanded = on
         if on { liveEditing = false; status = Self.draftStatus }
+        if !on { scopeStatus = Self.scopesHiddenText; scopeSurfaceId = 0 }
+        requestPreview()                       // the scope demand follows the panel
     }
 
-    func addPrimaries() {
+    func addPrimaries() { addAdjustment(kind: "primaries") }
+    /// "+ Curves" (VM.Advanced.cs:115-121).
+    func addCurves() { addAdjustment(kind: "curves") }
+
+    private func addAdjustment(kind: String) {
         let operations = document?.operations ?? []
         guard operations.count < 8 else { status = Self.adjustmentLimitText; return }
-        let added = GradeOperation()
-        if editDocument(withOperations: operations + [added]) { selectedAdjustmentId = added.id }
+        var added = GradeOperation(); added.kind = kind
+        if editDocument(withOperations: operations + [added]) { selectedAdjustmentId = added.id; curveSelection = -1 }
+    }
+
+    // ── G3: curves ───────────────────────────────────────────────────────────
+
+    /// The selected curves adjustment's channel as an editing value (nil when none is selected).
+    var curveEditing: GradeCurveEditing? {
+        guard let op = selectedAdjustment, op.kind == "curves", op.curves.indices.contains(curveChannel) else { return nil }
+        return GradeCurveEditing(points: op.curves[curveChannel], selectedIndex: curveSelection)
+    }
+
+    /// VM.Advanced.cs:107-112 SetCurve: one validated edit (a refusal keeps the draft and says why).
+    func setCurve(channel: Int, points: [GradeCurvePoint]) {
+        guard (0..<4).contains(channel), selectedAdjustment?.kind == "curves" else { return }
+        editSelected { $0.curves[channel] = points }
+    }
+
+    private func applyCurve(_ change: (inout GradeCurveEditing) -> Bool) {
+        guard var editing = curveEditing else { return }
+        let changed = change(&editing)
+        curveSelection = editing.selectedIndex
+        if changed { setCurve(channel: curveChannel, points: editing.points) }
+    }
+    func curvePress(at point: CGPoint, size: CGSize) { applyCurve { $0.press(at: point, size: size) } }
+    func curveDrag(to point: CGPoint, size: CGSize) { applyCurve { $0.drag(to: point, size: size) } }
+    func curveKey(_ key: CurveKey, shift: Bool, command: Bool) { applyCurve { $0.key(key, shift: shift, command: command) } }
+    func curveRemoveSelected() { applyCurve { $0.removeSelected() } }
+    /// "Reset channel".
+    func curveResetChannel() { applyCurve { editing in editing.reset(); return true } }
+    /// The "Point input" / "Point output" numbers (GradeAdjustmentControl.cs:50-55).
+    func curveSetSelectedPoint(x: Double, y: Double) { applyCurve { $0.setSelected(x: x, y: y) } }
+
+    /// "Import LUT" (VM.Advanced.cs:181-190): parse first, then the eight-adjustment limit, then add a
+    /// named cube adjustment carrying the exact text and its SHA-256, selected. Refusals keep the draft.
+    func importCube(text: String, name: String) {
+        do { _ = try CubeLutParser.parse(text) }
+        catch let error as GradeValidationError { status = error.message; return }
+        catch { status = error.localizedDescription; return }
+        let operations = document?.operations ?? []
+        guard operations.count < 8 else { status = Self.adjustmentLimitText; return }
+        var op = GradeOperation()
+        op.kind = "cube"; op.name = name; op.cubeText = text; op.cubeSha256 = GradeDocumentRef.sha256Hex(text)
+        if editDocument(withOperations: operations + [op]) { selectedAdjustmentId = op.id }
     }
 
     func moveSelected(_ direction: Int) {
@@ -221,6 +500,7 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         }
         recorded = currentGrade
         clearRequested = false
+        requestPreview()
         if liveEditing { Task { _ = await send() } }
     }
 
@@ -301,14 +581,30 @@ extension AppModel {
         let editor = GradeEditorModel(
             sourceId: sourceId, sourceName: gradeSourceName(for: sourceId),
             binding: gradeIdentity(for: sourceId)?.binding ?? "unavailable",
-            seed: seed.grade, draftNotice: seed.draftNotice, store: sourceGrades)
+            seed: seed.grade, draftNotice: seed.draftNotice, store: sourceGrades,
+            previewSupported: gradePreviewSupported,
+            previewSend: { [weak self] body in
+                guard let self else { throw BridgeError.notRunning }
+                return try await self.gradeRequest(body)
+            })
         editor.onClose = { [weak self] in self?.closeGradeEditor(sourceId: sourceId) }
+        // G7: capture the stable identity ONCE (StudioViewModel.ScopePreferences.cs:13-23) — never
+        // save a departed guest's region under whoever later reuses this transient source id.
+        let identity = gradeIdentity(for: sourceId)
+        if let key = identity?.stableKey, let binding = identity?.binding {
+            if let saved = sourceGrades.scopeRegion(forKey: key) { editor.setScopeRoi(saved) }
+            editor.onScopeRoiChanged = { [weak self] roi in
+                guard let self, self.gradeIdentity(for: sourceId)?.binding == binding else { return }
+                self.sourceGrades.rememberScopeRegion(roi, key: key)
+            }
+        }
         gradeEditors[sourceId] = editor
         return .opened(editor)
     }
 
     /// "Close / discard draft": sends nothing.
     func closeGradeEditor(sourceId: String) {
+        gradeEditors[sourceId]?.closePreview()       // ends the native demand (enabled:false)
         gradeEditors[sourceId] = nil
     }
 }

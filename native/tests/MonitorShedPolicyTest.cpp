@@ -292,6 +292,10 @@ class SlowPreviewCompositor final : public corevideo::modules::ICompositor {
     texture.height = 720;
     return texture;
   }
+  // Grading Phase 2, Task 5: the shed divisor the core hands the compositor (grade previews give
+  // way by it on Metal). Every value received, in order.
+  void setMonitorShedDivisor(int divisor) override { shedDivisors.push_back(divisor); }
+  std::vector<int> shedDivisors;
   int programRenders = 0;
   int previewRenders = 0;
   int previewSleepMs = 30;
@@ -435,4 +439,23 @@ TEST(MonitorShedIntegration, SyntheticFullTicksNeverFeedThePolicy) {
   if (shed == nullptr) return;
   EXPECT_EQ(shed->getNumber("divisor"), 1);
   EXPECT_EQ(shed->getNumber("enteredCount"), 0);
+}
+
+// Grading Phase 2, Task 5 (shared hook, reaches Windows as a no-op): every shed transition is
+// handed to the compositor, so the Metal grade-preview worker can slow by the same divisor
+// (plan default P4). Only transitions are forwarded, never every tick.
+TEST(MonitorShedIntegration, TheShedDivisorIsHandedToTheCompositorOnEachTransition) {
+  auto rig = makeSlowPreviewRig(/*liveWorkers=*/true);
+  auto& core = *rig.core;
+  for (int i = 0; i < 30; ++i) core.renderDisplayTick();
+  const auto state = core.sessionState();
+  const auto* shed = monitorShedNode(state);
+  ASSERT_TRUE(shed != nullptr && shed->getNumber("divisor") >= 2) << "the rig must shed";
+  ASSERT_FALSE(rig.compositor->shedDivisors.empty()) << "the compositor heard about the shed";
+  EXPECT_EQ(rig.compositor->shedDivisors.back(), int(shed->getNumber("divisor")));
+  EXPECT_LT(rig.compositor->shedDivisors.size(), 5u) << "transitions only, not one call per tick";
+  rig.compositor->previewSleepMs = 0;
+  for (int i = 0; i < 400 && monitorShedNode(core.sessionState())->getNumber("divisor") > 1; ++i) core.renderDisplayTick();
+  ASSERT_EQ(monitorShedNode(core.sessionState())->getNumber("divisor"), 1) << "the rig must recover";
+  EXPECT_EQ(rig.compositor->shedDivisors.back(), 1) << "recovery is forwarded too";
 }

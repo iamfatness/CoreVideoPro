@@ -96,7 +96,7 @@ extension ShellTests {
             expect(false, "contracts/control.platforms.json is readable from the checkout"); return
         }
         // Each slice updates this number: RC1 13, after RC2 25, after RC3 36.
-        expectEqual(fileSupported.count, 36, "supported rows in the platform file")
+        expectEqual(fileSupported.count, 42, "supported rows in the platform file (Phase 2: +audio.masterLimiter.set, +3 media.rundown; quick wins: +audio.zoomMode.set, +automation.autoAssignInputs.set)")
         expectEqual(AppModelControlSurface.supportedActionIds, fileSupported,
                     "the dispatcher's ids equal the platform file's supported rows (Windows SupportedActionIds twin)")
         expectEqual(Set(ControlCatalog.actions.map(\.id)), fileSupported,
@@ -143,7 +143,7 @@ extension ShellTests {
             expectEqual(json(response.body)["error"] as? String, expected, "\(id) says why, in the operator's words")
             checked += 1
         }
-        expectEqual(checked, 74, "110 - 36 unavailable ids checked (each slice updates this)")
+        expectEqual(checked, 68, "110 - 42 unavailable ids checked (each slice updates this)")
         expectEqual(surface.invocations.count, 0, "an unavailable action never reaches the surface")
         let bogus = route(router, "POST", "/invoke", #"{"action":"bogus.id"}"#)
         expectEqual(bogus.status, 400, "an id in neither file keeps Windows' 400")
@@ -168,7 +168,7 @@ extension ShellTests {
         expectEqual(response.status, 200, "GET /manifest")
         expect(NSDictionary(dictionary: json(response.body)).isEqual(to: expected),
                "GET /manifest is the shared file with only the Mac-supported actions and feedback fields")
-        expectEqual(supportedFields.count, 21, "RC3: twenty-one feedback fields (each slice updates this)")
+        expectEqual(supportedFields.count, 23, "quick wins: twenty-three feedback fields, +autoAssignInputs (each slice updates this)")
         for retired in ["automation.magic", "automation.toggle", "automation.autoTake.set"] {
             expect(!response.body.contains(retired), "retired \(retired) is not advertised")
         }
@@ -308,7 +308,7 @@ extension ShellTests {
                 return supported.contains(row) ? ControlOscMessage(address: ControlOscAddressMap.stateAddress(field), args: [arg(a)]) : nil
             }
             expectEqual(ControlOscFeedback.encode(feedback["state"] as? [String: Any] ?? [:]), want, "osc feedback lines (Windows order, supported rows)")
-            expectEqual(want.count, 25, "after RC3: 17 scalar lines + 8 input lines")
+            expectEqual(want.count, 27, "quick wins: 19 scalar lines (+autoAssignInputs) + 8 input lines")
             ran += 1
         }
         // OSC `f` arrives as Float (D14); coercion follows Windows' float cases.
@@ -839,6 +839,8 @@ extension ShellTests {
         private var received = Data()
         private let lock = NSLock()
         var soFar: String { lock.lock(); defer { lock.unlock() }; return String(decoding: received, as: UTF8.self) }
+        /// The raw bytes so far (a WebSocket frame header is not UTF-8).
+        var bytesSoFar: Data { lock.lock(); defer { lock.unlock() }; return received }
         init(port: UInt16) {
             connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
         }
@@ -895,10 +897,28 @@ extension ShellTests {
         spin(until: { stalled.box.value != nil }, limit: 3)
         stalled.connection.cancel()
         expect((stalled.box.value ?? "").hasPrefix("HTTP/1.1 408"), "a stalled request is 408: \((stalled.box.value ?? "").prefix(20))")
-        // The timer stops once the request reaches the router: an invoke that runs 3x the timeout is answered 200.
-        surface.handler = { _, _ in Thread.sleep(forTimeInterval: 1.2); return .success }
-        let slow = raw(port, Data("POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}".utf8))
-        expect(slow.hasPrefix("HTTP/1.1 200"), "a long invoke is not cut off by the request timer: \(slow.prefix(20))")
+        // The timer stops once the request reaches the router: an invoke that runs
+        // well past the timeout is answered 200. Its own server has a 1 s timeout
+        // (a loaded runner cannot take that long to deliver one small request), and
+        // the handler is HELD by the test, entered first, released only after 3x
+        // the timeout — waiting longer can only make the check stricter.
+        var slowOptions = ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil)
+        slowOptions.requestTimeout = 1.0
+        let (slowServer, slowStarted) = startServer(ControlRouter(surface: surface), slowOptions)
+        defer { slowServer.stop() }
+        guard case .success(let slowPort)? = slowStarted else { expect(false, "slow server starts"); return }
+        let entered = Box<Bool>(), release = DispatchSemaphore(value: 0)
+        surface.handler = { _, _ in entered.value = true; release.wait(); return .success }
+        let slow = RawClient(port: slowPort)
+        slow.run(Data("POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}".utf8))
+        spin(until: { entered.value == true }, limit: 5)
+        expect(entered.value == true, "the invoke reached the handler")
+        spin(until: { slow.box.value != nil }, limit: 3 * slowOptions.requestTimeout)
+        expect(slow.box.value == nil, "nothing (no 408) was sent while the invoke ran 3x the timeout")
+        release.signal()
+        spin(until: { slow.box.value != nil }, limit: 5)
+        slow.connection.cancel()
+        expect((slow.box.value ?? "").hasPrefix("HTTP/1.1 200"), "a long invoke is not cut off by the request timer: \((slow.box.value ?? "").prefix(20))")
         expectEqual(ControlServerOptions.fromEnvironment([:]).requestTimeout, 10, "the default is 10 s")
     }
 
@@ -979,15 +999,28 @@ extension ShellTests {
                "DNS-rebinding Host refused on a loopback bind")
         // Bytes after a complete body (pipelining / a hostile client) must never
         // dispatch the action again while the first one is still running.
-        surface.handler = { _, _ in Thread.sleep(forTimeInterval: 0.3); return .success }
+        // The handler is HELD until the extra bytes have been handed to the socket,
+        // so they always arrive while the first invoke is still running (a timed
+        // sleep could finish first and pass vacuously).
+        let releasePipelined = DispatchSemaphore(value: 0)
+        surface.handler = { _, _ in releasePipelined.wait(); return .success }
         let before = surface.invocations.count
         let pipelined = RawClient(port: port)
         let request = "POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}"
         pipelined.run(Data(request.utf8))
-        spin(until: { surface.invocations.count > before }, limit: 3)
-        pipelined.connection.send(content: Data(String(repeating: "x", count: 4096).utf8), completion: .contentProcessed { _ in })
-        pipelined.connection.send(content: Data(String(repeating: "y", count: 4096).utf8), completion: .contentProcessed { _ in })
-        spin(until: { pipelined.box.value != nil }, limit: 4)
+        spin(until: { surface.invocations.count > before }, limit: 5)
+        let extraSent = Box<Int>()
+        for filler in ["x", "y"] {
+            pipelined.connection.send(content: Data(String(repeating: filler, count: 4096).utf8),
+                                      completion: .contentProcessed { _ in
+                                          DispatchQueue.main.async { extraSent.value = (extraSent.value ?? 0) + 1 } })
+        }
+        spin(until: { extraSent.value == 2 }, limit: 5)
+        expectEqual(extraSent.value, 2, "the extra bytes were sent while the invoke was held")
+        expect(pipelined.box.value == nil, "and before any answer")
+        spin(until: { false }, limit: 0.2)   // let the server read them; more time only makes this stricter
+        releasePipelined.signal()
+        spin(until: { pipelined.box.value != nil }, limit: 5)
         pipelined.connection.cancel()
         expect((pipelined.box.value ?? "").hasPrefix("HTTP/1.1 200"), "the pipelined request is answered once")
         expectEqual(surface.invocations.count, before + 1, "extra bytes after the body never re-dispatch the action")

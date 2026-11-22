@@ -190,6 +190,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The Companion module is not a workspace: its own lockfile installs
+      # @companion-module/base, which its presets (and so mac.test.ts, RC5) import.
+      - run: npm ci --prefix companion-module-corevideopro
       - run: npm run test:unit
       - run: npm run test:scripts
 

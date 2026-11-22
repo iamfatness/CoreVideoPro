@@ -43,6 +43,23 @@ separate settings only when every device on that network is trusted to operate t
 show. Existing `COREVIDEO_OSC_LAN=1` configurations now keep both services local
 until the new HTTP setting or explicit OSC trusted-network setting is supplied.
 
+### On macOS
+
+The Mac app serves the same API with the same ports and environment variables, and this
+module works against it unchanged (proven by the Mac shell harness case
+`control/companion-request-shapes` and `src/mac.test.ts`, 2026-11-21; updated 2026-11-22). Differences:
+
+| | Windows | macOS |
+|---|---|---|
+| Actions in `GET /manifest` | 110 | 42 (the manifest lists only what works on the Mac; the rest answer HTTP 422 with the reason) |
+| Presets | all 7 | all 7 (**Auto-assign** drives the Sources "fill free inputs" toggle since 2026-11-22) |
+| Feedbacks / variables never published | none | `autoLowerThirds`, `viewMode` (they read off / empty) |
+| Host field | any name that reaches the app | on a loopback bind use `127.0.0.1`: the Mac refuses a request whose `Host` names any other address (DNS-rebinding guard), and it listens on IPv4 only, so `localhost` can fail where Node resolves it to `::1` first |
+| LAN access | `netsh` URL ACL may be needed | set the variables with `launchctl setenv` and open the app normally (see `docs/owner-acceptance/mac-remote-control-phase1.md`) |
+
+`node scripts/companion-mac-live-check.mjs --module <built module dir> --base http://127.0.0.1:8011`
+(repo root) runs this module's own request code against a running app, read-only.
+
 ## 2. Build the module
 
 ```

@@ -67,6 +67,18 @@ struct AudioRouteControlProjection {
         notice = "Audio route edit pending core application"
     }
 
+    /// A refused remote edit leaves nothing behind (Windows changes nothing):
+    /// its draft, expectation and pin go, unless a newer edit replaced the draft.
+    mutating func discardRemoteDraft(source: String, bus: String, operationId: String) {
+        let key = AudioRouteKey(source: source, bus: bus)
+        guard pinned[key] == nil || pinned[key] == operationId else { return }
+        drafts[key] = nil
+        expected[key] = nil
+        pinned[key] = nil
+        blocked.remove(key)
+        if drafts.isEmpty { notice = "" }
+    }
+
     /// nil while the core has not answered `operationId`.
     func outcome(of operationId: String) -> AudioRouteControlOutcome? {
         switch outcomes[operationId] {

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstddef>
 #include <string>
+#include <utility>
 
 #include "modules/SrtFfmpegArgs.h"
 
@@ -92,6 +93,27 @@ inline void replaceAll(std::string& text, const std::string& needle, const std::
   scrub(passphrase, "<passphrase>");
   scrub(streamId, "<stream-id>");
   return text;
+}
+
+/// The ffmpeg invocation as it may be written to the core log.
+///
+/// Review finding (mac streaming Phase 2): the one-shot "[rtmp] ffmpeg <args>"
+/// line printed the output URL whole, so the RTMP stream key and the SRT
+/// passphrase/Stream ID reached corevideo-native.log and every support bundle.
+/// The whole raw endpoint is replaced by the redacted form the snapshot already
+/// publishes FIRST - that covers a key of any length, where the secret scrub
+/// below skips anything shorter than six characters - then every secret is
+/// scrubbed in case the arguments carry it in another shape (percent-encoded).
+[[nodiscard]] inline std::string redactFfmpegInvocation(std::string arguments,
+                                                        const std::string& rawEndpoint,
+                                                        const std::string& redactedEndpoint,
+                                                        const std::string& streamKey,
+                                                        const std::string& passphrase,
+                                                        const std::string& streamId = "") {
+  if (!rawEndpoint.empty() && rawEndpoint != redactedEndpoint) {
+    detail::replaceAll(arguments, rawEndpoint, redactedEndpoint);
+  }
+  return redactFfmpegDiagnostics(std::move(arguments), streamKey, passphrase, streamId);
 }
 
 // Read enough bytes before the display tail to include a secret that straddles

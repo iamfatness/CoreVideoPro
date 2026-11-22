@@ -1,0 +1,175 @@
+{
+  "area": "names-clock",
+  "description": "Names-list expansion (VariantEntries / NextVariant), variant cue fields with cells (GraphicsMappedValues), and the clock configuration a clock row sends; rows from documents/windows-names-clock.json.",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "variant-entries",
+      "operation": "variantEntries",
+      "input": {
+        "rowId": "panel-names"
+      },
+      "expected": {
+        "entries": [
+          {
+            "sourceId": "variant:v-ada",
+            "name": "Ada Lovelace",
+            "title": "Mathematician",
+            "instanceId": "playlist-panel-names-a73d528d7bb1"
+          },
+          {
+            "sourceId": "variant:v-bo",
+            "name": "Bo Diddley",
+            "title": "",
+            "instanceId": "playlist-panel-names-98ab80728eef"
+          },
+          {
+            "sourceId": "variant:v-cy",
+            "name": "Cy Twombly",
+            "title": "Painter",
+            "instanceId": "playlist-panel-names-acd0026b52ae"
+          }
+        ]
+      }
+    },
+    {
+      "id": "next-variant-none",
+      "operation": "nextVariant",
+      "input": {
+        "rowId": "panel-names",
+        "onProgram": []
+      },
+      "expected": {
+        "sourceId": "variant:v-ada"
+      }
+    },
+    {
+      "id": "next-variant-first",
+      "operation": "nextVariant",
+      "input": {
+        "rowId": "panel-names",
+        "onProgram": [
+          "variant:v-ada"
+        ]
+      },
+      "expected": {
+        "sourceId": "variant:v-bo"
+      }
+    },
+    {
+      "id": "next-variant-last-wraps",
+      "operation": "nextVariant",
+      "input": {
+        "rowId": "panel-names",
+        "onProgram": [
+          "variant:v-cy"
+        ]
+      },
+      "expected": {
+        "sourceId": "variant:v-ada"
+      }
+    },
+    {
+      "id": "next-variant-two-on-air-takes-the-later",
+      "operation": "nextVariant",
+      "input": {
+        "rowId": "panel-names",
+        "onProgram": [
+          "variant:v-ada",
+          "variant:v-bo"
+        ]
+      },
+      "expected": {
+        "sourceId": "variant:v-cy"
+      }
+    },
+    {
+      "id": "variant-cue-fields-v-ada",
+      "operation": "cueFields",
+      "input": {
+        "rowId": "panel-names",
+        "sourceId": "variant:v-ada",
+        "name": "Ada Lovelace",
+        "title": "Mathematician"
+      },
+      "expected": {
+        "fields": {
+          "name": "Ada Lovelace",
+          "title": "Mathematician",
+          "text-size": 72
+        }
+      }
+    },
+    {
+      "id": "variant-cue-fields-v-bo",
+      "operation": "cueFields",
+      "input": {
+        "rowId": "panel-names",
+        "sourceId": "variant:v-bo",
+        "name": "Bo Diddley",
+        "title": ""
+      },
+      "expected": {
+        "fields": {
+          "name": "Bo Diddley",
+          "title": "",
+          "text-size": 42
+        }
+      }
+    },
+    {
+      "id": "variant-cue-fields-v-cy",
+      "operation": "cueFields",
+      "input": {
+        "rowId": "panel-names",
+        "sourceId": "variant:v-cy",
+        "name": "Cy Twombly",
+        "title": "Painter"
+      },
+      "expected": {
+        "fields": {
+          "name": "Cy Twombly",
+          "title": "Painter",
+          "text-size": 42,
+          "show-logo": false
+        }
+      }
+    },
+    {
+      "id": "variant-cue-fields-row",
+      "operation": "cueFields",
+      "input": {
+        "rowId": "panel-names",
+        "sourceId": "",
+        "name": "Panel names",
+        "title": ""
+      },
+      "expected": {
+        "fields": {
+          "name": "Row default",
+          "title": "",
+          "text-size": 42
+        }
+      }
+    },
+    {
+      "id": "clock-configuration",
+      "operation": "clockConfiguration",
+      "input": {
+        "rowId": "countdown"
+      },
+      "expected": {
+        "configuration": {
+          "mode": "countdown",
+          "zone": "utc",
+          "format": "hm",
+          "finish": "hide",
+          "offsetMinutes": 0,
+          "durationSeconds": 600,
+          "restoreRemainingSeconds": null
+        },
+        "valid": true
+      }
+    }
+  ]
+}

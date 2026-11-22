@@ -1,0 +1,26 @@
+# Pinned sources for the bundled macOS ffmpeg (scripts/build-macos-ffmpeg.sh).
+# Shell-sourceable. Changing ANY line here (or the build script) changes the
+# cache key, so the next release rebuilds from source.
+#
+# Provenance of each SHA-256 (recorded 2026-11-21):
+#   ffmpeg   first download from ffmpeg.org (trust on first use: upstream
+#            publishes only a GPG .asc and no gpg was available to check it)
+#   openssl  matches upstream's published openssl-3.5.9.tar.gz.sha256
+#   srt      first download of GitHub's tag archive (trust on first use)
+# Licences: ffmpeg is built LGPL (no --enable-gpl, no --enable-nonfree);
+# OpenSSL 3 is Apache-2.0; libsrt is MPL-2.0. All three are statically linked
+# into the ONE ffmpeg executable, which the core runs as a separate process.
+
+FFMPEG_VERSION=8.1.3
+FFMPEG_URL=https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz
+FFMPEG_SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
+
+OPENSSL_VERSION=3.5.9
+OPENSSL_URL=https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz
+OPENSSL_SHA256=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
+
+SRT_VERSION=1.5.7
+SRT_URL=https://github.com/Haivision/srt/archive/refs/tags/v1.5.7.tar.gz
+SRT_SHA256=017cd1e437ef2073a4dd10ddf7b55e86bc3d6ebac0393d13bd22f6a57055d32b
+
+MACOS_MIN=13.0

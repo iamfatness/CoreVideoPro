@@ -2336,6 +2336,14 @@ void MediaCore::syncStillMediaDesired() {
   if (takeTransition_.waitingForColdMedia) {
     addRoutes(takeTransition_.outgoingRoutes, "media:");
   }
+  // Sources Phase 2, Task 5: a still that sits in a Show Input slot is on the wall even
+  // when no scene routes it. Same key as a routed still (one cache entry for both). A clip
+  // is never decoded here: it has transport state the wall does not own (plan D10).
+  for (const auto& source : multiviewSources_) {
+    if (source.kind != "media" || source.mediaAssetId.empty() || source.mediaAssetPath.empty()) continue;
+    if (!modules::isStillImageMediaAsset(source.mediaAssetKind, source.mediaAssetPath)) continue;
+    desired.push_back({"media:" + source.mediaAssetId, modules::normalizeMediaAssetPath(source.mediaAssetPath)});
+  }
   stillMediaCache_->setDesired(std::move(desired));
 }
 
@@ -3657,11 +3665,13 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
       source.participantId = entry.getString("participantId");
       source.captureDeviceId = entry.getString("captureDeviceId");
       source.mediaAssetId = entry.getString("mediaAssetId");
+      source.mediaAssetPath = entry.getString("mediaAssetPath");
+      source.mediaAssetKind = entry.getString("mediaAssetKind");
       source.label = entry.getString("label");
       source.slot = entry.get("slot") ? static_cast<int>(entry.getNumber("slot", autoSlot)) : autoSlot;
       signature += std::to_string(source.slot) + ":" + source.kind + ":" + source.sourceId + ":" +
                    source.participantId + ":" + source.captureDeviceId + ":" + source.mediaAssetId + ":" +
-                   source.label + "|";
+                   source.mediaAssetPath + ":" + source.mediaAssetKind + ":" + source.label + "|";
       parsed.push_back(std::move(source));
       ++autoSlot;
     }
@@ -3686,6 +3696,8 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
   multiviewCanvasHeight_ = resolvedHeight;
   // A layout change is a structural change; force the next render's event emit.
   multiviewStructureEmitted_ = false;
+  // A still in a slot is decoded for the wall even when no scene routes it.
+  syncStillMediaDesired();
   return true;
 }
 
@@ -3896,6 +3908,22 @@ void holdDropoutForMonitoring(modules::CompositorRenderPlan& plan) {
 }
 
 }  // namespace
+
+modules::CompositorRenderPlan MediaCore::buildSourceSheetPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
+  std::vector<SourceSheetInput> inputs;
+  inputs.reserve(multiviewSources_.size());
+  for (const auto& source : multiviewSources_) {
+    inputs.push_back({source.slot, resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+                                                        source.captureDeviceId, source.mediaAssetId)});
+  }
+  auto plan = buildSourceSheetRenderPlan(inputs);
+  const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  for (auto& layer : plan.layers) annotateLayerSource(layer, videoFrames, nowNs);
+  holdDropoutForMonitoring(plan);          // the row shows the source, never a dropout black
+  sourceGrades_.applyTo(plan, videoFrames);  // per-source grade on; no program look, no key
+  return plan;
+}
 
 modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   modules::CompositorRenderPlan renderPlan;
@@ -6359,6 +6387,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
     lastPreviewPlanLayerCount_ = static_cast<int>(previewPlan.layers.size());
+    renderedPreviewSources_.publish(previewPlan);
     // Read-only: use find(), never forWall() — a preview scene with no wall
     // has an empty layerId, and forWall("") would insert a phantom map node
     // (allocate + free) under coreMutex on every such render tick.
@@ -6399,6 +6428,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastProgramFrame_.previewWidth = lastPreviewWidth_;
     lastProgramFrame_.previewHeight = lastPreviewHeight_;
   } else {
+    renderedPreviewSources_.invalidate();
     lastPreviewPassNs_ = 0;
     lastPreviewTexture_ = {};
     lastPreviewWidth_ = 0;
@@ -6411,6 +6441,32 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       lastProgramFrame_.previewHeight = 0;
       previewStructureEmitted_ = false;
     }
+  }
+  // Fourth pass (Sources Phase 2, S6): the SOURCE SHEET, only while the Sources tab holds
+  // the 3 s demand lease and the wall has a source. Every 4th monitor cycle on its own phase
+  // (2) so it never stacks on the multiview (0) or Preview (1) pass; the first one renders at
+  // once. The Metal pass does not wait for the GPU. Its CPU time joins the shed cost as a
+  // quarter (it runs on one tick in four). With demand off there is no target and no pass.
+  const bool sheetActive = sourcePreviewDemand_.active() && !multiviewSources_.empty();
+  if (sheetActive) {
+    const auto sheetDivisor = monitorDivisor * 4;
+    const bool sheetDue = !sourceSheet_.active || (multiviewTickCounter_ % sheetDivisor) == (2u % sheetDivisor);
+    if (sheetDue) {
+      const auto sheetStartTp = std::chrono::steady_clock::now();
+      auto sheetPlan = buildSourceSheetPlan(videoFrames);
+      const auto texture = modules_.compositor->renderSourceSheet(sheetPlan, videoFrames);
+      sourceSheet_.active = true;
+      sourceSheet_.texture = texture;
+      sourceSheet_.cells = sourceSheetCells(sheetPlan, videoFrames);
+      const bool exported = texture.iosurfaceId != 0 || !texture.sharedHandleHex.empty();
+      lastSourceSheetPassNs_ = exported
+          ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - sheetStartTp).count()
+          : 0;
+    }
+  } else if (sourceSheet_.active) {
+    sourceSheet_ = {};
+    lastSourceSheetPassNs_ = 0;
   }
   }
   const auto monitorEndTp = std::chrono::steady_clock::now();
@@ -6438,7 +6494,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         s_stageIngestUs + s_subFetchUs + s_subStoreUs + s_subTapUs + s_subPollUs + s_subMergeUs;
     ::corevideo::core::nativeVerboseLogf("[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
                  "plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
-                 "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
+                 "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld zerocopy=%lld\n",
                  ingestTotalUs / (s_stageTicks * 1000.0),
                  s_subFetchUs / (s_stageTicks * 1000.0), s_subStoreUs / (s_stageTicks * 1000.0),
                  s_subTapUs / (s_stageTicks * 1000.0), s_subPollUs / (s_stageTicks * 1000.0),
@@ -6449,7 +6505,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
                  static_cast<long long>(texStats.cachedUploads - s_lastTexStats.cachedUploads),
                  static_cast<long long>(texStats.cacheHits - s_lastTexStats.cacheHits),
                  static_cast<long long>(texStats.textureCreates - s_lastTexStats.textureCreates),
-                 static_cast<long long>(texStats.scratchUploads - s_lastTexStats.scratchUploads));
+                 static_cast<long long>(texStats.scratchUploads - s_lastTexStats.scratchUploads),
+                 static_cast<long long>(texStats.zeroCopyBinds - s_lastTexStats.zeroCopyBinds));
     s_lastTexStats = texStats;
     s_stageIngestUs = s_stagePlanUs = s_stageProgramUs = s_stageMultiviewUs = s_stagePreviewUs = 0;
     s_stageEmitUs = 0;
@@ -6495,9 +6552,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     shedObservation.programCostNs =
         std::chrono::duration_cast<std::chrono::nanoseconds>(tickEndTp - tickStartTp).count() -
         std::chrono::duration_cast<std::chrono::nanoseconds>(monitorEndTp - monitorStartTp).count();
-    shedObservation.monitorCycleCostNs = lastMultiviewPassNs_ + lastPreviewPassNs_;
+    shedObservation.monitorCycleCostNs = lastMultiviewPassNs_ + lastPreviewPassNs_ + lastSourceSheetPassNs_ / 4;
     const auto transition = monitorShed_.observe(shedObservation);
     if (transition != MonitorShedTransition::None) {
+      // Grading Phase 2 (P4): optional analysis (Metal grade previews) slows by the same divisor.
+      modules_.compositor->setMonitorShedDivisor(monitorShed_.divisor());
       ::corevideo::core::nativeLogf(
           "[monitor-shed] %s divisor=%d level=%d reason=%s programMs=%.2f monitorCycleMs=%.2f "
           "budgetMs=%.2f entered=%lld shedTicks=%lld\n",

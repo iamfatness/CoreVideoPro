@@ -11,10 +11,11 @@
 // defaults until M2/M3.
 //
 // Differences from the D3D11 adapter, all deliberate:
-//  - Overlay layers composite the PORTABLE CPU raster (rasterizeOverlayTileBgra,
-//    the deterministic 5x7-font band) uploaded as a texture — premultiplied at
-//    upload so the overlay pipeline's premultiplied blend math matches D2D's
-//    output on Windows. A CoreText raster is a later increment.
+//  - Overlay layers composite CoreTextOverlayRaster's prepared texture (the
+//    CompositorOverlayRaster twin, Metal graphics backend G1): rastered with
+//    Core Text on a preparation worker, premultiplied, uploaded once, cached
+//    by content. The render thread never rasters; a cold overlay draws the
+//    Windows fallback (band + accent bar) until its texture is published.
 //  - The render target uses storageModeShared (Apple-silicon unified memory),
 //    so the CPU readbacks are a plain getBytes after waitUntilCompleted — no
 //    staging-texture dance. fullProgramReadback fills ProgramFrame::
@@ -32,6 +33,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -49,189 +51,23 @@
 #include "compositor/CompositorShaderParams.h"
 #include "compositor/AdvancedGrade.h"
 #include "compositor/MetalCompositorShaders.h"
+#include "compositor/MetalGradePreview.h"
 #include "modules/Interfaces.h"
+#include "compositor/CoreTextOverlayRaster.h"
+#include "compositor/OverlayRasterRetention.h"
+#include "graphics/GraphicsCrawl.h"
+#include "graphics/GraphicsMotion.h"
+#include "graphics/GraphicsTemplate.h"
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
-
-#include <CoreText/CoreText.h>
-#include <ImageIO/ImageIO.h>
+#include "compositor/MetalPixelBufferTextures.h"
 
 namespace corevideo::modules {
 namespace {
 
-// ── Core Text overlay raster (the DirectWrite analogue) ──────────────────────
-//
-// Same computeOverlayTileLayout geometry as the portable 5x7 raster and the
-// Windows D2D path — only the glyph/image rasterizer differs. Output is
-// PREMULTIPLIED BGRA (CGBitmapContext native), which is exactly what the
-// overlay pipeline's (One, 1-SrcAlpha) blend expects, so no post pass.
-
-CGColorRef createColorFromArgb(uint32_t argb) {
-  const CGFloat components[4] = {
-      static_cast<CGFloat>((argb >> 16) & 0xff) / 255.0,
-      static_cast<CGFloat>((argb >> 8) & 0xff) / 255.0,
-      static_cast<CGFloat>(argb & 0xff) / 255.0,
-      static_cast<CGFloat>((argb >> 24) & 0xff) / 255.0,
-  };
-  CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-  CGColorRef color = CGColorCreate(space, components);
-  CGColorSpaceRelease(space);
-  return color;
-}
-
-// Tile pixel space is top-down; CG is bottom-up. Rects convert here so text
-// never needs a mirroring CTM (which would flip glyphs).
-CGRect bottomUpRect(const OverlayTileRect& rect, int heightPx) {
-  return CGRectMake(rect.x, static_cast<CGFloat>(heightPx) - rect.y - rect.height, rect.width,
-                    rect.height);
-}
-
-void drawOverlayImageWithImageIo(CGContextRef context, const std::string& imageUri,
-                                 const OverlayTileRect& rect, int heightPx) {
-  if (imageUri.empty() || imageUri.rfind("http", 0) == 0) {
-    return;  // remote fetches never happen on the render path
-  }
-  std::string path = imageUri;
-  constexpr const char* filePrefix = "file://";
-  if (path.rfind(filePrefix, 0) == 0) {
-    path = path.substr(std::strlen(filePrefix));
-  }
-  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
-      kCFAllocatorDefault, reinterpret_cast<const UInt8*>(path.c_str()),
-      static_cast<CFIndex>(path.size()), false);
-  if (!url) {
-    return;
-  }
-  CGImageSourceRef source = CGImageSourceCreateWithURL(url, nullptr);
-  CFRelease(url);
-  if (!source) {
-    return;
-  }
-  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, nullptr);
-  CFRelease(source);
-  if (!image) {
-    return;
-  }
-  // Aspect-fit inside the layout's image rect.
-  const CGFloat imageWidth = static_cast<CGFloat>(CGImageGetWidth(image));
-  const CGFloat imageHeight = static_cast<CGFloat>(CGImageGetHeight(image));
-  CGRect box = bottomUpRect(rect, heightPx);
-  if (imageWidth > 0 && imageHeight > 0) {
-    const CGFloat scale = std::min(box.size.width / imageWidth, box.size.height / imageHeight);
-    const CGFloat fitWidth = imageWidth * scale;
-    const CGFloat fitHeight = imageHeight * scale;
-    box = CGRectMake(box.origin.x + (box.size.width - fitWidth) / 2,
-                     box.origin.y + (box.size.height - fitHeight) / 2, fitWidth, fitHeight);
-  }
-  CGContextDrawImage(context, box, image);
-  CGImageRelease(image);
-}
-
-void drawOverlayTextLineCoreText(CGContextRef context, const OverlayTileTextLine& line,
-                                 const std::string& fontFamily, int heightPx) {
-  if (line.text.empty() || line.rect.height <= 1.f) {
-    return;
-  }
-  CFStringRef familyName = CFStringCreateWithCString(kCFAllocatorDefault, fontFamily.c_str(),
-                                                     kCFStringEncodingUTF8);
-  // CTFontCreateWithName substitutes a system face when the brand family
-  // (default "Inter") is not installed — never a missing-glyph box.
-  CTFontRef font = CTFontCreateWithName(familyName ? familyName : CFSTR("Helvetica Neue"),
-                                        line.rect.height * 0.72, nullptr);
-  if (familyName) {
-    CFRelease(familyName);
-  }
-  if (!font) {
-    return;
-  }
-  CGColorRef color = createColorFromArgb(line.colorArgb);
-  CFStringRef text = CFStringCreateWithCString(kCFAllocatorDefault, line.text.c_str(),
-                                               kCFStringEncodingUTF8);
-  if (!text) {  // non-UTF8 bytes: fall back to a lossy ASCII copy
-    std::string ascii = line.text;
-    for (auto& ch : ascii) {
-      if (static_cast<unsigned char>(ch) > 0x7f) {
-        ch = '?';
-      }
-    }
-    text = CFStringCreateWithCString(kCFAllocatorDefault, ascii.c_str(), kCFStringEncodingASCII);
-  }
-  if (text) {
-    const void* keys[] = {kCTFontAttributeName, kCTForegroundColorAttributeName};
-    const void* values[] = {font, color};
-    CFDictionaryRef attributes =
-        CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2, &kCFTypeDictionaryKeyCallBacks,
-                           &kCFTypeDictionaryValueCallBacks);
-    CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, text, attributes);
-    CTLineRef ctLine = attributed ? CTLineCreateWithAttributedString(attributed) : nullptr;
-    if (ctLine) {
-      const CGRect box = bottomUpRect(line.rect, heightPx);
-      CGContextSaveGState(context);
-      CGContextClipToRect(context, box);
-      // Baseline: bottom of the rect plus the descent, vertically centering
-      // the em box in the layout rect.
-      const CGFloat descent = CTFontGetDescent(font);
-      const CGFloat ascent = CTFontGetAscent(font);
-      const CGFloat baselineY =
-          box.origin.y + (box.size.height - (ascent + descent)) / 2 + descent;
-      CGContextSetTextPosition(context, box.origin.x, baselineY);
-      CTLineDraw(ctLine, context);
-      CGContextRestoreGState(context);
-      CFRelease(ctLine);
-    }
-    if (attributed) {
-      CFRelease(attributed);
-    }
-    if (attributes) {
-      CFRelease(attributes);
-    }
-    CFRelease(text);
-  }
-  CGColorRelease(color);
-  CFRelease(font);
-}
-
-bool rasterOverlayTileCoreText(const CompositorOverlayContent& overlay, int widthPx, int heightPx,
-                               std::vector<uint8_t>& outPremulBgra) {
-  if (widthPx <= 0 || heightPx <= 0) {
-    return false;
-  }
-  const OverlayTileLayout layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
-  const size_t stride = static_cast<size_t>(widthPx) * 4;
-  outPremulBgra.assign(stride * static_cast<size_t>(heightPx), 0);
-  CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-  CGContextRef context = CGBitmapContextCreate(
-      outPremulBgra.data(), static_cast<size_t>(widthPx), static_cast<size_t>(heightPx), 8, stride,
-      space,
-      static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little);
-  CGColorSpaceRelease(space);
-  if (!context) {
-    return false;
-  }
-  // Band background (full tile, opaque per the layout contract).
-  CGColorRef background = createColorFromArgb(layout.backgroundArgb);
-  CGContextSetFillColorWithColor(context, background);
-  CGContextFillRect(context, CGRectMake(0, 0, widthPx, heightPx));
-  CGColorRelease(background);
-  // Accent bar.
-  if (layout.accentBar.width > 0 && layout.accentBar.height > 0) {
-    CGColorRef accent = createColorFromArgb(layout.accentArgb);
-    CGContextSetFillColorWithColor(context, accent);
-    CGContextFillRect(context, bottomUpRect(layout.accentBar, heightPx));
-    CGColorRelease(accent);
-  }
-  if (layout.hasImage) {
-    drawOverlayImageWithImageIo(context, overlay.imageUri, layout.imageRect, heightPx);
-  }
-  for (const auto& line : layout.textLines) {
-    drawOverlayTextLineCoreText(context, line, layout.fontFamily, heightPx);
-  }
-  CGContextRelease(context);
-  return true;
-}
-
 bool frameHasContent(const VideoFrame& frame) {
-  return frame.hasPixels() || frame.hasI420();
+  // A zero-copy media frame (N4) is content: its picture is an IOSurface.
+  return frame.hasPixels() || frame.hasI420() || compositor::MetalPixelBufferTextures::canSample(frame);
 }
 
 uint32_t previewPixelSignature(const ProgramFramePreviewPixels& preview) {
@@ -263,8 +99,14 @@ class MetalCompositor final : public ICompositor {
 
   std::string rendererName() const override { return "metal"; }
 
+  // Metal graphics backend G2: templates are rastered by CoreTextOverlayRaster,
+  // and this adapter emits the facts GraphicsInstances consumes (5.9), so the
+  // core's graphics-* gate and the graphics-instances capability open.
+  bool supportsGraphicsInstances() const override { return true; }
+
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
+    retainedOverlayRasters_.prune(static_cast<uint64_t>(frameNumber_));
     const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -295,7 +137,37 @@ class MetalCompositor final : public ICompositor {
     // shell's request timeouts). fullProgramReadback is honored on the
     // throttled FULL renders only, which is also what feeds the encoder.
     const bool fullTick = !renderPlan.skipCpuReadback;
+    overlayRaster_.beginFrame();
+    // Facts (draw-submitted, composition-eligible, ready, subject draws) are
+    // collected on the PROGRAM pass only, as on Windows.
+    traceFrame_ = &frame;
     renderPassInto(program_, deterministicPlan, frames, /*waitForCompletion=*/fullTick);
+    traceFrame_ = nullptr;
+    // Same frame warnings as D3D11CompositorAdapter::render: an overlay still
+    // preparing (or failed) is named on the Program frame and degrades health.
+    if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
+    if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
+    if (!frame.warnings.empty()) frame.health = "degraded";
+    // Admit accepted Program resource work before private/Cue requests. These
+    // nonblocking preparations do not turn a healthy Program into degradation
+    // (D3D11CompositorAdapter::render parity).
+    for (const auto& candidate : deterministicPlan.graphicsPreparations) {
+      const auto& r = candidate.rect;
+      overlayRaster_.rasterOverlayTexture(device_, candidate.overlay, {r.x, r.y, r.width, r.height}, targetWidth_,
+                                          targetHeight_, candidate.layerId, true, candidate.graphicsPreparedResource);
+      // The warning travels by reference (sharedReason): Segoe UI is the
+      // default family, so nearly every graphic carries the Selawik
+      // substitution warning, and copying it would allocate per graphic per
+      // frame on the render thread.
+      frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
+          overlayRaster_.preparationState(), {}, overlayRaster_.preparedResource(),
+          candidate.overlay.graphicsContentHash, candidate.overlay.hasGraphicsContentHash,
+          overlayRaster_.sharedWarning()});
+    }
+    overlayRaster_.beginFrame();
+    // Graphics automation reads the plan it was composed from.
+    if (renderPlan.observeGraphicsSubjects)
+      frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(deterministicPlan);
 #if COREVIDEO_WITH_MAC_VIRTUALCAM
     // EVERY tick, light ticks included: the camera is a 60 fps per-frame
     // output, and the light display tick IS the 60 Hz tick. No CPU wait here.
@@ -383,11 +255,35 @@ class MetalCompositor final : public ICompositor {
     return renderSecondaryPass(multiview_, renderPlan, frames);
   }
 
+  // Private per-source grade previews and scopes (grading Phase 2, G5/G6): delegated whole to
+  // MetalGradePreview, which renders on its own thread, queue and textures, never this one's.
+  bool supportsGradePreview() const override { return gradePreview_ != nullptr; }
+  void submitGradePreviews(MonitorRenderRequest request) override {
+    if (gradePreview_) gradePreview_->submit(std::move(request));
+  }
+  std::shared_ptr<const MonitorRenderResult> latestGradePreviews() const override {
+    return gradePreview_ ? gradePreview_->latest() : nullptr;
+  }
+  MonitorRenderDiagnostics gradePreviewDiagnostics() const override {
+    return gradePreview_ ? gradePreview_->diagnostics() : MonitorRenderDiagnostics{};
+  }
+  void setMonitorShedDivisor(int divisor) override {
+    if (gradePreview_) gradePreview_->setMonitorShedDivisor(divisor);
+  }
+
   // Third compositor pass: the PREVIEW scene into its own IOSurface-backed
   // texture, identical machinery to renderMultiview.
   ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan,
                                           const std::vector<VideoFrame>& frames) override {
     return renderSecondaryPass(preview_, renderPlan, frames);
+  }
+
+  // Sources Phase 2 (S6): the source sheet into its own IOSurface. Not waited: like the
+  // Program IOSurface, the shell samples it as-is, and a thumbnail must not block the
+  // render thread on the GPU.
+  ProgramFrameSharedTexture renderSourceSheet(const CompositorRenderPlan& renderPlan,
+                                              const std::vector<VideoFrame>& frames) override {
+    return renderSecondaryPass(sourceSheet_, renderPlan, frames, /*waitForCompletion=*/false);
   }
 
  private:
@@ -407,13 +303,9 @@ class MetalCompositor final : public ICompositor {
     int width = 0;
     int height = 0;
     int64_t lastUsedFrame = 0;
-  };
-
-  struct OverlayTex {
-    id<MTLTexture> texture;
-    uint64_t signature = 0;
-    int width = 0;
-    int height = 0;
+    // Zero-copy (N4): the source's current IOSurface binding; `bgra` is its
+    // texture. Never uploaded into: a CPU frame for this source recreates.
+    std::shared_ptr<compositor::PixelBufferBinding> zeroCopy;
   };
 
   // A render pass target backed by an IOSurface, so the composited result is
@@ -454,6 +346,7 @@ class MetalCompositor final : public ICompositor {
       return fail("no Metal device");
     }
     queue_ = [device_ newCommandQueue];
+    pixelBufferTextures_ = std::make_unique<compositor::MetalPixelBufferTextures>(device_);
     NSError* error = nil;
     id<MTLLibrary> library =
         [device_ newLibraryWithSource:[NSString stringWithUTF8String:kMetalCompositorShaderSource]
@@ -985,12 +878,15 @@ class MetalCompositor final : public ICompositor {
                       bool waitForCompletion) {
     @autoreleasepool {
       id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
+      // Leases every zero-copy surface this pass samples until the GPU is done.
+      if (pixelBufferTextures_) pixelBufferTextures_->beginPass(commandBuffer);
       MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
       pass.colorAttachments[0].texture = target.texture;
       pass.colorAttachments[0].loadAction = MTLLoadActionClear;
       pass.colorAttachments[0].storeAction = MTLStoreActionStore;
       pass.colorAttachments[0].clearColor = MTLClearColorMake(0.047, 0.067, 0.094, 1.0);
       id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+      graphicsSourceDrawCount_ = 0;  // the bound-source record is per pass
       const auto layers = resolveLayers(deterministicPlan, frames);
       for (const auto& layer : layers) {
         drawLayer(encoder, layer, deterministicPlan);
@@ -1019,7 +915,8 @@ class MetalCompositor final : public ICompositor {
 
   ProgramFrameSharedTexture renderSecondaryPass(PassTarget& target,
                                                 const CompositorRenderPlan& renderPlan,
-                                                const std::vector<VideoFrame>& frames) {
+                                                const std::vector<VideoFrame>& frames,
+                                                bool waitForCompletion = true) {
     ProgramFrameSharedTexture out;
     if (!ensurePipeline()) {
       return out;
@@ -1035,7 +932,10 @@ class MetalCompositor final : public ICompositor {
     const int savedHeight = targetHeight_;
     targetWidth_ = target.width;
     targetHeight_ = target.height;
-    renderPassInto(target, deterministicPlan, frames, /*waitForCompletion=*/true);
+    // Monitor passes share the raster (and its cache) but report nothing.
+    overlayRaster_.beginFrame();
+    renderPassInto(target, deterministicPlan, frames, waitForCompletion);
+    overlayRaster_.beginFrame();
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
     out.iosurfaceId = target.iosurfaceId;
@@ -1337,10 +1237,14 @@ class MetalCompositor final : public ICompositor {
     }
     auto& tex = sourceTextures_[frame.participantId];
     tex.lastUsedFrame = frameNumber_;
+    if (pixelBufferTextures_ && compositor::MetalPixelBufferTextures::canSample(frame)) {
+      return acquireZeroCopyTex(frame, tex);
+    }
     const bool isI420 = frame.hasI420();
     const int width = isI420 ? frame.i420Width : frame.pixelWidth;
     const int height = isI420 ? frame.i420Height : frame.pixelHeight;
     const bool needsCreate =
+        tex.zeroCopy != nullptr ||  // never upload into a decoder's IOSurface
         tex.isI420 != isI420 || tex.width != width || tex.height != height ||
         (isI420 ? tex.y == nil : tex.bgra == nil);
     if (needsCreate) {
@@ -1380,7 +1284,33 @@ class MetalCompositor final : public ICompositor {
     return &tex;
   }
 
+  // ZERO-COPY (N4): the decoder's IOSurface wrapped as the source texture, no
+  // upload. The binding is leased to the current pass by bind(); the cache
+  // entry only remembers it so a held frame is not re-wrapped every pass.
+  SourceTex* acquireZeroCopyTex(const VideoFrame& frame, SourceTex& tex) {
+    auto binding = pixelBufferTextures_->bind(frame, tex.zeroCopy);
+    if (!binding) {
+      tex = SourceTex{};
+      tex.lastUsedFrame = frameNumber_;
+      return nullptr;  // the layer shows its slate, never a stale picture
+    }
+    if (binding == tex.zeroCopy) {
+      ++stats_.cacheHits;
+    } else {
+      ++stats_.zeroCopyBinds;
+      tex = SourceTex{};
+      tex.lastUsedFrame = frameNumber_;
+      tex.zeroCopy = binding;
+      tex.bgra = binding->texture;
+      tex.width = frame.gpuPixels->width;
+      tex.height = frame.gpuPixels->height;
+    }
+    tex.frameId = frame.frameId;
+    return &tex;
+  }
+
   bool uploadScratchTex(const VideoFrame& frame, SourceTex& out) {
+    if (!frame.hasPixels() && !frame.hasI420()) return false;  // a zero-copy frame is never uploaded
     out.isI420 = frame.hasI420();
     if (out.isI420) {
       out.width = frame.i420Width;
@@ -1430,7 +1360,13 @@ class MetalCompositor final : public ICompositor {
     }
 
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
-      drawOverlayLayer(encoder, layer, renderPlan, rect, layerAlpha);
+      const bool composited = drawOverlayLayer(encoder, layer, renderPlan, rect, layerAlpha);
+      if (traceFrame_ && composited && !layer.plan.graphicsInstanceId.empty()) {
+        const auto resource = overlayRaster_.preparedResource();
+        if (resource && resource != layer.plan.graphicsPreparedResource)
+          traceFrame_->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "ready", "", resource});
+        traceFrame_->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "draw-submitted", ""});
+      }
       return;
     }
 
@@ -1506,34 +1442,110 @@ class MetalCompositor final : public ICompositor {
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     resetScissor(encoder);
 
-    // TODO(4a-metal-text): bus health on air (#535 slice 4a) — the failed
-    // slate is colour-only here. The D3D11 twin composites the source's
-    // display name as a small bottom-left label (drawFailedSlateName in
-    // D3D11CompositorAdapter.cpp) via its cached DirectWrite/D2D overlay
-    // raster; this file has no MTLTexture-upload/caching counterpart for
-    // `rasterOverlayTileCoreText`'s raw premultiplied-BGRA buffer on a
-    // non-overlay layer, so the name label is pending that CoreText
-    // plumbing rather than done here.
+    // Graphics source binding (D3D11 parity): record which source generation
+    // was ACTUALLY drawn textured this pass, so a bound graphic draws only over
+    // its own guest's pixels; and publish subject draws for automation.
+    const bool textured = sourceTex != nullptr;
+    const bool subjectKind = layer.plan.kind == "participant-video" || layer.plan.kind == "screen-share";
+    if (textured && layer.frame && layer.frame->sourceGeneration && subjectKind && layerAlpha > 0)
+      recordGraphicsSourceDraw(*layer.frame);
+    if (traceFrame_ && renderPlan.observeGraphicsSubjects && textured && layer.frame && layerAlpha > 0 && subjectKind &&
+        traceFrame_->graphicsFacts.size() < 128) {
+      const bool sharing = layer.plan.kind == "screen-share" ||
+          layer.frame->participantId.rfind("capture:screen:", 0) == 0 ||
+          layer.frame->participantId.rfind("capture:window:", 0) == 0;
+      const char* state = sharing ? "share-draw-submitted" : "source-draw-submitted";
+      const auto identity = "source:" + layer.frame->participantId;
+      if (std::none_of(traceFrame_->graphicsFacts.begin(), traceFrame_->graphicsFacts.end(), [&](const auto& fact) {
+            return fact.state == state && fact.instanceId == identity && fact.revision == layer.frame->sourceGeneration;
+          }))
+        traceFrame_->graphicsFacts.push_back({identity, layer.frame->sourceGeneration, state, ""});
+    }
+
+    // bus health on air (#535 slice 4a, R4): a failed OR stalled-with-no-frame
+    // source's slate carries its display name so an operator can tell WHICH
+    // source died at a glance (D3D11 drawFailedSlateName parity).
+    if (layer.frame == nullptr &&
+        (layer.plan.sourceHealth == "failed" || layer.plan.sourceHealth == "stalled")) {
+      drawFailedSlateName(encoder, layer, renderPlan, rect, layerAlpha);
+    }
 
     const auto border = compositor::computeBorderFraming(layer.plan.borderStyle, layer.plan.borderColor,
                                                          layer.plan.borderThickness);
     drawBorderPass(encoder, layer, renderPlan, rect, border, layerAlpha);
   }
 
-  void drawOverlayLayer(id<MTLRenderCommandEncoder> encoder,
+  // The slate name as a SMALL LABEL anchored bottom-left of the layer, not
+  // the full-canvas lower-third band a bare overlay content would raster.
+  // Mirrors D3D11CompositorAdapter::drawFailedSlateName: height 8% of the
+  // layer; width capped at 40% of it or a rough text-width ESTIMATE (~55% of
+  // the line height per glyph plus breathing room); brandColor = the slate
+  // colour so the lower-third accent bar is invisible against it; the raster
+  // paints no band for plain content, so there is no plate. Prepared by the
+  // same async raster; while it prepares the colour-only slate shows.
+  void drawFailedSlateName(id<MTLRenderCommandEncoder> encoder,
+                           const ResolvedLayer& layer,
+                           const CompositorRenderPlan& renderPlan,
+                           const compositor::LayerRect& rect,
+                           float layerAlpha) {
+    const std::string& name = layer.plan.sourceDisplayName;
+    if (name.empty()) {
+      return;
+    }
+    const float labelHeight = rect.height * 0.08f;
+    if (labelHeight <= 0.f || rect.width <= 0.f) {
+      return;
+    }
+    const float labelHeightPx = labelHeight * static_cast<float>(targetHeight_);
+    const float estTextWidthPx = labelHeightPx * 0.55f * static_cast<float>(name.size()) + labelHeightPx;
+    const float estTextWidthFrac =
+        targetWidth_ > 0 ? estTextWidthPx / static_cast<float>(targetWidth_) : rect.width;
+    const float labelWidth = std::min(rect.width * 0.4f, estTextWidthFrac);
+    if (labelWidth <= 0.f) {
+      return;
+    }
+    const compositor::LayerRect labelRect{rect.x, rect.y + rect.height - labelHeight, labelWidth, labelHeight};
+    char hexBuf[8];
+    std::snprintf(hexBuf, sizeof(hexBuf), "#%06x", compositor::kFailedSlateRgba & 0xffffffu);
+    // Built per draw, as on Windows. Every string is short (small-string
+    // storage) unless the display name is long; the raster lookup is a hit.
+    CompositorOverlayContent content;
+    content.title = name;
+    content.brandColor = hexBuf;
+    id<MTLTexture> texture =
+        overlayRaster_.rasterOverlayTexture(device_, content, labelRect, targetWidth_, targetHeight_);
+    if (!texture) {
+      return;
+    }
+    const compositor::LayerRect clip = layer.plan.hasClipRect
+        ? compositor::LayerRect{layer.plan.clipRect.x, layer.plan.clipRect.y,
+                                layer.plan.clipRect.width, layer.plan.clipRect.height}
+        : rect;
+    drawOverlayTexture(encoder, layer, renderPlan, texture, labelRect, clip, layerAlpha);
+    resetScissor(encoder);
+  }
+
+  // Returns true when a prepared raster was composited (the draw-submitted
+  // fact). Mirrors D3D11CompositorAdapter::drawOverlayLayer.
+  bool drawOverlayLayer(id<MTLRenderCommandEncoder> encoder,
                         const ResolvedLayer& layer,
                         const CompositorRenderPlan& renderPlan,
                         const compositor::LayerRect& rect,
                         float layerAlpha) {
+    // A bound graphic draws only when its source was drawn this pass at the
+    // bound generation: never over a replaced or stale guest.
+    if (layer.plan.graphicsBoundSourceGeneration &&
+        !hasGraphicsSourceDraw(layer.plan.graphicsBoundParticipantId, layer.plan.graphicsBoundSourceGeneration))
+      return false;
     const auto& overlay = layer.plan.overlay;
     const auto key = compositor::computeOverlayKeyTransform(overlay.keyPhase, overlay.keyProgress,
                                                             overlay.keyPosition, rect.height);
     if (!key.visible || key.alpha <= 0.001f) {
-      return;
+      return false;
     }
     const float alpha = std::clamp(layerAlpha * key.alpha, 0.f, 1.f);
     if (alpha <= 0.f) {
-      return;
+      return false;
     }
 
     compositor::LayerRect animated = rect;
@@ -1553,19 +1565,50 @@ class MetalCompositor final : public ICompositor {
                                 layer.plan.clipRect.width, layer.plan.clipRect.height}
         : compositor::LayerRect{0.f, 0.f, 1.f, 1.f};
 
-    setScissorFromRect(encoder, clip);
-    drawSolidQuad(encoder, layer, renderPlan, animated, background, alpha);
+    // Instance revisions become visible only after their complete raster
+    // exists (strict); legacy overlays draw the fallback while they prepare.
+    id<MTLTexture> overlayTex = overlayRaster_.rasterOverlayTexture(
+        device_, overlay, rect, targetWidth_, targetHeight_, {}, !layer.plan.graphicsInstanceId.empty(),
+        layer.plan.graphicsPreparedResource);
+    if (overlay.holdLastRaster) {
+      // #1073 Tiles name line (D3D11CompositorAdapter.cpp parity): a reflow
+      // resizes every band at once and preparation is bounded, so "preparing"
+      // can last several frames on a big wall. Draw the layer's previous
+      // raster (the viewport scales it to the new band) until the new one is
+      // ready, and never the bare accent bar: a tick with no text is worse
+      // than a name a few frames old. The lease keeps the texture alive.
+      const int widthPx = static_cast<int>(std::lround(double(rect.width) * targetWidth_));
+      const int heightPx = static_cast<int>(std::lround(double(rect.height) * targetHeight_));
+      const void* drawable = retainedOverlayRasters_.resolve(
+          layer.plan.layerId, overlayTex ? (__bridge const void*)overlayTex : nullptr,
+          overlayTex ? overlayRaster_.lease() : nullptr, widthPx, heightPx,
+          static_cast<uint64_t>(frameNumber_));
+      overlayTex = drawable ? (__bridge id<MTLTexture>)drawable : nil;
+      if (!overlayTex) return false;
+    }
+    if (!layer.plan.graphicsInstanceId.empty() && !overlayTex) return false;
+    if (layer.plan.graphicsAwaitingEntrance) {
+      if (traceFrame_)
+        traceFrame_->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "composition-eligible", ""});
+      return false;
+    }
 
-    // Composite the portable CPU raster over the band. Sizing/caching uses the
+    // Brand band quad: only when the raster does not paint the band itself
+    // (an appearance-styled lower third paints its own rounded band). Drawing
+    // both doubled the band and showed the quad round the rounded corners.
+    setScissorFromRect(encoder, clip);
+    if (!overlay.appearance.enabled || overlay.isCaption) {
+      drawSolidQuad(encoder, layer, renderPlan, animated, background, alpha);
+    }
+
+    // Composite the prepared raster over the band. Sizing/caching uses the
     // un-animated rect so a build-in/out sweep scales the SAME cached texture.
-    if (id<MTLTexture> overlayTex = rasterOverlayTexture(overlay, rect)) {
-      setScissorFromRect(encoder, clip);
-      setViewportFromRect(encoder, animated);
-      setLayerConstants(encoder, layer, renderPlan, 0xffffffffu, alpha, 1.f, 1.f, 0.f, 0.f);
-      [encoder setRenderPipelineState:overlayPipeline_];
-      [encoder setFragmentTexture:overlayTex atIndex:0];
-      [encoder setFragmentSamplerState:sampler_ atIndex:0];
-      [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    bool composited = false;
+    if (overlayTex && overlayRaster_.activeRuns() && !overlay.holdLastRaster) {
+      composited = drawOverlayRuns(encoder, layer, renderPlan, overlayTex, *overlayRaster_.activeRuns(), animated, clip, alpha);
+    } else if (overlayTex) {
+      drawOverlayTexture(encoder, layer, renderPlan, overlayTex, animated, clip, alpha);
+      composited = true;
     } else {
       setScissorFromRect(encoder, clip);
       if (overlay.isCaption) {
@@ -1577,45 +1620,112 @@ class MetalCompositor final : public ICompositor {
       }
     }
     resetScissor(encoder);
+    return composited;
   }
 
-  // CPU raster -> premultiplied BGRA texture, cached by content signature (the
-  // signature excludes keyPhase/keyProgress so an animation sweep reuses the
-  // cached tile, matching the D3D11 D2D raster cache semantics).
-  id<MTLTexture> rasterOverlayTexture(const CompositorOverlayContent& overlay,
-                                      const compositor::LayerRect& rect) {
-    const int widthPx =
-        std::max(2, static_cast<int>(std::lround(rect.width * static_cast<float>(targetWidth_))));
-    const int heightPx =
-        std::max(2, static_cast<int>(std::lround(rect.height * static_cast<float>(targetHeight_))));
-    const uint64_t signature = overlayContentSignature(overlay, widthPx, heightPx);
-    if (overlayTex_.texture && overlayTex_.signature == signature &&
-        overlayTex_.width == widthPx && overlayTex_.height == heightPx) {
-      return overlayTex_.texture;
-    }
-    // Core Text raster (real type + ImageIO images — the DirectWrite analogue,
-    // premultiplied natively); the portable 5x7 raster stays as the fallback.
-    std::vector<uint8_t> bgra;
-    if (!rasterOverlayTileCoreText(overlay, widthPx, heightPx, bgra)) {
-      if (!rasterizeOverlayTileBgra(overlay, widthPx, heightPx, bgra)) {
-        return nil;
+  // Spec 5.8: an atlas raster draws each run from its slice. Motion and crawl
+  // are core decisions (overlay.graphicsMotion, overlay.graphicsCrawlDistance);
+  // the math is the shared headers', so this is the D3D11 loop with Metal's
+  // three state calls. A crawl scroll is a per-frame destination change over a
+  // static atlas: no re-raster while it runs.
+  bool drawOverlayRuns(id<MTLRenderCommandEncoder> encoder,
+                       const ResolvedLayer& layer,
+                       const CompositorRenderPlan& renderPlan,
+                       id<MTLTexture> atlas,
+                       const graphics::GraphicsRunLayout& layout,
+                       const compositor::LayerRect& animated,
+                       const compositor::LayerRect& clip,
+                       float alpha) {
+    const auto& overlay = layer.plan.overlay;
+    if (!layout.drawing || layout.width <= 0 || layout.height <= 0 || layout.atlasWidth <= 0 || layout.atlasHeight <= 0)
+      return false;
+    bool composited = false;
+    const auto state = overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
+    const auto toRect = [&](const graphics::GraphicsBox& box) {
+      return compositor::LayerRect{animated.x + float(box.x / layout.width) * animated.width,
+                                   animated.y + float(box.y / layout.height) * animated.height,
+                                   float(box.width / layout.width) * animated.width,
+                                   float(box.height / layout.height) * animated.height};
+    };
+    for (size_t i = 0; i < layout.runs.size() && i < layout.slices.size(); ++i) {
+      const auto& run = layout.runs[i];
+      const auto& slice = layout.slices[i];
+      if (slice.width <= 0 || slice.height <= 0) continue;
+      const auto sample = graphics::sampleRun(*layout.drawing, run.unit, state);
+      if (sample.opacity <= 0) continue;
+      auto source = run.source;
+      auto mask = sample.clip;
+      const auto& item = layout.drawing->primitives[run.first];
+      if (item.crawlStart && layout.drawing->crawl) {
+        const auto& crawl = *layout.drawing->crawl;
+        const auto distance = overlay.graphicsCrawlDistance;
+        if (distance && *distance >= crawl.passWidth) continue;
+        source.x = crawl.window.x + (distance ? graphics::crawlItemX(crawl.window.width, *item.crawlStart,
+                                                                     source.width, *distance, crawl.rightward)
+                                              : *item.crawlStart);
+        const auto window = sample.transform.apply(crawl.clip);
+        if (graphics::intersect(sample.transform.apply(source), window).width <= 0) continue;
+        mask = mask ? graphics::intersect(*mask, window) : window;
       }
-      // The fallback raster is straight alpha; the overlay pipeline expects
-      // premultiplied content (parity with D2D's output on Windows).
-      for (size_t offset = 0; offset + 3 < bgra.size(); offset += 4) {
-        const uint32_t alpha = bgra[offset + 3];
-        bgra[offset + 0] = static_cast<uint8_t>((bgra[offset + 0] * alpha + 127) / 255);
-        bgra[offset + 1] = static_cast<uint8_t>((bgra[offset + 1] * alpha + 127) / 255);
-        bgra[offset + 2] = static_cast<uint8_t>((bgra[offset + 2] * alpha + 127) / 255);
+      const auto destination = toRect(sample.transform.apply(source));
+      if (destination.width <= 0 || destination.height <= 0) continue;
+      auto scissor = clip;
+      if (mask) {
+        const auto bounds = toRect(*mask);
+        const float x = std::max(clip.x, bounds.x), y = std::max(clip.y, bounds.y);
+        scissor = {x, y, std::min(clip.x + clip.width, bounds.x + bounds.width) - x,
+                   std::min(clip.y + clip.height, bounds.y + bounds.height) - y};
       }
+      if (scissor.width <= 0 || scissor.height <= 0) continue;
+      setScissorFromRect(encoder, scissor);
+      setViewportFromRect(encoder, destination);
+      setLayerConstants(encoder, layer, renderPlan, 0xffffffffu, alpha * float(sample.opacity),
+                        float(slice.width) / layout.atlasWidth, float(slice.height) / layout.atlasHeight,
+                        float(slice.x) / layout.atlasWidth, float(slice.y) / layout.atlasHeight);
+      [encoder setRenderPipelineState:overlayPipeline_];
+      [encoder setFragmentTexture:atlas atIndex:0];
+      [encoder setFragmentSamplerState:sampler_ atIndex:0];
+      [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      composited = true;
     }
-    id<MTLTexture> texture = makeTexture(MTLPixelFormatBGRA8Unorm, widthPx, heightPx);
-    if (!texture) {
-      return nil;
+    return composited;
+  }
+
+  void recordGraphicsSourceDraw(const VideoFrame& frame) {
+    if (frame.participantId.size() > 512) return;
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i) {
+      if (graphicsSourceDraws_[i].id != frame.participantId) continue;
+      if (graphicsSourceDraws_[i].generation != frame.sourceGeneration) graphicsSourceDraws_[i].generation = 0;
+      return;
     }
-    uploadRegion(texture, bgra.data(), widthPx, heightPx, widthPx * 4);
-    overlayTex_ = OverlayTex{texture, signature, widthPx, heightPx};
-    return texture;
+    if (graphicsSourceDrawCount_ < graphicsSourceDraws_.size()) {
+      auto& draw = graphicsSourceDraws_[graphicsSourceDrawCount_++];
+      draw.id = frame.participantId;
+      draw.generation = frame.sourceGeneration;
+    }
+  }
+  bool hasGraphicsSourceDraw(const std::string& id, uint64_t generation) const {
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i)
+      if (graphicsSourceDraws_[i].id == id && graphicsSourceDraws_[i].generation == generation) return true;
+    return false;
+  }
+
+  // One premultiplied (One, 1-SrcAlpha) draw of a prepared overlay texture
+  // into `destination`, scissored to `clip`.
+  void drawOverlayTexture(id<MTLRenderCommandEncoder> encoder,
+                          const ResolvedLayer& layer,
+                          const CompositorRenderPlan& renderPlan,
+                          id<MTLTexture> texture,
+                          const compositor::LayerRect& destination,
+                          const compositor::LayerRect& clip,
+                          float alpha) {
+    setScissorFromRect(encoder, clip);
+    setViewportFromRect(encoder, destination);
+    setLayerConstants(encoder, layer, renderPlan, 0xffffffffu, alpha, 1.f, 1.f, 0.f, 0.f);
+    [encoder setRenderPipelineState:overlayPipeline_];
+    [encoder setFragmentTexture:texture atIndex:0];
+    [encoder setFragmentSamplerState:sampler_ atIndex:0];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   }
 
   // ── members ────────────────────────────────────────────────────────────────
@@ -1655,6 +1765,7 @@ class MetalCompositor final : public ICompositor {
     gradeCubeTextures_.emplace(cube->hash,texture); return texture;
   }
   id<MTLDevice> device_ = nil;
+  std::unique_ptr<compositor::MetalPixelBufferTextures> pixelBufferTextures_;
   id<MTLCommandQueue> queue_ = nil;
   id<MTLRenderPipelineState> solidPipeline_ = nil;
   id<MTLRenderPipelineState> texturedPipeline_ = nil;
@@ -1665,6 +1776,7 @@ class MetalCompositor final : public ICompositor {
   PassTarget program_;
   PassTarget multiview_;
   PassTarget preview_;
+  PassTarget sourceSheet_;  // Sources Phase 2 (S6)
   // Canvas dims the draw helpers are currently pointed at (the program pass's
   // dims except inside a secondary pass, which saves/restores them).
   int targetWidth_ = 0;
@@ -1703,8 +1815,21 @@ class MetalCompositor final : public ICompositor {
   IdentifiedVcamFrameSink identifiedVcamSink_;
 #endif
   std::unordered_map<std::string, SourceTex> sourceTextures_;
-  OverlayTex overlayTex_;
+  std::unique_ptr<MetalGradePreview> gradePreview_ = MetalGradePreview::create();
   CompositorSourceTexStats stats_;
+  // Previous ready raster per holdLastRaster layer (bridged texture pointer
+  // kept alive by the raster lease stored beside it).
+  compositor::OverlayRasterRetention<const void> retainedOverlayRasters_;
+  // Program pass only: where drawLayer pushes graphics facts (null otherwise).
+  ProgramFrame* traceFrame_ = nullptr;
+  // Fixed-size per-pass record of drawn sources (no per-tick allocation once
+  // each slot's id string has capacity), D3D11 graphicsSourceDraws_ parity.
+  struct GraphicsSourceDraw { std::string id; uint64_t generation = 0; };
+  std::array<GraphicsSourceDraw, 256> graphicsSourceDraws_;
+  size_t graphicsSourceDrawCount_ = 0;
+  // Last member: its preparation worker joins first on destruction. It holds
+  // its own strong device reference per request, so device_ order is moot.
+  CoreTextOverlayRaster overlayRaster_;
 };
 
 }  // namespace

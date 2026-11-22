@@ -1,0 +1,765 @@
+{
+  "area": "playout",
+  "description": "GraphicsPlayoutService identity and entries, GraphicsLayoutResolver.CueFields (no Sources columns), StyleWire, and the interview default rows.",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "instance-id-guest-0",
+      "operation": "instanceIdFor",
+      "input": {
+        "rowId": "guest",
+        "sourceId": ""
+      },
+      "expected": {
+        "instanceId": "playlist-guest"
+      }
+    },
+    {
+      "id": "instance-id-guest-1",
+      "operation": "instanceIdFor",
+      "input": {
+        "rowId": "guest",
+        "sourceId": "zoom:16778240"
+      },
+      "expected": {
+        "instanceId": "playlist-guest-c6753450743d"
+      }
+    },
+    {
+      "id": "instance-id-title-2",
+      "operation": "instanceIdFor",
+      "input": {
+        "rowId": "title",
+        "sourceId": "capture:Cámara 1"
+      },
+      "expected": {
+        "instanceId": "playlist-title-c5e425f80cca"
+      }
+    },
+    {
+      "id": "instance-id-guest-3",
+      "operation": "instanceIdFor",
+      "input": {
+        "rowId": "guest",
+        "sourceId": "media:clip-1"
+      },
+      "expected": {
+        "instanceId": "playlist-guest-c674bc654a27"
+      }
+    },
+    {
+      "id": "instance-id-logo-4",
+      "operation": "instanceIdFor",
+      "input": {
+        "rowId": "logo",
+        "sourceId": "zoom:\uD83C\uDF99️ host"
+      },
+      "expected": {
+        "instanceId": "playlist-logo-d3f11a5a8d6b"
+      }
+    },
+    {
+      "id": "instance-id-live-bug-5",
+      "operation": "instanceIdFor",
+      "input": {
+        "rowId": "live-bug",
+        "sourceId": "variant:v1"
+      },
+      "expected": {
+        "instanceId": "playlist-live-bug-b5b1e6f2693f"
+      }
+    },
+    {
+      "id": "guest-entries",
+      "operation": "guestEntries",
+      "input": {
+        "rowId": "guest",
+        "slots": [
+          {
+            "slotNumber": 3,
+            "sourceId": "zoom:300",
+            "derivedName": "Cy"
+          },
+          {
+            "slotNumber": 1,
+            "sourceId": "zoom:100",
+            "derivedName": "Ada"
+          },
+          {
+            "slotNumber": 2,
+            "sourceId": null,
+            "derivedName": "Empty"
+          },
+          {
+            "slotNumber": 4,
+            "sourceId": "zoom:100",
+            "derivedName": "Ada again"
+          },
+          {
+            "slotNumber": 5,
+            "sourceId": "capture:cam",
+            "derivedName": "Desk cam"
+          },
+          {
+            "slotNumber": 6,
+            "sourceId": "",
+            "derivedName": "Blank"
+          }
+        ]
+      },
+      "expected": {
+        "entries": [
+          {
+            "sourceId": "zoom:100",
+            "name": "Ada",
+            "title": "",
+            "slotNumber": 1,
+            "instanceId": "playlist-guest-2b0548cb8f62"
+          },
+          {
+            "sourceId": "zoom:300",
+            "name": "Cy",
+            "title": "",
+            "slotNumber": 3,
+            "instanceId": "playlist-guest-56c946a9fae2"
+          },
+          {
+            "sourceId": "capture:cam",
+            "name": "Desk cam",
+            "title": "",
+            "slotNumber": 5,
+            "instanceId": "playlist-guest-77315dcba303"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cue-fields-guest-guest-7",
+      "operation": "cueFieldsAndStyle",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "entry": {
+          "sourceId": "zoom:100",
+          "name": "Ada Lovelace",
+          "title": ""
+        },
+        "templateId": "minimal-accent",
+        "templateVersion": 1
+      },
+      "expected": {
+        "fields": {
+          "name": "Ada Lovelace",
+          "title": ""
+        },
+        "style": {
+          "version": 1,
+          "preset": "minimal-accent",
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameSize": 40,
+          "titleSize": 26,
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#44C1A1",
+          "backgroundOpacity": 0,
+          "padding": 20,
+          "width": 0.6,
+          "cornerRadius": 0,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06,
+          "showLogo": true,
+          "logoScale": 1
+        }
+      }
+    },
+    {
+      "id": "cue-fields-guest-row-8",
+      "operation": "cueFieldsAndStyle",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "entry": {
+          "sourceId": "",
+          "name": "Guest name",
+          "title": ""
+        },
+        "templateId": "minimal-accent",
+        "templateVersion": 1
+      },
+      "expected": {
+        "fields": {
+          "name": "Alex Rivera",
+          "title": "Host · Interview"
+        },
+        "style": {
+          "version": 1,
+          "preset": "minimal-accent",
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameSize": 40,
+          "titleSize": 26,
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#44C1A1",
+          "backgroundOpacity": 0,
+          "padding": 20,
+          "width": 0.6,
+          "cornerRadius": 0,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06,
+          "showLogo": true,
+          "logoScale": 1
+        }
+      }
+    },
+    {
+      "id": "cue-fields-title-row-9",
+      "operation": "cueFieldsAndStyle",
+      "input": {
+        "row": {
+          "id": "title",
+          "kind": "title",
+          "name": "Show title",
+          "hotkey": "F2",
+          "playOutAfterMs": 0,
+          "templateId": "centered-title",
+          "templateVersion": 1,
+          "fields": {
+            "heading": "In conversation",
+            "subtitle": "Stories worth sharing",
+            "text-size": 64
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "entry": {
+          "sourceId": "",
+          "name": "Show title",
+          "title": ""
+        },
+        "templateId": "centered-title",
+        "templateVersion": 1
+      },
+      "expected": {
+        "fields": {
+          "heading": "In conversation",
+          "subtitle": "Stories worth sharing",
+          "text-size": 64
+        },
+        "style": {
+          "version": 1,
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#44C1A1",
+          "backgroundOpacity": 0.9,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06
+        }
+      }
+    },
+    {
+      "id": "cue-fields-title-guest-10",
+      "operation": "cueFieldsAndStyle",
+      "input": {
+        "row": {
+          "id": "title",
+          "kind": "title",
+          "name": "Show title",
+          "hotkey": "F2",
+          "playOutAfterMs": 0,
+          "templateId": "centered-title",
+          "templateVersion": 1,
+          "fields": {
+            "heading": "In conversation",
+            "subtitle": "Stories worth sharing",
+            "text-size": 64
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "entry": {
+          "sourceId": "zoom:100",
+          "name": "Ada",
+          "title": "Host"
+        },
+        "templateId": "centered-title",
+        "templateVersion": 1
+      },
+      "expected": {
+        "fields": {
+          "heading": "In conversation",
+          "subtitle": "Stories worth sharing",
+          "text-size": 64
+        },
+        "style": {
+          "version": 1,
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#44C1A1",
+          "backgroundOpacity": 0.9,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06
+        }
+      }
+    },
+    {
+      "id": "cue-fields-live-bug-row-11",
+      "operation": "cueFieldsAndStyle",
+      "input": {
+        "row": {
+          "id": "live-bug",
+          "kind": "liveBug",
+          "name": "LIVE bug",
+          "hotkey": "F4",
+          "playOutAfterMs": 0,
+          "templateId": "clock-panel",
+          "templateVersion": 1,
+          "fields": {
+            "label": "LIVE",
+            "time": "12:34:56",
+            "text-size": 56
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": true,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "entry": {
+          "sourceId": "",
+          "name": "LIVE bug",
+          "title": ""
+        },
+        "templateId": "clock-panel",
+        "templateVersion": 1
+      },
+      "expected": {
+        "fields": {
+          "label": "LIVE",
+          "time": "12:34:56",
+          "text-size": 56
+        },
+        "style": {
+          "version": 1,
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#44C1A1",
+          "backgroundOpacity": 0.9,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06
+        }
+      }
+    },
+    {
+      "id": "default-rows-interview",
+      "operation": "defaultRows",
+      "input": {
+        "starter": "interview",
+        "nodeFile": "nodes/program-and-cue.json"
+      },
+      "expected": {
+        "rows": [
+          {
+            "id": "guest",
+            "kind": "guest",
+            "name": "Guest name",
+            "hotkey": "F1",
+            "playOutAfterMs": 8000,
+            "templateId": "minimal-accent",
+            "templateVersion": 1,
+            "fields": {
+              "name": "Alex Rivera",
+              "title": "Host · Interview"
+            },
+            "style": {
+              "version": 1,
+              "preset": "minimal-accent",
+              "anchor": "lower-left",
+              "fontFamily": "Segoe UI",
+              "nameSize": 40,
+              "titleSize": 26,
+              "nameColor": "#FFFFFF",
+              "titleColor": "#E1E9F2",
+              "backgroundColor": "#172433",
+              "accentColor": "#44C1A1",
+              "backgroundOpacity": 0,
+              "padding": 20,
+              "width": 0.6,
+              "cornerRadius": 0,
+              "safeOffsetX": 0.05,
+              "safeOffsetY": 0.06,
+              "showLogo": true,
+              "logoScale": 1,
+              "isValid": true
+            },
+            "imagePath": null,
+            "image": null,
+            "followSources": true,
+            "dataBinding": null,
+            "sourceMappings": {},
+            "showClock": false,
+            "motion": null,
+            "variants": [],
+            "placement": null,
+            "clock": null
+          },
+          {
+            "id": "title",
+            "kind": "title",
+            "name": "Show title",
+            "hotkey": "F2",
+            "playOutAfterMs": 0,
+            "templateId": "centered-title",
+            "templateVersion": 1,
+            "fields": {
+              "heading": "In conversation",
+              "subtitle": "Stories worth sharing",
+              "text-size": 64
+            },
+            "style": {
+              "version": 1,
+              "preset": "compact-solid",
+              "anchor": "lower-left",
+              "fontFamily": "Segoe UI",
+              "nameSize": 42,
+              "titleSize": 28,
+              "nameColor": "#FFFFFF",
+              "titleColor": "#E1E9F2",
+              "backgroundColor": "#172433",
+              "accentColor": "#44C1A1",
+              "backgroundOpacity": 0.9,
+              "padding": 20,
+              "width": 0.6,
+              "cornerRadius": 8,
+              "safeOffsetX": 0.05,
+              "safeOffsetY": 0.06,
+              "showLogo": true,
+              "logoScale": 1,
+              "isValid": true
+            },
+            "imagePath": null,
+            "image": null,
+            "followSources": false,
+            "dataBinding": null,
+            "sourceMappings": {},
+            "showClock": false,
+            "motion": null,
+            "variants": [],
+            "placement": null,
+            "clock": null
+          },
+          {
+            "id": "logo",
+            "kind": "logo",
+            "name": "Logo",
+            "hotkey": "F3",
+            "playOutAfterMs": 0,
+            "templateId": "corner-logo",
+            "templateVersion": 1,
+            "fields": {
+              "logo": "logo",
+              "show-logo": true
+            },
+            "style": {
+              "version": 1,
+              "preset": "compact-solid",
+              "anchor": "lower-left",
+              "fontFamily": "Segoe UI",
+              "nameSize": 42,
+              "titleSize": 28,
+              "nameColor": "#FFFFFF",
+              "titleColor": "#E1E9F2",
+              "backgroundColor": "#172433",
+              "accentColor": "#44C1A1",
+              "backgroundOpacity": 0.9,
+              "padding": 20,
+              "width": 0.6,
+              "cornerRadius": 8,
+              "safeOffsetX": 0.05,
+              "safeOffsetY": 0.06,
+              "showLogo": true,
+              "logoScale": 1,
+              "isValid": true
+            },
+            "imagePath": null,
+            "image": null,
+            "followSources": false,
+            "dataBinding": null,
+            "sourceMappings": {},
+            "showClock": false,
+            "motion": null,
+            "variants": [],
+            "placement": null,
+            "clock": null
+          },
+          {
+            "id": "live-bug",
+            "kind": "liveBug",
+            "name": "LIVE bug",
+            "hotkey": "F4",
+            "playOutAfterMs": 0,
+            "templateId": "clock-panel",
+            "templateVersion": 1,
+            "fields": {
+              "label": "LIVE",
+              "time": "12:34:56",
+              "text-size": 56
+            },
+            "style": {
+              "version": 1,
+              "preset": "compact-solid",
+              "anchor": "lower-left",
+              "fontFamily": "Segoe UI",
+              "nameSize": 42,
+              "titleSize": 28,
+              "nameColor": "#FFFFFF",
+              "titleColor": "#E1E9F2",
+              "backgroundColor": "#172433",
+              "accentColor": "#44C1A1",
+              "backgroundOpacity": 0.9,
+              "padding": 20,
+              "width": 0.6,
+              "cornerRadius": 8,
+              "safeOffsetX": 0.05,
+              "safeOffsetY": 0.06,
+              "showLogo": true,
+              "logoScale": 1,
+              "isValid": true
+            },
+            "imagePath": null,
+            "image": null,
+            "followSources": false,
+            "dataBinding": null,
+            "sourceMappings": {},
+            "showClock": true,
+            "motion": null,
+            "variants": [],
+            "placement": null,
+            "clock": null
+          },
+          {
+            "id": "sponsor",
+            "kind": "sponsor",
+            "name": "Sponsor card",
+            "hotkey": "F5",
+            "playOutAfterMs": 15000,
+            "templateId": "",
+            "templateVersion": 0,
+            "fields": {},
+            "style": {
+              "version": 1,
+              "preset": "minimal-accent",
+              "anchor": "lower-left",
+              "fontFamily": "Segoe UI",
+              "nameSize": 40,
+              "titleSize": 26,
+              "nameColor": "#F4F7FA",
+              "titleColor": "#44C1A1",
+              "backgroundColor": "#0C1118",
+              "accentColor": "#44C1A1",
+              "backgroundOpacity": 0,
+              "padding": 20,
+              "width": 0.6,
+              "cornerRadius": 0,
+              "safeOffsetX": 0.05,
+              "safeOffsetY": 0.06,
+              "showLogo": true,
+              "logoScale": 1,
+              "isValid": true
+            },
+            "imagePath": null,
+            "image": null,
+            "followSources": false,
+            "dataBinding": null,
+            "sourceMappings": {},
+            "showClock": false,
+            "motion": null,
+            "variants": [],
+            "placement": null,
+            "clock": null
+          }
+        ]
+      }
+    }
+  ]
+}

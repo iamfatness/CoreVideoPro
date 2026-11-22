@@ -19,7 +19,16 @@ struct AudioPane: View {
     // The pop-out window hosts this same view; it just hides the pop-out button.
     var isPopout: Bool = false
     @EnvironmentObject var model: AppModel
-    @State private var surface = "SHOW"
+    @State private var surface = AudioPane.initialSurface
+    /// The offscreen tab renderer (COREVIDEO_SHELL_TAB_SNAPSHOT) may open another
+    /// surface with COREVIDEO_SHELL_AUDIO_SURFACE=ROUTING|SETUP|PLUG-INS; the
+    /// running app always opens on SHOW.
+    static var initialSurface: String {
+        guard ShellHarness.isActive,
+              let wanted = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUDIO_SURFACE"],
+              ["SHOW", "ROUTING", "PLUG-INS", "SETUP"].contains(wanted) else { return "SHOW" }
+        return wanted
+    }
     @State private var selectedStripId: String?
 
     var selected: AudioStrip? {
@@ -39,6 +48,18 @@ struct AudioPane: View {
                             .fill(surface == name ? Studio.blue : Studio.surface))
                 }
                 Spacer()
+                // A1, Windows AudioPage.xaml:79-88: OFF = Zoom's own program mix rides
+                // to master (echo-cancelled, continuous); ON = each guest's isolated
+                // stem routes through their strip, so the faders shape program audio.
+                Toggle(isOn: Binding(
+                    get: { model.zoomAudioMode == .perGuestIso },
+                    set: { model.setZoomAudioMode($0 ? .perGuestIso : .programMix) })) {
+                    Text(model.zoomAudioMode == .perGuestIso ? "Per-guest ISO" : "Zoom program mix")
+                        .font(.plexMono(10, .semibold)).foregroundStyle(Studio.secondary)
+                }
+                .toggleStyle(.switch).controlSize(.small)
+                .accessibilityLabel("Per-guest ISO audio to program")
+                .help("Route each guest's isolated audio through their fader instead of Zoom's combined mix")
                 // Real second-display mixer (was a disabled placeholder). Hidden
                 // inside the pop-out so it cannot spawn copies of itself.
                 if !isPopout {
@@ -55,7 +76,9 @@ struct AudioPane: View {
                     .padding(.top, 2)
             case "SETUP":
                 VStack(alignment: .leading, spacing: 12) {
+                    MasteringGuideMeters()
                     MasteringRack()
+                    LocalAudioSourceCard()
                     Text("Monitor output").font(.grotesk(13, .semibold))
                     MonitorDevicePicker()
                     Toggle("Monitor", isOn: Binding(
@@ -207,6 +230,13 @@ struct ProcessingWorkspace: View {
                     labeledSlider("Threshold (dB)", bind(\.compThresholdDb), in: -40...(-6))
                     labeledSlider("Ratio", bind(\.compRatio), in: 1...20)
                 }
+                let gr = MasterMeterReadout.gainReduction(
+                    model.strips.first { $0.id == stripId }?.gainReductionDb ?? 0)
+                HStack(spacing: 6) {
+                    Text(gr.label).font(.plexMono(9)).foregroundStyle(Studio.secondary)
+                        .frame(width: 70, alignment: .leading)
+                    GainReductionBar(level: gr.level).frame(height: 6)
+                }
                 HStack(spacing: 6) {
                     labeledSlider("Attack", bind(\.compAttackMs), in: 0.1...100)
                     labeledSlider("Release", bind(\.compReleaseMs), in: 10...1000)
@@ -350,6 +380,18 @@ struct ConsoleStrip: View {
                 let reading = AudioConsolePolicy.meterReading(strip)
                 SegmentedMeter(level: reading.level, dimmed: reading.dimmed)
                     .frame(width: 12, height: 150)
+                MeterTickScale().frame(width: 18, height: 150)
+            }
+            if AudioConsolePolicy.isMeterOnly(strip.id, mode: model.zoomAudioMode) {
+                // A1: in ProgramMix the guest is inside zoom-mix, so this strip's
+                // mute and fader do not change program — say so (Windows status copy).
+                Text("METER ONLY").font(.plexMono(9, .semibold)).foregroundStyle(Studio.secondary)
+                    .help("Zoom program mix is on: this guest reaches program through Zoom's combined mix")
+            }
+            if strip.sourceMuted {
+                // Display only (#481): the guest muted themselves in Zoom.
+                Text("ZOOM MUTED").font(.plexMono(9, .semibold)).foregroundStyle(Studio.amber)
+                    .accessibilityLabel("\(label) is muted in Zoom")
             }
             Text(label).font(.grotesk(10, .medium))
                 .lineLimit(1).truncationMode(.tail)
@@ -366,17 +408,16 @@ struct ConsoleStrip: View {
 struct MasterLufsRail: View {
     @EnvironmentObject var model: AppModel
 
+    /// Windows MasterLufsLabel: the core's loudnessLufs (short-term, else momentary).
     var lufsLabel: String {
-        model.shortTermLufs <= -119 ? "—" : String(format: "%.1f", model.shortTermLufs)
+        MasterMeterReadout.railLufsLabel(loudnessLufs: model.loudnessLufs, mixedFrames: model.mixedFrameCount)
     }
 
     var body: some View {
         VStack(spacing: 8) {
             MonoLabel("Master")
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("LUFS").font(.grotesk(13, .semibold))
-                Text(lufsLabel).font(.grotesk(24, .semibold))
-            }
+            Text(lufsLabel).font(.grotesk(22, .semibold))
+                .accessibilityLabel("Master loudness \(lufsLabel)")
             // #870: the clock re-evaluates the observation age between snapshots,
             // so a stalled audio worker cannot leave held meters looking live.
             TimelineView(.periodic(from: .now, by: 0.25)) { context in
@@ -388,9 +429,14 @@ struct MasterLufsRail: View {
                         .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 }
             }
-            HStack(spacing: 6) {
-                SegmentedMeter(level: model.masterLevel).frame(width: 12, height: 170)
-                SegmentedMeter(level: model.masterLevel).frame(width: 12, height: 170)
+            // L and R from the pgm-l / pgm-r bus taps (StudioFooterReadout.masterLevels,
+            // Windows ResolveMasterMeterReadout) — no longer the mono level twice.
+            HStack(spacing: 4) {
+                MeterTickScale().frame(width: 20, height: 170)
+                SegmentedMeter(level: model.masterLevelLeft).frame(width: 12, height: 170)
+                    .accessibilityLabel("Master left")
+                SegmentedMeter(level: model.masterLevelRight).frame(width: 12, height: 170)
+                    .accessibilityLabel("Master right")
             }
             Toggle("Monitor", isOn: Binding(
                 get: { model.monitorEnabled },
@@ -414,6 +460,93 @@ struct MasterLufsRail: View {
         .frame(width: 160)
         .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+/// The Windows AudioMeterScale major ticks beside a 0..100 meter.
+struct MeterTickScale: View {
+    var body: some View {
+        GeometryReader { geo in
+            ForEach(AudioMeterScale.majorTicksDbfs, id: \.self) { tick in
+                Text(tick == 0 ? "0" : String(Int(tick)))
+                    .font(.plexMono(7)).foregroundStyle(Studio.textDim)
+                    .position(x: geo.size.width / 2,
+                              y: geo.size.height * (1 - CGFloat(AudioMeterScale.toLevel(tick + 0.0001)) / 100))
+            }
+        }
+    }
+}
+
+/// Compressor gain reduction, 0..24 dB, filled from the left.
+struct GainReductionBar: View {
+    let level: Int
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Studio.surfaceRaised)
+                Rectangle().fill(Studio.amber).frame(width: geo.size.width * CGFloat(level) / 100)
+            }
+        }
+    }
+}
+
+/// SETUP guide meters (Windows AudioPage.xaml:349-380, MasteringGuideMeter):
+/// integrated loudness against the target, true peak against the ceiling.
+/// Measured post-master values only; no evidence reads a dash.
+struct MasteringGuideMeters: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // #870: a stalled core or audio worker cannot leave held values
+            // looking live — the Windows MeterWarning words, re-evaluated on a clock.
+            TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                if let warning = model.meterWarning(now: context.date) {
+                    Text(warning).font(.grotesk(11, .medium)).foregroundStyle(Studio.amber)
+                }
+            }
+            meters
+        }
+    }
+
+    var meters: some View {
+        HStack(spacing: 16) {
+            meter(title: "INTEGRATED · POST-MASTER",
+                  value: model.integratedLufs, min: -36, max: 0,
+                  guide: model.mastering.targetLufs, warnAbove: false,
+                  label: MasterMeterReadout.integratedLabel(model.integratedLufs),
+                  guideLabel: MasterMeterReadout.targetLabel(model.mastering.targetLufs))
+            meter(title: "TRUE PEAK · POST-MASTER",
+                  value: model.truePeakDbfs, min: -24, max: 0,
+                  guide: model.mastering.ceilingDbfs, warnAbove: true,
+                  label: MasterMeterReadout.truePeakLabel(model.truePeakDbfs),
+                  guideLabel: MasterMeterReadout.ceilingLabel(model.mastering.ceilingDbfs))
+        }
+    }
+
+    func meter(title: String, value: Double, min: Double, max: Double, guide: Double,
+               warnAbove: Bool, label: String, guideLabel: String) -> some View {
+        let engaged = model.mastering.enabled
+        let fraction = MasterMeterReadout.guideFraction(value: value, min: min, max: max)
+        let guideFraction = MasterMeterReadout.guideFraction(value: guide, min: min, max: max)
+        let fill: Color = !engaged ? Studio.textDim
+            : (warnAbove && value > guide + 0.05) ? Studio.red : Studio.accent
+        return VStack(alignment: .leading, spacing: 4) {
+            MonoLabel(title, dim: !engaged)
+            Text(label).font(.grotesk(20, .semibold))
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Studio.surfaceRaised)
+                    Rectangle().fill(fill).frame(width: geo.size.width * fraction)
+                    Rectangle().fill(Studio.textPrimary.opacity(engaged ? 1 : 0.55))
+                        .frame(width: 2).offset(x: geo.size.width * guideFraction - 1)
+                }
+            }
+            .frame(height: 10)
+            Text(guideLabel).font(.plexMono(9)).foregroundStyle(Studio.secondary)
+        }
+        .frame(maxWidth: 300)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -455,55 +588,60 @@ struct AudioRoutingSurface: View {
         model.strips.map { strip in (strip.id, model.audioSourceLabel(strip.id)) }
     }
 
+    static let cellWidth: CGFloat = 58
+    static let sourceWidth: CGFloat = 150
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Every crosspoint carries a level. Click to route or select; "
-                 + "gain edits apply to the selected send.")
+                 + "gain edits apply to the selected send. ISO buses are metered routing taps; "
+                 + "ISO recordings take each guest's own audio.")
                 .font(.grotesk(12)).foregroundStyle(Studio.secondary)
             if !model.audioRouteControlNotice.isEmpty {
                 Text(model.audioRouteControlNotice)
                     .font(.grotesk(12)).foregroundStyle(Studio.amber)
             }
+            AudioBusStrip()
             if sources.isEmpty {
                 Text("Sources appear here once channels carry PCM.")
                     .font(.grotesk(12)).foregroundStyle(Studio.textDim)
             }
-            Grid(horizontalSpacing: 2, verticalSpacing: 2) {
-                GridRow {
-                    Color.clear.frame(width: 150, height: 14)
-                    ForEach(AppModel.routingBuses, id: \.self) { bus in
-                        MonoLabel(bus).frame(width: 62)
+            // Source column pinned; the bus columns scroll (15+ columns do not fit).
+            HStack(alignment: .top, spacing: 2) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Color.clear.frame(width: Self.sourceWidth, height: 28)
+                    ForEach(sources, id: \.id) { source in
+                        HStack(spacing: 4) {
+                            Text(source.label).font(.grotesk(12)).lineLimit(1)
+                            Spacer(minLength: 0)
+                            Button("Clear") { model.clearRoutes(source: source.id) }
+                                .buttonStyle(.plain).font(.plexMono(8)).foregroundStyle(Studio.textDim)
+                                .help("Unroute this source from every bus")
+                        }
+                        .frame(width: Self.sourceWidth - 6, height: 24, alignment: .leading)
+                        .padding(.leading, 6)
+                        .background(Rectangle().fill(Studio.surface))
                     }
                 }
-                ForEach(sources, id: \.id) { source in
-                    GridRow {
-                        Text(source.label).font(.grotesk(12)).lineLimit(1)
-                            .frame(width: 150, alignment: .leading)
-                            .padding(.vertical, 4).padding(.leading, 6)
-                            .background(Rectangle().fill(Studio.surface))
-                        ForEach(AppModel.routingBuses, id: \.self) { bus in
-                            let gain = model.sendGain(source: source.id, bus: bus)
-                            let selected = model.selectedSend?.source == source.id
-                                && model.selectedSend?.bus == bus
-                            Button {
-                                model.selectOrRouteSend(source: source.id, bus: bus)
-                            } label: {
-                                Text(gain.map { String(format: "%.1f", $0) } ?? "·")
-                                    .font(.plexMono(9, gain != nil ? .semibold : .regular))
-                                    .foregroundStyle(gain != nil ? Studio.accent
-                                                                 : Studio.secondary)
-                                    .frame(maxWidth: .infinity).frame(height: 24)
-                                    .background(Rectangle().fill(
-                                        gain != nil ? Studio.accent.opacity(0.16)
-                                                    : Studio.field))
-                                    .overlay(Rectangle().stroke(
-                                        selected ? Studio.textPrimary
-                                            : gain != nil ? Studio.accent.opacity(0.7)
-                                                          : Studio.border,
-                                        lineWidth: selected ? 2 : 1))
+                ScrollView(.horizontal) {
+                    Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                        GridRow {
+                            ForEach(model.buses) { bus in
+                                VStack(spacing: 0) {
+                                    MonoLabel(bus.label).lineLimit(1)
+                                    Text("\(model.routedCount(bus: bus.id))")
+                                        .font(.plexMono(8)).foregroundStyle(Studio.textDim)
+                                }
+                                .frame(width: Self.cellWidth, height: 28)
+                                .help("\(model.routedCount(bus: bus.id)) source(s) routed to \(bus.label)")
                             }
-                            .buttonStyle(.plain)
-                            .frame(width: 62)
+                        }
+                        ForEach(sources, id: \.id) { source in
+                            GridRow {
+                                ForEach(model.buses) { bus in
+                                    cell(source: source.id, bus: bus.id)
+                                }
+                            }
                         }
                     }
                 }
@@ -534,14 +672,116 @@ struct AudioRoutingSurface: View {
             }
         }
     }
+
+    func cell(source: String, bus: String) -> some View {
+        let gain = model.sendGain(source: source, bus: bus)
+        let selected = model.selectedSend?.source == source && model.selectedSend?.bus == bus
+        return Button {
+            model.selectOrRouteSend(source: source, bus: bus)
+        } label: {
+            Text(gain.map { String(format: "%.1f", $0) } ?? "·")
+                .font(.plexMono(9, gain != nil ? .semibold : .regular))
+                .foregroundStyle(gain != nil ? Studio.accent : Studio.secondary)
+                .frame(maxWidth: .infinity).frame(height: 24)
+                .background(Rectangle().fill(gain != nil ? Studio.accent.opacity(0.16) : Studio.field))
+                .overlay(Rectangle().stroke(
+                    selected ? Studio.textPrimary : gain != nil ? Studio.accent.opacity(0.7) : Studio.border,
+                    lineWidth: selected ? 2 : 1))
+        }
+        .buttonStyle(.plain)
+        .frame(width: Self.cellWidth)
+    }
+}
+
+/// One chip per bus (Windows AudioPage.xaml:846-906): label (editable for aux and
+/// custom buses), routed count, LISTEN, and for aux/custom buses the MASTER /
+/// MON / STREAM sends with their shared gain and a remove button; "+ Bus" adds a
+/// custom bus.
+struct AudioBusStrip: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(model.buses) { bus in chip(bus) }
+                    Button("+ Bus") { model.addCustomBus() }
+                        .buttonStyle(GhostButtonStyle())
+                        .help("Add a custom bus")
+                }
+            }
+            Text("LISTEN plays one bus on the monitor output while Monitor is on.")
+                .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+        }
+    }
+
+    func chip(_ bus: AudioBus) -> some View {
+        let listening = model.listenBusId == bus.id
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                if bus.isRemovable {
+                    TextField("Bus", text: Binding(get: { bus.label },
+                                                   set: { model.renameBus(bus.id, to: $0) }))
+                        .textFieldStyle(.plain).font(.plexMono(9, .semibold)).frame(width: 64)
+                } else {
+                    MonoLabel(bus.label)
+                }
+                Text("\(model.routedCount(bus: bus.id))").font(.plexMono(8)).foregroundStyle(Studio.textDim)
+                Button("LISTEN") { model.setListening(bus.id, on: !listening) }
+                    .buttonStyle(.plain).font(.plexMono(8, .semibold))
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(listening ? Studio.amber : Studio.surface))
+                    .foregroundStyle(listening ? Color.black : Studio.secondary)
+                    .accessibilityLabel("Listen to \(bus.label)")
+            }
+            if bus.isRemovable {
+                HStack(spacing: 3) {
+                    Text("→").font(.plexMono(9)).foregroundStyle(Studio.textDim)
+                    sendToggle(bus, "master", "MASTER", bus.sendsToMaster)
+                    sendToggle(bus, "mon", "MON", bus.sendsToMonitor)
+                    sendToggle(bus, "stream", "STREAM", bus.sendsToStream)
+                    Button("×") { model.removeBus(bus.id) }
+                        .buttonStyle(.plain).font(.plexMono(10)).foregroundStyle(Studio.red)
+                        .accessibilityLabel("Remove \(bus.label)")
+                }
+                HStack(spacing: 4) {
+                    Slider(value: Binding(get: { bus.outputGainDb },
+                                          set: { model.setBusOutputGain(bus.id, gainDb: $0) }), in: -60...10)
+                        .frame(width: 110)
+                    Text(String(format: "%.1f dB", bus.outputGainDb)).font(.plexMono(8)).foregroundStyle(Studio.secondary)
+                }
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(listening ? Studio.amber : Studio.border, lineWidth: 1))
+    }
+
+    func sendToggle(_ bus: AudioBus, _ target: String, _ title: String, _ on: Bool) -> some View {
+        Button(title) { model.setBusSend(bus.id, target: target, enabled: !on) }
+            .buttonStyle(.plain).font(.plexMono(8, .semibold))
+            .padding(.horizontal, 3).padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 3).fill(on ? Studio.accent.opacity(0.25) : Studio.surface))
+            .foregroundStyle(on ? Studio.accent : Studio.textDim)
+            .accessibilityLabel("\(bus.label) sends to \(title)")
+    }
 }
 
 // Master-bus mastering rack. Stages render in DSP order; the engage opacity
 // mirrors the exact neutral-bypass condition (honesty rule: dim == a no-op).
+// A3: COMPARE A/B, Starting point, Reset stage and MY PRESETS rows follow the
+// Windows rack (W/Views/AudioPage.xaml:199-330); ranges follow its sliders.
 struct MasteringRack: View {
     @EnvironmentObject var model: AppModel
+    @State private var presetName = ""
+    @State private var selectedPresetId: String?
 
     var params: MasteringParams { model.mastering }
+
+    func bind(_ keyPath: WritableKeyPath<MasteringParams, Double>) -> Binding<Double> {
+        Binding(get: { model.mastering[keyPath: keyPath] },
+                set: { v in model.editMastering { $0[keyPath: keyPath] = v } })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -553,6 +793,7 @@ struct MasteringRack: View {
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .labelsHidden()
+                    .accessibilityLabel("Master in")
                 Text(params.enabled ? "MASTER IN" : "BYPASS")
                     .font(.plexMono(9, .semibold))
                     .foregroundStyle(params.enabled ? Studio.accent : Studio.textDim)
@@ -562,65 +803,128 @@ struct MasteringRack: View {
                         .font(.plexMono(10)).foregroundStyle(Studio.secondary)
                 }
             }
+            compareRow
+            presetsRow
+            if !model.masteringStatus.isEmpty {
+                Text(model.masteringStatus).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+            }
             HStack(alignment: .top, spacing: 8) {
-                stage("INPUT", engaged: abs(params.inputGainDb) > 0.05) {
-                    knob("Gain", value: Binding(
-                        get: { params.inputGainDb },
-                        set: { v in model.editMastering { $0.inputGainDb = v } }),
-                        in: -12...12, unit: "dB")
+                stage("01 INPUT", engaged: abs(params.inputGainDb) > 0.05) {
+                    knob("Gain", value: bind(\.inputGainDb), in: -12...12, unit: "dB")
                 }
-                stage("FILTERS", engaged: params.highPassHz > 20) {
-                    knob("Low cut", value: Binding(
-                        get: { params.highPassHz },
-                        set: { v in model.editMastering { $0.highPassHz = v } }),
-                        in: 0...200, unit: "Hz")
+                // The core runs high-pass when > 0 and low-pass when > 0
+                // (AudioMastering.h:421-424): the light follows the value SENT.
+                stage("02 FILTER", engaged: params.highPassHz > 0 || params.lowPassHz > 0) {
+                    knob("Low cut", value: bind(\.highPassHz), in: 0...300, unit: "Hz")
+                    knob("High cut", value: bind(\.lowPassHz), in: 0...20000, unit: "Hz")
                 }
-                stage("TONE", engaged: abs(params.lowShelfDb) > 0.05
+                stage("03 TONE", engaged: abs(params.lowShelfDb) > 0.05
                       || abs(params.presenceDb) > 0.05 || abs(params.highShelfDb) > 0.05) {
-                    knob("Low", value: Binding(
-                        get: { params.lowShelfDb },
-                        set: { v in model.editMastering { $0.lowShelfDb = v } }),
-                        in: -6...6, unit: "dB")
-                    knob("Presence", value: Binding(
-                        get: { params.presenceDb },
-                        set: { v in model.editMastering { $0.presenceDb = v } }),
-                        in: -6...6, unit: "dB")
-                    knob("Air", value: Binding(
-                        get: { params.highShelfDb },
-                        set: { v in model.editMastering { $0.highShelfDb = v } }),
-                        in: -6...6, unit: "dB")
+                    knob("Low", value: bind(\.lowShelfDb), in: -12...12, unit: "dB")
+                    knob("Presence", value: bind(\.presenceDb), in: -12...12, unit: "dB")
+                    knob("Air", value: bind(\.highShelfDb), in: -12...12, unit: "dB")
                 }
-                stage("RIDE", engaged: params.maxRideDb > 0.05) {
-                    knob("Target", value: Binding(
-                        get: { params.targetLufs },
-                        set: { v in model.editMastering { $0.targetLufs = v } }),
-                        in: -24...(-9), unit: "LUFS")
-                    knob("Max ride", value: Binding(
-                        get: { params.maxRideDb },
-                        set: { v in model.editMastering { $0.maxRideDb = v } }),
-                        in: 0...12, unit: "dB")
+                stage("04 RIDE", engaged: params.maxRideDb > 0.05) {
+                    knob("Target", value: bind(\.targetLufs), in: -24...(-9), unit: "LUFS")
+                    knob("Max ride", value: bind(\.maxRideDb), in: 0...12, unit: "dB")
                 }
-                stage("GLUE", engaged: params.glueAmount > 0.005) {
-                    knob("Amount", value: Binding(
-                        get: { params.glueAmount },
-                        set: { v in model.editMastering { $0.glueAmount = v } }),
-                        in: 0...1, unit: "")
+                stage("05 GLUE", engaged: params.glueAmount > 0.005) {
+                    knob("Amount", value: bind(\.glueAmount), in: 0...1, unit: "")
+                    knob("Ratio", value: bind(\.glueRatio), in: 1...10, unit: ":1")
+                    knob("Attack", value: bind(\.glueAttackMs), in: 1...200, unit: "ms")
+                    knob("Release", value: bind(\.glueReleaseMs), in: 20...1000, unit: "ms")
+                    knob("Makeup", value: bind(\.glueMakeupDb), in: -6...6, unit: "dB")
+                    Toggle("Multiband", isOn: Binding(
+                        get: { params.glueMultiband },
+                        set: { v in model.editMastering { $0.glueMultiband = v } }))
+                        .toggleStyle(.switch).controlSize(.mini).font(.plexMono(9))
+                    if params.glueMultiband {
+                        knob("Low band", value: bind(\.glueBandLowDb), in: -6...6, unit: "dB")
+                        knob("Mid band", value: bind(\.glueBandMidDb), in: -6...6, unit: "dB")
+                        knob("High band", value: bind(\.glueBandHighDb), in: -6...6, unit: "dB")
+                    }
                 }
-                stage("WIDTH", engaged: abs(params.stereoWidth - 1) > 0.005) {
-                    knob("Width", value: Binding(
-                        get: { params.stereoWidth },
-                        set: { v in model.editMastering { $0.stereoWidth = v } }),
-                        in: 0...2, unit: "×")
+                stage("06 WIDTH", engaged: abs(params.stereoWidth - 1) > 0.005) {
+                    knob("Width", value: bind(\.stereoWidth), in: 0...2, unit: "×")
                 }
-                stage("CEILING", engaged: true) {
-                    knob("True peak", value: Binding(
-                        get: { params.ceilingDbfs },
-                        set: { v in model.editMastering { $0.ceilingDbfs = v } }),
-                        in: -6...(-0.1), unit: "dBFS")
+                stage("07 CEILING", engaged: params.limiterEnabled) {
+                    knob("True peak", value: bind(\.ceilingDbfs), in: -6...(-0.5), unit: "dBFS")
+                    Toggle("Master protection", isOn: Binding(
+                        get: { params.limiterEnabled },
+                        set: { v in model.editMastering { $0.limiterEnabled = v } }))
+                        .toggleStyle(.switch).controlSize(.mini).font(.plexMono(9))
+                    Text(params.limiterEnabled ? "In" : "Bypass")
+                        .font(.plexMono(9)).foregroundStyle(params.limiterEnabled ? Studio.accent : Studio.amber)
                 }
             }
             .opacity(params.enabled ? 1 : 0.5)
             .disabled(!params.enabled)
+        }
+    }
+
+    var compareRow: some View {
+        HStack(spacing: 8) {
+            MonoLabel("Compare")
+            ForEach(["A", "B"], id: \.self) { slot in
+                Button(slot) { model.selectMasteringCompareSlot(slot) }
+                    .buttonStyle(.plain)
+                    .font(.plexMono(10, .semibold))
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 4)
+                        .fill(model.masteringCompareSlot == slot ? Studio.blue : Studio.surface))
+                    .foregroundStyle(model.masteringCompareSlot == slot ? Studio.onAccent : Studio.secondary)
+                    .help("Recall comparison \(slot); the current settings are retained in the other slot")
+                    .accessibilityLabel("Comparison \(slot)")
+            }
+            Menu("Starting point") {
+                Button("Streaming · -14 LUFS") { model.applyMasteringPreset("streaming") }
+                Button("Podcast · -16 LUFS") { model.applyMasteringPreset("podcast") }
+                Button("Broadcast · -23 LUFS") { model.applyMasteringPreset("broadcast") }
+                Divider()
+                Button("Neutral · protection only") { model.applyMasteringPreset("neutral") }
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            Menu("Reset stage") {
+                ForEach(Array(["Input", "Filter", "Tone", "Ride", "Glue", "Width", "Ceiling"].enumerated()),
+                        id: \.offset) { index, name in
+                    Button(String(format: "%02d · %@", index + 1, name)) {
+                        model.resetMasteringStage(name.lowercased())
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            Text("A/B slots and the whole rack persist across restarts.")
+                .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+        }
+    }
+
+    var presetsRow: some View {
+        HStack(spacing: 8) {
+            MonoLabel("My presets")
+            TextField("Preset name", text: $presetName)
+                .textFieldStyle(.roundedBorder).frame(width: 160)
+            Button("Save") {
+                if let saved = model.saveMasteringUserPreset(name: presetName) { selectedPresetId = saved.id }
+            }
+            .buttonStyle(GhostButtonStyle())
+            .help("Save the current rack as a named preset (same name = overwrite)")
+            Picker("Saved presets", selection: $selectedPresetId) {
+                Text("Saved presets").tag(String?.none)
+                ForEach(model.masteringUserPresets) { preset in
+                    Text(preset.name).tag(Optional(preset.id))
+                }
+            }
+            .labelsHidden().frame(width: 170)
+            let hasPresets = !model.masteringUserPresets.isEmpty
+            Button("Apply") { model.applyMasteringUserPreset(id: selectedPresetId) }
+                .buttonStyle(GhostButtonStyle()).disabled(!hasPresets)
+            Button("Rename") { model.renameMasteringUserPreset(id: selectedPresetId, to: presetName) }
+                .buttonStyle(GhostButtonStyle()).disabled(!hasPresets)
+                .help("Rename the selected preset to the name typed on the left")
+            Button("Delete") {
+                if model.deleteMasteringUserPreset(id: selectedPresetId) { selectedPresetId = nil }
+            }
+            .buttonStyle(GhostButtonStyle(tint: Studio.red)).disabled(!hasPresets)
         }
     }
 

@@ -760,6 +760,14 @@ TEST(OutputDestinationSupervisor, ATerminalFailureIsPublishedLoudlyAndNeverRetri
   EXPECT_FALSE(fixture.reportFor("ndi").gaveUp);
 }
 
+// mac streaming Phase 2 (P1): HLS is the same out-of-process FFmpeg sender as
+// RTMP/SRT (RtmpOutputSenderAdapter.cpp hlsProtocol) with the same interrupt().
+// It used to fall through to "unknown, assumed unprotected".
+TEST(OutputDestinationSupervisor, HlsIsAnOutOfProcessInterruptibleDestination) {
+  EXPECT_FALSE(destinationIsolationTraits("hls").inProcess);
+  EXPECT_TRUE(destinationIsolationTraits("hls").interruptible);
+}
+
 TEST(OutputDestinationSupervisor, PublishesWhichDestinationsAreActuallyIsolated) {
   // NDI's in-process risk is VISIBLE rather than an implementation detail, which
   // is the whole of what PR19 can honestly claim for it.

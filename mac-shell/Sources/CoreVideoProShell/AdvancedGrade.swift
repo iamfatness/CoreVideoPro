@@ -72,9 +72,9 @@ struct AdvancedGradeDocument: Codable, Equatable {
     static let maxCubeTextBytes = 1_500_000
     static let maxTransportBytes = 2_000_000
 
-    /// C# Validate, in its order and with its messages. D8: a cube's text must be present and
-    /// match its SHA-256 within the 1.5 MB cap; full .cube parsing arrives with G3 (the core
-    /// still refuses a malformed cube at register-grade-document).
+    /// C# Validate, in its order and with its messages. A cube's text must be present, parse
+    /// (CubeLutParser, G3; Phase 1's D8 checked only the hash) and match its SHA-256, within the
+    /// 1.5 MB cap.
     func validate() throws {
         func fail(_ message: String) -> GradeValidationError { GradeValidationError(message: message) }
         func range(_ value: Double, _ lo: Double, _ hi: Double) throws {
@@ -98,6 +98,7 @@ struct AdvancedGradeDocument: Codable, Equatable {
             try range(op.gamma, 0.1, 4); try range(op.gain, 0, 4)
             if op.kind == "cube" {
                 guard !op.cubeText.isEmpty else { throw fail("LUT content is required.") }
+                _ = try CubeLutParser.parse(op.cubeText)      // G3: full parse, before the hash (C# order)
                 guard op.cubeSha256 == GradeDocumentRef.sha256Hex(op.cubeText) else {
                     throw fail("LUT content does not match its stored hash.")
                 }

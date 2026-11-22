@@ -8,7 +8,9 @@
 
 #include <IOSurface/IOSurface.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -25,6 +27,7 @@
 #include "compositor/CompositorShaderParams.h"
 #include "modules/Interfaces.h"
 #include "core/ProgramBlackout.h"
+#include "core/SourceSheetPlan.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"
 
@@ -387,7 +390,17 @@ TEST(MetalCompositor, OverlayRastersNonUniformBand) {
   overlay.overlay.keyProgress = 1.f;
   plan.layers.push_back(overlay);
 
-  const auto gpu = compositor->render(plan, {});
+  // G1: the overlay raster prepares off the render tick, so the first frames
+  // legitimately draw the band + accent fallback. Sample once it is ready.
+  ProgramFrame gpu;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  do {
+    gpu = compositor->render(plan, {});
+    const bool preparing = std::find(gpu.warnings.begin(), gpu.warnings.end(), "graphics-preparing") !=
+                           gpu.warnings.end();
+    if (!preparing) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (std::chrono::steady_clock::now() < deadline);
   // The overlay band must contain more than two distinct colors (background +
   // band + rastered text pixels), proving the raster composited.
   std::set<std::array<int, 4>> colors;
@@ -592,6 +605,49 @@ TEST(MetalCompositor, PreviewPassIsIndependentOfProgramAndMultiview) {
   EXPECT_NE(program.sharedTexture.iosurfaceId, multiview.iosurfaceId);
 }
 
+// Sources Phase 2 (S6): the source sheet. Two sources in slots 0 and 6 land in cells 0 and 6
+// of a 3200x720 surface of its own; every other cell stays clear. The pass is not waited, so
+// the test follows it with a waited Preview pass: one command queue runs its buffers in order,
+// so the sheet is complete when the Preview's wait returns.
+TEST(MetalCompositor, SourceSheetPutsEachSourceInItsSlotCell) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto plan = ::corevideo::core::buildSourceSheetRenderPlan(
+      {{6, ::corevideo::core::resolveMultiviewFeed("participant-video", "zoom:b", "b", "", "")},
+       {0, ::corevideo::core::resolveMultiviewFeed("participant-video", "zoom:a", "a", "", "")}});
+  for (auto& layer : plan.layers) layer.sourceHealth = "producing";
+  const auto a = bgraFrame("a", 320, 180, 10, 200, 60);
+  const auto b = bgraFrame("b", 320, 180, 220, 30, 90);
+  const auto sheet = compositor->renderSourceSheet(plan, {a, b});
+  ASSERT_NE(sheet.iosurfaceId, 0u);
+  EXPECT_EQ(sheet.width, 3200);
+  EXPECT_EQ(sheet.height, 720);
+  CompositorRenderPlan drain;
+  drain.renderPlanId = "plan-drain";
+  const auto preview = compositor->renderPreview(drain, {});
+  EXPECT_NE(sheet.iosurfaceId, preview.iosurfaceId) << "the sheet owns its own surface";
+
+  auto cellCentre = [&](int slot, bool& ok) {
+    return iosurfacePixel(sheet.iosurfaceId, (static_cast<float>(slot % 5) + 0.5f) / 5.f,
+                          (static_cast<float>(slot / 5) + 0.5f) / 2.f, ok);
+  };
+  bool ok = false;
+  const auto cell0 = cellCentre(0, ok);
+  ASSERT_TRUE(ok);
+  EXPECT_NEAR(cell0[0], 10, 3);
+  EXPECT_NEAR(cell0[1], 200, 3);
+  EXPECT_NEAR(cell0[2], 60, 3);
+  const auto cell6 = cellCentre(6, ok);
+  EXPECT_NEAR(cell6[0], 220, 3);
+  EXPECT_NEAR(cell6[1], 30, 3);
+  EXPECT_NEAR(cell6[2], 90, 3);
+  for (int slot : {1, 2, 3, 4, 5, 7, 8, 9}) {
+    const auto empty = cellCentre(slot, ok);
+    const bool isA = std::abs(empty[0] - 10) < 4 && std::abs(empty[1] - 200) < 4;
+    const bool isB = std::abs(empty[0] - 220) < 4 && std::abs(empty[1] - 30) < 4;
+    EXPECT_FALSE(isA || isB) << "slot " << slot << " shows a source it does not hold";
+  }
+}
+
 TEST(MetalCompositor, SharedTextureJsonCarriesIOSurfaceId) {
   MAKE_COMPOSITOR_OR_SKIP(compositor);
   CompositorRenderPlan plan;
@@ -683,6 +739,331 @@ TEST(MetalCompositor, SourcelessFillColorLayerPaintsItsParsedColour) {
   EXPECT_NEAR(pixel[2], 0x33, 2);  // R
   EXPECT_NEAR(pixel[1], 0x66, 2);  // G
   EXPECT_NEAR(pixel[0], 0xCC, 2);  // B
+}
+
+// ── Overlay raster off the render tick (Metal graphics backend G1) ──────────
+//
+// The overlay raster prepares on a worker; the render thread only adopts a
+// published texture. The prepare hook (CompositorFaultInjection.h) counts
+// every preparation and can BLOCK the worker (with a hard 1.5 s timeout, so a
+// broken test cannot wedge the binary). Canvas 320x180 makes the 320x180
+// preview readback pixel-exact, so every pixel assertion below is in canvas
+// pixels computed from computeOverlayTileLayout's fractions.
+
+std::atomic<int> gOverlayPrepares{0};
+std::atomic<bool> gOverlayPrepareBlocked{false};
+std::mutex gOverlayPrepareMutex;
+std::condition_variable gOverlayPrepareCv;
+
+void overlayPrepareHook() {
+  gOverlayPrepares.fetch_add(1);
+  std::unique_lock<std::mutex> lock(gOverlayPrepareMutex);
+  gOverlayPrepareCv.wait_for(lock, std::chrono::milliseconds(1500),
+                             [] { return !gOverlayPrepareBlocked.load(); });
+}
+
+// Declare AFTER the compositor: destroyed first, so a blocked worker is
+// released before the compositor joins it.
+struct OverlayPrepareHookScope {
+  explicit OverlayPrepareHookScope(bool block) {
+    gOverlayPrepares = 0;
+    gOverlayPrepareBlocked = block;
+    corevideo::compositor::setOverlayRasterPrepareHookForTest(&overlayPrepareHook);
+  }
+  void block() { gOverlayPrepareBlocked = true; }
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(gOverlayPrepareMutex);
+      gOverlayPrepareBlocked = false;
+    }
+    gOverlayPrepareCv.notify_all();
+  }
+  ~OverlayPrepareHookScope() {
+    release();
+    corevideo::compositor::setOverlayRasterPrepareHookForTest(nullptr);
+  }
+};
+
+bool hasWarning(const ProgramFrame& frame, const std::string& warning) {
+  return std::find(frame.warnings.begin(), frame.warnings.end(), warning) != frame.warnings.end();
+}
+
+std::array<int, 4> canvasPixel(const ProgramFramePreviewPixels& preview, int x, int y) {
+  const size_t offset = (static_cast<size_t>(y) * preview.width + x) * 4u;
+  return {preview.bgra[offset + 0], preview.bgra[offset + 1], preview.bgra[offset + 2],
+          preview.bgra[offset + 3]};
+}
+
+bool bright(const std::array<int, 4>& p) { return p[0] > 200 && p[1] > 200 && p[2] > 200; }
+
+CompositorRenderPlanLayer overlayLayer(const std::string& id, CompositorLayerRect rect,
+                                       const std::string& name, const std::string& title) {
+  CompositorRenderPlanLayer layer;
+  layer.layerId = "overlay:" + id;
+  layer.kind = "overlay-lower-third";
+  layer.rect = rect;
+  layer.order = 10;
+  layer.hasOverlayContent = true;
+  layer.overlay.text = name;
+  layer.overlay.title = title;
+  layer.overlay.brandColor = "#ff0000";
+  layer.overlay.brandBackgroundColor = "#0c1118";
+  layer.overlay.keyPhase = "on-air";
+  layer.overlay.keyProgress = 1.f;
+  return layer;
+}
+
+CompositorRenderPlan overlayPlan(const std::string& id) {
+  CompositorRenderPlan plan;
+  plan.renderPlanId = id;
+  plan.width = 320;
+  plan.height = 180;
+  auto bg = solidLayer("bg", 0.f, 0.f, 1.f, 1.f);
+  bg.order = 0;
+  plan.layers.push_back(bg);
+  return plan;
+}
+
+ProgramFrame renderUntilOverlayReady(ICompositor& compositor, const CompositorRenderPlan& plan,
+                                     const std::vector<VideoFrame>& frames) {
+  ProgramFrame frame;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  do {
+    frame = compositor.render(plan, frames);
+    if (!hasWarning(frame, "graphics-preparing")) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (std::chrono::steady_clock::now() < deadline);
+  return frame;
+}
+
+// Name-line rect in canvas pixels for an overlay at canvas rect (x0, y0, w, h)
+// (OverlayTileRaster.cpp lower-third fractions: x 0.06..0.88, y 0.18..0.52).
+struct PixelRect { int x0, y0, x1, y1; };
+PixelRect nameLine(int x0, int y0, int w, int h) {
+  return {x0 + int(w * 0.06f), y0 + int(h * 0.18f), x0 + int(w * 0.88f), y0 + int(h * 0.52f)};
+}
+int brightIn(const ProgramFramePreviewPixels& preview, PixelRect r) {
+  int count = 0;
+  for (int y = r.y0; y < r.y1; ++y)
+    for (int x = r.x0; x < r.x1; ++x)
+      if (bright(canvasPixel(preview, x, y))) ++count;
+  return count;
+}
+
+TEST(MetalCompositor, ABlockedOverlayPreparationNeverStallsTheRenderTick) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  OverlayPrepareHookScope hook(/*block=*/true);
+  auto plan = overlayPlan("plan-overlay-blocked");
+  plan.layers.push_back(overlayLayer("lt", {0.f, 0.5f, 1.f, 0.5f}, "ADA OTIENO", "AETHELRED LABS"));
+  const std::vector<VideoFrame> frames{bgraFrame("bg", 64, 36, 0, 0, 0)};
+  const auto name = nameLine(0, 90, 320, 90);
+  double worstMs = 0;
+  for (int i = 0; i < 20; ++i) {
+    const auto start = std::chrono::steady_clock::now();
+    const auto frame = compositor->render(plan, frames);
+    worstMs = std::max(worstMs, std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - start).count());
+    ASSERT_TRUE(hasWarning(frame, "graphics-preparing")) << "tick " << i;
+    EXPECT_EQ(frame.health, "degraded");
+    // Fallback while preparing: the brand accent bar (left 4%), and no text.
+    const auto bar = canvasPixel(frame.preview, 3, 135);
+    EXPECT_GT(bar[2], 200);
+    EXPECT_LT(bar[1], 40);
+    EXPECT_EQ(brightIn(frame.preview, name), 0) << "tick " << i << " drew text it cannot have yet";
+  }
+  std::fprintf(stderr, "[metal-test] blocked overlay preparation: worst tick %.3f ms\n", worstMs);
+  EXPECT_LT(worstMs, 250.0) << "a render tick waited for the overlay raster";
+  EXPECT_GE(gOverlayPrepares.load(), 1) << "the preparation never started";
+
+  hook.release();
+  const auto ready = renderUntilOverlayReady(*compositor, plan, frames);
+  EXPECT_FALSE(hasWarning(ready, "graphics-preparing"));
+  EXPECT_EQ(ready.health, "live");
+  EXPECT_GE(brightIn(ready.preview, name), 30) << "the prepared text never reached Program";
+}
+
+TEST(MetalCompositor, TwoOverlaysAndTwoPassesRasterOncePerContent) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  OverlayPrepareHookScope hook(/*block=*/false);
+  auto plan = overlayPlan("plan-two-overlays");
+  plan.layers.push_back(overlayLayer("a", {0.f, 0.5f, 0.5f, 0.25f}, "FIRST NAME", "FIRST TITLE"));
+  plan.layers.push_back(overlayLayer("b", {0.5f, 0.75f, 0.5f, 0.25f}, "SECOND NAME", "SECOND TITLE"));
+  const std::vector<VideoFrame> frames{bgraFrame("bg", 64, 36, 0, 0, 0)};
+  renderUntilOverlayReady(*compositor, plan, frames);
+  for (int tick = 0; tick < 30; ++tick) {
+    const auto frame = compositor->render(plan, frames);
+    EXPECT_FALSE(hasWarning(frame, "graphics-preparing")) << "tick " << tick;
+    compositor->renderPreview(plan, frames);  // same canvas size: same keys
+  }
+  EXPECT_EQ(gOverlayPrepares.load(), 2) << "one preparation per distinct content, never per pass or frame";
+}
+
+TEST(MetalCompositor, LegacyLowerThirdTextLandsInsideItsBand) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto plan = overlayPlan("plan-lt-pixels");
+  plan.layers.push_back(overlayLayer("lt", {0.f, 0.5f, 1.f, 0.5f}, "ADA OTIENO", "AETHELRED LABS"));
+  const std::vector<VideoFrame> frames{bgraFrame("bg", 64, 36, 0, 0, 0)};
+  const auto frame = renderUntilOverlayReady(*compositor, plan, frames);
+  ASSERT_FALSE(hasWarning(frame, "graphics-preparing"));
+  const auto name = nameLine(0, 90, 320, 90);
+  EXPECT_GE(brightIn(frame.preview, name), 30);
+  // White text exists only on the name line (the title is the red accent
+  // colour); one pixel of antialiasing bleed allowed.
+  int stray = 0;
+  for (int y = 0; y < 180; ++y)
+    for (int x = 0; x < 320; ++x) {
+      const bool inName = x >= name.x0 - 1 && x <= name.x1 && y >= name.y0 - 1 && y <= name.y1;
+      if (!inName && bright(canvasPixel(frame.preview, x, y))) ++stray;
+    }
+  EXPECT_EQ(stray, 0);
+  // The band (brand background #0c1118) fills band pixels away from text.
+  const auto band = canvasPixel(frame.preview, 300, 95);
+  EXPECT_NEAR(band[0], 0x18, 3);
+  EXPECT_NEAR(band[1], 0x11, 3);
+  EXPECT_NEAR(band[2], 0x0c, 3);
+  // Above the overlay the black source is untouched.
+  const auto above = canvasPixel(frame.preview, 160, 40);
+  EXPECT_LE(above[0] + above[1] + above[2], 6);
+}
+
+// #1073 parity: a Tiles name line (holdLastRaster) keeps drawing its previous
+// raster, scaled to the new band, while the resized raster prepares. Never
+// the bare accent bar. The un-held overlay beside it is the control: under
+// the same resize it shows the fallback and no text.
+TEST(MetalCompositor, AHeldNameLineKeepsItsTextWhileTheResizedRasterPrepares) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  OverlayPrepareHookScope hook(/*block=*/false);
+  auto plan = overlayPlan("plan-held-name");
+  auto held = overlayLayer("held", {0.f, 0.f, 1.f, 0.4f}, "HELD NAME", "");
+  held.overlay.holdLastRaster = true;
+  plan.layers.push_back(held);
+  plan.layers.push_back(overlayLayer("plain", {0.f, 0.5f, 1.f, 0.4f}, "PLAIN NAME", ""));
+  const std::vector<VideoFrame> frames{bgraFrame("bg", 64, 36, 0, 0, 0)};
+  const auto ready = renderUntilOverlayReady(*compositor, plan, frames);
+  ASSERT_FALSE(hasWarning(ready, "graphics-preparing"));
+  ASSERT_GE(brightIn(ready.preview, nameLine(0, 0, 320, 72)), 20);
+  ASSERT_GE(brightIn(ready.preview, nameLine(0, 90, 320, 72)), 20);
+
+  hook.block();
+  plan.layers[1].rect = {0.f, 0.f, 1.f, 0.45f};   // held: 72 -> 81 px tall
+  plan.layers[2].rect = {0.f, 0.5f, 1.f, 0.45f};  // plain: same resize
+  for (int tick = 0; tick < 5; ++tick) {
+    const auto frame = compositor->render(plan, frames);
+    ASSERT_TRUE(hasWarning(frame, "graphics-preparing")) << "tick " << tick;
+    EXPECT_GE(brightIn(frame.preview, nameLine(0, 0, 320, 81)), 20)
+        << "tick " << tick << ": the held name line lost its text while resizing";
+    EXPECT_EQ(brightIn(frame.preview, nameLine(0, 90, 320, 81)), 0)
+        << "tick " << tick << ": the un-held control cannot have text yet";
+    const auto bar = canvasPixel(frame.preview, 3, 120);
+    EXPECT_GT(bar[2], 200) << "the un-held control draws the accent-bar fallback";
+  }
+}
+
+// ── Slate name label (#535 slice 4a, the former TODO(4a-metal-text)) ───────
+//
+// Judged on the FULL-resolution Program readback (programFullBgra, which the
+// Metal tap publishes one tick late), at 1280x720, so the label's glyphs are
+// real pixels rather than a downscaled smear. Geometry is the D3D11
+// drawFailedSlateName rule, computed here from its constants: height 8% of
+// the layer, width min(40% of the layer, 0.55 * labelPx * chars + labelPx).
+ProgramFramePreviewPixels fullResAfterReady(ICompositor& compositor, CompositorRenderPlan plan,
+                                            const std::vector<VideoFrame>& frames) {
+  plan.fullProgramReadback = true;
+  renderUntilOverlayReady(compositor, plan, frames);
+  ProgramFramePreviewPixels latest;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  int harvested = 0;
+  while (harvested < 2 && std::chrono::steady_clock::now() < deadline) {
+    auto frame = compositor.render(plan, frames);
+    if (!frame.programFullBgra.bgra.empty()) {
+      latest = std::move(frame.programFullBgra);
+      ++harvested;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return latest;
+}
+
+struct SlateLabelCheck {
+  int brightInLabel = 0;
+  int strayOutsideLabel = 0;
+  int leftmostBright = 1 << 30;
+};
+
+SlateLabelCheck checkSlateLabel(const ProgramFramePreviewPixels& px, int labelW, int labelY0) {
+  SlateLabelCheck out;
+  const int slateB = int(corevideo::compositor::kFailedSlateRgba & 0xff);
+  const int slateG = int((corevideo::compositor::kFailedSlateRgba >> 8) & 0xff);
+  const int slateR = int((corevideo::compositor::kFailedSlateRgba >> 16) & 0xff);
+  for (int y = 0; y < px.height; ++y)
+    for (int x = 0; x < px.width; ++x) {
+      const auto p = canvasPixel(px, x, y);
+      const bool inLabel = x < labelW && y >= labelY0;
+      if (inLabel) {
+        if (bright(p)) { ++out.brightInLabel; out.leftmostBright = std::min(out.leftmostBright, x); }
+      } else if (std::abs(p[0] - slateB) > 2 || std::abs(p[1] - slateG) > 2 || std::abs(p[2] - slateR) > 2) {
+        ++out.strayOutsideLabel;
+      }
+    }
+  return out;
+}
+
+TEST(MetalCompositor, AFailedSlateCarriesItsNameBottomLeftAndNothingElse) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  const int W = 1280, H = 720;
+  const float labelPx = 0.08f * H;                                    // 57.6
+  const int labelW = int(std::min(0.4f * W, 0.55f * labelPx * 5 + labelPx)) + 1;  // "CAM 2": ~216
+  const int labelY0 = int(H - labelPx);
+  for (const char* health : {"failed", "stalled"}) {
+    CompositorRenderPlan plan;
+    plan.renderPlanId = std::string("plan-slate-") + health;
+    plan.width = W;
+    plan.height = H;
+    auto layer = solidLayer("cam2", 0.f, 0.f, 1.f, 1.f, health);
+    layer.sourceDisplayName = "CAM 2";
+    plan.layers.push_back(layer);
+    const auto px = fullResAfterReady(*compositor, plan, {});
+    ASSERT_EQ(px.width, W) << health;
+    ASSERT_EQ(px.height, H) << health;
+    const auto check = checkSlateLabel(px, labelW, labelY0);
+    EXPECT_GE(check.brightInLabel, 20) << health << ": the slate's name label has no glyphs";
+    EXPECT_EQ(check.strayOutsideLabel, 0) << health << ": pixels outside the label differ from the slate";
+    // Text starts at the label tile's 6% text column (computeOverlayTileLayout),
+    // i.e. ~13 px for a ~216 px label; a label sized to the whole layer would
+    // start it at ~77 px.
+    EXPECT_LT(check.leftmostBright, int(0.06f * labelW + 0.5f * labelPx)) << health;
+  }
+  // Control: a live (warming) frameless layer carries no label.
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-slate-live";
+  plan.width = W;
+  plan.height = H;
+  auto layer = solidLayer("cam3", 0.f, 0.f, 1.f, 1.f, "live");
+  layer.sourceDisplayName = "CAM 3";
+  plan.layers.push_back(layer);
+  const auto px = fullResAfterReady(*compositor, plan, {});
+  ASSERT_EQ(px.width, W);
+  EXPECT_EQ(checkSlateLabel(px, labelW, labelY0).brightInLabel, 0) << "only failed/stalled slates are named";
+}
+
+TEST(MetalCompositor, AnAppearanceBandIsDrawnOnceNotTwice) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto plan = overlayPlan("plan-appearance-band");
+  auto lt = overlayLayer("lt", {0.f, 0.5f, 1.f, 0.5f}, "N", "");
+  lt.overlay.appearance.enabled = true;
+  lt.overlay.appearance.fontFamily = "Helvetica Neue";
+  lt.overlay.appearance.backgroundColor = "#000000";
+  lt.overlay.appearance.backgroundOpacity = 0.5;
+  lt.overlay.appearance.cornerRadius = 0;
+  lt.overlay.appearance.showLogo = false;
+  plan.layers.push_back(lt);
+  const std::vector<VideoFrame> frames{bgraFrame("bg", 64, 36, 255, 255, 255)};
+  const auto frame = renderUntilOverlayReady(*compositor, plan, frames);
+  ASSERT_FALSE(hasWarning(frame, "graphics-preparing"));
+  // One 50% black band over white: 127.5. A doubled band (quad + raster) is
+  // far darker.
+  const auto band = canvasPixel(frame.preview, 310, 176);
+  for (int c = 0; c < 3; ++c) EXPECT_NEAR(band[c], 128, 3) << "channel " << c;
 }
 
 #if COREVIDEO_WITH_MAC_VIRTUALCAM

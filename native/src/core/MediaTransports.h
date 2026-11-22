@@ -102,6 +102,13 @@ class MediaTransports final {
     int64_t videoQueued = 0, decoderRestarts = 0;
   };
 
+  // TEST SEAM. The millisecond clock every decoder worker reads its `nowMs`
+  // from (the Ended windows, the decoder clock, audio demand). Production
+  // leaves it unset: steady_clock. A test sets it BEFORE the first apply() so
+  // it can cross a multi-second window losslessly instead of sleeping through
+  // it on the wall clock. Thread creation orders this write before any read.
+  void setWorkerClockForTesting(std::function<int64_t()> nowMs) { workerClockForTesting_ = std::move(nowMs); }
+
   explicit MediaTransports(DecoderFactory factory, std::shared_ptr<modules::CpuSourcePreparation> preparation = {})
       : factory_(std::move(factory)), preparation_(std::move(preparation)), manager_([this] { manage(); }) {}
   ~MediaTransports() {
@@ -390,7 +397,7 @@ class MediaTransports final {
     const auto& selected = hold ? entry.video.hold() : entry.video.select(timestamp100ns);
     entry.wake = true;
     entry.changed.notify_all();
-    if (!selected.hasPixels()) return std::nullopt;
+    if (!selected.hasContent()) return std::nullopt;  // a GPU-only media frame is content (N4)
     if (selected.frameId != entry.lastPresentedFrameId) {
       entry.lastPresentedFrameId = selected.frameId;
       entry.presentedVideoFrames += 1;
@@ -640,7 +647,8 @@ class MediaTransports final {
       // When the decoder was first seen at EOS in this run of it (0 = not at EOS).
       int64_t decoderEndedSinceMs = 0;
       while (!entry->stop.load()) {
-        const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const int64_t nowMs = workerClockForTesting_ ? workerClockForTesting_()
+            : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         if (lastNewFrameMs == 0) lastNewFrameMs = nowMs;
         modules::MediaDecodeRequest request;
         bool restart = false, resume = false;
@@ -741,10 +749,32 @@ class MediaTransports final {
         { std::lock_guard<std::mutex> lock(entry->mutex);
           audioRoom = entry->audio.size() < 2; audioTarget = entry->audioNextTime + static_cast<int64_t>(entry->audio.size()) * 20;
         }
-        const bool audioPolled = playing && entry->wantsAudio.load() && audioRoom;
+        // AN AUDIO BED ENDED BY THE BACKSTOP IS STILL POLLED (review round
+        // 2026-11-22). A bed's only progress is its audio, so a stall past
+        // kEndedBackstopNoNewFrameMs (a NAS hiccup, a loaded box, a consumer
+        // that stopped pulling) ends it while its decoder has NOT reached EOS.
+        // Ended stops wanting audio, and a bed never has a new frame to take
+        // the recovery branch below, so before this it stayed Ended and silent
+        // until an operator Play restarted it from 0. Polling such a bed's
+        // audio lets delivered audio recover it exactly as a new picture
+        // recovers a video clip. A decoder that reports EOS is not polled, and
+        // a decoder with video (every MF/Windows decoder: mediaHasVideo()
+        // defaults to true) never takes this path.
+        const bool isAudioBed = prefetchDecoder && !prefetchDecoder->mediaHasVideo();
+        bool stalledBed = false;
+        if (isAudioBed && playing && !prefetchDecoder->mediaEnded()) {
+          std::lock_guard<std::mutex> lock(entry->mutex);
+          stalledBed = entry->state == MediaTransportState::Ended;
+        }
+        const bool audioPolled = playing && (entry->wantsAudio.load() || stalledBed) && audioRoom;
         auto audio = audioPolled ? decoder->pollMediaAudioFrames(request, audioTarget) : std::vector<modules::AudioFrame>{};
         // Asked for audio and got none: the decoder has nothing more to hand over (at EOS, its tail is out).
         const bool decoderAudioDry = audioPolled && audio.empty();
+        // AN AUDIO BED HAS ONE PICTURE FOR ITS WHOLE LIFE (N3). For a decoder
+        // that knows the asset has no video, delivered audio is the progress
+        // the no-new-frame backstop measures; otherwise a bed longer than the
+        // backstop would be ended, and silenced, while it was still playing.
+        if (!audio.empty() && isAudioBed) lastNewFrameMs = nowMs;
         auto warnings = decoder->warnings();
         // Read AFTER the poll that could have moved it: the decoder reaches
         // EOS inside prefetchMediaVideo/pollMediaFrames.
@@ -774,7 +804,7 @@ class MediaTransports final {
             // nothing and the only exit was an operator Play, which is
             // OpenLive — a frozen, silent clip on air whose recovery gesture
             // restarts it from the top.
-            if (entry->state == MediaTransportState::Ended && sawNewFrame) {
+            if (entry->state == MediaTransportState::Ended && (sawNewFrame || (stalledBed && !audio.empty()))) {
               entry->state = MediaTransportState::Live;
               entry->wantsAudio.store(true);
             } else if (playing && !request.loop && everProducedFrame &&
@@ -852,6 +882,7 @@ class MediaTransports final {
     }
   }
 
+  std::function<int64_t()> workerClockForTesting_;
   DecoderFactory factory_;
   std::shared_ptr<modules::CpuSourcePreparation> preparation_;
   mutable std::mutex mutex_;

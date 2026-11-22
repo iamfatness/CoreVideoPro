@@ -19,6 +19,7 @@ extension ShowInputSlot {
         switch kind {
         case "zoom": return "zoom:" + sourceId
         case "capture": return "capture:" + sourceId
+        case "media": return "media:" + sourceId   // Windows SlotSourceId (ShowInputRosterService.cs:318)
         default: return nil
         }
     }
@@ -63,7 +64,7 @@ extension AppModel {
         for record in saved.sorted(by: { $0.slotId < $1.slotId }) {
             // Capture only (plan D2): a Zoom record in an older file is skipped —
             // Zoom reuses user ids across meetings.
-            guard record.kind == "capture",
+            guard record.kind == "capture" || record.kind == "media",
                   !record.sourceId.isEmpty,
                   let index = slots.firstIndex(where: { $0.id == record.slotId }),
                   slots[index].kind == "unassigned" else { continue }

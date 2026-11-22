@@ -9,14 +9,17 @@ import Foundation
 
 enum SourceType: String, Equatable {
     case zoomGuest = "Zoom guest", camera = "Camera", captureCard = "Capture card", screen = "Screen"
-    case window = "Window", unassigned = "Unassigned"   // still / mediaClip arrive with S4
+    case window = "Window", still = "Still", mediaClip = "Media clip", unassigned = "Unassigned"
 
     /// Mirrors Windows InferCaptureDeviceKind (ShowInputRosterService.cs:96-117) for the Mac ids:
     /// "screen:" → screen, "window:" → window (SckScreenCaptureAdapter.mm:269,287),
     /// vendor blackmagic|aja (case-insensitive) → captureCard, otherwise camera.
-    static func of(kind: String, sourceId: String, vendor: String?) -> SourceType {
+    static func of(kind: String, sourceId: String, vendor: String?, media: [MediaAsset] = []) -> SourceType {
         switch kind {
         case "zoom": return .zoomGuest
+        case "media":
+            // A missing asset is still a media slot; it reads as a clip until the bin says otherwise.
+            return media.first { $0.id == sourceId }?.isStillImage == true ? .still : .mediaClip
         case "capture":
             if sourceId.hasPrefix("screen:") { return .screen }
             if sourceId.hasPrefix("window:") { return .window }
@@ -33,6 +36,7 @@ enum SourceType: String, Equatable {
         case .zoomGuest: return "Zoom"
         case .camera, .captureCard: return "Cameras"
         case .screen, .window: return "Screens"
+        case .still, .mediaClip: return "Media"
         case .unassigned: return "Unassigned"
         }
     }
@@ -44,6 +48,8 @@ enum SourceType: String, Equatable {
         case .captureCard: return "Capture card · "
         case .screen: return "Screen · "
         case .window: return "Window · "
+        case .still: return "Still · "
+        case .mediaClip: return "Media clip · "
         case .unassigned: return ""
         }
     }
@@ -62,7 +68,7 @@ enum SourcePickerCatalog {
     /// current source is absent, a first group carries one entry reading
     /// "Saved source unavailable — <name>" (ShowInputRosterService.cs:240-248): a missing saved
     /// source is named, never substituted.
-    static func groups(roster: [RosterParticipant], devices: [CaptureDeviceRow],
+    static func groups(roster: [RosterParticipant], devices: [CaptureDeviceRow], media: [MediaAsset] = [],
                        current: ShowInputSlot?) -> [(title: String, options: [SourcePickerOption])] {
         let zoom = roster.map {
             SourcePickerOption(sourceKey: "zoom:" + $0.id, kind: "zoom", sourceId: $0.id,
@@ -77,8 +83,18 @@ enum SourcePickerCatalog {
         let typed = devices.map(option)
         let cameras = typed.filter { $0.0.category == "Cameras" }.map(\.1)
         let screens = typed.filter { $0.0.category == "Screens" }.map(\.1)
+        // Every bin asset with a picture (Windows BuildSourceOptions :437-443); an audio-only
+        // file has nothing to show in a slot.
+        let pictures = media.filter {
+            !MediaBin.audioExtensions.contains(($0.filePath as NSString).pathExtension.lowercased())
+        }
+        let mediaOptions = pictures.map { asset -> SourcePickerOption in
+            let type: SourceType = asset.isStillImage ? .still : .mediaClip
+            return SourcePickerOption(sourceKey: "media:" + asset.id, kind: "media", sourceId: asset.id,
+                                      label: type.pickerPrefix + asset.name, unavailable: false)
+        }
         var groups: [(title: String, options: [SourcePickerOption])] = [
-            ("Zoom", zoom), ("Camera", cameras), ("Screen", screens),
+            ("Zoom", zoom), ("Camera", cameras), ("Screen", screens), ("Media", mediaOptions),
         ].filter { !$0.options.isEmpty }
         if let current, let key = current.sourceKey,
            !groups.contains(where: { $0.options.contains { $0.sourceKey == key } }) {

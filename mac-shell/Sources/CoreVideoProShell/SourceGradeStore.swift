@@ -238,6 +238,31 @@ final class SourceGradeStore: ObservableObject {
         }
     }
 
+    /// register-grade-document for a preview (G5): ask, upload when absent; returns the documentRef.
+    /// The same SHA-256-of-the-exact-text rule as an apply (MediaCoreSupervisor.GradeDocuments.cs:27-48).
+    func registerDocument(_ document: AdvancedGradeDocument) async throws -> String {
+        try document.validate()
+        let text = try document.canonicalJSON()
+        guard text.utf8.count <= AdvancedGradeDocument.maxTransportBytes else {
+            throw GradeValidationError(message: "Grade document exceeds its 2 MB transport budget.")
+        }
+        let ref = GradeDocumentRef.sha256Hex(text)
+        let asked = try await send(CoreCommands.registerGradeDocument(ref: ref, json: nil))
+        if asked["present"] as? Bool != true {
+            let uploaded = try await send(CoreCommands.registerGradeDocument(ref: ref, json: text))
+            guard uploaded["present"] as? Bool == true else { throw GradeValidationError(message: "Invalid grade document content.") }
+        }
+        return ref
+    }
+
+    /// Plan P7: a ready/held preview observation's epoch seeds the store when it holds none, which
+    /// saves the first query-source-grade (Windows learns the epoch only this way,
+    /// ColorGradeEditorViewModel.cs:117-125). The query and the D7 retry remain the authority.
+    func observePreviewEpoch(sourceId: String, epoch: UInt64) {
+        guard known[sourceId]?.epoch == nil else { return }
+        known[sourceId] = Known(epoch: epoch, revision: known[sourceId]?.revision ?? 0)
+    }
+
     private enum QueryResult { case present, absent, stale }
 
     /// query-source-grade; on present, the core's epoch and revision replace the store's.
@@ -426,6 +451,13 @@ final class SourceGradeStore: ObservableObject {
     }
 
     func isGraded(_ sourceId: String) -> Bool { sessions[sourceId] != nil }
+
+    // ── G7: per-person scope regions (an editor preference, never part of a grade) ──
+    func scopeRegion(forKey key: String) -> GradeScopeRoi? { file.scopeRegions[key] }
+    func rememberScopeRegion(_ roi: GradeScopeRoi, key: String) {
+        file.rememberScopeRegion(roi, key: key)
+        scheduleSave()
+    }
 }
 
 extension AppModel {

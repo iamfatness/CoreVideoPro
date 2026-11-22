@@ -2913,6 +2913,9 @@ enum ShellTests {
         model.assignSlot(2, kind: "zoom", sourceId: "b", name: "b")
         model.toggleSlotIso(1)
         model.toggleSlotIso(2)
+        // Key first, as in the app: toggleStreaming validates before it sets the
+        // intent, and the streamed destinations are frozen at that moment.
+        model.streamKey = "quit-test-key"        // only a VALID destination is sent (D1)
         model.streamingDesired = true            // stream up
         startRecordingThroughTheRealPath(model, core)
         model.roster = []                        // transient roster loss mid-take (#1183)
@@ -2995,7 +2998,7 @@ enum ShellTests {
     }
 
     @MainActor
-    private static func runTake(_ model: AppModel, wait: Bool = true) -> TakeBox {
+    static func runTake(_ model: AppModel, wait: Bool = true) -> TakeBox {
         let box = TakeBox()
         Task { @MainActor in box.result = await model.take() }
         if wait { spin(until: { box.result != nil }, limit: 3) }
@@ -3926,6 +3929,9 @@ enum ShellTests {
 
     @MainActor
     static func runAndExit() -> Never {
+        // Plan D4: the harness never reads or writes the operator's graphics show.
+        setenv("COREVIDEO_GRAPHICS_DOCUMENT_PATH",
+               (NSTemporaryDirectory() as NSString).appendingPathComponent("cvp-shell-tests-graphics-\(getpid())/default.json"), 1)
         // Before ANY test: a run whose prefs resolve to the real file aborts.
         ShellHarness.requireIsolatedPrefsOrExit()
         failures = []
@@ -3933,6 +3939,9 @@ enum ShellTests {
         // No test runs a real core binary as a camera probe (cases that test
         // the probe name their own executable).
         FreshProcessCameraDeviceProbe.defaultExecutable = { nil }
+        // No test touches a real secret: every KeychainStore user (stream key,
+        // Zoom tokens, later feed credentials) gets an in-memory Keychain.
+        KeychainStore.defaultBackend = MemoryKeychain()
 
         let cases: [(String, () -> Void)] = [
             ("monitor/revisioned-projection", testMonitorControlProjection),
@@ -4127,8 +4136,12 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases
-        for (name, body) in cases {
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases + gradePhase2Cases + sourcesPhase2Cases
+        // COREVIDEO_SHELL_TESTS_FILTER=<prefix> runs only the matching cases (mutation runs,
+        // iteration); COREVIDEO_SHELL_TEST_FILTER is accepted too. Unset, every case runs.
+        let env = ProcessInfo.processInfo.environment
+        let filter = env["COREVIDEO_SHELL_TESTS_FILTER"] ?? env["COREVIDEO_SHELL_TEST_FILTER"] ?? ""
+        for (name, body) in cases where filter.isEmpty || name.hasPrefix(filter) {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()
         }

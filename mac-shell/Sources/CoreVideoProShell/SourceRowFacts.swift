@@ -32,6 +32,7 @@ struct SourceSlotRef: Equatable {
         switch kind {
         case "zoom": return "zoom:" + sourceId
         case "capture": return "capture:" + sourceId
+        case "media": return "media:" + sourceId   // Windows SlotSourceId (ShowInputRosterService.cs:318)
         default: return nil
         }
     }
@@ -78,6 +79,26 @@ struct ZoomFormatFact: Equatable {
             frameId: (format["frameId"] as? NSNumber)?.intValue ?? 0,
             frameAtMs: frameAt)
     }
+}
+
+/// The Zoom camera ceiling the core APPLIED at this meeting's join (plan D6):
+/// `zoomSubscriptionChurn.cameraMaxResolution` (SDK tier 0/1/2) and `cameraMaxFps`
+/// (ZoomEngineRuntime.cpp:250-265, 1424-1425). Never a shell preference.
+struct ZoomAppliedCap: Equatable {
+    let tier: Int
+    let fps: Int
+
+    /// From the `zoomSubscriptionChurn` node. nil when there is no engine or no cap fields.
+    static func parse(churn: JSONObject) -> ZoomAppliedCap? {
+        guard churn["engine"] as? Bool != false,
+              let tier = (churn["cameraMaxResolution"] as? NSNumber)?.intValue,
+              let fps = (churn["cameraMaxFps"] as? NSNumber)?.intValue else { return nil }
+        return ZoomAppliedCap(tier: min(max(tier, 0), 2), fps: fps)
+    }
+
+    /// Windows ZoomCameraResolutionPreference.FromSdkTier / Dimensions.
+    var label: String { ["360p", "720p", "1080p"][tier] }
+    var dimensions: (width: Int, height: Int) { [(640, 360), (1280, 720), (1920, 1080)][tier] }
 }
 
 struct BusSourceRow: Equatable {
@@ -131,6 +152,12 @@ struct SourceRowFacts: Equatable {
     var frameAgeMs: Double? = nil
     var tally = "none"         // pgm | pvw | talking | hold | none
     var writer = "OFF"         // OFF | ARMED | REC | ERROR | —
+    /// Windows FormatDetailLabel (MultiviewInputRow.cs:69): the frame age while stale,
+    /// else the configured-cap note, else "".
+    var formatDetail = ""
+    /// Windows FormatLabel "W×H@fps"; the rate is dropped while stale or unmeasured
+    /// (ResolutionLabel / FrameRateLabel, :38-41).
+    var formatWithRate: String { fps == "—" || format == "—" ? format : "\(format)@\(fps)" }
     /// MultiviewInputRow.cs:56: PGM only for a LIVE row on Program.
     var chip: String { signal == "LIVE" && tally == "pgm" ? "PGM" : signal }
 }
@@ -157,6 +184,7 @@ struct SourceRowFactsProjection {
     private var program: Set<String> = []
     private var preview: Set<String> = []
     private var writers: [String: String] = [:]
+    private var appliedCap: ZoomAppliedCap?
 
     init(slotIds: [Int] = Array(1...10)) {
         self.slotIds = slotIds
@@ -176,6 +204,9 @@ struct SourceRowFactsProjection {
 
     /// A new epoch clears every Zoom format and frame clock (:86-99).
     mutating func applyRoster(_ next: ZoomRosterFact) {
+        // Windows ApplyRosterFact (:80-82): no epoch, no roster fact. An older core's
+        // unrevisioned roster may still drive the slot law; it never becomes a row fact.
+        guard !next.epoch.isEmpty else { return }
         if roster?.epoch != next.epoch { zoomFrames.removeAll() }
         engineIsStopped = false
         roster = next
@@ -225,9 +256,17 @@ struct SourceRowFactsProjection {
     }
 
     /// sourceKeys on rendered Program and on the Preview scene.
+    mutating func applyProgramTally(_ keys: Set<String>) { program = keys }
+    mutating func applyPreviewTally(_ keys: Set<String>) { preview = keys }
+
     mutating func applyTally(program: Set<String>, preview: Set<String>) {
         self.program = program
         self.preview = preview
+    }
+
+    /// The core's applied Zoom camera cap (plan D6); nil clears the note.
+    mutating func applyCap(_ cap: ZoomAppliedCap?) {
+        appliedCap = cap
     }
 
     /// sourceKey → recording|armed|error|unknown (IsoWriterChip.observe).
@@ -256,6 +295,8 @@ struct SourceRowFactsProjection {
         var talking = false
         if ref.kind == "capture" {
             patchCapture(&facts, key: key, deviceId: ref.sourceId)
+        } else if ref.kind == "media" {
+            patchMedia(&facts, key: key)
         } else {
             talking = patchZoom(&facts, slotId: slotId, pid: ref.sourceId)
         }
@@ -282,6 +323,15 @@ struct SourceRowFactsProjection {
         }
     }
 
+    /// Plan D5: a media slot is LIVE once the bus carries a picture for `media:<id>`, else
+    /// NO INCOMING. Never STALLED: a still never advances, and a paused clip holds by design.
+    /// (Departs from Windows, which reads media as a capture device: :367-384.)
+    private func patchMedia(_ facts: inout SourceRowFacts, key: String) {
+        guard let row = bus[key], row.width > 0, row.height > 0 else { facts.signal = "NO INCOMING"; return }
+        facts.signal = "LIVE"
+        facts.format = "\(row.width)×\(row.height)"
+    }
+
     /// Returns whether the participant is talking (for the tally).
     private func patchZoom(_ facts: inout SourceRowFacts, slotId: Int, pid: String) -> Bool {
         guard let roster else { return false }                        // IDLE (:386-392)
@@ -298,14 +348,32 @@ struct SourceRowFactsProjection {
             facts.signal = "STALLED"
             facts.formatStale = true
             facts.frameAgeMs = age
+            facts.formatDetail = Self.ageDetail(age)
             return participant.talking
         }
         facts.fps = frame.fps > 0 ? String(frame.fps) : "—"
+        facts.formatDetail = Self.capNote(width: frame.width, height: frame.height, fps: frame.fps, cap: appliedCap)
         facts.signal = participant.talking ? "TALKING" : "LIVE"
         return participant.talking
     }
 
     // ── shared rules ────────────────────────────────────────────────────
+
+    /// "age 2.3s stale" (Windows FormatDetailLabel, one decimal).
+    /// Windows ApplyCameraCap (MultiviewInputRowsProjection.cs:144-159), verbatim copy.
+    /// A request ceiling is a note beside the format, never a measurement.
+    static func capNote(width: Int, height: Int, fps: Int, cap: ZoomAppliedCap?) -> String {
+        guard let cap else { return "" }
+        let (capWidth, capHeight) = cap.dimensions
+        var parts: [String] = []
+        if width < capWidth || height < capHeight { parts.append("up to \(cap.label) requested") }
+        if cap.fps < 60 && fps > cap.fps { parts.append("local max \(cap.fps) fps") }
+        return parts.joined(separator: " · ")
+    }
+
+    static func ageDetail(_ ageMs: Double) -> String {
+        String(format: "age %.1fs stale", ageMs / 1000)
+    }
 
     static func inMeeting(_ state: String) -> Bool { state == "in_meeting" || state == "in-meeting" }
 

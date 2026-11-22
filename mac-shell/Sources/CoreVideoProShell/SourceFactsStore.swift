@@ -56,38 +56,41 @@ extension AppModel {
                                                sourceGeneration: $0.sourceGeneration)
                        })
     }
-
-    /// The Preview scene's source keys, from the routes it would send.
-    func previewSourceKeys() -> Set<String> {
-        guard !previewSceneId.isEmpty else { return [] }
-        var keys: Set<String> = []
-        for route in buildRoutes(for: previewSceneId) {
-            if let pid = route["participantId"] as? String, !pid.isEmpty { keys.insert("zoom:" + pid) }
-            if let cam = route["captureDeviceId"] as? String, !cam.isEmpty { keys.insert("capture:" + cam) }
-        }
-        return keys
-    }
 }
 
 extension AppModel {
-    /// The snapshot's observed facts: `sources[]` rows, rendered Program, the
-    /// Preview scene, and ISO writer lifecycle.
+    /// The snapshot's observed facts: `sources[]` rows, rendered Program and
+    /// Preview, the applied Zoom cap, and ISO writer lifecycle.
     func applySourceFacts(_ snapshot: JSONObject) {
-        let sources = snapshot["sources"] as? [JSONObject]
-        let program = (snapshot["programFrame"] as? JSONObject).map { frame in
-            Set((frame["videoSources"] as? [JSONObject] ?? []).compactMap { $0["sourceId"] as? String })
+        // S6: the node is published unconditionally by a current core; an absent node (older
+        // core, or a partial snapshot) leaves the last answer alone.
+        if snapshot["sourceSheet"] != nil {
+            let sheet = SourceSheetState.parse(snapshot)
+            if sheet != sourceSheet { setSourceSheet(sheet) }
         }
+        let sources = snapshot["sources"] as? [JSONObject]
+        // PGM and PVW are both CORE evidence: what the core rendered on each bus
+        // (programFrame / previewFrame.videoSources), never the shell's own routes (plan D4).
+        func rendered(_ node: String) -> Set<String>? {
+            (snapshot[node] as? JSONObject).map { frame in
+                Set((frame["videoSources"] as? [JSONObject] ?? []).compactMap { $0["sourceId"] as? String })
+            }
+        }
+        let program = rendered("programFrame")
+        let preview = rendered("previewFrame")
         let recording = snapshot["recording"] as? JSONObject
-        guard sources != nil || program != nil || recording != nil else { return }
+        let churn = snapshot["zoomSubscriptionChurn"] as? JSONObject
+        guard sources != nil || program != nil || preview != nil || recording != nil || churn != nil else { return }
         let now = sourceFactsNowMs
         let captures = Self.captureSignals(captureDevices)
-        let preview = program != nil ? previewSourceKeys() : []
         sourceFacts.mutate { projection in
             if let sources {
                 projection.applyBus(BusSourceRow.parse(sources), captures: captures, atMs: now)
             }
-            if let program { projection.applyTally(program: program, preview: preview) }
+            if let program { projection.applyProgramTally(program) }
+            if let preview { projection.applyPreviewTally(preview) }
             if let recording { projection.applyWriters(IsoWriterChip.observe(recording)) }
+            if let churn { projection.applyCap(ZoomAppliedCap.parse(churn: churn)) }
         }
     }
 }

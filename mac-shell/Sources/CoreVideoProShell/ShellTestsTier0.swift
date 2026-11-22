@@ -145,6 +145,7 @@ extension ShellTests {
         model.canvasFps = 30
         expectEqual(model.canvasLabel, "2160p30", "multiview chip reflects the real canvas")
         model.streamBitrateMbps = 12.5
+        model.streamKey = "tier0-key"            // only a VALID destination is sent (D1)
         let start = model.startProgramOutput(recording: false, streaming: true)
         let profile = start["streamOutputProfile"] as? JSONObject
         expectEqual((profile?["targetBitrateMbps"] as? NSNumber)?.doubleValue, 12.5,
@@ -170,6 +171,9 @@ extension ShellTests {
         model.canvasWidth = 3840
         model.canvasHeight = 2160
         model.canvasFps = 60
+        // Only VALID destinations are sent (mac streaming Phase 2, Windows
+        // BuildStreamDestinationSettings): the RTMP row needs its key.
+        model.streamKey = "tier0-key"
         let start = model.startProgramOutput(recording: false, streaming: true)
         let profile = start["streamOutputProfile"] as? JSONObject
         expectEqual(profile?["width"] as? Int, 3840, "stream start sends the canvas width, not 1920")

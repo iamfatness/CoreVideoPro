@@ -13,10 +13,12 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
+#import <CoreImage/CoreImage.h>
 #import <CoreVideo/CoreVideo.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -32,6 +34,7 @@
 #include "core/FrameAllocation.h"
 #include "modules/Interfaces.h"
 #include "modules/MediaClipDecoder.h"
+#include "modules/PixelBufferVideoFrame.h"
 #include "modules/StillMediaFrameCache.h"
 
 namespace corevideo::modules {
@@ -46,6 +49,10 @@ constexpr const char* kWebmRefusal =
 // 1080p), and the owner already queues up to three, so more here buys memory
 // and nothing else.
 constexpr size_t kSamplesDecodedAhead = 1;
+
+// Every decoded frame copied into CPU BGRA, process-wide. The zero-copy path
+// (N4) must leave this untouched; the test reads it, production never does.
+std::atomic<uint64_t> g_cpuFrameCopies{0};
 
 std::string lowercaseExtension(const std::string& path) {
   auto extension = std::filesystem::path(path).extension().string();
@@ -79,12 +86,20 @@ struct VideoReaderState {
   std::deque<ClipVideoSample> ready;  // at most kSamplesDecodedAhead wait for take()
   bool endOfStream = false;
   bool failed = false;
+  bool noVideoTrack = false;  // the file opened and has no video track (an audio bed)
   std::string error;
   AVAssetReader* reader = nil;  // also read by the destructor, to cancel
   AVURLAsset* asset = nil;      // likewise, to cancel a load in flight
-  // Reader-queue only.
-  AVAssetReaderTrackOutput* output = nil;
+  // Set before the reader starts, read on the reader queue only. ZERO-COPY
+  // (N4): hand the decoder's IOSurface-backed buffer over retained, instead of
+  // copying it into CPU BGRA.
+  bool zeroCopy = false;
+  // Reader-queue only. Always a plain track output; a rotated track is turned
+  // upright per sample by `rotator` (review round 2026-11-22).
+  AVAssetReaderOutput* output = nil;
+  std::unique_ptr<struct SampleRotator> rotator;
   bool straightenAlpha = false;
+  bool loggedZeroCopyRefusal = false;
   int64_t lastPts100ns = -1;
   int64_t lastDuration100ns = 0;
   double copyTotalMs = 0, copyMaxMs = 0;
@@ -133,7 +148,8 @@ NSArray<AVAssetTrack*>* loadTracks(AVURLAsset* asset, AVMediaType type, const st
   return result;
 }
 
-void loadDuration(AVURLAsset* asset, const std::shared_ptr<VideoReaderState>& state) {
+template <typename ReaderState>
+void loadDuration(AVURLAsset* asset, const std::shared_ptr<ReaderState>& state) {
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   [asset loadValuesAsynchronouslyForKeys:@[ @"duration" ] completionHandler:^{ dispatch_semaphore_signal(done); }];
   if (!waitUnlessCancelled(done, state->cancelled)) return;
@@ -153,12 +169,138 @@ bool trackContainsAlpha(AVAssetTrack* track) {
   return false;
 }
 
+struct TrackTransform {
+  bool rotated = false;
+  CGAffineTransform transform = CGAffineTransformIdentity;
+};
+
+// The track property a rotation needs, loaded asynchronously on the reader
+// queue like every other asset property here.
+TrackTransform loadTrackTransform(AVAssetTrack* track, const std::atomic<bool>& cancelled) {
+  TrackTransform result;
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  NSArray<NSString*>* keys = @[ @"preferredTransform" ];
+  [track loadValuesAsynchronouslyForKeys:keys completionHandler:^{ dispatch_semaphore_signal(done); }];
+  if (!waitUnlessCancelled(done, cancelled)) return result;
+  NSError* error = nil;
+  if ([track statusOfValueForKey:@"preferredTransform" error:&error] != AVKeyValueStatusLoaded) return result;
+  result.transform = track.preferredTransform;
+  result.rotated = !CGAffineTransformIsIdentity(result.transform);
+  return result;
+}
+
+// A ROTATED TRACK (a phone held upright, plan 2026-11-21 Task 2), turned upright
+// ONE DECODED SAMPLE AT A TIME on the GPU (Core Image on the system Metal device).
+// Review round 2026-11-22 replaced AVAssetReaderVideoCompositionOutput here
+// because that output (1) forces alpha to 255, so a rotated ProRes 4444
+// lower-third covered the scene with its fill colour, and (2) re-times the clip
+// onto a composition frameDuration, so a variable-frame-rate phone clip lost or
+// gained frames (measured: 15 frames out for 16 samples). Here every source
+// sample becomes exactly one upright sample at its own timestamp, and alpha is
+// carried through untouched: colour management is off end to end and the
+// pixels are never premultiplied or unpremultiplied, so the owner's STRAIGHT
+// alpha contract holds (AvfMediaDecoder.ARotatedAlphaClipStaysUprightAndKeepsItsStraightAlpha).
+// The output is an IOSurface-backed, Metal-compatible pool buffer, so the
+// zero-copy path wraps it exactly like a decoder buffer, and the pool cannot
+// recycle a buffer a frame (or a Metal pass) still retains.
+struct SampleRotator {
+  CIContext* context = nil;
+  CGAffineTransform storageToDisplay = CGAffineTransformIdentity;  // y-down, as preferredTransform
+  size_t storageWidth = 0, storageHeight = 0;
+  size_t displayWidth = 0, displayHeight = 0;
+  CGAffineTransform ciTransform = CGAffineTransformIdentity;  // y-up Core Image space
+  bool exactQuarterTurn = false;  // a multiple of 90 degrees and/or a flip: sample nearest, bit-exact
+  CVPixelBufferPoolRef pool = nullptr;
+  ~SampleRotator() { if (pool) CVPixelBufferPoolRelease(pool); }
+
+  // Lazily sized from the first decoded buffer, so the geometry is the buffer's,
+  // never a container's naturalSize that can disagree with it.
+  bool prepare(size_t width, size_t height, std::string& error) {
+    if (pool && width == storageWidth && height == storageHeight) return true;
+    if (pool) { CVPixelBufferPoolRelease(pool); pool = nullptr; }
+    storageWidth = width; storageHeight = height;
+    const auto w = static_cast<CGFloat>(width), h = static_cast<CGFloat>(height);
+    const CGRect display = CGRectApplyAffineTransform(CGRectMake(0, 0, w, h), storageToDisplay);
+    displayWidth = static_cast<size_t>(std::lround(std::abs(display.size.width)));
+    displayHeight = static_cast<size_t>(std::lround(std::abs(display.size.height)));
+    if (displayWidth == 0 || displayHeight == 0) { error = "the track's transform has no area"; return false; }
+    // preferredTransform maps storage to display in y-DOWN pixels; Core Image is
+    // y-UP. Flip into storage y-down, apply the transform moved back into
+    // positive space, flip out of display y-down.
+    const CGAffineTransform flipIn = CGAffineTransformMake(1, 0, 0, -1, 0, h);
+    const CGAffineTransform toOrigin = CGAffineTransformMakeTranslation(-display.origin.x, -display.origin.y);
+    const CGAffineTransform flipOut = CGAffineTransformMake(1, 0, 0, -1, 0, static_cast<CGFloat>(displayHeight));
+    ciTransform = CGAffineTransformConcat(
+        CGAffineTransformConcat(CGAffineTransformConcat(flipIn, storageToDisplay), toOrigin), flipOut);
+    const auto unit = [](CGFloat v) { return std::abs(v) < 1e-6 || std::abs(std::abs(v) - 1) < 1e-6; };
+    const auto whole = [](CGFloat v) { return std::abs(v - std::round(v)) < 1e-6; };
+    const auto& t = ciTransform;
+    exactQuarterTurn = unit(t.a) && unit(t.b) && unit(t.c) && unit(t.d) && whole(t.tx) && whole(t.ty);
+    NSDictionary* attributes = @{
+      (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+      (id)kCVPixelBufferWidthKey : @(displayWidth),
+      (id)kCVPixelBufferHeightKey : @(displayHeight),
+      (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+      (id)kCVPixelBufferMetalCompatibilityKey : @YES,
+    };
+    if (CVPixelBufferPoolCreate(kCFAllocatorDefault, nullptr, (__bridge CFDictionaryRef)attributes, &pool) !=
+            kCVReturnSuccess || !pool) {
+      pool = nullptr;
+      error = "the rotation buffer pool could not be created";
+      return false;
+    }
+    if (!context) {
+      context = [CIContext contextWithOptions:@{
+        kCIContextWorkingColorSpace : [NSNull null],
+        kCIContextOutputColorSpace : [NSNull null],
+        kCIContextUseSoftwareRenderer : @NO,
+        kCIContextCacheIntermediates : @NO,
+      }];
+      if (!context) { error = "Core Image is unavailable"; return false; }
+    }
+    return true;
+  }
+
+  // +1 retained upright buffer, or nullptr with `error` set.
+  CVPixelBufferRef rotate(CVImageBufferRef source, std::string& error) {
+    if (!prepare(CVPixelBufferGetWidth(source), CVPixelBufferGetHeight(source), error)) return nullptr;
+    CVPixelBufferRef out = nullptr;
+    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &out) != kCVReturnSuccess || !out) {
+      error = "no rotation buffer was available";
+      return nullptr;
+    }
+    CIImage* image = [CIImage imageWithCVPixelBuffer:source options:@{ kCIImageColorSpace : [NSNull null] }];
+    if (exactQuarterTurn) image = [image imageBySamplingNearest];
+    image = [image imageByApplyingTransform:ciTransform];
+    CIRenderDestination* destination = [[CIRenderDestination alloc] initWithPixelBuffer:out];
+    destination.colorSpace = nil;
+    // Core Image reads a BGRA buffer as STRAIGHT alpha and premultiplies it for
+    // its working space; writing Unpremultiplied hands the owner straight alpha back.
+    destination.alphaMode = CIRenderDestinationAlphaUnpremultiplied;
+    NSError* failure = nil;
+    CIRenderTask* task = [context startTaskToRender:image
+                                           fromRect:CGRectMake(0, 0, displayWidth, displayHeight)
+                                      toDestination:destination
+                                            atPoint:CGPointZero
+                                              error:&failure];
+    if (!task || ![task waitUntilCompletedAndReturnError:&failure]) {
+      CVPixelBufferRelease(out);
+      error = std::string("Core Image could not rotate a frame (") +
+              (failure.localizedDescription.UTF8String ?: "unknown") + ")";
+      return nullptr;
+    }
+    CVBufferPropagateAttachments(source, out);
+    return out;
+  }
+};
+
 // Copies one decoded pixel buffer into a tightly packed BGRA vector
 // (stride = width * 4). nullptr = the allocation failed; the sample is dropped
 // and the clip holds its last frame (the MF adapter's behaviour, MF:1171-1178).
 std::shared_ptr<const std::vector<uint8_t>> copyBgra(CVImageBufferRef image, int& width, int& height,
                                                     bool straightenAlpha) {
   static core::FrameAllocationFailures allocationFailures("media-decoder-avf");
+  g_cpuFrameCopies.fetch_add(1, std::memory_order_relaxed);
   width = static_cast<int>(CVPixelBufferGetWidth(image));
   height = static_cast<int>(CVPixelBufferGetHeight(image));
   if (width <= 0 || height <= 0) return nullptr;
@@ -219,8 +361,33 @@ void decodeNext(const std::shared_ptr<VideoReaderState>& state) {
       CVImageBufferRef image = CMSampleBufferGetImageBuffer(sampleBuffer);
       if (!image) { CFRelease(sampleBuffer); continue; }  // a marker sample with no picture
       const auto copyStart = std::chrono::steady_clock::now();
+      CVPixelBufferRef upright = nullptr;  // +1 when the track is rotated; released below
+      if (state->rotator) {
+        std::string rotateError;
+        upright = state->rotator->rotate(image, rotateError);
+        if (!upright) {
+          CFRelease(sampleBuffer);
+          failReader(state, "AVFoundation cannot play this rotated clip (" + rotateError + ")");
+          return;
+        }
+        image = upright;
+      }
       ClipVideoSample decoded;
-      decoded.bgra = copyBgra(image, decoded.width, decoded.height, state->straightenAlpha);
+      if (state->zeroCopy) {
+        // ZERO-COPY (N4): the buffer itself, retained by PixelBufferVideoFrame
+        // until the last frame AND the last Metal pass sampling it let go, so
+        // the decoder's pool can never recycle it under a reader.
+        decoded.gpu = makePixelBufferVideoFrame(image);
+        if (decoded.gpu) {
+          decoded.width = decoded.gpu->width;
+          decoded.height = decoded.gpu->height;
+        } else if (!state->loggedZeroCopyRefusal) {
+          state->loggedZeroCopyRefusal = true;
+          ::corevideo::core::nativeLogf("[media-decoder] %s: decoded buffer is not an IOSurface-backed BGRA buffer; "
+                                        "copying to CPU BGRA instead of zero-copy\n", state->path.c_str());
+        }
+      }
+      if (!decoded.gpu) decoded.bgra = copyBgra(image, decoded.width, decoded.height, state->straightenAlpha);
       const auto copyMs = elapsedMs(copyStart);
       decoded.pts100ns = (std::max)(int64_t{0}, to100ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)));
       auto duration = to100ns(CMSampleBufferGetDuration(sampleBuffer));
@@ -231,8 +398,9 @@ void decodeNext(const std::shared_ptr<VideoReaderState>& state) {
       decoded.duration100ns = duration;
       state->lastPts100ns = decoded.pts100ns;
       state->lastDuration100ns = duration;
+      if (upright) CVPixelBufferRelease(upright);  // a zero-copy frame holds its own retain
       CFRelease(sampleBuffer);
-      if (!decoded.bgra) continue;  // allocation failed: drop this sample, keep reading
+      if (!decoded.bgra && !decoded.gpu) continue;  // allocation failed: drop this sample, keep reading
       // The measurement the load drill reads: what the CPU copy costs per frame.
       state->copyTotalMs += copyMs;
       state->copyMaxMs = (std::max)(state->copyMaxMs, copyMs);
@@ -270,13 +438,21 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
       failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
       return;
     }
-    if (tracks.count == 0) { failReader(state, "the file has no video track"); return; }
+    if (tracks.count == 0) {
+      // An audio bed, not a failure (N3): MediaClipDecoder gives it a
+      // transparent picture and plays its audio.
+      { std::lock_guard<std::mutex> lock(state->mutex); state->noVideoTrack = true; }
+      wakeOwner(state);
+      return;
+    }
     loadDuration(asset, state);
     if (state->cancelled.load()) return;
     AVAssetTrack* track = tracks.firstObject;
     // An opaque track is opaque: no per-pixel alpha pass (measured: VideoToolbox
     // delivers 0xFF, AvfMediaDecoder.ACuePosterIsTheFirstFrameAndOpaque).
     const bool hasAlpha = trackContainsAlpha(track);
+    const auto transform = loadTrackTransform(track, state->cancelled);
+    if (state->cancelled.load()) return;
     AVAssetReader* reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
     if (!reader) {
       failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
@@ -287,19 +463,31 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
       AVVideoTransferFunctionKey : AVVideoTransferFunction_ITU_R_709_2,
       AVVideoYCbCrMatrixKey : AVVideoYCbCrMatrix_ITU_R_709_2,
     };
-    NSDictionary* settings = @{
+    NSMutableDictionary* settings = [@{
       (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
       AVVideoColorPropertiesKey : colour,
-    };
-    AVAssetReaderTrackOutput* output = nil;
+    } mutableCopy];
+    if (state->zeroCopy) {
+      // Buffers Metal can wrap as a texture in place (N4).
+      settings[(id)kCVPixelBufferIOSurfacePropertiesKey] = @{};
+      settings[(id)kCVPixelBufferMetalCompatibilityKey] = @YES;
+    }
+    if (transform.rotated) {
+      // Plan default P3, kept: only a non-identity transform pays for a
+      // rotation, so every unrotated clip keeps the plain output byte for byte.
+      state->rotator = std::make_unique<SampleRotator>();
+      state->rotator->storageToDisplay = transform.transform;
+    }
+    AVAssetReaderOutput* output = nil;
     @try {
-      output = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
+      AVAssetReaderTrackOutput* plain = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
+      plain.alwaysCopiesSampleData = NO;
+      output = plain;
     } @catch (NSException* exception) {
       failReader(state, std::string("AVFoundation cannot open this file (") +
                             (exception.reason.UTF8String ?: "invalid reader settings") + ")");
       return;
     }
-    output.alwaysCopiesSampleData = NO;
     if (![reader canAddOutput:output]) {
       failReader(state, "AVFoundation cannot open this file (the video track cannot be decoded to BGRA)");
       return;
@@ -326,13 +514,14 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
 
 class AvfClipVideoReader final : public IClipVideoReader {
  public:
-  AvfClipVideoReader(const std::string& path, std::function<void()> wake)
+  AvfClipVideoReader(const std::string& path, std::function<void()> wake, bool zeroCopy)
       : state_(std::make_shared<VideoReaderState>()),
         queue_(dispatch_queue_create("com.corevideo.media-decoder.video",
                                      dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
                                                                              QOS_CLASS_USER_INITIATED, 0))) {
     state_->path = path;
     state_->wake = std::move(wake);
+    state_->zeroCopy = zeroCopy;
     const auto state = state_;
     dispatch_async(queue_, ^{ openVideo(state); });
   }
@@ -364,6 +553,7 @@ class AvfClipVideoReader final : public IClipVideoReader {
       return ClipReadStatus::Ready;
     }
     if (state_->failed) { error = state_->error; return ClipReadStatus::Failed; }
+    if (state_->noVideoTrack) return ClipReadStatus::NoVideoTrack;
     if (state_->endOfStream) return ClipReadStatus::EndOfStream;
     return ClipReadStatus::Pending;
   }
@@ -395,6 +585,7 @@ struct AudioReaderState {
   AVAssetReaderOutput* output = nil;
   // Any thread.
   std::atomic<bool> cancelled{false};
+  std::atomic<int64_t> duration100ns{-1};
 };
 
 void wakeOwner(const std::shared_ptr<AudioReaderState>& state) {
@@ -479,6 +670,8 @@ void openAudio(const std::shared_ptr<AudioReaderState>& state) {
     // No audio track is NOT a failure: the reader ends without one sample and
     // MediaClipDecoder treats the clip as silent, unwarned.
     if (tracks.count == 0) { endReader(state); return; }
+    loadDuration(asset, state);  // an audio bed's only duration (N3)
+    if (state->cancelled.load()) return;
     AVAssetReader* reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
     if (!reader) {
       failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
@@ -563,6 +756,8 @@ class AvfClipAudioReader final : public IClipAudioReader {
     return ClipReadStatus::Pending;
   }
 
+  int64_t duration100ns() const override { return state_->duration100ns.load(); }
+
  private:
   std::shared_ptr<AudioReaderState> state_;
   dispatch_queue_t queue_;
@@ -570,10 +765,11 @@ class AvfClipAudioReader final : public IClipAudioReader {
 
 class AvfClipReaderFactory final : public IClipReaderFactory {
  public:
+  explicit AvfClipReaderFactory(bool zeroCopy) : zeroCopy_(zeroCopy) {}
   std::unique_ptr<IClipVideoReader> openVideo(const std::string& path, std::function<void()> wake,
                                               std::string& error) override {
     error.clear();
-    return std::make_unique<AvfClipVideoReader>(path, std::move(wake));
+    return std::make_unique<AvfClipVideoReader>(path, std::move(wake), zeroCopy_);
   }
 
   // Returns a reader at once; "no audio track" is learned on the reader's queue
@@ -598,16 +794,31 @@ class AvfClipReaderFactory final : public IClipReaderFactory {
     frame.pixels = std::move(pixels.bgra);
     return true;
   }
+
+ private:
+  bool zeroCopy_ = false;
 };
 
 }  // namespace
 
 std::shared_ptr<IClipReaderFactory> createAvFoundationClipReaderFactory() {
-  return std::make_shared<AvfClipReaderFactory>();
+  return std::make_shared<AvfClipReaderFactory>(/*zeroCopy=*/false);
 }
+
+std::shared_ptr<IClipReaderFactory> createAvFoundationZeroCopyClipReaderFactory() {
+  return std::make_shared<AvfClipReaderFactory>(/*zeroCopy=*/true);
+}
+
+uint64_t avfMediaDecoderCpuFrameCopiesForTest() { return g_cpuFrameCopies.load(); }
 
 std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory() {
   return [] { return std::unique_ptr<IMediaDecoder>(new MediaClipDecoder(createAvFoundationClipReaderFactory())); };
+}
+
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationZeroCopyMediaDecoderFactory() {
+  return [] {
+    return std::unique_ptr<IMediaDecoder>(new MediaClipDecoder(createAvFoundationZeroCopyClipReaderFactory()));
+  };
 }
 
 }  // namespace corevideo::modules
@@ -622,6 +833,10 @@ std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFa
 namespace corevideo::modules {
 
 std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory() {
+  return {};
+}
+
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationZeroCopyMediaDecoderFactory() {
   return {};
 }
 

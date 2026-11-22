@@ -199,21 +199,21 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "media.rundown.load", title: "Load Volt clip", description: "Refresh the local media bin and return the staged clip's source id.", params: [
                 ControlParam(name: "clip", type: .string, required: true, description: "Staged clip key"),
             ]),
-            availability: .blocked(workstream: "MED", label: "Media clip playback")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "media.rundown.preview", title: "Preview Volt clip", description: "Cue a staged clip to a named scene route on Preview.", params: [
                 ControlParam(name: "clip", type: .string, required: true, description: "Staged clip key"),
                 ControlParam(name: "scene", type: .string, required: true, description: "Scene id"),
                 ControlParam(name: "route", type: .string, required: false, description: "Route id; optional in a scene with one eligible route"),
             ]),
-            availability: .blocked(workstream: "MED", label: "Media clip playback")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "media.rundown.take", title: "Take Volt clip", description: "Take the specified staged clip when it is still on Preview.", params: [
                 ControlParam(name: "clip", type: .string, required: true, description: "Staged clip key"),
                 ControlParam(name: "scene", type: .string, required: true, description: "Scene id"),
                 ControlParam(name: "route", type: .string, required: false, description: "Route id; optional in a scene with one eligible route"),
             ]),
-            availability: .blocked(workstream: "MED", label: "Media clip playback")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "input.assign", title: "Assign input", description: "Assign a source to a Show Input slot (1-10).", params: [
                 ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
@@ -472,7 +472,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "audio.zoomMode.set", title: "Zoom audio mode", description: "Choose independently routed ISO stems or Zoom's combined fallback mix.", params: [
                 ControlParam(name: "mode", type: .string, required: true, description: "perGuestIso | programMix"),
             ]),
-            availability: .blocked(workstream: "AUD", label: "Audio parity")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.monitor.set", title: "Audio monitor", description: "Enable/disable the audio monitor.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
@@ -509,7 +509,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "audio.masterLimiter.set", title: "Master limiter", description: "Enable/disable the master limiter.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "AUD", label: "Audio parity")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.mastering.set", title: "Mastering", description: "Enable/disable the master-bus mastering chain.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
@@ -557,7 +557,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "automation.autoAssignInputs.set", title: "Auto-assign inputs", description: "Toggle auto-assigning roster participants to Show Inputs.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "automation.lowerThirds.set", title: "Auto lower-thirds", description: "Toggle automation lower-thirds.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
@@ -607,12 +607,12 @@ enum ControlManifestGenerated {
         ("multiviewTileCount", .supported),
         ("automationOn", .supported),
         ("autoTake", .supported),
-        ("autoAssignInputs", .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+        ("autoAssignInputs", .supported),
         ("autoLowerThirds", .blocked(workstream: "GFX", label: "Graphics engine")),
         ("autoCaptions", .supported),
         ("audioMonitorOn", .supported),
         ("audioMonitorVolume", .supported),
-        ("masterLimiterOn", .blocked(workstream: "AUD", label: "Audio parity")),
+        ("masterLimiterOn", .supported),
         ("input/{slot}/inShow", .supported),
         ("input/{slot}/kind", .supported),
         ("input/{slot}/source", .supported),

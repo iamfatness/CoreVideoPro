@@ -84,12 +84,17 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         case "transport.ftb.set":
             return blackout(await model.setProgramBlackout(bool(0)))
         case "transport.take":
-            // Windows RunTake: refuse when CanTake is false, else the one Take path.
-            guard model.canTake else { return .fail(takeUnavailable) }
-            switch await model.take() {
-            case .success: return .success
-            case .failed(let why): return .fail(why.isEmpty ? "Take was not confirmed by the media core." : why)
+            return await runTake(model)
+        // ── Volt rundown (RC6, VoltRundown.swift; Windows StudioControlSurface.cs:361-369) ──
+        case "media.rundown.load":
+            return model.loadVoltRundownClip(string(0))
+        case "media.rundown.preview":
+            return model.previewVoltRundownClip(string(0), scene: string(1), route: optionalString(2) ?? "")
+        case "media.rundown.take":
+            if let refusal = model.checkVoltRundownPreview(string(0), scene: string(1), route: optionalString(2) ?? "") {
+                return .fail(refusal)
             }
+            return await runTake(model)
         case "transport.record.toggle":
             return toggle(model, what: "recording", desired: { $0.recordingDesired }, model.toggleRecording)
         case "transport.record.set":
@@ -152,9 +157,9 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setEngine(model, on: bool(0))
         // ── Production (ControlSurface+Production.swift) ──
         case "graphics.lowerThird.toggle":
-            return setLowerThird(model, on: nil)
+            return await setLowerThird(model, on: nil)
         case "graphics.lowerThird.set":
-            return setLowerThird(model, on: bool(0))
+            return await setLowerThird(model, on: bool(0))
         case "automation.captions.set":
             return setAutoCaptions(bool(0))
         case "multiview.layout.set":
@@ -163,6 +168,24 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMultiviewTileCount(model, count: int(0))
         case "audio.mastering.set":
             return setMastering(model, on: bool(0))
+        case "audio.masterLimiter.set":
+            return setMasterLimiter(model, on: bool(0))
+        case "automation.autoAssignInputs.set":
+            // Windows StudioControlSurface.cs:697-699: always Success. The Mac's
+            // Sources toggle (setAutoAssignInputs) persists and reruns the law.
+            model.setAutoAssignInputs(bool(0))
+            return .success
+        case "audio.zoomMode.set":
+            // Windows StudioControlSurface.cs:638-651: case-insensitive, trimmed;
+            // anything else refuses and changes nothing.
+            let mode = string(0).trimmingCharacters(in: .whitespaces)
+            if mode.caseInsensitiveCompare(ZoomAudioMode.perGuestIsoValue) == .orderedSame {
+                model.setZoomAudioMode(.perGuestIso); return .success
+            }
+            if mode.caseInsensitiveCompare(ZoomAudioMode.programMixValue) == .orderedSame {
+                model.setZoomAudioMode(.programMix); return .success
+            }
+            return .fail("mode must be 'perGuestIso' or 'programMix'.")
         case "audio.mastering.target":
             return setMasteringTarget(model, index: int(0))
         case "audio.vst.scan":
@@ -211,7 +234,23 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "multiview.layout.set", "multiview.tileCount.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "audio.monitor.set", "audio.monitor.volume", "audio.route.set",
+        // Phase 2 (A3)
+        "audio.masterLimiter.set",
+        // Settings quick wins (A1, Companion autoassign)
+        "audio.zoomMode.set", "automation.autoAssignInputs.set",
+        // Phase 2 (RC6)
+        "media.rundown.load", "media.rundown.preview", "media.rundown.take",
     ]
+
+    /// Windows RunTake: refuse when CanTake is false, else the one Take path.
+    @MainActor
+    static func runTake(_ model: AppModel) async -> ControlInvokeResult {
+        guard model.canTake else { return .fail(takeUnavailable) }
+        switch await model.take() {
+        case .success: return .success
+        case .failed(let why): return .fail(why.isEmpty ? "Take was not confirmed by the media core." : why)
+        }
+    }
 
     /// The `default:` branch's text (Windows' unknown-action wording).
     static func undispatched(_ id: String) -> String { "Unknown action '\(id)'." }
@@ -297,6 +336,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             // the true value is false, not "unknown".
             "automationOn": false,
             "autoTake": false,
+            // The Sources "fill free inputs" toggle (Companion autoassign preset).
+            "autoAssignInputs": model.autoAssignInputsEnabled,
             // RC2 (ControlStateProjection is the only mapping point).
             "zoomStatus": ControlStateProjection.zoomStatus(meetingState: model.meetingState),
             "engineStatus": ControlStateProjection.engineStatus(
@@ -309,6 +350,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             "lowerThirdOnAir": model.lowerThirdVisible,   // the core's observed `visible`
             "multiviewTileCount": model.multiviewTileCount,
             "masteringOn": model.mastering.enabled,
+            "masterLimiterOn": model.mastering.limiterEnabled,   // Phase 2 (A3)
+            "zoomAudioMode": model.zoomAudioMode.persisted,      // A1 (Windows ControlState.ZoomAudioMode)
             "masteringTarget": masteringTargetIndex(model.mastering.targetLufs),
             // No caption source exists on the Mac: the true value is false.
             "autoCaptions": false,

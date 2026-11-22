@@ -113,6 +113,9 @@ enum GradeSourceIdentity: Equatable {
 struct SourceGradeFile: Equatable {
     var grades: [String: SourceColorGrade] = [:]
     var order: [String] = []               // oldest first; every key of `grades` exactly once
+    /// G7 (Phase 2 Task 9, plan P11): per-person scope regions, revision 0, at most 64.
+    var scopeRegions: [String: GradeScopeRoi] = [:]
+    var scopeRegionOrder: [String] = []    // oldest first
 
     static let capacity = 64
     static let retiredNotice = " · oldest saved source grade retired (64-source limit)"
@@ -160,6 +163,18 @@ struct SourceGradeFile: Equatable {
                 notices.append("Saved grade unavailable: \(key) could not be read")
             }
         }
+        // Scope regions: only stable keys and valid regions survive (StudioViewModel.ScopePreferences.cs:7-12).
+        if let rawRegions = root["scopeRegions"] as? JSONObject {
+            let listedRegions = (root["scopeRegionOrder"] as? [Any])?.compactMap { $0 as? String } ?? []
+            var seenRegions = Set<String>()
+            var keys = listedRegions.filter { seenRegions.insert($0).inserted && rawRegions[$0] != nil }
+            keys += rawRegions.keys.filter { !seenRegions.contains($0) }.sorted()
+            for key in keys where isPersistableKey(key) && file.scopeRegionOrder.count < capacity {
+                guard let node = rawRegions[key] as? JSONObject, let roi = GradeScopeRoi(json: node), roi.isValid else { continue }
+                file.scopeRegions[key] = roi
+                file.scopeRegionOrder.append(key)
+            }
+        }
         return (file, notices)
     }
 
@@ -169,7 +184,8 @@ struct SourceGradeFile: Equatable {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let body = Envelope(version: 1, grades: grades, order: order)
+        let body = Envelope(version: 1, grades: grades, order: order,
+                            scopeRegions: scopeRegions, scopeRegionOrder: scopeRegionOrder)
         try encoder.encode(body).write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
@@ -192,6 +208,16 @@ struct SourceGradeFile: Equatable {
         return notice
     }
 
+    /// Revision 0, newest last; a 65th key retires the oldest.
+    mutating func rememberScopeRegion(_ roi: GradeScopeRoi, key: String) {
+        guard Self.isPersistableKey(key), roi.isValid else { return }
+        var stored = roi; stored.revision = 0
+        scopeRegionOrder.removeAll { $0 == key }
+        scopeRegionOrder.append(key)
+        scopeRegions[key] = stored
+        while scopeRegionOrder.count > Self.capacity { scopeRegions[scopeRegionOrder.removeFirst()] = nil }
+    }
+
     mutating func forget(key: String) {
         grades[key] = nil
         order.removeAll { $0 == key }
@@ -201,5 +227,7 @@ struct SourceGradeFile: Equatable {
         let version: Int
         let grades: [String: SourceColorGrade]
         let order: [String]
+        let scopeRegions: [String: GradeScopeRoi]
+        let scopeRegionOrder: [String]
     }
 }

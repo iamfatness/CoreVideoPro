@@ -160,7 +160,8 @@ struct SourcesTable: View {
     private var visibleSlots: [ShowInputSlot] {
         model.slots.filter { slot in
             let type = SourceType.of(kind: slot.kind, sourceId: slot.sourceId,
-                                     vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor)
+                                     vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor,
+                                     media: model.mediaAssets)
             return model.sourcesWorkspace.matches(slotId: slot.id, displayName: slot.name,
                                                   sourceLabel: type.pickerPrefix + slot.name, type: type)
         }
@@ -193,6 +194,7 @@ struct SourcesToolsRow: View {
             .fixedSize()
             AutoAssignInputsToggle()
             Spacer(minLength: 0)
+            GradeSelectedButton()
             Button(model.sourcesWorkspace.columns.inspectorOpen ? "Close inspector" : "Open inspector") {
                 if model.sourcesWorkspace.columns.inspectorOpen {
                     model.sourcesWorkspace.columns.inspectorOpen = false
@@ -207,13 +209,15 @@ struct SourcesToolsRow: View {
 
 struct SourcesTableRow: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     let slot: ShowInputSlot
     @ObservedObject var box: SlotFactsBox
 
     private var assigned: Bool { slot.kind != "unassigned" }
     private var type: SourceType {
         SourceType.of(kind: slot.kind, sourceId: slot.sourceId,
-                      vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor)
+                      vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor,
+                      media: model.mediaAssets)
     }
     private var selected: Bool { model.sourcesWorkspace.selectedSlotId == slot.id }
 
@@ -225,7 +229,18 @@ struct SourcesTableRow: View {
             Cell { thumbnail }
             Cell { sourceCell }
             Cell { Text(assigned ? type.rawValue : "—").font(.grotesk(11)).foregroundStyle(Studio.secondary) }
-            Cell { Text(assigned ? box.facts.format : "—").font(.plexMono(10)) }
+            Cell {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(assigned ? box.facts.format : "—").font(.plexMono(10))
+                        .foregroundStyle(box.facts.formatStale ? Studio.amber : Studio.textPrimary)
+                    // Windows FormatDetailLabel: frame age while stale, else the cap note.
+                    if assigned, !box.facts.formatDetail.isEmpty {
+                        Text(box.facts.formatDetail).font(.plexMono(9))
+                            .foregroundStyle(box.facts.formatStale ? Studio.amber : Studio.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
             Cell { Text(assigned ? box.facts.fps : "—").font(.plexMono(10)) }
             Cell {
                 Text(box.facts.chip).font(.plexMono(9, .semibold))
@@ -258,24 +273,23 @@ struct SourcesTableRow: View {
         switch slot.kind {
         case "zoom": return "Zoom source audio"
         case "capture": return slot.audioDeviceName.isEmpty ? "No paired microphone" : slot.audioDeviceName
+        // Spec §4.4 "Still (no audio)"; a clip's audio is the Media strip (Windows "Media audio",
+        // ShowInputSlotViewModel.cs:383).
+        case "media": return type == .still ? "Still (no audio)" : "Media audio"
         default: return "—"
         }
     }
 
-    /// D1: thumbnails arrive with the core source sheet (slice S6).
+    /// D1/S6: the slot's cell of the core source sheet, or the reason it has none.
     private var thumbnail: some View {
-        RoundedRectangle(cornerRadius: 6).fill(Studio.field)
-            .overlay(Text("Preview unavailable").font(.grotesk(9)).foregroundStyle(Studio.textDim)
-                .multilineTextAlignment(.center).padding(4))
-            .frame(width: 96, height: 54)
-            .accessibilityLabel("Input \(slot.id) preview unavailable")
+        SourceThumbnail(slot: slot, box: box)
     }
 
     private var sourceCell: some View {
         // The assignment this menu was built for (picker guard, audit row 12).
         let openedFor = slot.sourceKey
         let groups = SourcePickerCatalog.groups(roster: model.roster, devices: model.captureDevices,
-                                                current: assigned ? slot : nil)
+                                                media: model.mediaAssets, current: assigned ? slot : nil)
         return VStack(alignment: .leading, spacing: 2) {
             Menu {
                 ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
@@ -306,9 +320,12 @@ struct SourcesTableRow: View {
     }
 
     private func choose(_ option: SourcePickerOption, openedFor: String?) {
-        let name = option.kind == "zoom"
-            ? model.roster.first { $0.id == option.sourceId }?.name ?? option.sourceId
-            : model.captureDevices.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        let name: String
+        switch option.kind {
+        case "zoom": name = model.roster.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        case "media": name = model.mediaAssets.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        default: name = model.captureDevices.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        }
         model.assignSlot(slot.id, kind: option.kind, sourceId: option.sourceId, name: name,
                          openedFor: openedFor)
         if option.kind == "capture",
@@ -325,9 +342,14 @@ struct SourcesTableRow: View {
             Button("Inspect") { model.sourcesWorkspace.inspect(slot.id) }
                 .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.accent)
                 .accessibilityLabel("Inspect input \(slot.id)")
+            Button("Grade") { model.openGradeWorkspace(slotId: slot.id) { openWindow(id: PopoutWindow.sourceGrade, value: $0) } }
+                .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.accent)
+                .disabled(!assigned)
+                .accessibilityLabel("Grade input \(slot.id)")          // SourcesTableRowControl.cs:78
             if slot.keyEnabled {
                 Text("KEY").font(.plexMono(9, .semibold)).foregroundStyle(Studio.accent)
             }
+            SlotGradedChip(store: model.sourceGrades, slotId: slot.id)
             moreMenu
         }
     }
@@ -425,6 +447,21 @@ struct CaptureDevicesSection: View {
                         .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.accent)
                         Button("Take offline") { model.takeCaptureDeviceOffline(device.id) }
                             .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.amber)
+                    }
+                    // Z2 (Windows SourcesInputsPage.xaml:110-134): the offset and the nudges.
+                    // Cameras only: a ScreenCaptureKit display carries no audio on the
+                    // Mac, so a nudge there would be a control that does nothing.
+                    if CaptureAudioSyncPolicy.offersNudge(category: type(device).category) {
+                        HStack(spacing: 8) {
+                            Text(CaptureAudioSyncPolicy.label(model.captureAudioSyncOffset(device.id)))
+                                .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                            Button("-20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: -CaptureAudioSyncPolicy.stepMs) }
+                                .buttonStyle(.plain).font(.grotesk(10, .semibold)).foregroundStyle(Studio.accent)
+                                .help("Nudge this device's audio 20 ms earlier")
+                            Button("+20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: CaptureAudioSyncPolicy.stepMs) }
+                                .buttonStyle(.plain).font(.grotesk(10, .semibold)).foregroundStyle(Studio.accent)
+                                .help("Nudge this device's audio 20 ms later")
+                        }
                     }
                     if !device.warning.isEmpty {
                         Text(device.warning).font(.grotesk(10))

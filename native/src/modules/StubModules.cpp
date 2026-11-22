@@ -711,6 +711,9 @@ std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink() {
 std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory() {
   return {};
 }
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationZeroCopyMediaDecoderFactory() {
+  return {};
+}
 std::unique_ptr<ICaptureDevice> createAvfCaptureDevice() {
   return nullptr;
 }

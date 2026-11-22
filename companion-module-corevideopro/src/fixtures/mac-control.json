@@ -1,0 +1,731 @@
+{
+  "manifest" : {
+    "Actions" : [
+      {
+        "Description" : "Join a Zoom meeting through the embedded Meeting SDK.",
+        "Id" : "zoom.join",
+        "OscAddress" : "\/cvp\/zoom\/join",
+        "Params" : [
+          {
+            "Description" : "Zoom meeting URL or ID",
+            "Name" : "meetingUrl",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Optional participant display name",
+            "Name" : "displayName",
+            "Required" : false,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Join as a webinar attendee",
+            "Name" : "webinar",
+            "Required" : false,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Join Zoom"
+      },
+      {
+        "Description" : "Leave the current embedded Zoom meeting.",
+        "Id" : "zoom.leave",
+        "OscAddress" : "\/cvp\/zoom\/leave",
+        "Params" : [
+
+        ],
+        "Title" : "Leave Zoom"
+      },
+      {
+        "Description" : "Fade Program video to black or back in over 300 ms. Audio and output sessions continue.",
+        "Id" : "transport.ftb.toggle",
+        "OscAddress" : "\/cvp\/transport\/ftb\/toggle",
+        "Params" : [
+
+        ],
+        "Title" : "Fade to Black"
+      },
+      {
+        "Description" : "Set Program blackout; repeated identical requests do not reverse the fade.",
+        "Id" : "transport.ftb.set",
+        "OscAddress" : "\/cvp\/transport\/ftb\/set",
+        "Params" : [
+          {
+            "Name" : "enabled",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Set Fade to Black"
+      },
+      {
+        "Description" : "Cut\/transition Preview to Program.",
+        "Id" : "transport.take",
+        "OscAddress" : "\/cvp\/transport\/take",
+        "Params" : [
+
+        ],
+        "Title" : "Take"
+      },
+      {
+        "Description" : "Set the Take transition (cut\/fade\/dip\/wipe).",
+        "Id" : "transport.transition.set",
+        "OscAddress" : "\/cvp\/transport\/transition\/set",
+        "Params" : [
+          {
+            "Description" : "cut | fade | dip | wipe",
+            "Name" : "mode",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Set transition"
+      },
+      {
+        "Description" : "Toggle recording.",
+        "Id" : "transport.record.toggle",
+        "OscAddress" : "\/cvp\/transport\/record\/toggle",
+        "Params" : [
+
+        ],
+        "Title" : "Record toggle"
+      },
+      {
+        "Description" : "Start or stop recording explicitly.",
+        "Id" : "transport.record.set",
+        "OscAddress" : "\/cvp\/transport\/record\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Record set"
+      },
+      {
+        "Description" : "Toggle streaming.",
+        "Id" : "transport.stream.toggle",
+        "OscAddress" : "\/cvp\/transport\/stream\/toggle",
+        "Params" : [
+
+        ],
+        "Title" : "Stream toggle"
+      },
+      {
+        "Description" : "Start or stop streaming explicitly.",
+        "Id" : "transport.stream.set",
+        "OscAddress" : "\/cvp\/transport\/stream\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Stream set"
+      },
+      {
+        "Description" : "Save RTMP\/RTMPS settings without starting streaming. Refused while streaming or transitioning; omitted key retains the saved key, empty clears it.",
+        "Id" : "transport.stream.rtmp.configure",
+        "OscAddress" : "\/cvp\/transport\/stream\/rtmp\/configure",
+        "Params" : [
+          {
+            "Name" : "enabled",
+            "Required" : true,
+            "Type" : "bool"
+          },
+          {
+            "Name" : "protocol",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "serverUrl",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "streamKey",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Configure RTMP destination"
+      },
+      {
+        "Description" : "Toggle the capture engine on\/off.",
+        "Id" : "transport.engine.toggle",
+        "OscAddress" : "\/cvp\/transport\/engine\/toggle",
+        "Params" : [
+
+        ],
+        "Title" : "Engine toggle"
+      },
+      {
+        "Description" : "Turn the capture engine on or off explicitly.",
+        "Id" : "transport.engine.set",
+        "OscAddress" : "\/cvp\/transport\/engine\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Engine set"
+      },
+      {
+        "Description" : "Toggle the virtual camera output.",
+        "Id" : "transport.virtualcam.toggle",
+        "OscAddress" : "\/cvp\/transport\/virtualcam\/toggle",
+        "Params" : [
+
+        ],
+        "Title" : "Virtual camera toggle"
+      },
+      {
+        "Description" : "Turn the virtual camera on or off explicitly.",
+        "Id" : "transport.virtualcam.set",
+        "OscAddress" : "\/cvp\/transport\/virtualcam\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Virtual camera set"
+      },
+      {
+        "Description" : "Mirror the virtual camera output horizontally.",
+        "Id" : "transport.virtualcam.mirror.set",
+        "OscAddress" : "\/cvp\/transport\/virtualcam\/mirror\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Virtual camera mirror"
+      },
+      {
+        "Description" : "Set the virtual camera's display name (blank keeps the default).",
+        "Id" : "transport.virtualcam.name.set",
+        "OscAddress" : "\/cvp\/transport\/virtualcam\/name\/set",
+        "Params" : [
+          {
+            "Name" : "name",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Virtual camera name"
+      },
+      {
+        "Description" : "Cue a scene to Preview by id. Unknown scene fails and changes nothing; reply includes previewSceneId when applied.",
+        "Id" : "scene.select",
+        "OscAddress" : "\/cvp\/scene\/select",
+        "Params" : [
+          {
+            "Name" : "sceneId",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Select scene"
+      },
+      {
+        "Description" : "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.",
+        "Id" : "scene.list",
+        "OscAddress" : "\/cvp\/scene\/list",
+        "Params" : [
+
+        ],
+        "Title" : "List scenes"
+      },
+      {
+        "Description" : "Refresh the local media bin and return the staged clip's source id.",
+        "Id" : "media.rundown.load",
+        "OscAddress" : "\/cvp\/media\/rundown\/load",
+        "Params" : [
+          {
+            "Description" : "Staged clip key",
+            "Name" : "clip",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Load Volt clip"
+      },
+      {
+        "Description" : "Cue a staged clip to a named scene route on Preview.",
+        "Id" : "media.rundown.preview",
+        "OscAddress" : "\/cvp\/media\/rundown\/preview",
+        "Params" : [
+          {
+            "Description" : "Staged clip key",
+            "Name" : "clip",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Scene id",
+            "Name" : "scene",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Route id; optional in a scene with one eligible route",
+            "Name" : "route",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Preview Volt clip"
+      },
+      {
+        "Description" : "Take the specified staged clip when it is still on Preview.",
+        "Id" : "media.rundown.take",
+        "OscAddress" : "\/cvp\/media\/rundown\/take",
+        "Params" : [
+          {
+            "Description" : "Staged clip key",
+            "Name" : "clip",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Scene id",
+            "Name" : "scene",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Route id; optional in a scene with one eligible route",
+            "Name" : "route",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Take Volt clip"
+      },
+      {
+        "Description" : "Assign a source to a Show Input slot (1-10).",
+        "Id" : "input.assign",
+        "OscAddress" : "\/cvp\/input\/assign",
+        "Params" : [
+          {
+            "Description" : "1-10",
+            "Name" : "slot",
+            "Required" : true,
+            "Type" : "int"
+          },
+          {
+            "Description" : "zoom:<pid> | capture:<id> | media:<id>",
+            "Name" : "sourceId",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Assign input"
+      },
+      {
+        "Description" : "Use the existing capture device controls. Taking a device offline unassigns its inputs; native video readiness remains separately observed.",
+        "Id" : "source.capture.online.set",
+        "OscAddress" : "\/cvp\/source\/capture\/online\/set",
+        "Params" : [
+          {
+            "Description" : "capture:<deviceId>",
+            "Name" : "sourceId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "online",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Connect or take capture offline"
+      },
+      {
+        "Description" : "Clear only this input through the same operator command; the source remains available for reassignment.",
+        "Id" : "input.unassign",
+        "OscAddress" : "\/cvp\/input\/unassign",
+        "Params" : [
+          {
+            "Name" : "slot",
+            "Required" : true,
+            "Type" : "int"
+          }
+        ],
+        "Title" : "Unassign show input"
+      },
+      {
+        "Description" : "Set the display name override for a Show Input's source (blank resets).",
+        "Id" : "input.name",
+        "OscAddress" : "\/cvp\/input\/name",
+        "Params" : [
+          {
+            "Description" : "1-10",
+            "Name" : "slot",
+            "Required" : true,
+            "Type" : "int"
+          },
+          {
+            "Name" : "name",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Name input source"
+      },
+      {
+        "Description" : "Set what a source shows when it stops delivering (hold last frame or black). Zoom-only this slice.",
+        "Id" : "source.dropout.set",
+        "OscAddress" : "\/cvp\/source\/dropout\/set",
+        "Params" : [
+          {
+            "Description" : "zoom:<pid>",
+            "Name" : "sourceId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "hold | black",
+            "Name" : "policy",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Source on dropout"
+      },
+      {
+        "Description" : "Add\/remove a Show Input slot from the show.",
+        "Id" : "input.inShow.set",
+        "OscAddress" : "\/cvp\/input\/inShow\/set",
+        "Params" : [
+          {
+            "Description" : "1-10",
+            "Name" : "slot",
+            "Required" : true,
+            "Type" : "int"
+          },
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Input in-show"
+      },
+      {
+        "Description" : "Toggle the program lower-third.",
+        "Id" : "graphics.lowerThird.toggle",
+        "OscAddress" : "\/cvp\/graphics\/lowerThird\/toggle",
+        "Params" : [
+
+        ],
+        "Title" : "Lower-third toggle"
+      },
+      {
+        "Description" : "Show or hide the program lower-third explicitly.",
+        "Id" : "graphics.lowerThird.set",
+        "OscAddress" : "\/cvp\/graphics\/lowerThird\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Lower-third set"
+      },
+      {
+        "Description" : "Choose independently routed ISO stems or Zoom's combined fallback mix.",
+        "Id" : "audio.zoomMode.set",
+        "OscAddress" : "\/cvp\/audio\/zoomMode\/set",
+        "Params" : [
+          {
+            "Description" : "perGuestIso | programMix",
+            "Name" : "mode",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Zoom audio mode"
+      },
+      {
+        "Description" : "Enable\/disable the audio monitor.",
+        "Id" : "audio.monitor.set",
+        "OscAddress" : "\/cvp\/audio\/monitor\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          },
+          {
+            "Name" : "authorityEpoch",
+            "Required" : false,
+            "Type" : "string"
+          },
+          {
+            "Name" : "expectedRevision",
+            "Required" : false,
+            "Type" : "double"
+          },
+          {
+            "Name" : "operationId",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Audio monitor"
+      },
+      {
+        "Description" : "Set the audio monitor volume (0.0-1.0).",
+        "Id" : "audio.monitor.volume",
+        "OscAddress" : "\/cvp\/audio\/monitor\/volume",
+        "Params" : [
+          {
+            "Description" : "0.0-1.0",
+            "Name" : "volume",
+            "Required" : true,
+            "Type" : "double"
+          },
+          {
+            "Name" : "authorityEpoch",
+            "Required" : false,
+            "Type" : "string"
+          },
+          {
+            "Name" : "expectedRevision",
+            "Required" : false,
+            "Type" : "double"
+          },
+          {
+            "Name" : "operationId",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Monitor volume"
+      },
+      {
+        "Description" : "Set one source-to-bus route at an expected core revision. Read audioRouteAuthorityEpoch and audioRouteRevision from \/state.",
+        "Id" : "audio.route.set",
+        "OscAddress" : "\/cvp\/audio\/route\/set",
+        "Params" : [
+          {
+            "Name" : "sourceId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "busId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "enabled",
+            "Required" : true,
+            "Type" : "bool"
+          },
+          {
+            "Description" : "-60 to +10 dB",
+            "Name" : "gainDb",
+            "Required" : true,
+            "Type" : "double"
+          },
+          {
+            "Name" : "authorityEpoch",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "expectedRevision",
+            "Required" : true,
+            "Type" : "double"
+          },
+          {
+            "Name" : "operationId",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Audio crosspoint"
+      },
+      {
+        "Description" : "Enable\/disable the master limiter.",
+        "Id" : "audio.masterLimiter.set",
+        "OscAddress" : "\/cvp\/audio\/masterLimiter\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Master limiter"
+      },
+      {
+        "Description" : "Enable\/disable the master-bus mastering chain.",
+        "Id" : "audio.mastering.set",
+        "OscAddress" : "\/cvp\/audio\/mastering\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Mastering"
+      },
+      {
+        "Description" : "Set the mastering loudness target (0=-14 streaming, 1=-16 podcast, 2=-23 broadcast).",
+        "Id" : "audio.mastering.target",
+        "OscAddress" : "\/cvp\/audio\/mastering\/target",
+        "Params" : [
+          {
+            "Description" : "0-2",
+            "Name" : "index",
+            "Required" : true,
+            "Type" : "int"
+          }
+        ],
+        "Title" : "Mastering target"
+      },
+      {
+        "Description" : "Scan and validate installed VST3 plug-ins in isolated host processes.",
+        "Id" : "audio.vst.scan",
+        "OscAddress" : "\/cvp\/audio\/vst\/scan",
+        "Params" : [
+
+        ],
+        "Title" : "Scan VST3 plug-ins"
+      },
+      {
+        "Description" : "Set the multiview layout mode.",
+        "Id" : "multiview.layout.set",
+        "OscAddress" : "\/cvp\/multiview\/layout\/set",
+        "Params" : [
+          {
+            "Description" : "grid | pgmPvwTop | pgmPvwLarge | pgmPvwSide",
+            "Name" : "mode",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Multiview layout"
+      },
+      {
+        "Description" : "Set the multiview source tile count.",
+        "Id" : "multiview.tileCount.set",
+        "OscAddress" : "\/cvp\/multiview\/tileCount\/set",
+        "Params" : [
+          {
+            "Description" : "1-10",
+            "Name" : "count",
+            "Required" : true,
+            "Type" : "int"
+          }
+        ],
+        "Title" : "Multiview tiles"
+      },
+      {
+        "Description" : "Toggle auto-assigning roster participants to Show Inputs.",
+        "Id" : "automation.autoAssignInputs.set",
+        "OscAddress" : "\/cvp\/automation\/autoAssignInputs\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Auto-assign inputs"
+      },
+      {
+        "Description" : "Legacy compatibility: automatic captions are unavailable. Enabling is rejected; false is a no-op.",
+        "Id" : "automation.captions.set",
+        "OscAddress" : "\/cvp\/automation\/captions\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Auto captions (unavailable)"
+      }
+    ],
+    "FeedbackFields" : [
+      "recording",
+      "streaming",
+      "engineOn",
+      "canTake",
+      "lowerThirdOnAir",
+      "zoomStatus",
+      "engineStatus",
+      "commandStatus",
+      "activeSceneId",
+      "previewSceneId",
+      "multiviewLayoutMode",
+      "multiviewTileCount",
+      "automationOn",
+      "autoTake",
+      "autoAssignInputs",
+      "autoCaptions",
+      "audioMonitorOn",
+      "audioMonitorVolume",
+      "masterLimiterOn",
+      "input\/{slot}\/inShow",
+      "input\/{slot}\/kind",
+      "input\/{slot}\/source",
+      "input\/{slot}\/name"
+    ],
+    "Root" : "\/cvp",
+    "Version" : 1
+  },
+  "note" : "Written by the Mac shell harness case control\/companion-request-shapes (COREVIDEO_WRITE_COMPANION_FIXTURE=1 rewrites it). Do not edit by hand.",
+  "stateKeys" : [
+    "activeSceneId",
+    "audioMonitorAuthorityEpoch",
+    "audioMonitorLastResult",
+    "audioMonitorOn",
+    "audioMonitorRevision",
+    "audioMonitorVolume",
+    "audioRouteAuthorityEpoch",
+    "audioRouteLastResult",
+    "audioRouteRevision",
+    "audioRoutes",
+    "audioSourceCount",
+    "audioSources",
+    "autoAssignInputs",
+    "autoCaptions",
+    "autoTake",
+    "automationOn",
+    "canTake",
+    "commandStatus",
+    "engineOn",
+    "engineStatus",
+    "inputs",
+    "lowerThirdOnAir",
+    "masterLimiterOn",
+    "masteringOn",
+    "masteringTarget",
+    "multiviewLayoutMode",
+    "multiviewTileCount",
+    "previewSceneId",
+    "programBlackout",
+    "recording",
+    "streaming",
+    "virtualCameraOn",
+    "zoomAudioMode",
+    "zoomParticipantIds",
+    "zoomStatus"
+  ]
+}

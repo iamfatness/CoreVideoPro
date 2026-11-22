@@ -74,6 +74,9 @@ struct MediaClipDecoder::Impl {
     bool videoPending = false;  // direct-poll path: one decoded sample of lookahead
     bool stillLoaded = false;
     bool stillFailed = false;
+    // The file opened and has no video track (an audio bed, N3). Its picture
+    // is ONE transparent frame for the identity's whole life.
+    bool audioOnly = false;
     VideoFrame lastFrame;       // the most recently decoded frame
     VideoFrame presentedFrame;  // the frame the direct-poll path last presented
     int64_t decodedPts = 0, decodedDuration = 0, loopOffset = 0;
@@ -167,6 +170,7 @@ struct MediaClipDecoder::Impl {
     // At most: the loop seam, one replacement of a pre-opened successor that
     // turned out to have failed, then the first sample of the successor.
     for (int hop = 0; hop < 3; ++hop) {
+      if (state.audioOnly) return false;  // its one picture is already decoded
       if (state.openFailed) { warnOpenFailure(request, cue); return false; }
       if (!state.reader) {
         std::string error;
@@ -180,6 +184,27 @@ struct MediaClipDecoder::Impl {
       const auto status = state.reader->take(sample, error);
       if (state.duration100ns <= 0) state.duration100ns = state.reader->duration100ns();
       if (status == ClipReadStatus::Pending) return false;  // a stall is never an end
+      if (status == ClipReadStatus::NoVideoTrack) {
+        // AN AUDIO BED (N3). Not an open failure: nothing warns and nothing is
+        // logged. Its picture is fully transparent, so a layer carrying it
+        // draws nothing over the scene (a frameless layer would paint a slate
+        // over Program). One frame, one id, held for the identity's life.
+        state.reader.reset();
+        state.audioOnly = true;
+        state.duration100ns = -1;  // a reader with no video track has no say; the audio track decides
+        VideoFrame frame;
+        frame.participantId = sourceId;
+        frame.width = frame.pixelWidth = frame.naturalWidth = 2;
+        frame.height = frame.pixelHeight = frame.naturalHeight = 2;
+        frame.pixelStride = 8;
+        frame.timestampMs = timestampMs;
+        frame.frameId = ++frameId;
+        frame.pixels = std::make_shared<const std::vector<uint8_t>>(16u, uint8_t{0});
+        state.lastFrame = std::move(frame);
+        state.decodedPts = 0;
+        state.decodedDuration = 0;
+        return true;
+      }
       if (status == ClipReadStatus::Failed) {
         if (state.samplesFromReader == 0 && state.readerWasPreopened) {
           // The successor was opened ~300 ms before the seam and failed in the
@@ -224,18 +249,29 @@ struct MediaClipDecoder::Impl {
         }
         continue;
       }
-      if (!sample.bgra || sample.width <= 0 || sample.height <= 0 ||
-          sample.bgra->size() < static_cast<size_t>(sample.width) * static_cast<size_t>(sample.height) * 4u) {
+      const bool gpuSample = sample.gpu && sample.gpu->width > 0 && sample.gpu->height > 0;
+      const bool cpuSample = sample.bgra && sample.width > 0 && sample.height > 0 &&
+          sample.bgra->size() >= static_cast<size_t>(sample.width) * static_cast<size_t>(sample.height) * 4u;
+      if (!gpuSample && !cpuSample) {
         return false;  // consumed and dropped; the clip holds its last frame
       }
       VideoFrame frame;
       frame.participantId = sourceId;
-      frame.width = frame.pixelWidth = frame.naturalWidth = sample.width;
-      frame.height = frame.pixelHeight = frame.naturalHeight = sample.height;
-      frame.pixelStride = sample.width * 4;
       frame.timestampMs = timestampMs;
       frame.frameId = ++frameId;
-      frame.pixels = std::move(sample.bgra);
+      if (cpuSample) {
+        frame.width = frame.pixelWidth = frame.naturalWidth = sample.width;
+        frame.height = frame.pixelHeight = frame.naturalHeight = sample.height;
+        frame.pixelStride = sample.width * 4;
+        frame.pixels = std::move(sample.bgra);
+      } else {
+        // ZERO-COPY (N4): the reader's native image, untouched. No CPU
+        // dimensions are claimed (pixelWidth stays 0), so nothing mistakes it
+        // for a CPU payload.
+        frame.width = frame.naturalWidth = sample.gpu->width;
+        frame.height = frame.naturalHeight = sample.gpu->height;
+        frame.gpuPixels = std::move(sample.gpu);
+      }
       state.lastFrame = std::move(frame);
       state.decodedPts = sample.pts100ns;
       state.decodedDuration = sample.duration100ns;
@@ -298,6 +334,8 @@ struct MediaClipDecoder::Impl {
       ClipAudioSample sample;
       std::string error;
       const auto status = state.audioReader->take(sample, error);
+      // An audio bed has no video reader to ask: its duration is the audio track's.
+      if (state.audioOnly && state.duration100ns <= 0) state.duration100ns = state.audioReader->duration100ns();
       if (status == ClipReadStatus::Pending) break;
       if (status == ClipReadStatus::Failed) {
         if (state.audioSamplesFromReader == 0) {
@@ -368,7 +406,7 @@ struct MediaClipDecoder::Impl {
     const auto timestampMs = now100ns / 10000;
     configure(request, now100ns);
     const auto deliver = [&](const VideoFrame& frame) {
-      if (!frame.hasPixels()) return false;
+      if (!frame.hasContent()) return false;
       out = frame;
       out.participantId = sourceId;
       out.timestampMs = timestampMs;
@@ -379,7 +417,7 @@ struct MediaClipDecoder::Impl {
       if (!state.stillLoaded && !state.stillFailed) {
         VideoFrame still;
         std::string error;
-        if (readers && readers->decodeStill(state.path, still, error) && still.hasPixels()) {
+        if (readers && readers->decodeStill(state.path, still, error) && still.hasContent()) {
           still.frameId = ++frameId;
           state.lastFrame = std::move(still);
           state.stillLoaded = true;
@@ -397,16 +435,16 @@ struct MediaClipDecoder::Impl {
       // PAUSED AFTER IT ROLLED: hold the frame on air and read nothing; the
       // reader stays where it is, so Play continues with the next sample
       // (MF:790-799).
-      const VideoFrame& held = state.presentedFrame.hasPixels() ? state.presentedFrame : state.lastFrame;
-      if (state.wasPlaying && held.hasPixels()) return deliver(held);
+      const VideoFrame& held = state.presentedFrame.hasContent() ? state.presentedFrame : state.lastFrame;
+      if (state.wasPlaying && held.hasContent()) return deliver(held);
       // NEVER PLAYED (a cue poster): exactly one sample, then held (MF:800-819).
-      if (!state.lastFrame.hasPixels()) (void)takeNewSample(request, sourceId, timestampMs, /*cue=*/true);
+      if (!state.lastFrame.hasContent()) (void)takeNewSample(request, sourceId, timestampMs, /*cue=*/true);
       return deliver(state.lastFrame);
     }
     // PLAYING. A cue that starts to roll continues from the reader's next
     // sample, no reopen (MF:820-824). On the direct path the poster is the
     // presented frame until the next sample comes due.
-    if (!state.wasPlaying && state.lastFrame.hasPixels() && !state.presentedFrame.hasPixels()) {
+    if (!state.wasPlaying && state.lastFrame.hasContent() && !state.presentedFrame.hasContent()) {
       state.presentedFrame = state.lastFrame;
     }
     state.wasPlaying = true;
@@ -515,8 +553,19 @@ int64_t MediaClipDecoder::mediaDurationMs() const {
   return duration > 0 ? duration / 10000 : -1;  // MF:617-621
 }
 
-// A loop never ends (MF:626-630).
-bool MediaClipDecoder::mediaEnded() const { return impl_->state.ended && !impl_->state.loop; }
+// A loop never ends (MF:626-630). An audio bed ends when its audio reader has
+// run out: its one picture never ends. (decodeAudio sees the reader's end only
+// while it is short of a full window, and emits that tail in the same poll, so
+// nothing is left buffered once this turns true; the OWNER's #1214 drain rule
+// then waits for the delivered windows to play.)
+bool MediaClipDecoder::mediaEnded() const {
+  const auto& state = impl_->state;
+  if (state.loop) return false;
+  if (state.audioOnly) return state.audioEnded || state.audioAbsent;
+  return state.ended;
+}
+
+bool MediaClipDecoder::mediaHasVideo() const { return !impl_->state.audioOnly; }
 
 int MediaClipDecoder::videoReadersOpenedForTest() const { return impl_->readersOpened; }
 

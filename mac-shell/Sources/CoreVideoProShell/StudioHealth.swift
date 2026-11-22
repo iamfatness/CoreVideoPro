@@ -130,3 +130,43 @@ enum MultiviewEmptyStatePolicy {
                 : Surface(hasFrames: false, status: "Preparing Program"))
     }
 }
+
+/// R3 (comms spec C2): the Zoom SDK's subscription responses the core retained
+/// (`zoomSubscriptionChurn.sdkSubscriptionEvidence`, ZoomSubscriptionSdkEvidence.h), for Health.
+/// Requests and responses only: a successful 1080p request is not proof of 1080p delivery.
+enum SubscriptionEvidenceReadout {
+    static let shown = 5
+
+    static func rows(_ snapshot: JSONObject) -> [DiagItem] {
+        guard let churn = snapshot["zoomSubscriptionChurn"] as? JSONObject else { return [] }
+        guard churn["engine"] as? Bool != false,
+              let node = churn["sdkSubscriptionEvidence"] as? JSONObject else {
+            return [DiagItem(label: "sdk evidence", value: "no Zoom engine")]
+        }
+        let events = node["events"] as? [JSONObject] ?? []
+        let dropped = (node["dropped"] as? NSNumber)?.intValue ?? 0
+        var header = "\(events.count + dropped) events"
+        switch node["platform"] as? String {
+        case "macos": header += " · macOS codes (ZoomSDKError)"
+        case "windows": header += " · Windows codes (SDKError)"
+        case let other?: header += " · \(other) codes"
+        case nil: header += " · code space unreported"
+        }
+        var rows = [DiagItem(label: "sdk evidence", value: header)]
+        for event in events.suffix(shown).reversed() {
+            func number(_ key: String) -> Int? { (event[key] as? NSNumber)?.intValue }
+            var parts = ["participant \(event["participantId"] as? String ?? "?")",
+                         event["stage"] as? String ?? "?"]
+            if let code = number("sdkCode") { parts.append("code \(code)") }
+            if let resolution = number("resolution") { parts.append("resolution \(resolution)") }
+            if let requested = number("requestedResolution") {
+                parts.append(number("actualResolution").map { "requested \(requested) → actual \($0)" }
+                             ?? "requested \(requested)")
+            }
+            let failed = (number("sdkCode") ?? 0) != 0 || (event["stage"] as? String ?? "").contains("failed")
+            rows.append(DiagItem(label: "  #\(number("sequence") ?? 0)", value: parts.joined(separator: " · "),
+                                 tone: failed ? .warn : .neutral, wrap: true))
+        }
+        return rows
+    }
+}

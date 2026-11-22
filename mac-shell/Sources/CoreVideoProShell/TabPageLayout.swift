@@ -46,7 +46,7 @@ struct TabPageContent: View {
                 case .sources: SourcesTable()
                 case .scenes: ScenesPane()
                 case .routing: RoutingPane()
-                case .overlays: OverlaysPane()
+                case .overlays: GraphicsTabPane(graphics: model.graphics)
                 case .audio: AudioPane()
                 case .media: MediaPane()
                 case .automation: AutomationPane()
@@ -108,11 +108,30 @@ enum TabSnapshotHarness {
             $0.applyTally(program: ["capture:cam-1"], preview: [])
             $0.applyWriters(["zoom:101": "armed"])
         }
+        seedAudio(model)
         // The inspector open on slot 3 (beside the table at 1920, below it at 1360).
         // COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR=0 renders the table with it closed.
         if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR"] != "0" {
             model.sourcesWorkspace.inspect(3)
         }
+    }
+
+    /// Audio tab (Phase 2 A4/A6): two Zoom strips (102 muted in Zoom, 101 with
+    /// measured gain reduction), default routes, a custom bus sending to master
+    /// and LISTEN on aux-1. Measurements are fixture values, never live levels.
+    private static func seedAudio(_ model: AppModel) {
+        let echo: [JSONObject] = [
+            ["participantId": "101", "outputLevel": 70, "inputPeakDbfs": -8.0, "gainReductionDb": 4.5, "status": "live"],
+            ["participantId": "102", "outputLevel": 0, "inputPeakDbfs": -14.0, "status": "live"],
+        ]
+        model.strips = AudioConsolePolicy.mergeStrips(echo: echo, prior: [], expected: ["101", "102"], zoomMuted: ["102"])
+        for source in ["101", "102"] {
+            for bus in AudioConsolePolicy.defaultSendBuses { model.audioSends[source, default: [:]][bus] = 0 }
+        }
+        let bus = model.addCustomBus()
+        model.audioSends["101", default: [:]][bus.id] = -3
+        model.setBusSend(bus.id, target: "master", enabled: true)
+        model.setListening("aux-1", on: true)
     }
 
     private static func seedSlots(_ model: AppModel) {

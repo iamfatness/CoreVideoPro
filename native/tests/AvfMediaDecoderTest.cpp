@@ -2,6 +2,7 @@
 #include "modules/Interfaces.h"
 #include "modules/MediaClipDecoder.h"
 #include "modules/MediaVideoPresentation.h"
+#include "modules/PixelBufferVideoFrame.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <memory>
 #include <thread>
@@ -20,6 +22,7 @@
 // so the reader CONTRACT can be driven directly.
 namespace corevideo::modules {
 std::shared_ptr<IClipReaderFactory> createAvFoundationClipReaderFactory();
+uint64_t avfMediaDecoderCpuFrameCopiesForTest();
 }
 
 using namespace corevideo;
@@ -409,4 +412,282 @@ TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
   // snapshot's position being sampled by the worker, not at the pop.
   EXPECT_GE(lastAudibleAtPositionMs, durationMs - 40) << "the owner cut the clip's audio tail";
   EXPECT_EQ(positionWhenEnded, lastAudibleAtPositionMs) << "audio was still delivered after Ended";
+}
+
+// N3 (plan 2026-11-21 Task 1). An audio bed (.m4a AAC and .wav LPCM, no video
+// track) decodes: its picture is a transparent 2x2 frame, nothing warns, its
+// duration is the audio track's, and its tone comes out.
+TEST(AvfMediaDecoder, AnAudioOnlyFileDecodesItsToneAndHasNoVideoWarning) {
+  for (const char* name : {"bed.m4a", "bed.wav"}) {
+    const auto p = tmp(name); Cleanup c{p};
+    const auto written = corevideo::testing::writeToneOnlyAudio(p.string(), 1000, 440.0);
+    ASSERT_EQ(written, "") << name << ": " << written;
+    auto d = modules::createAvFoundationMediaDecoderFactory()();
+    auto* pre = dynamic_cast<modules::IMediaVideoPrefetch*>(d.get());
+    ASSERT_NE(pre, nullptr);
+    auto r = req(p, true);
+    r.assetKind = "audio-bed";
+    const auto startMs = steadyMs();
+    pre->syncMediaClock(r, startMs);
+    const auto frames = pollUntilFrame(*d, r);
+    ASSERT_EQ(frames.size(), 1u) << name << ": an audio bed still presents a (transparent) picture";
+    ASSERT_TRUE(frames[0].hasPixels());
+    EXPECT_EQ(frames[0].pixelWidth, 2);
+    for (const auto byte : *frames[0].pixels) ASSERT_EQ(byte, 0) << name;
+    float peak = 0.f;
+    for (int slot = 5; slot < 30; ++slot) {
+      const auto slotMs = startMs + slot * 20;
+      for (const auto deadline = slotMs + 2000; steadyMs() < deadline;) {
+        if (steadyMs() >= slotMs) {
+          const auto windows = d->pollMediaAudioFrames(r, slotMs);
+          if (!windows.empty()) {
+            for (const auto v : windows.front().pcm) peak = (std::max)(peak, std::abs(v));
+            break;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
+    EXPECT_GT(peak, 0.3f) << name << ": the tone came out";
+    EXPECT_NEAR(static_cast<double>(pre->mediaDurationMs()), 1000.0, 30.0) << name;
+    EXPECT_FALSE(pre->mediaHasVideo()) << name;
+    const auto warnings = d->warnings();
+    EXPECT_TRUE(warnings.empty()) << name << ": " << (warnings.empty() ? "" : warnings.front());
+  }
+}
+
+// N3 (plan 2026-11-21 Task 2). A clip recorded with a rotation in its track's
+// preferredTransform (a phone held upright) decodes upright at its DISPLAY
+// size. Fixture: storage 64x36, quadrants TL RED, TR GREEN, BL BLUE, BR WHITE.
+// Expected display quadrants are derived from the transform by hand (plan):
+//   90  -> 36x64, display TL BLUE, TR RED, BL WHITE, BR GREEN
+//   180 -> 64x36, display TL WHITE, TR BLUE, BL GREEN, BR RED
+//   0   -> 64x36, unchanged
+TEST(AvfMediaDecoder, APortraitPhoneClipDecodesUprightAtItsDisplaySize) {
+  using Bgr = std::array<int, 3>;
+  const Bgr red{0x20, 0x20, 0xE0}, green{0x20, 0xE0, 0x20}, blue{0xE0, 0x20, 0x20}, white{0xD0, 0xD0, 0xD0};
+  struct Case { int degrees, width, height; Bgr tl, tr, bl, br; };
+  const Case cases[] = {{90, 36, 64, blue, red, white, green},
+                        {180, 64, 36, white, blue, green, red},
+                        {0, 64, 36, red, green, blue, white}};
+  for (const auto& k : cases) {
+    const auto p = tmp("rot" + std::to_string(k.degrees) + ".mp4"); Cleanup c{p};
+    const auto written = corevideo::testing::writeQuadrantClip(p.string(), 64, 36, k.degrees);
+    ASSERT_EQ(written, "") << written;
+    auto d = modules::createAvFoundationMediaDecoderFactory()();
+    const auto f = pollUntilFrame(*d, req(p, false));
+    ASSERT_EQ(f.size(), 1u) << k.degrees;
+    EXPECT_EQ(f[0].pixelWidth, k.width) << k.degrees << " degrees";
+    EXPECT_EQ(f[0].pixelHeight, k.height) << k.degrees << " degrees";
+    if (f[0].pixelWidth != k.width || f[0].pixelHeight != k.height) continue;
+    const auto check = [&](int x, int y, const Bgr& want, const char* where) {
+      const auto v = px(f[0], x, y);
+      for (int ch = 0; ch < 3; ++ch) {
+        EXPECT_NEAR(v[ch], want[ch], 24) << k.degrees << " degrees, display " << where << " channel " << ch;
+      }
+    };
+    check(k.width / 4, k.height / 4, k.tl, "TL");
+    check(3 * k.width / 4, k.height / 4, k.tr, "TR");
+    check(k.width / 4, 3 * k.height / 4, k.bl, "BL");
+    check(3 * k.width / 4, 3 * k.height / 4, k.br, "BR");
+    EXPECT_TRUE(d->warnings().empty()) << k.degrees;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Review round (2026-11-22), items 1 and 4. A rotated track used to go through
+// AVAssetReaderVideoCompositionOutput, which (a) forces alpha to 255, so a
+// rotated ProRes 4444 lower-third became an opaque rectangle on air, and (b)
+// renders at a composition frameDuration taken from minFrameDuration, so one
+// close pair of timestamps in a variable-frame-rate phone clip multiplied the
+// frames decoded. Rotation now happens per decoded sample on the GPU.
+// ---------------------------------------------------------------------------
+namespace {
+// BGRA at display (x, y) of a frame from either factory: CPU pixels, or the
+// zero-copy frame's retained CVPixelBuffer.
+std::array<int, 4> pixelAt(const modules::VideoFrame& f, int x, int y) {
+  if (f.hasPixels()) return px(f, x, y);
+  const auto* image = dynamic_cast<const modules::PixelBufferVideoFrame*>(f.gpuPixels.get());
+  if (!image) return {-1, -1, -1, -1};
+  CVPixelBufferRef buffer = image->pixelBuffer();
+  CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
+  const auto* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
+  const uint8_t* p = base + static_cast<size_t>(y) * CVPixelBufferGetBytesPerRow(buffer) + static_cast<size_t>(x) * 4u;
+  std::array<int, 4> out{p[0], p[1], p[2], p[3]};
+  CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
+  return out;
+}
+int frameWidth(const modules::VideoFrame& f) { return f.hasPixels() ? f.pixelWidth : (f.gpuPixels ? f.gpuPixels->width : 0); }
+int frameHeight(const modules::VideoFrame& f) { return f.hasPixels() ? f.pixelHeight : (f.gpuPixels ? f.gpuPixels->height : 0); }
+}  // namespace
+
+TEST(AvfMediaDecoder, ARotatedAlphaClipStaysUprightAndKeepsItsStraightAlpha) {
+  // ProRes 4444, storage 64x36, 90 degrees clockwise, every pixel at straight alpha 0x80.
+  // Opaque output reads alpha 255; premultiplied output reads the colour channels halved.
+  using Bgr = std::array<int, 3>;
+  const Bgr red{0x20, 0x20, 0xE0}, green{0x20, 0xE0, 0x20}, blue{0xE0, 0x20, 0x20}, white{0xD0, 0xD0, 0xD0};
+  const auto p = tmp("rot90-alpha.mov"); Cleanup c{p};
+  corevideo::testing::QuadrantClip options;
+  options.alpha = 0x80;
+  const auto written = corevideo::testing::writeQuadrantClip(p.string(), 64, 36, 90, options);
+  ASSERT_EQ(written, "") << "the alpha fixture could not be written on this OS: " << written;
+  struct Factory { const char* name; std::function<std::unique_ptr<modules::IMediaDecoder>()> make; };
+  const Factory factories[] = {{"bgra", modules::createAvFoundationMediaDecoderFactory()},
+                               {"zero-copy", modules::createAvFoundationZeroCopyMediaDecoderFactory()}};
+  for (const auto& factory : factories) {
+    auto d = factory.make();
+    const auto f = pollUntilFrame(*d, req(p, false));
+    ASSERT_EQ(f.size(), 1u) << factory.name;
+    ASSERT_EQ(frameWidth(f[0]), 36) << factory.name;
+    ASSERT_EQ(frameHeight(f[0]), 64) << factory.name;
+    struct Probe { int x, y; Bgr want; const char* where; };
+    const Probe probes[] = {{9, 16, blue, "TL"}, {27, 16, red, "TR"}, {9, 48, white, "BL"}, {27, 48, green, "BR"}};
+    for (const auto& probe : probes) {
+      const auto v = pixelAt(f[0], probe.x, probe.y);
+      std::fprintf(stderr, "[rotated-alpha] %s %s BGRA(%d,%d,%d,%d)\n", factory.name, probe.where, v[0], v[1], v[2], v[3]);
+      EXPECT_NEAR(v[3], 0x80, 4) << factory.name << " " << probe.where << ": alpha";
+      for (int ch = 0; ch < 3; ++ch) {
+        EXPECT_NEAR(v[ch], probe.want[ch], 24) << factory.name << " " << probe.where << " channel " << ch;
+      }
+    }
+    EXPECT_TRUE(d->warnings().empty()) << factory.name;
+  }
+}
+
+TEST(AvfMediaDecoder, AVariableFrameRateRotatedClipDecodesOneFramePerSourceSample) {
+  // 16 samples at a nominal 30 fps, except that sample 2 lands 1 ms after sample 1,
+  // the way a phone's timestamps jitter. Every sample must come out once, upright,
+  // and nothing in between: a composition timed off minFrameDuration renders a
+  // frame per millisecond here (~500 for a half-second clip).
+  constexpr int kSamples = 16;
+  corevideo::testing::QuadrantClip options;
+  options.frames = kSamples;
+  options.prores = true;  // intra-only, so the 1 ms pair survives the writer (see AvfMediaFixtures.h)
+  for (int i = 0; i < kSamples; ++i) options.ptsMs.push_back(i <= 1 ? i * 33 : (i == 2 ? 34 : (i - 1) * 33 + 1));
+  const auto p = tmp("rot90-vfr.mov"); Cleanup c{p};
+  const auto written = corevideo::testing::writeQuadrantClip(p.string(), 64, 36, 90, options);
+  ASSERT_EQ(written, "") << written;
+  auto d = modules::createAvFoundationMediaDecoderFactory()();
+  auto* pre = dynamic_cast<modules::IMediaVideoPrefetch*>(d.get());
+  ASSERT_NE(pre, nullptr);
+  const auto r = req(p, true);
+  pre->syncMediaClock(r, steadyMs());
+  std::vector<int64_t> ids;
+  int width = 0, height = 0;
+  for (auto deadline = steadyMs() + 8000; steadyMs() < deadline && ids.size() < 2000;) {
+    auto got = pre->prefetchMediaVideo(r, steadyMs());
+    if (got.empty()) {
+      if (pre->mediaEnded()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
+    if (!ids.empty() && got.front().frame.frameId == ids.back()) continue;
+    ids.push_back(got.front().frame.frameId);
+    width = got.front().frame.pixelWidth; height = got.front().frame.pixelHeight;
+  }
+  std::fprintf(stderr, "[vfr] %zu frames for %d samples, %dx%d\n", ids.size(), kSamples, width, height);
+  EXPECT_TRUE(pre->mediaEnded()) << "the clip never reached its end";
+  EXPECT_EQ(static_cast<int>(ids.size()), kSamples) << "decoded frames for " << kSamples << " source samples";
+  EXPECT_EQ(width, 36);
+  EXPECT_EQ(height, 64);
+}
+
+// ---------------------------------------------------------------------------
+// N4 (plan 2026-11-21 Task 6). THE ZERO-COPY DECODER hands over the decoder's
+// own IOSurface-backed buffer: no CPU BGRA copy, and a buffer it handed over is
+// never recycled while a frame still refers to it.
+// ---------------------------------------------------------------------------
+namespace {
+// Centre pixel of a zero-copy frame, read through its retained CVPixelBuffer.
+std::array<int, 4> zeroCopyCentre(const modules::VideoFrame& f) {
+  const auto* image = dynamic_cast<const modules::PixelBufferVideoFrame*>(f.gpuPixels.get());
+  if (!image) return {-1, -1, -1, -1};
+  CVPixelBufferRef buffer = image->pixelBuffer();
+  CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
+  const auto* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
+  const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
+  const uint8_t* p = base + (CVPixelBufferGetHeight(buffer) / 2) * stride + (CVPixelBufferGetWidth(buffer) / 2) * 4u;
+  std::array<int, 4> out{p[0], p[1], p[2], p[3]};
+  CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
+  return out;
+}
+// Decodes frames as fast as the reader allows (prefetch: one new sample per call).
+std::vector<modules::VideoFrame> rollFrames(modules::IMediaDecoder& d, const modules::MediaDecodeRequest& r, int count) {
+  auto* pre = dynamic_cast<modules::IMediaVideoPrefetch*>(&d);
+  std::vector<modules::VideoFrame> frames;
+  if (!pre) return frames;
+  pre->syncMediaClock(r, steadyMs());
+  for (const auto deadline = steadyMs() + 8000; steadyMs() < deadline && static_cast<int>(frames.size()) < count;) {
+    auto got = pre->prefetchMediaVideo(r, steadyMs());
+    if (got.empty()) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
+    frames.push_back(std::move(got.front().frame));
+  }
+  return frames;
+}
+}  // namespace
+
+TEST(AvfMediaDecoder, ZeroCopyFramesCarryTheDecodersSurfaceAndCopyNothing) {
+  // Fixture: 640x360 @30, 30 RED frames.
+  const auto p = tmp("zc.mp4"); Cleanup c{p};
+  ASSERT_EQ(corevideo::testing::writeFlatColourClip(p.string(), 640, 360, 30, {{30, 0x20, 0x20, 0xE0}}), "");
+  const auto copiesBefore = modules::avfMediaDecoderCpuFrameCopiesForTest();
+  auto d = modules::createAvFoundationZeroCopyMediaDecoderFactory()();
+  ASSERT_NE(d, nullptr);
+  const auto frames = rollFrames(*d, req(p, true), 30);
+  ASSERT_EQ(frames.size(), 30u) << "the zero-copy decoder did not roll the clip";
+  for (const auto& f : frames) {
+    ASSERT_TRUE(f.hasGpuPixels()) << "frame " << f.frameId;
+    ASSERT_FALSE(f.hasPixels()) << "frame " << f.frameId << " carries a CPU copy";
+    ASSERT_EQ(f.gpuPixels->backend, modules::GpuVideoFrame::Backend::AppleIOSurfaceBgra);
+    EXPECT_EQ(f.width, 640); EXPECT_EQ(f.height, 360);
+  }
+  const auto centre = zeroCopyCentre(frames.back());
+  EXPECT_NEAR(centre[2], 0xE0, 12) << "the surface holds the clip's picture";
+  EXPECT_EQ(modules::avfMediaDecoderCpuFrameCopiesForTest(), copiesBefore) << "a frame was copied into CPU BGRA";
+  EXPECT_TRUE(d->warnings().empty());
+}
+
+// A frame the decoder handed over is never overwritten by later decodes: the
+// buffer stays out of the decoder's pool while the frame holds it. Fixture:
+// 45 one-frame segments, frame i has B = 0x20 + 4*i (distinct per frame).
+TEST(AvfMediaDecoder, AHeldZeroCopyFrameIsNeverOverwrittenByLaterDecodes) {
+  std::vector<corevideo::testing::FlatSegment> segments;
+  for (int i = 0; i < 45; ++i) segments.push_back({1, static_cast<uint8_t>(0x20 + 4 * i), 0x40, 0x60});
+  const auto p = tmp("zc-held.mp4"); Cleanup c{p};
+  ASSERT_EQ(corevideo::testing::writeFlatColourClip(p.string(), 320, 180, 30, segments), "");
+  auto d = modules::createAvFoundationZeroCopyMediaDecoderFactory()();
+  auto first = rollFrames(*d, req(p, true), 5);
+  ASSERT_EQ(first.size(), 5u);
+  // Hold frames 2, 3 and 4 and note what each shows NOW.
+  std::vector<modules::VideoFrame> held(first.begin() + 2, first.begin() + 5);
+  std::vector<std::array<int, 4>> was;
+  for (const auto& f : held) was.push_back(zeroCopyCentre(f));
+  first.clear();
+  auto later = rollFrames(*d, req(p, true), 40);
+  ASSERT_EQ(later.size(), 40u) << "holding three frames starved the decoder";
+  const auto last = zeroCopyCentre(later.back());
+  later.clear();
+  for (size_t i = 0; i < held.size(); ++i) {
+    const auto now = zeroCopyCentre(held[i]);
+    EXPECT_EQ(now, was[i]) << "held frame " << held[i].frameId << " was overwritten (B " << was[i][0] << " -> " << now[0] << ")";
+    EXPECT_NEAR(now[0], 0x20 + 4 * (2 + static_cast<int>(i)), 6) << "held frame " << i << " is not its own picture";
+  }
+  EXPECT_GT(std::abs(last[0] - was[0][0]), 100) << "fixture: the last frame differs from the held ones";
+}
+
+// N4 (plan default P5): with a Metal compositor the default modules decode
+// zero-copy (and say so in the capability detail); the decoder they build
+// hands over IOSurface frames, not CPU pixels.
+TEST(AvfMediaDecoder, TheDefaultModulesDecodeZeroCopyWithAMetalCompositor) {
+  auto modulesSet = modules::createDefaultModules();
+  ASSERT_TRUE(static_cast<bool>(modulesSet.mediaDecoderFactory));
+  const bool metal = modulesSet.compositor && modulesSet.compositor->rendererName() == "metal";
+  EXPECT_EQ(modulesSet.capabilityConstruction["media-clip-playback"].detail, metal ? "zero-copy" : "");
+  const auto p = tmp("zc-default.mp4"); Cleanup c{p};
+  ASSERT_EQ(corevideo::testing::writeFlatColourClip(p.string(), 64, 64, 30, {{10, 0x20, 0x20, 0xE0}}), "");
+  auto d = modulesSet.mediaDecoderFactory();
+  const auto f = pollUntilFrame(*d, req(p, false));
+  ASSERT_EQ(f.size(), 1u);
+  EXPECT_EQ(f[0].hasGpuPixels(), metal) << "metal=" << metal;
+  EXPECT_EQ(f[0].hasPixels(), !metal) << "metal=" << metal;
 }

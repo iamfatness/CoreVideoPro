@@ -272,20 +272,12 @@ actor ZoomOAuth {
     // Internal (not private) so a test can assert this app NEVER reads or
     // writes the OBS plugin's item ("CoreVideo OBS Plugin").
     static let service = "us.iamfatness.corevideopro.zoom-oauth"
-    private static let account = "tokens"
+    /// The shared KeychainStore item (same service and account as before).
+    static var keychain: KeychainStore { KeychainStore(service: service, account: "tokens") }
 
     private func loadTokens() -> Tokens? {
         if let tokens { return tokens }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
+        guard let data = Self.keychain.read(),
               let decoded = try? JSONDecoder().decode(Tokens.self, from: data),
               !decoded.refreshToken.isEmpty || !decoded.accessToken.isEmpty
         else { return nil }
@@ -295,26 +287,10 @@ actor ZoomOAuth {
 
     private func keychainSave(_ value: Tokens) {
         guard let data = try? JSONEncoder().encode(value) else { return }
-        let base: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
-        ]
-        let update: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(base as CFDictionary, update as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = base
-            add[kSecValueData as String] = data
-            SecItemAdd(add as CFDictionary, nil)
-        }
+        Self.keychain.write(data)
     }
 
     private func keychainDelete() {
-        let base: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
-        ]
-        SecItemDelete(base as CFDictionary)
+        Self.keychain.delete()
     }
 }

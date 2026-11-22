@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "modules/MacCaptureLiveness.h"
 #include "modules/MacCaptureSupport.h"
 
 namespace corevideo::modules {
@@ -48,6 +49,9 @@ struct SckFrameState {
   int width = 0;
   int height = 0;
   int64_t frameId = 0;
+  // Untrusted cadence: SCK sends a frame only when the screen changes, so a static
+  // screen's silence is not loss; only didStopWithError is (plan Task 7, D7).
+  MacCaptureLiveness liveness{/*cadenceTrusted=*/false};
 };
 
 }  // namespace
@@ -95,11 +99,17 @@ struct SckFrameState {
   state->width = width;
   state->height = height;
   ++state->frameId;
+  state->liveness.sample(corevideo::modules::MacCaptureLiveness::steadyNowNs());
 }
 
 - (void)stream:(SCStream*)stream didStopWithError:(NSError*)error {
   (void)stream;
-  (void)error;  // surfaced through the row staying signalPresent=false
+  (void)error;  // also surfaced through the row staying signalPresent=false
+  if (auto state = state_) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->liveness.lost(corevideo::modules::CaptureLossReason::StreamError,
+                         corevideo::modules::MacCaptureLiveness::steadyNowNs());
+  }
 }
 @end
 
@@ -226,6 +236,7 @@ class SckScreenCaptureDevice final : public ICaptureDevice {
       frame.naturalHeight = session.naturalHeight > 0 ? session.naturalHeight : frame.pixelHeight;
       frame.frameId = session.state->frameId;
       frame.timestampMs = timestampMs;
+      frame.captureLiveness = session.state->liveness.value();
       frames.push_back(std::move(frame));  // held frame re-emitted every tick
     }
     replaceVideo(std::move(frames));

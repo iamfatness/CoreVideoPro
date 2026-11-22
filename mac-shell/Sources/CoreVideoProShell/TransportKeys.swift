@@ -10,7 +10,8 @@ import AppKit
 // to a focused control, so an NSEvent local monitor decides first.
 
 struct TransportKeyEvent: Equatable {
-    enum Kind: Equatable { case space, returnKey, b, other }
+    /// `function(n)` = Fn key F1...F12 (graphics hotkeys; transport ignores them).
+    enum Kind: Equatable { case space, returnKey, b, function(Int), other }
     struct Modifiers: OptionSet, Equatable {
         let rawValue: Int
         static let command = Modifiers(rawValue: 1)
@@ -53,7 +54,7 @@ enum TransportKeys {
         case .b:
             guard event.modifiers == [.command, .shift] else { return .ignore }
             wanted = .toggleBlackout
-        case .other:
+        case .function, .other:
             return .ignore
         }
         // Initial press only: a held key never re-Takes or flaps FTB.
@@ -83,6 +84,7 @@ enum TransportKeys {
         switch nsEvent.keyCode {
         case 49: kind = .space
         case 36, 76: kind = .returnKey
+        case let code where GraphicsHotkeys.keyCodes[code] != nil: kind = .function(GraphicsHotkeys.keyCodes[code]!)
         default:
             kind = nsEvent.charactersIgnoringModifiers?.lowercased() == "b" ? .b : .other
         }

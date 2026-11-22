@@ -7,19 +7,37 @@
 #include "graphics/GraphicsResourceBudget.h"
 #include "graphics/GraphicsTemplate.h"
 #include "GraphicsAssetFixture.h"
+#include "modules/ProgramFramePreview.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <thread>
 
+// Runs on every GPU compositor that supports graphics instances: D3D11 on
+// Windows and, since Metal graphics backend G2, Metal on macOS. Tests that open
+// a DXGI shared handle (the private preview) or call the D3D raster directly
+// (thumbnails) stay D3D11-only until G6 / G5.
+#if COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL
+#include <filesystem>
+#include <fstream>
+#include <cstdlib>
 #if COREVIDEO_WITH_D3D11
 #include <d3d11.h>
 #include "compositor/ComPtrLite.h"
 #include "compositor/CompositorOverlayRaster.h"
-#include <filesystem>
-#include <fstream>
-#include <cstdlib>
+#endif
 
+namespace {
+std::unique_ptr<corevideo::modules::ICompositor> createGraphicsTestCompositor() {
+#if COREVIDEO_WITH_D3D11
+  return corevideo::modules::createD3D11Compositor();
+#else
+  return corevideo::modules::createMetalCompositor();
+#endif
+}
+}  // namespace
+
+#if COREVIDEO_WITH_D3D11
 TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndProducesChangingPixels) {
   using corevideo::rpc::Json;
   using corevideo::modules::ComPtrLite;
@@ -105,13 +123,14 @@ TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndPr
     EXPECT_GT(changed,32u) << templateId;
   }
 }
+#endif  // COREVIDEO_WITH_D3D11 (private preview)
 
 TEST(GraphicsCompositionPixel, ReviewedSocialCardsRenderOnlyOnExplicitShowAndRetire) {
   using corevideo::rpc::Json;
   for (const auto& templateId : {std::string("youtube-chat-card"), std::string("twitch-chat-card")}) {
   double now = 0;
   corevideo::graphics::GraphicsInstances graphics{"test-core", [&] { return now; }};
-  auto compositor = corevideo::modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_TRUE(compositor);
   std::ifstream file(std::filesystem::path(COREVIDEO_REPO_ROOT) / "contracts" / "graphics-social" / (templateId + ".json"));
   ASSERT_TRUE(file.good());
@@ -161,18 +180,29 @@ TEST(GraphicsCompositionPixel, ReviewedSocialCardsRenderOnlyOnExplicitShowAndRet
   EXPECT_EQ("Reviewed message", instance().get("programFields")->getString("message"));
   const auto pixels = render();
   ASSERT_EQ(baseline.size(), pixels.size());
+#if COREVIDEO_WITH_METAL
+  // Core Text does not hint. The card's 22-unit source line is 3.7 px tall on
+  // this 320x180 canvas; DirectWrite snaps its stems to whole pixels, Core
+  // Text spreads them (peak coverage ~0.6 even with small-text smoothing), so
+  // the pink never passes 140 over the dark plate. Same rows, same hue test, a
+  // lower brightness floor; the plate (r=20) and white text (r>g+24 false)
+  // still cannot pass it. Cross-rasterizer parity is measured by G4.
+  constexpr int accentFloor = 110;
+#else
+  constexpr int accentFloor = 140;
+#endif
   const auto ink = [&](int y0, int y1, bool accent) {
     int count = 0;
     for (int y = y0; y < y1; ++y) for (int x = 29; x < 200; ++x) {
       const auto at = (y * 320 + x) * 4;
       const int b = pixels[at], g = pixels[at + 1], r = pixels[at + 2];
-      if (accent ? r > 140 && r > g + 24 : b > 155 && g > 155 && r > 155) ++count;
+      if (accent ? r > accentFloor && r > g + 24 : b > 155 && g > 155 && r > 155) ++count;
     }
     return count;
   };
-  EXPECT_GT(ink(135, 142, true), 6);
-  EXPECT_GT(ink(142, 150, false), 6);
-  EXPECT_GT(ink(150, 163, false), 6);
+  EXPECT_GT(ink(135, 142, true), 6) << "source line";
+  EXPECT_GT(ink(142, 150, false), 6) << "author line";
+  EXPECT_GT(ink(150, 163, false), 6) << "message line";
   // The moderation owner clears an on-air card through this same command.
   ASSERT_TRUE(command("graphics-instance-trigger", {{"action", "clear"}}));
   EXPECT_EQ(baseline, render());
@@ -187,7 +217,7 @@ TEST(GraphicsCompositionPixel, ReviewedSocialCardsRenderOnlyOnExplicitShowAndRet
 }
 
 TEST(GraphicsCompositionPixel, LocalScreenCaptureDrawFactsHonorPresentationSuppression) {
-  auto compositor=corevideo::modules::createD3D11Compositor();ASSERT_TRUE(compositor);
+  auto compositor=createGraphicsTestCompositor();ASSERT_TRUE(compositor);
   corevideo::modules::VideoFrame image;image.participantId="capture:screen:0";image.sourceGeneration=7;
   image.width=image.pixelWidth=image.height=image.pixelHeight=1;image.pixelStride=4;
   image.pixels=std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{20,40,100,255});
@@ -208,7 +238,7 @@ TEST(GraphicsCompositionPixel, LocalCameraAndScreenLowerThirdsDrawAndRejectStale
     corevideo::modules::VideoFrame image; image.participantId=id; image.width=image.pixelWidth=2; image.height=image.pixelHeight=2; image.pixelStride=8;
     image.pixels=std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{100,40,20,255,100,40,20,255,100,40,20,255,100,40,20,255});
     source.setLatest(image); auto frames=source.poll(0).video; state.observeSources({},0,frames);
-    auto compositor=corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor); int sequence=0;
+    auto compositor=createGraphicsTestCompositor(); ASSERT_TRUE(compositor); int sequence=0;
     auto basePlan=[&] {
       corevideo::modules::CompositorRenderPlan plan;plan.width=320;plan.height=180;
       corevideo::modules::CompositorRenderPlanLayer video;video.layerId="camera";video.sourceId=id;video.participantId=id;
@@ -248,7 +278,7 @@ TEST(GraphicsCompositionPixel, EveryCuratedLookReachesActualNativeProgramPixels)
   using corevideo::rpc::Json;
   for (const auto& definition:corevideo::graphics::GraphicsTemplate::curated()) {
     double now=0; corevideo::graphics::GraphicsInstances state{"test-core",[&]{return now;}};
-    auto compositor=corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor); int sequence=0;
+    auto compositor=createGraphicsTestCompositor(); ASSERT_TRUE(compositor); int sequence=0;
     const auto command=[&](const std::string& type,Json::Object fields) {
       fields["schemaVersion"]=1; fields["coreEpoch"]="test-core"; fields["clientId"]="curated-qa"; fields["instanceId"]="featured";
       fields["requestId"]="curated-"+std::to_string(++sequence); fields["expectedRevision"]=1;
@@ -277,7 +307,7 @@ TEST(GraphicsCompositionPixel, EveryCuratedLookReachesActualNativeProgramPixels)
 }
 
 TEST(GraphicsCompositionPixel, VerifiedLogoInCompatibilityLookChangesActualProgramAndPrivatePreviewUsesSameBytes) {
- using corevideo::rpc::Json;corevideo::graphics::GraphicsInstances graphics{"test-core"};auto compositor=corevideo::modules::createD3D11Compositor();ASSERT_TRUE(compositor);
+ using corevideo::rpc::Json;corevideo::graphics::GraphicsInstances graphics{"test-core"};auto compositor=createGraphicsTestCompositor();ASSERT_TRUE(compositor);
  int sequence=0;const auto command=[&](const std::string& type,Json::Object body) {body["schemaVersion"]=1;body["coreEpoch"]="test-core";body["clientId"]="logo-compat-qa";body["requestId"]="logo-"+std::to_string(++sequence);body["instanceId"]="logo";if(!body.count("expectedRevision")) body["expectedRevision"]=1;return graphics.apply(Json::Object{{"type",type},{"graphics",body}});};
  const auto row=[&]() -> const Json& {return graphics.snapshot().get("instances")->asArray().front();};
  const auto render=[&] {corevideo::modules::CompositorRenderPlan plan;plan.width=640;plan.height=360;graphics.append(plan,false);auto frame=compositor->render(plan,{});graphics.observe(frame);return frame.preview.bgra;};
@@ -294,7 +324,7 @@ TEST(GraphicsCompositionPixel, VerifiedLogoInCompatibilityLookChangesActualProgr
 TEST(GraphicsCompositionPixel, ClockTicksAdoptPreparedDigitsWithoutBlankingProgramOrChangingEditRevision) {
   using corevideo::rpc::Json;
   double now=0; corevideo::graphics::GraphicsInstances state{"test-core",[&]{return now;}};
-  auto compositor=corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor); int sequence=0;
+  auto compositor=createGraphicsTestCompositor(); ASSERT_TRUE(compositor); int sequence=0;
   const auto command=[&](const std::string& type,Json::Object fields) {
     fields["schemaVersion"]=1; fields["coreEpoch"]="test-core"; fields["clientId"]="clock-pixel-qa"; fields["instanceId"]="clock";
     fields["requestId"]="clock-pixel-"+std::to_string(++sequence); fields["expectedRevision"]=1;
@@ -333,7 +363,7 @@ TEST(GraphicsCompositionPixel, VerifiedPackageImagePreservesAlphaAndAcceptedByte
   const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(), error); ASSERT_TRUE(asset);
   graphicsTest::Package package(asset); const auto rootBytes = package.root.u8string(); const std::string root(rootBytes.begin(),rootBytes.end());
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
-  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor);
+  auto compositor = createGraphicsTestCompositor(); ASSERT_TRUE(compositor);
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
     payload["schemaVersion"] = 1; payload["requestId"] = "image-request-" + std::to_string(++sequence);
@@ -370,7 +400,7 @@ TEST(GraphicsCompositionPixel, FullyTransparentPngRevealsBackgroundAndKeepsParti
   const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(0), error); ASSERT_TRUE(asset);
   graphicsTest::Package package(asset); const auto rootBytes = package.root.u8string(); const std::string root(rootBytes.begin(),rootBytes.end());
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
-  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor);
+  auto compositor = createGraphicsTestCompositor(); ASSERT_TRUE(compositor);
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
     payload["schemaVersion"] = 1; payload["requestId"] = "image-request-" + std::to_string(++sequence);
@@ -407,7 +437,7 @@ TEST(GraphicsCompositionPixel, UploadedDeclarativeLogoPreservesAlphaAspectAndAcc
   const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(0), error); ASSERT_TRUE(asset);
   graphicsTest::Package package(asset); const auto rootBytes = package.root.u8string(); const std::string root(rootBytes.begin(),rootBytes.end());
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
-  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor);
+  auto compositor = createGraphicsTestCompositor(); ASSERT_TRUE(compositor);
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
     payload["schemaVersion"] = 1; payload["requestId"] = "image-request-" + std::to_string(++sequence);
@@ -453,7 +483,7 @@ TEST(GraphicsCompositionPixel, UploadedDeclarativeLogoPreservesAlphaAspectAndAcc
 
 TEST(GraphicsRpcPixel, CommandsReachCoreStateAndActualProgramPixels) {
   auto modules = corevideo::modules::createStubModules();
-  modules.compositor = corevideo::modules::createD3D11Compositor();
+  modules.compositor = createGraphicsTestCompositor();
   ASSERT_NE(modules.compositor, nullptr);
   corevideo::core::MediaCore core(std::move(modules));
   corevideo::rpc::JsonRpcServer server(core);
@@ -570,7 +600,7 @@ TEST(GraphicsRpcPixel, CommandsReachCoreStateAndActualProgramPixels) {
 }
 
 TEST(GraphicsCompositionPixel, NativeFadeAndReversalReachActualGpuPixels) {
-  auto compositor = corevideo::modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_NE(compositor, nullptr);
   using corevideo::rpc::Json;
   double now = 0;
@@ -624,7 +654,7 @@ TEST(GraphicsCompositionPixel, NativeFadeAndReversalReachActualGpuPixels) {
 
 TEST(GraphicsCompositionPixel, TextEffectsDrawShadowOutlineAndFill) {
   using namespace corevideo;
-  auto compositor = modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_TRUE(compositor);
   auto input = std::make_shared<graphics::GraphicsTemplateInput>();
   std::string error;
@@ -668,7 +698,7 @@ TEST(GraphicsCompositionPixel, TextEffectsDrawShadowOutlineAndFill) {
 
 TEST(GraphicsCompositionPixel, DataTablePublishesCompleteRowsAndKeepsAcceptedPixelsOnFailure) {
   using corevideo::rpc::Json;
-  auto compositor = corevideo::modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_TRUE(compositor);
   corevideo::graphics::GraphicsInstances graphics{"table-core"};
   int sequence = 0;
@@ -739,7 +769,7 @@ TEST(GraphicsCompositionPixel, DataTablePublishesCompleteRowsAndKeepsAcceptedPix
 
 TEST(GraphicsCompositionPixel, NewShapesDrawCoverageAndInsetStrokes) {
   using namespace corevideo;
-  auto compositor = modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_TRUE(compositor);
   modules::CompositorRenderPlan plan;
   plan.width = 320;
@@ -787,7 +817,7 @@ TEST(GraphicsCompositionPixel, NewShapesDrawCoverageAndInsetStrokes) {
 }
 
 TEST(GraphicsCompositionPixel, BarLeadsTheWordsOnProgramPixels) {
-  auto compositor = corevideo::modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_NE(compositor, nullptr);
   using corevideo::rpc::Json;
   double now = 0;
@@ -895,7 +925,7 @@ TEST(GraphicsCompositionPixel, BarLeadsTheWordsOnProgramPixels) {
     EXPECT_NEAR((black[channel] + opaque[channel]) / 2., blended[channel], 2.);
 }
 
-#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 TEST(GraphicsCompositionPixel, ThumbnailForALayeredTemplateMatchesItsSettledDesign) {
   using namespace corevideo;
   const auto manifest = graphics::test::motionFixture("bar-first.json");
@@ -929,7 +959,7 @@ TEST(GraphicsCompositionPixel, ThumbnailForALayeredTemplateMatchesItsSettledDesi
 
 TEST(GraphicsCompositionPixel, AutomaticIntroductionUsesActualSourceDrawAndClearPreventsReplay) {
   using corevideo::rpc::Json;
-  auto compositor = corevideo::modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_NE(compositor, nullptr);
   double now=0;corevideo::graphics::GraphicsInstances graphics{"test-core",[&]{return now;}};
   corevideo::modules::ZoomEngineParticipant participant;
@@ -982,7 +1012,7 @@ TEST(GraphicsCompositionPixel, AutomaticIntroductionUsesActualSourceDrawAndClear
 
 TEST(GraphicsCompositionPixel, SourceGenerationReplacementCannotBurnThePreviousGuestIntoNewVideo) {
   using corevideo::rpc::Json;
-  auto compositor = corevideo::modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_NE(compositor, nullptr);
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
   corevideo::modules::ZoomEngineParticipant participant;
@@ -1055,7 +1085,7 @@ TEST(GraphicsCompositionPixel, SourceGenerationReplacementCannotBurnThePreviousG
 
 TEST(GraphicsCompositionPixel, FailedFontPreparationRetainsAcceptedPixelsAndRepairsWithoutRestart) {
   using corevideo::rpc::Json;
-  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_NE(compositor, nullptr);
+  auto compositor = createGraphicsTestCompositor(); ASSERT_NE(compositor, nullptr);
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
@@ -1099,7 +1129,7 @@ TEST(GraphicsCompositionPixel, FailedFontPreparationRetainsAcceptedPixelsAndRepa
 
 TEST(GraphicsCompositionPixel, AcceptedRasterSurvivesDraftCachePressureAndANewRendererWithoutAnotherShow) {
   using corevideo::rpc::Json;
-  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_NE(compositor, nullptr);
+  auto compositor = createGraphicsTestCompositor(); ASSERT_NE(compositor, nullptr);
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
@@ -1142,13 +1172,21 @@ TEST(GraphicsCompositionPixel, AcceptedRasterSurvivesDraftCachePressureAndANewRe
   graphics.append(original, false);
   ASSERT_EQ(1u, original.layers.size());
   const auto oldDevice = original.layers.front().graphicsPreparedResource->deviceIdentity;
-  auto replacement = corevideo::modules::createD3D11Compositor(); ASSERT_NE(replacement, nullptr);
+  auto replacement = createGraphicsTestCompositor(); ASSERT_NE(replacement, nullptr);
   bool restored = false;
   ASSERT_TRUE(until([&] { restored = render(*replacement) == accepted; return restored; }, *replacement));
   corevideo::modules::CompositorRenderPlan recovered; recovered.width = 320; recovered.height = 180;
   graphics.append(recovered, false);
   ASSERT_EQ(1u, recovered.layers.size());
+#if COREVIDEO_WITH_D3D11
+  // A new D3D11 compositor creates a new device: the resource is re-prepared.
   EXPECT_NE(oldDevice, recovered.layers.front().graphicsPreparedResource->deviceIdentity);
+#else
+  // Metal device identity is the GPU's registryID, stable for the process: a
+  // second compositor on the same GPU shares the device and may adopt the
+  // accepted texture directly. A different GPU (eGPU) would differ.
+  EXPECT_EQ(oldDevice, recovered.layers.front().graphicsPreparedResource->deviceIdentity);
+#endif
   EXPECT_EQ(1., row().getNumber("programRevision"));
   EXPECT_EQ(double(latestRevision), row().getNumber("revision"));
   EXPECT_EQ("Accepted Program", row().get("programFields")->getString("name"));
@@ -1158,7 +1196,7 @@ TEST(GraphicsCompositionPixel, AcceptedRasterSurvivesDraftCachePressureAndANewRe
 
 TEST(GraphicsCompositionPixel, AcceptedCuePixelsStaySeparateFromPrivateEditsAndProgramUntilExplicitShow) {
   using corevideo::rpc::Json;
-  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_NE(compositor, nullptr);
+  auto compositor = createGraphicsTestCompositor(); ASSERT_NE(compositor, nullptr);
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
@@ -1200,7 +1238,7 @@ TEST(GraphicsCompositionPixel, AcceptedCuePixelsStaySeparateFromPrivateEditsAndP
 
 TEST(GraphicsCompositionPixel, EightProgramAndCueInstancesRefuseExcessRevisionsWithoutLosingAcceptedPixels) {
   using corevideo::rpc::Json;
-  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_NE(compositor, nullptr);
+  auto compositor = createGraphicsTestCompositor(); ASSERT_NE(compositor, nullptr);
   corevideo::graphics::GraphicsInstances graphics{"test-core"};
   int operation = 0, revisionClock = 0;
   std::array<int, 8> revisions{};
@@ -1264,7 +1302,7 @@ TEST(GraphicsCompositionPixel, EightProgramAndCueInstancesRefuseExcessRevisionsW
 
 TEST(GraphicsCompositionPixel, CrawlUsesPreparedTextAndClipsBothDirections) {
   using namespace corevideo;
-  auto compositor = modules::createD3D11Compositor();
+  auto compositor = createGraphicsTestCompositor();
   ASSERT_TRUE(compositor);
   modules::CompositorRenderPlan plan;
   plan.width = 320; plan.height = 180;
@@ -1312,5 +1350,80 @@ TEST(GraphicsCompositionPixel, CrawlUsesPreparedTextAndClipsBothDirections) {
     EXPECT_EQ(blank, compositor->render(plan, {}).preview.bgra);
   }
 }
+
+#if COREVIDEO_WITH_METAL
+// Metal graphics backend G2 acceptance through the real core: the Metal core
+// advertises graphics-instances, refuses nothing as backend-not-built, and a
+// cued lower third, shown, reaches Program pixels INSIDE its placement only.
+// compact-solid is a lower-third family template anchored lower-left, so its
+// pixels are in the lower half; the top 40% of Program must not change.
+TEST(GraphicsRpcPixel, MetalCoreAdvertisesGraphicsAndACuedLowerThirdReachesProgramPixels) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = createGraphicsTestCompositor();
+  ASSERT_NE(modules.compositor, nullptr);
+  corevideo::core::MediaCore core(std::move(modules));
+  corevideo::rpc::JsonRpcServer server(core);
+  using corevideo::rpc::Json;
+  const auto state = [&] {
+    auto response = server.handle(Json::Object{{"id", "tick"}, {"type", "media-core-sync"}, {"commands", Json::Array{}}});
+    return response.get("snapshot") ? *response.get("snapshot") : Json{};
+  };
+  const auto initial = state();
+  const auto& capabilities = initial.get("profile")->get("capabilities")->asArray();
+  EXPECT_TRUE(std::any_of(capabilities.begin(), capabilities.end(), [](const Json& c) { return c.asString() == "graphics-instances"; }))
+      << "a Metal core must advertise graphics-instances";
+  const auto epoch = initial.get("graphics")->getString("coreEpoch");
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    const auto operation = "metal-" + std::to_string(++sequence);
+    payload["schemaVersion"] = 1; payload["requestId"] = operation; payload["clientId"] = "metal-g2";
+    payload["coreEpoch"] = epoch; payload["instanceId"] = "guest";
+    auto response = server.handle(Json::Object{{"id", operation}, {"type", type}, {"graphics", std::move(payload)}});
+    const auto* snapshot = response.get("snapshot");
+    EXPECT_NE(snapshot, nullptr);
+    if (!snapshot) return Json{};
+    for (const auto& failure : snapshot->get("commandProtocolFailures")->asArray())
+      EXPECT_NE(failure.asString(), "graphics-instance-backend-not-built") << type;
+    EXPECT_TRUE(snapshot->get("graphics")->get("lastResult")->get("accepted")->asBool()) << type;
+    return *snapshot;
+  };
+  const auto blank = corevideo::modules::base64Decode(initial.get("programFramePreview")->getString("bgraBase64"));
+  const int width = int(initial.get("programFramePreview")->getNumber("width"));
+  const int height = int(initial.get("programFramePreview")->getNumber("height"));
+  ASSERT_EQ(blank.size(), size_t(width) * height * 4);
+  command("graphics-instance-create", {{"templateId", "compact-solid"}, {"templateVersion", 1}, {"scope", "global"},
+      {"fields", Json::Object{{"name", "Metal guest"}, {"title", "On Program"}}},
+      {"animations", Json::Object{{"in", Json::Object{{"type", "none"}}}, {"out", Json::Object{{"type", "none"}}}}}});
+  command("graphics-instance-cue", {{"expectedRevision", 1}});
+  Json cued;
+  const auto cueLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do { cued = state(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  while (cued.get("graphics")->get("instances")->asArray().front().getNumber("cueRevision") != 1 &&
+         std::chrono::steady_clock::now() < cueLimit);
+  ASSERT_EQ(1., cued.get("graphics")->get("instances")->asArray().front().getNumber("cueRevision"));
+  EXPECT_EQ(blank, corevideo::modules::base64Decode(cued.get("programFramePreview")->getString("bgraBase64")))
+      << "a cue alone must not reach Program";
+  command("graphics-instance-trigger", {{"expectedRevision", 1}, {"target", "cue"}, {"action", "show"}});
+  Json onAir;
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do { onAir = state(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  while (onAir.get("graphics")->get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame") == 0 &&
+         std::chrono::steady_clock::now() < limit);
+  const auto& row = onAir.get("graphics")->get("instances")->asArray().front();
+  ASSERT_GT(row.getNumber("firstDrawSubmittedFrame"), 0.);
+  EXPECT_EQ("metal", row.get("programResource")->getString("backend"));
+  const auto pixels = corevideo::modules::base64Decode(onAir.get("programFramePreview")->getString("bgraBase64"));
+  ASSERT_EQ(pixels.size(), blank.size());
+  int changedTop = 0, changedBottom = 0;
+  for (int y = 0; y < height; ++y)
+    for (int x = 0; x < width; ++x) {
+      const size_t at = (size_t(y) * width + x) * 4;
+      if (!std::equal(pixels.begin() + at, pixels.begin() + at + 3, blank.begin() + at))
+        (y < height * 2 / 5 ? changedTop : changedBottom)++;
+    }
+  EXPECT_EQ(changedTop, 0) << "a lower third changed pixels in the top of Program";
+  EXPECT_GT(changedBottom, 200) << "the shown graphic never reached Program";
+}
+#endif  // COREVIDEO_WITH_METAL
 
 #endif

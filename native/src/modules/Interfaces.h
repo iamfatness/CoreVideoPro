@@ -257,6 +257,9 @@ struct ProgramFrameSharedTexture {
 struct ParticipantSharedTexture {
   std::string participantId;
   std::string sharedHandleHex;
+  // macOS only (grading Phase 2, G5): the global IOSurface id of a Metal grade-preview or scope
+  // surface. 0 on Windows, where sharedHandleHex is the identity; never both set.
+  uint32_t iosurfaceId = 0;
   int width = 0;
   int height = 0;
   std::string format = "B8G8R8A8_UNORM";
@@ -324,6 +327,11 @@ struct GraphicsFrameFact {
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource;
   std::array<uint8_t,32> requestedContentHash{};
   bool hasRequestedContentHash=false;
+  // Optional SHARED reason text (Metal graphics backend G2 review): a raster
+  // warning carried by reference so a per-frame fact does not copy it. When
+  // set it takes precedence over `reason`. Readers use reasonText().
+  std::shared_ptr<const std::string> sharedReason;
+  const std::string& reasonText() const { return sharedReason ? *sharedReason : reason; }
 };
 
 // NDI graphics key: one straight-alpha BGRA readback of the graphics-only
@@ -1040,6 +1048,10 @@ struct OutputSender {
   std::string sendArtifactPath;
   int64_t sendBytesWritten = 0;
   std::string runtimeDetail;
+  // POSIX: whether the transport child (ffmpeg) runs under corevideo-child-guard,
+  // i.e. dies with the core even on SIGKILL. Absent = not applicable / not
+  // launched yet (Windows uses a job object and never sets it).
+  std::optional<bool> childGuarded;
   // PR22: every destination carries a lifecycle and a terminal outcome. Before
   // this an RTMP/SRT/NDI stream that died mid-show had NOTHING an operator or a
   // support bundle could read as a state — only free-text adapter status
@@ -1241,6 +1253,7 @@ struct CompositorSourceTexStats {
   uint64_t cacheHits = 0;       // draws served from the cache with no upload
   uint64_t textureCreates = 0;  // per-source GPU texture set (re)creations
   uint64_t scratchUploads = 0;  // legacy shared-scratch uploads (frames with no stable source id)
+  uint64_t zeroCopyBinds = 0;   // native GPU images wrapped as a texture with NO upload (Metal IOSurface, N4)
 };
 
 // One immutable monitor job. Geometry/tally and pixels travel together; a late
@@ -1409,6 +1422,10 @@ class ICompositor {
   virtual void submitGradePreviews(MonitorRenderRequest /*request*/) {}
   [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestGradePreviews() const { return {}; }
   [[nodiscard]] virtual MonitorRenderDiagnostics gradePreviewDiagnostics() const { return {}; }
+  // The monitor load-shedding divisor (core/MonitorShedPolicy.h), handed over on each transition
+  // (1 = healthy). Optional analysis work (Metal grade previews) gives way by it; the default
+  // ignores it, so a compositor that does not override is unchanged (grading Phase 2, P4).
+  virtual void setMonitorShedDivisor(int /*divisor*/) {}
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}
@@ -1477,6 +1494,13 @@ class ICompositor {
   // (its own render target, mirroring renderMultiview) and returns its handle/
   // dimensions. Defaulted to an empty texture so the software/stub compositor
   // stays valid; only the GPU adapter implements it.
+  // Sources Phase 2 (S6): the source sheet, a fixed 5x2 grid where cell N is Show Input
+  // slot N+1, rendered only while the Sources tab holds the demand lease. Default: no
+  // texture (a compositor without it leaves the rows on their placeholder).
+  virtual ProgramFrameSharedTexture renderSourceSheet(const CompositorRenderPlan& /*renderPlan*/,
+                                                      const std::vector<VideoFrame>& /*frames*/) {
+    return {};
+  }
   virtual ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) {
     (void)renderPlan;
     (void)frames;
@@ -2087,6 +2111,10 @@ std::unique_ptr<ICompositor> createMetalCompositor();
 std::function<std::unique_ptr<IMediaDecoder>()> createMediaFoundationMediaDecoderFactory();
 // One AVFoundation-backed MediaClipDecoder per call; empty unless COREVIDEO_WITH_AVF_MEDIA_DECODER.
 std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory();
+// The same decoder handing Metal the decoder's own IOSurface-backed buffer
+// (no CPU BGRA copy, plan 2026-11-21 N4). Only for a Metal compositor: its
+// frames carry no CPU pixels. Empty when the option is off.
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationZeroCopyMediaDecoderFactory();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 // macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
 std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();

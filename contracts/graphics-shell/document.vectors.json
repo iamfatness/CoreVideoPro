@@ -1,0 +1,2684 @@
+{
+  "area": "document",
+  "description": "GraphicsPlaylistRow.IsValid and GraphicsDocumentStore.LoadAsync outcomes (plan D3: unported sections are counted, not re-validated).",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "row-default-guest",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-default-title",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "title",
+          "kind": "title",
+          "name": "Show title",
+          "hotkey": "F2",
+          "playOutAfterMs": 0,
+          "templateId": "centered-title",
+          "templateVersion": 1,
+          "fields": {
+            "heading": "In conversation",
+            "subtitle": "Stories worth sharing",
+            "text-size": 64
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-default-logo",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "logo",
+          "kind": "logo",
+          "name": "Logo",
+          "hotkey": "F3",
+          "playOutAfterMs": 0,
+          "templateId": "corner-logo",
+          "templateVersion": 1,
+          "fields": {
+            "logo": "logo",
+            "show-logo": true
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-default-live-bug",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "live-bug",
+          "kind": "liveBug",
+          "name": "LIVE bug",
+          "hotkey": "F4",
+          "playOutAfterMs": 0,
+          "templateId": "clock-panel",
+          "templateVersion": 1,
+          "fields": {
+            "label": "LIVE",
+            "time": "12:34:56",
+            "text-size": 56
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": true,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-default-sponsor",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "sponsor",
+          "kind": "sponsor",
+          "name": "Sponsor card",
+          "hotkey": "F5",
+          "playOutAfterMs": 15000,
+          "templateId": "",
+          "templateVersion": 0,
+          "fields": {},
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-minimal",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "a",
+          "name": "A"
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-bad-id-uppercase",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "Bad",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-id-49-chars",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-id-48-chars",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-unknown-kind",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "crawl",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-empty-name",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-name-129",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-name-wrong-type",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": 5,
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-hotkey-f13",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F13",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-hotkey-f0",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F0",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-hotkey-lower",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "f1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-hotkey-f12",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F12",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-play-out-5000",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 5000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-play-out-15000",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 15000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-template-without-version",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 0,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-version-without-template",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-template-version-fraction",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1.5,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-style-center-anchor",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "center",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-style-name-size-200",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 200,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-style-bad-colour",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#12345",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-style-missing-uses-default",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-motion-ok",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": {
+            "layers": "whole",
+            "in": {
+              "type": "slide",
+              "direction": "up",
+              "easing": "ease-out",
+              "durationMs": 300
+            },
+            "out": {
+              "type": "fade",
+              "durationMs": 200
+            }
+          },
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-motion-bad-type",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": {
+            "in": {
+              "type": "zoom"
+            },
+            "out": {}
+          },
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-motion-too-long",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": {
+            "in": {
+              "durationMs": 3001
+            },
+            "out": {}
+          },
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-variants-ok",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [
+            {
+              "id": "v1",
+              "name": "Ada",
+              "title": "Host"
+            },
+            {
+              "id": "v2",
+              "name": "Bo"
+            }
+          ],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-variants-duplicate-ids",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [
+            {
+              "id": "v1",
+              "name": "Ada"
+            },
+            {
+              "id": "v1",
+              "name": "Bo"
+            }
+          ],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-variant-title-257",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [
+            {
+              "id": "v1",
+              "name": "Ada",
+              "title": "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"
+            }
+          ],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-placement-ok",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": {
+            "anchor": "upper-center",
+            "x": 0,
+            "y": 10,
+            "scale": 1.5
+          },
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-placement-scale-5",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": {
+            "anchor": "center",
+            "x": 0,
+            "y": 0,
+            "scale": 5
+          },
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-clock-countdown",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": {
+            "mode": "countdown",
+            "zone": "utc",
+            "format": "hm",
+            "finish": "hide",
+            "offsetMinutes": 0,
+            "durationSeconds": 600
+          }
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-clock-bad-mode",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": {
+            "mode": "stopwatch"
+          }
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-image-ok",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": {
+            "templateId": "logo-pack",
+            "templateVersion": 1,
+            "assetId": "logo"
+          },
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-image-missing-asset",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": {
+            "templateId": "logo-pack",
+            "templateVersion": 1,
+            "assetId": ""
+          },
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-fields-33",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "f0": "x",
+            "f1": "x",
+            "f2": "x",
+            "f3": "x",
+            "f4": "x",
+            "f5": "x",
+            "f6": "x",
+            "f7": "x",
+            "f8": "x",
+            "f9": "x",
+            "f10": "x",
+            "f11": "x",
+            "f12": "x",
+            "f13": "x",
+            "f14": "x",
+            "f15": "x",
+            "f16": "x",
+            "f17": "x",
+            "f18": "x",
+            "f19": "x",
+            "f20": "x",
+            "f21": "x",
+            "f22": "x",
+            "f23": "x",
+            "f24": "x",
+            "f25": "x",
+            "f26": "x",
+            "f27": "x",
+            "f28": "x",
+            "f29": "x",
+            "f30": "x",
+            "f31": "x",
+            "f32": "x"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-source-mapping-bad-key",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {
+            "Name": "name"
+          },
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "row-source-mapping-ok",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {
+            "name": "pronouns"
+          },
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "row-image-path-nul",
+      "operation": "validateRow",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": "a\u0000b",
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "load-missing",
+      "operation": "load",
+      "input": {},
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "New graphics workspace; automation is unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-minimal-v3",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-v1-upgrades",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":1,\"showId\":\"old\"}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.",
+        "showId": "old",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-v2-upgrades",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":2,\"playlist\":[{\"id\":\"a\",\"name\":\"A\"}]}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": [
+          "a"
+        ]
+      }
+    },
+    {
+      "id": "load-v4-read-only",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":4,\"playlist\":[]}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics schema 4 is newer than this build. Read-only; the original document is preserved.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-schema-0",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":0}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-schema-missing",
+      "operation": "load",
+      "input": {
+        "primary": "{\"showId\":\"x\"}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-schema-string",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":\"3\"}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-duplicate-nested-key",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"playlist\":[{\"id\":\"a\",\"name\":\"A\",\"name\":\"B\"}]}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-duplicate-top-key",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"showId\":\"a\",\"showId\":\"b\"}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-authority-volt",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"authority\":\"volt\"}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.",
+        "showId": "default",
+        "authority": "volt",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-authority-bad",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"authority\":\"instances\"}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-show-id-blank",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"showId\":\"  \"}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-show-id-65",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"showId\":\"sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss\"}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-playlist-duplicate-ids",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"playlist\":[{\"id\":\"a\",\"name\":\"A\"},{\"id\":\"a\",\"name\":\"B\"}]}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-playlist-invalid-row",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"playlist\":[{\"id\":\"a\",\"name\":\"\"}]}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-cues-65",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"cues\":[{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}]}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-template-bad-hash",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"templates\":[{\"templateId\":\"t\",\"templateVersion\":1,\"manifestHash\":\"xyz\",\"definition\":{}}]}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document is invalid. Original retained; repair or restore a backup before saving.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-template-ok",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"templates\":[{\"templateId\":\"t\",\"templateVersion\":1,\"manifestHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"definition\":{},\"packageRoot\":\"\"}]}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-unknown-section-kept",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"futureSection\":{\"a\":1}}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-corrupt-primary-good-backup",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":3,\"playlist\":[{\"id\":\"a\",\"name\":\"\"}]}",
+        "backup": "{\"schemaVersion\":3,\"playlist\":[{\"id\":\"b\",\"name\":\"B\"}]}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": true,
+        "status": "Recovered the last complete graphics backup. Graphics remain hidden and automation unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": [
+          "b"
+        ]
+      }
+    },
+    {
+      "id": "load-no-primary-good-backup",
+      "operation": "load",
+      "input": {
+        "backup": "{\"schemaVersion\":3,\"playlist\":[{\"id\":\"b\",\"name\":\"B\"}]}"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": true,
+        "status": "Recovered the last complete graphics backup. Graphics remain hidden and automation unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": [
+          "b"
+        ]
+      }
+    },
+    {
+      "id": "load-both-invalid",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":0}",
+        "backup": "{\"showId\":\"x\"}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document unavailable: Missing graphics schema.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-backup-duplicate-key",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":0}",
+        "backup": "{\"schemaVersion\":3,\"a\":1,\"a\":2}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document unavailable: Duplicate graphics key.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-backup-invalid-playlist",
+      "operation": "load",
+      "input": {
+        "primary": "{\"schemaVersion\":0}",
+        "backup": "{\"schemaVersion\":3,\"playlist\":[{\"id\":\"a\",\"name\":\"\"}]}"
+      },
+      "expected": {
+        "readOnly": true,
+        "recoveredBackup": false,
+        "status": "Graphics document unavailable: Invalid saved graphics playlist.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": []
+      }
+    },
+    {
+      "id": "load-windows-show",
+      "operation": "load",
+      "input": {
+        "primaryFile": "documents/windows-show.json"
+      },
+      "expected": {
+        "readOnly": false,
+        "recoveredBackup": false,
+        "status": "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.",
+        "showId": "default",
+        "authority": "legacy",
+        "playlistIds": [
+          "guest",
+          "title",
+          "logo",
+          "live-bug",
+          "sponsor"
+        ]
+      }
+    }
+  ]
+}

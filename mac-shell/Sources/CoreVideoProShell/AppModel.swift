@@ -70,6 +70,8 @@ struct SceneRoute {
     // a green screen" — so the setting lives on the slot and is applied to every
     // route bound to it.
     var chromaKey: JSONObject?
+    // A media slot's identity (mediaAssetId/Name/Kind/Path/Loop), merged as-is.
+    var media: JSONObject?
 
     var json: JSONObject {
         var object: JSONObject = [
@@ -79,6 +81,7 @@ struct SceneRoute {
         if let chromaKey { object["chromaKey"] = chromaKey }
         if let participantId { object["participantId"] = participantId }
         if let captureDeviceId { object["captureDeviceId"] = captureDeviceId }
+        if let media { object.merge(media) { _, new in new } }
         if let rect {
             object["rect"] = ["x": rect.x, "y": rect.y, "width": rect.w, "height": rect.h]
         }
@@ -138,6 +141,10 @@ struct AudioStrip: Identifiable, Equatable {
     /// PRE-MUTE input level, 0..100 (#481): measured before mute/fader, so a muted
     /// guest who is talking still shows on a dimmed meter instead of silence.
     var inputLevel = 0
+    /// Muted IN ZOOM (the roster's flag), display only: never the A1's mute (#481).
+    var sourceMuted = false
+    /// The channel compressor's measured gain reduction (core gainReductionDb).
+    var gainReductionDb = 0.0
 }
 
 // Show-input slot (inputs 1–10): the operator's stable mapping from "what's
@@ -146,7 +153,7 @@ struct AudioStrip: Identifiable, Equatable {
 // membership; assignedIds/multiview/scenes derive from them.
 struct ShowInputSlot: Identifiable, Equatable {
     var id: Int                 // 1...10 (var only so a drag-swap can renumber)
-    var kind = "unassigned"     // unassigned | zoom | capture
+    var kind = "unassigned"     // unassigned | zoom | capture | media (sourceId = bin asset id)
     var sourceId = ""           // participant id or capture device id
     var name = ""               // editable display name
     // The source's OWN name (participant / device). A hand-typed `name` lasts
@@ -249,7 +256,14 @@ struct ChannelInserts: Equatable {
 // Every field is optional core-side and absent keys keep struct defaults that
 // are bit-identical to the pre-B1 fixed values — so an untouched rack is a
 // true no-op, and `enabled` alone gates the whole chain.
-struct MasteringParams: Equatable {
+//
+// The 21 Windows fields (MasteringSettings, MasteringPresetCatalog.cs:10-31). The
+// ten added for A3 (low-pass .. band trims, limiter) carry the Windows/core
+// defaults (AudioMastering.h:29-58), so sending them explicitly is a no-op. The
+// target stays a continuous LUFS value on the Mac (Phase 1 D10); presets set
+// exactly -14/-16/-23. Codable for ShellPrefs: decoded key-by-key with defaults
+// so an older file never throws (the ShellPrefs rule).
+struct MasteringParams: Equatable, Codable {
     var enabled = false
     var targetLufs = -16.0
     var ceilingDbfs = -1.0
@@ -261,15 +275,52 @@ struct MasteringParams: Equatable {
     var presenceDb = 0.0
     var highShelfDb = 0.0
     var stereoWidth = 1.0
+    var lowPassHz = 0.0
+    // Top-level `limiterEnabled` of sync-participant-audio-mix (MediaCore.cpp:2943),
+    // never a key of the `mastering` object. Windows MasterLimiterEnabled.
+    var limiterEnabled = true
+    var glueRatio = 2.0
+    var glueAttackMs = 30.0
+    var glueReleaseMs = 250.0
+    var glueMakeupDb = 0.0
+    var glueMultiband = false
+    var glueBandLowDb = 0.0
+    var glueBandMidDb = 0.0
+    var glueBandHighDb = 0.0
 
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+        }
+        let d = MasteringParams()
+        enabled = v(.enabled, d.enabled); targetLufs = v(.targetLufs, d.targetLufs)
+        ceilingDbfs = v(.ceilingDbfs, d.ceilingDbfs); glueAmount = v(.glueAmount, d.glueAmount)
+        maxRideDb = v(.maxRideDb, d.maxRideDb); inputGainDb = v(.inputGainDb, d.inputGainDb)
+        highPassHz = v(.highPassHz, d.highPassHz); lowShelfDb = v(.lowShelfDb, d.lowShelfDb)
+        presenceDb = v(.presenceDb, d.presenceDb); highShelfDb = v(.highShelfDb, d.highShelfDb)
+        stereoWidth = v(.stereoWidth, d.stereoWidth); lowPassHz = v(.lowPassHz, d.lowPassHz)
+        limiterEnabled = v(.limiterEnabled, d.limiterEnabled); glueRatio = v(.glueRatio, d.glueRatio)
+        glueAttackMs = v(.glueAttackMs, d.glueAttackMs); glueReleaseMs = v(.glueReleaseMs, d.glueReleaseMs)
+        glueMakeupDb = v(.glueMakeupDb, d.glueMakeupDb); glueMultiband = v(.glueMultiband, d.glueMultiband)
+        glueBandLowDb = v(.glueBandLowDb, d.glueBandLowDb); glueBandMidDb = v(.glueBandMidDb, d.glueBandMidDb)
+        glueBandHighDb = v(.glueBandHighDb, d.glueBandHighDb)
+    }
+
+    /// The `mastering` object, the 20 keys Windows sends (MediaCoreCommandBuilder.cs:519-545).
     var json: JSONObject {
         [
             "enabled": enabled, "targetLufs": targetLufs,
             "ceilingDbfs": ceilingDbfs, "glueAmount": glueAmount,
             "maxRideDb": maxRideDb, "inputGainDb": inputGainDb,
-            "highPassHz": highPassHz, "lowShelfDb": lowShelfDb,
+            "highPassHz": highPassHz, "lowPassHz": lowPassHz, "lowShelfDb": lowShelfDb,
             "presenceDb": presenceDb, "highShelfDb": highShelfDb,
             "stereoWidth": stereoWidth,
+            "glueRatio": glueRatio, "glueAttackMs": glueAttackMs, "glueReleaseMs": glueReleaseMs,
+            "glueMakeupDb": glueMakeupDb, "glueMultiband": glueMultiband,
+            "glueBandLowDb": glueBandLowDb, "glueBandMidDb": glueBandMidDb, "glueBandHighDb": glueBandHighDb,
         ]
     }
 }
@@ -342,7 +393,15 @@ struct RosterParticipant: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
-    @Published var meetingState = "idle"
+    @Published var meetingState = "idle" {
+        didSet { latchZoomCameraCeilingIfJoined() }   // Z1: a join reached the meeting
+    }
+    /// Z1 (ZoomCameraQuality.swift): the operator's ceilings, what the in-flight
+    /// join sent, and what the current meeting applied.
+    @Published var zoomCameraMaxResolution = ZoomCameraResolutionPreference.defaultChoice
+    @Published var zoomCameraMaxFps = ZoomCameraFrameRatePreference.defaultFps
+    @Published var zoomCameraApplied = ZoomCameraCeiling()
+    var zoomCameraJoinSent: ZoomCameraCeiling?
     @Published var rawMediaActive = false
     @Published var roster: [RosterParticipant] = []
     /// The Zoom audio source set last placed on the spine (participant-audio ids,
@@ -350,6 +409,9 @@ final class AppModel: ObservableObject {
     /// console builds its strips from these — the FADER LAW needs a strip for
     /// every source the core is sent, not only for the ones it has echoed.
     @Published var zoomAudioSourceIds: [String] = []
+    /// A1: the Zoom -> program topology (Windows StudioViewModel._zoomAudioMode,
+    /// default perGuestIso). Changed only through setZoomAudioMode.
+    @Published private(set) var zoomAudioMode: ZoomAudioMode = .perGuestIso
     @Published var meetingAudioSubscribed = false
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
@@ -392,6 +454,11 @@ final class AppModel: ObservableObject {
     @Published var audioObservation: AudioObservation?
     var audioObservationReceivedAt = Date()
     @Published var shortTermLufs = -120.0
+    // A4: the rest of the core's masterMeter, and the rail's loudnessLufs.
+    @Published var integratedLufs = -120.0
+    @Published var momentaryLufs = -120.0
+    @Published var loudnessLufs = -120.0
+    @Published var mixedFrameCount = 0
     @Published var truePeakDbfs = -120.0
     @Published var limiterActive = false
     @Published var masteringRideDb = 0.0
@@ -422,7 +489,10 @@ final class AppModel: ObservableObject {
     @Published var multiviewTiles: [MultiviewTile] = []
     @Published var captureDevices: [CaptureDeviceRow] = []
     @Published var clockText = ""
-    @Published var selectedTab: StudioTab = .studio
+    @Published var selectedTab: StudioTab = .studio {
+        // S6: the core renders the source sheet only while the Sources tab holds the lease.
+        didSet { if selectedTab != oldValue { updateSourcePreviewDemand() } }
+    }
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
     @Published var displayName = "CoreVideo Pro (mac)"
@@ -510,9 +580,41 @@ final class AppModel: ObservableObject {
     }
     @Published var streamUrl = "rtmp://a.rtmp.youtube.com/live2"
     @Published var streamKey = ""
-    @Published var streamingDesired = false
+    @Published var streamingDesired = false {
+        didSet {
+            guard streamingDesired != oldValue else { return }
+            // Review finding 4: the destinations being streamed are frozen at
+            // Start. Without this an SRT/HLS edit mid-stream reached the core on
+            // the next full-state start-program-output (a recording toggle) and
+            // silently restarted the destination with half-typed settings.
+            if streamingDesired {
+                liveStreamDestinations = (streamConfig, streamSecrets)
+            } else {
+                liveStreamDestinations = nil
+            }
+        }
+    }
+    /// The config + secrets captured when streaming started (nil when off).
+    private(set) var liveStreamDestinations: (config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)?
+    /// True while destination settings must not change (the editor is locked).
+    var streamDestinationsLocked: Bool { streamingDesired || streamingObservedLive }
     @Published var streamStatus = ""       // sender status from outputSenderSession
     @Published var streamDetail = ""       // lastResultCode / warning
+    /// The destination list (mac streaming Phase 2, D1). rtmpUrl is NOT read
+    /// from here: `streamUrl` stays the one RTMP URL (remote configure,
+    /// Diagnostics and the flyout all write it); see `streamConfig`.
+    @Published var streamDestinations = StreamDestinationsConfig()
+    /// SRT passphrase: Keychain only (StreamKeychain.srtPassphraseAccount).
+    @Published var srtPassphrase = ""
+    /// Per-destination status rows, projected from the core's lifecycle +
+    /// supervisor on every snapshot (DestinationStatusProjection).
+    @Published var destinationRows: [String: DestinationStatus] = [:]
+    /// What the sender resolved as its ffmpeg ("" until a sender reports one).
+    @Published var streamRuntimeDetail = ""
+    /// Whether the core's stream ffmpeg runs under corevideo-child-guard (nil =
+    /// not reported yet). false means a crashed core can leave ffmpeg running.
+    @Published var streamChildGuard: Bool?
+    var warnedUnguardedChild = false
 
     // The LAST snapshots as the core sent them. applySnapshot/applyZoom cherry-
     // pick the slices the panes bind to; the Health surface and the support
@@ -558,6 +660,10 @@ final class AppModel: ObservableObject {
     /// prefs); false = not saved. Tests replace it so the harness never writes
     /// the operator's Keychain.
     var streamKeySaver: (String) -> Bool = { StreamKeychain.save($0); return true }
+    /// Where Start streaming stores the secrets it is about to use: (value,
+    /// Keychain account). Tests replace it so the harness never writes the
+    /// operator's Keychain.
+    var streamSecretSaver: (String, String) -> Void = { StreamKeychain.save($0, account: $1) }
     /// Per-source grades (grading plan Task 5): the only sender of set-source-grade.
     /// Harness-only: the saved-grade file the NEXT AppModel() uses (nil → SourceGradeFile.path),
     /// so one harness case's debounced save can never land in another case.
@@ -566,7 +672,30 @@ final class AppModel: ObservableObject {
     @Published var gradeEditors: [String: GradeEditorModel] = [:]
     /// The last refusal from opening a grade editor, shown under the inspector's Grade section.
     @Published var gradeNotice = ""
+    /// The core's `gradePreview.supported` (Metal grade-preview worker present; Phase 2 G5).
+    @Published var gradePreviewSupported = false
     private let gradeFilePath = AppModel.gradeFilePathForTesting ?? SourceGradeFile.path
+    /// The ONE graphics sub-model (graphics G1, spec 5.1): decode, gateway,
+    /// playout and the On Air strip. No graphics behaviour lives on AppModel.
+    private(set) lazy var graphics: GraphicsModel = {
+        let model = GraphicsModel(coreRunning: { [weak self] in
+            if case .connected = self?.status { return true }
+            return false
+        }, send: { [weak self] body in
+            guard let self else { throw BridgeError.notRunning }
+            return try await self.gradeRequest(body)
+        })
+        model.gateway.elapsedMs = { [weak self] in self?.elapsedMs() ?? 0 }
+        // Guest rows expand over the Show Input slots, as Windows' ShowInputEditors.
+        model.rosterSlots = { [weak self] in
+            (self?.slots ?? []).map {
+                GraphicsRosterSlot(slotNumber: $0.id, sourceId: ControlSourceId.canonical(kind: $0.kind, sourceId: $0.sourceId),
+                                   derivedName: $0.name.isEmpty ? $0.sourceName : $0.name)
+            }
+        }
+        model.loadDocument()
+        return model
+    }()
     private(set) lazy var sourceGrades: SourceGradeStore = {
         let store = SourceGradeStore(send: { [weak self] body in
             guard let self else { throw BridgeError.notRunning }
@@ -689,6 +818,7 @@ final class AppModel: ObservableObject {
         prefs.lowerThirdPosition = lowerThirdPosition
         prefs.logoBugAssetId = logoBug?.id ?? ""
         prefs.streamUrl = streamUrl
+        prefs.streamDestinations = streamDestinations
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
@@ -710,16 +840,24 @@ final class AppModel: ObservableObject {
                                        sourceKey: $0.sourceKey) }
         // Capture slots only (plan D2): Zoom reuses user ids across meetings, so a
         // restored Zoom slot could attach a different person's name and settings.
-        prefs.showInputSlots = slots.filter { $0.kind == "capture" && $0.sourceKey != nil }.map {
+        // Media too: a bin asset id is stable across launches.
+        prefs.showInputSlots = slots.filter { ($0.kind == "capture" || $0.kind == "media") && $0.sourceKey != nil }.map {
             PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
                           name: SlotNamePolicy.persisted($0), inShow: $0.inShow)
         }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.autoAssignInputs = autoAssignInputsEnabled
+        prefs.zoomAudioMode = zoomAudioMode.persisted
+        prefs.zoomCameraMaxResolution = zoomCameraMaxResolution
+        prefs.zoomCameraMaxFps = zoomCameraMaxFps
+        prefs.localAudioEnabled = localAudio.enabled
+        prefs.localAudioDeviceId = localAudio.deviceId.isEmpty ? nil : localAudio.deviceId
+        prefs.localAudioDeviceName = localAudio.deviceName.isEmpty ? nil : localAudio.deviceName
         prefs.sourcesWorkspace = sourcesWorkspace.columns
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
         storeProductionSettings(into: &prefs)
+        storeMastering(into: &prefs)
         prefs.recordingFolder = recordingFolderChoice.isEmpty ? nil : recordingFolderChoice
         prefs.scenes = railScenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
@@ -739,6 +877,7 @@ final class AppModel: ObservableObject {
     private func restorePrefs() {
         applyRestoredPrefs(ShellPrefs.load())
         streamKey = StreamKeychain.load()
+        srtPassphrase = StreamKeychain.load(account: StreamKeychain.srtPassphraseAccount)
     }
 
     /// Everything a relaunch restores from the prefs file, minus the file read
@@ -751,11 +890,18 @@ final class AppModel: ObservableObject {
                 + "a re-restore would overwrite live operator changes with disk state")
             return
         }
-        overlays = prefs.overlays ?? OverlaysState()
+        overlays = (prefs.overlays ?? OverlaysState()).migratingLegacyTiming()
         restoreSlotAssignments(prefs.showInputSlots ?? [])
         // No reapply: no roster exists at launch.
         assignmentLaw.autoAssignEnabled = prefs.autoAssignInputs ?? true
         autoAssignInputsEnabled = assignmentLaw.autoAssignEnabled
+        zoomAudioMode = ZoomAudioMode.parse(prefs.zoomAudioMode)
+        zoomCameraMaxResolution = ZoomCameraResolutionPreference.normalize(prefs.zoomCameraMaxResolution)
+        zoomCameraMaxFps = ZoomCameraFrameRatePreference.normalize(
+            prefs.zoomCameraMaxFps ?? ZoomCameraFrameRatePreference.defaultFps)
+        localAudio = LocalAudioSetting(enabled: prefs.localAudioEnabled ?? false,
+                                       deviceId: prefs.localAudioDeviceId ?? "",
+                                       deviceName: prefs.localAudioDeviceName ?? "")
         sourcesWorkspace.columns = prefs.sourcesWorkspace ?? SourcesColumnPrefs()
         for key in prefs.chromaKeys ?? [] {
             if let index = restoredSlotIndex(sourceKey: key.sourceKey, legacySlotId: key.slotId) {
@@ -786,6 +932,7 @@ final class AppModel: ObservableObject {
             gradeTemperature = prefs.colorGrade[3]
         }
         vstChannelSelection = prefs.vstChannelSelections ?? [:]
+        restoreMastering(from: prefs)
         joinMeetingId = prefs.joinMeetingId
         displayName = prefs.displayName
         monitorEnabled = prefs.monitorEnabled
@@ -804,11 +951,12 @@ final class AppModel: ObservableObject {
         autoExtras = prefs.automation ?? AutomationExtrasState()
         lowerThirdName = prefs.lowerThirdName
         lowerThirdTitle = prefs.lowerThirdTitle
-        lowerThirdPosition = prefs.lowerThirdPosition
+        lowerThirdPosition = LowerThirdPositions.migrate(prefs.lowerThirdPosition)
         if !prefs.logoBugAssetId.isEmpty {
             logoBug = mediaAssets.first { $0.id == prefs.logoBugAssetId }
         }
         streamUrl = prefs.streamUrl
+        if let saved = prefs.streamDestinations { streamDestinations = saved }
         recentMeetings = prefs.recentMeetings
         webinar = prefs.webinar
         if !prefs.scenes.isEmpty {
@@ -958,32 +1106,9 @@ final class AppModel: ObservableObject {
             status = .failed("corevideo-native not found — run scripts/run-mac-shell.sh")
             return
         }
-        var env: [String: String] = [:]
-        if let enginePath = paths.engineBinaryPath {
-            env["COREVIDEO_ZOOM_ENGINE_PATH"] = enginePath
-        }
-        if let key = UserDefaults.standard.string(forKey: "zoomPublicAppKey"), !key.isEmpty {
-            env["COREVIDEO_ZOOM_PUBLIC_APP_KEY"] = key
-        }
-        // The core waits this long for SDK auth, then again for the join
-        // verdict. Its built-in default is 7 s, which the Windows shell has
-        // never used (MediaCorePaths.cs sets 45000). Unset here, a Mac join
-        // reported "Timed out waiting for Zoom meeting join result." 7 s in,
-        // a moment before Zoom's real answer (2026-11-15, signed 1.0.0).
-        env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = ProcessInfo.processInfo
-            .environment["COREVIDEO_ZOOM_JOIN_WAIT_MS"] ?? ZoomJoinStatus.coreJoinWaitMs
-        // VST3 discovery. `resolvePluginHostExecutablePath` (MediaCore.cpp) only
-        // does sibling-of-the-exe lookup under _WIN32, so on macOS the core finds
-        // the host ONLY through this env var — without it pluginHost.status is
-        // permanently "absent". Likewise `scanRoots` (plugin-host.cpp) reads the
-        // Windows COMMONPROGRAMFILES vars plus this single override, so a macOS
-        // scan walks nothing unless we name a root. See VstInserts.swift.
-        if let hostPath = paths.pluginHostPath {
-            env["COREVIDEO_PLUGIN_HOST_PATH"] = hostPath
-        }
-        if ProcessInfo.processInfo.environment["COREVIDEO_VST3_SCAN_PATH"] == nil {
-            env["COREVIDEO_VST3_SCAN_PATH"] = VstScanRoots.effectiveRoot
-        }
+        let env = CoreLaunchEnvironment.extras(
+            paths: paths, processEnvironment: ProcessInfo.processInfo.environment,
+            zoomPublicAppKey: UserDefaults.standard.string(forKey: "zoomPublicAppKey"))
         let bridge = MediaCoreBridge(corePath: corePath, environmentExtras: env)
         self.bridge = bridge
         bridge.onStatus = { [weak self] status in
@@ -1025,6 +1150,9 @@ final class AppModel: ObservableObject {
             self.recordingStatus = "interrupted"
             self.streamStatus = "interrupted"
             self.streamDetail = "Media core exited; output continuity was interrupted."
+            self.destinationRows = [:]
+            self.warnedUnguardedChild = false
+            self.streamChildGuard = nil
             self.pushWarning("media core exited (code \(code)) — relaunching")
         }
     }
@@ -1183,7 +1311,7 @@ final class AppModel: ObservableObject {
 
     /// Saves now instead of waiting for the 5 s autosave, but never before the
     /// operator's file has been restored (that would write defaults over it).
-    private func persistPrefsNow() {
+    func persistPrefsNow() {
         guard prefsRestored else { return }
         let prefs = currentPrefs()
         guard prefs != lastSavedPrefs else { return }
@@ -1643,11 +1771,20 @@ final class AppModel: ObservableObject {
     /// Every core generation (initial handshake AND respawn). Internal: the
     /// harness drives it to prove the console is re-asserted.
     func onConnected() {
+        resetMasterMetersForProcess()
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
         rosterProjection.resetForProcess()
         sourceFacts.mutate { $0.engineStopped() }
         rosterRecoveryNotice = rosterProjection.notice
+        // The audio inputs BEFORE the console reassert (review #2): a saved local
+        // audio source resolves its device from this list, and an empty list on
+        // the first connect of a launch left it unsent — silent, toggle on.
+        refreshAudioInputs(push: false)
+        if !audioInputsWatched {
+            audioInputsWatched = true
+            AudioInputs.watch { [weak self] in self?.refreshAudioInputs(push: true) }
+        }
         // FIRST, before anything that can make a source audible (monitor, capture
         // mics, scenes with media): see reassertAudioConsole.
         reassertAudioConsole()
@@ -1670,9 +1807,17 @@ final class AppModel: ObservableObject {
         if !gradeIsNeutral { applyColorGrade() }
         // Per-source grades: forget every epoch/revision and re-assert on this generation.
         sourceGrades.coreGenerationChanged()
+        // Graphics: a new core has none of the old one's instances (spec 5.3).
+        graphics.coreGenerationChanged()
+        // One-shot: the brand kit is lost on respawn (L18a, gotchas). Sent at
+        // launch and on every generation, not only when the operator edits it.
+        pushBrandKitNow()
+        for editor in gradeEditors.values { editor.previewCoreReset() }   // the preview lease died with the core
+        // S6: a fresh core holds no preview-demand lease and has no sheet yet.
+        sourceSheet = nil
+        sourcePreviewDemand.coreConnected()
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
-        audioInputs = AudioInputs.available()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -1759,6 +1904,16 @@ final class AppModel: ObservableObject {
     }
 
     /// Words for the meters when the audio observation is aging/stale (nil = live).
+    /// A new core generation has measured nothing yet. The snapshot parser holds
+    /// the last value when a key is absent, so without this a respawned core
+    /// showed the DEAD core's loudness, peak and levels (never fabricate a level).
+    func resetMasterMetersForProcess() {
+        masterLevel = 0; masterLevelLeft = 0; masterLevelRight = 0
+        shortTermLufs = -120; integratedLufs = -120; momentaryLufs = -120; loudnessLufs = -120
+        truePeakDbfs = -120; mixedFrameCount = 0
+        limiterActive = false; masteringRideDb = 0
+    }
+
     func meterWarning(now: Date = Date()) -> String? {
         AudioObservationPolicy.warning(audioObservation, receivedAt: audioObservationReceivedAt, now: now)
     }
@@ -1775,6 +1930,7 @@ final class AppModel: ObservableObject {
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
         if !snapshot.isEmpty { applyMediaReadModels(snapshot) }
+        if !snapshot.isEmpty { graphics.observe(snapshot: snapshot) }
         if !snapshot.isEmpty {
             virtualCameraCore = VirtualCameraReadModel.parse(snapshot)
         }
@@ -1785,8 +1941,14 @@ final class AppModel: ObservableObject {
             captureDevices = Self.parseCaptureDevices(devices)
             refreshSlotHealth()
             reconnectRestoredCaptures()
+            reconcileCaptureAudioSyncOffsets(devices)   // Z2: the device copy, from what the core reports
         }
         applySourceFacts(snapshot)
+        if let preview = snapshot["gradePreview"] as? JSONObject, let supported = preview["supported"] as? Bool,
+           supported != gradePreviewSupported {
+            gradePreviewSupported = supported
+            for editor in gradeEditors.values { editor.setPreviewSupported(supported) }
+        }
         if !snapshot.isEmpty {
             sourceGrades.observe(sourceGrades: snapshot["sourceGrades"] as? [JSONObject],
                                  sources: gradeSources, now: sourceGrades.now())
@@ -1819,6 +1981,8 @@ final class AppModel: ObservableObject {
             let monitorAccepted = monitorControl.observe(mix)
             monitorControlNotice = monitorControl.notice
             masterLevel = mix["masterLevel"] as? Int ?? masterLevel
+            loudnessLufs = (mix["loudnessLufs"] as? NSNumber)?.doubleValue ?? loudnessLufs
+            mixedFrameCount = (mix["mixedFrameCount"] as? NSNumber)?.intValue ?? mixedFrameCount
             limiterActive = mix["limiterActive"] as? Bool ?? limiterActive
             let sides = StudioFooterReadout.masterLevels(snapshot: snapshot, fallback: masterLevel)
             masterLevelLeft = sides.left
@@ -1829,6 +1993,8 @@ final class AppModel: ObservableObject {
             }
             if let meter = mix["masterMeter"] as? JSONObject {
                 shortTermLufs = (meter["shortTermLufs"] as? NSNumber)?.doubleValue ?? shortTermLufs
+                integratedLufs = (meter["integratedLufs"] as? NSNumber)?.doubleValue ?? integratedLufs
+                momentaryLufs = (meter["momentaryLufs"] as? NSNumber)?.doubleValue ?? momentaryLufs
                 truePeakDbfs = (meter["truePeakDbfs"] as? NSNumber)?.doubleValue ?? truePeakDbfs
             }
             if let participants = mix["participants"] as? [JSONObject] {
@@ -1860,16 +2026,7 @@ final class AppModel: ObservableObject {
             applyMultiviewTiles(multiview["tiles"] as? [JSONObject])
         }
         if let session = snapshot["outputSenderSession"] as? JSONObject {
-            let senders = session["senders"] as? [JSONObject] ?? []
-            if let rtmp = senders.first(where: { $0["destination"] as? String == "rtmp" }) {
-                streamStatus = rtmp["status"] as? String ?? ""
-                let code = rtmp["lastResultCode"] as? String ?? ""
-                let warning = rtmp["warning"] as? String ?? ""
-                streamDetail = warning.isEmpty ? code : warning
-            } else if !streamingDesired {
-                streamStatus = ""
-                streamDetail = ""
-            }
+            applyStreamSenders(session)
         }
         if let auto = snapshot["autoProduction"] as? JSONObject {
             autoRuleId = auto["ruleId"] as? String ?? ""
@@ -2001,6 +2158,19 @@ final class AppModel: ObservableObject {
         return changed
     }
 
+    /// A1 (Windows SetZoomAudioMode): the mode, the status sentence, persisted
+    /// intent, and ONE full-state routing push. The flip is one matrix, so there
+    /// is never a window with both paths routed or neither. Subscriptions do not
+    /// change: stems stay subscribed in ProgramMix (they meter, and ISO recording
+    /// takes stems from source PCM, not from buses).
+    func setZoomAudioMode(_ mode: ZoomAudioMode) {
+        guard mode != zoomAudioMode else { return }
+        zoomAudioMode = mode
+        takeStatus = mode.statusSentence
+        persistPrefsNow()
+        pushRoutingBase()
+    }
+
     /// The auto-assign toggle. Either direction forgets both memories and reruns the
     /// roster pass, which fills only when on (D7; Windows MagicSceneCoordinator.cs:509-514).
     func setAutoAssignInputs(_ on: Bool) {
@@ -2028,6 +2198,14 @@ final class AppModel: ObservableObject {
     var slotWriteObserverForTesting: ((String) -> Void)?
     /// Observed row facts, one box per slot. NOT @Published (frame-fact rate).
     let sourceFacts = SourceFactsStore()
+    /// S6: the core's source sheet (surface + cell identities). Written only on change; the
+    /// surface id is stable and cells change only on reassignment.
+    @Published private(set) var sourceSheet: SourceSheetState?
+    private(set) lazy var sourcePreviewDemand = SourcePreviewDemandLease { [weak self] enabled in
+        self?.sendSourcePreviewDemand(enabled)
+    }
+    private var sourcePreviewDemandTimer: Timer?
+    func setSourceSheet(_ sheet: SourceSheetState?) { sourceSheet = sheet }
     /// TEST-ONLY clock (ms) for the measured capture FPS.
     var sourceFactsClockForTesting: (() -> Double)?
     var sourceFactsNowMs: Double { sourceFactsClockForTesting?() ?? ProcessInfo.processInfo.systemUptime * 1000 }
@@ -2127,6 +2305,8 @@ final class AppModel: ObservableObject {
     }
 
     // Keep slot health truthful as rosters/devices churn.
+    func refreshSlotHealthForTesting() { refreshSlotHealth() }
+
     private func refreshSlotHealth() {
         for index in slots.indices {
             switch slots[index].kind {
@@ -2139,6 +2319,11 @@ final class AppModel: ObservableObject {
                     $0.id == slots[index].sourceId && $0.connectionState == "connected"
                 }
                 adoptLiveSourceName(index, captureDevices.first { $0.id == slots[index].sourceId }?.name)
+            case "media":
+                // Never substituted: an asset that left the bin marks the slot offline.
+                let asset = mediaAssets.first { $0.id == slots[index].sourceId }
+                if slots[index].offline != (asset == nil) { slots[index].offline = asset == nil }
+                adoptLiveSourceName(index, asset?.name)
             default:
                 break
             }
@@ -2191,6 +2376,10 @@ final class AppModel: ObservableObject {
             if let id = event["iosurfaceId"] as? NSNumber {
                 previewSurfaceId = id.uint32Value
             }
+        case "grade-preview":
+            // Phase 2 Task 8: route to the editor that owns the instance (spec §5.5).
+            let instance = event["instanceId"] as? String
+            gradeEditors.values.first { $0.previewInstanceId == instance }?.observePreview(event)
         case "zoom-source-format":
             // One row's facts; no sync and no AppModel @Published write (spec §4.4).
             if let fact = ZoomFormatFact.parse(event: event) {
@@ -2227,6 +2416,14 @@ final class AppModel: ObservableObject {
     @Published var streamBitrateMbps = 6.0
     @Published var overlays = OverlaysState()
     @Published var audioInputs: [AudioInputDevice] = []
+    /// A5: the local audio source (LocalAudioSource.swift). Set via setLocalAudio.
+    @Published var localAudio = LocalAudioSetting()
+    /// Harness seam: the audio input list (the real one enumerates AVCaptureDevice).
+    var audioInputsProvider: () -> [AudioInputDevice] = { AudioInputs.available() }
+    private var audioInputsWatched = false
+    /// Z2: per capture device id, session only (CaptureAudioSync.swift). Absent = 0.
+    @Published var captureAudioSyncOffsets: [String: Int] = [:]
+    var captureSyncInFlight: Set<String> = []
     var captureAudioSyncTask: Task<Void, Never>?
     var brandSyncTask: Task<Void, Never>?
     /// Test seam: sees every overlay command before it goes to the bridge.
@@ -2244,6 +2441,10 @@ final class AppModel: ObservableObject {
     }
 
     @Published var streamCodec = "h264"
+    /// O1 (OutputProfiles.swift): the recording render profile and the stream
+    /// encoder settings, persisted and sent on every start.
+    @Published var recordingProfile = RecordingProfile()
+    @Published var streamEncoder = StreamEncoderSettings()
 
     /// Codecs this build can actually ENCODE, per the core's EncoderPolicy:
     /// HEVC encode is not shipped on any platform, and AV1 is non-Apple only, so
@@ -2326,6 +2527,30 @@ final class AppModel: ObservableObject {
             ])
         }
         syncScenes()
+    }
+
+    /// Sources tab visible ↔ lease held; the 1 s renewal timer runs only while held.
+    func updateSourcePreviewDemand() {
+        let visible = selectedTab == .sources
+        sourcePreviewDemand.tabVisible(visible)
+        if visible, sourcePreviewDemandTimer == nil {
+            sourcePreviewDemandTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.sourcePreviewDemand.tick() }
+            }
+        } else if !visible {
+            sourcePreviewDemandTimer?.invalidate()
+            sourcePreviewDemandTimer = nil
+        }
+    }
+
+    private func sendSourcePreviewDemand(_ enabled: Bool) {
+        let body: JSONObject = [
+            "type": "media-core-sync", "elapsedMs": elapsedMs(),
+            "commands": [["type": "set-source-preview-demand", "enabled": enabled] as JSONObject],
+        ]
+        if let capture = coreCommandCaptureForTesting { capture(body); return }
+        guard let bridge else { return }
+        Task { _ = try? await bridge.request(body) }
     }
 
     func applyMultiviewConfig() {
@@ -2493,6 +2718,12 @@ final class AppModel: ObservableObject {
             "displayName": displayName,
             "webinar": webinar,
         ]
+        // Z1: the camera ceilings, latched by this join (Windows JoinZoomAsync
+        // cameraMaxResolution / cameraMaxFps, MediaCoreSupervisor.cs:568-569).
+        let ceiling = zoomCameraJoinCeiling
+        payload["cameraMaxResolution"] = ceiling.tier
+        payload["cameraMaxFps"] = ceiling.fps
+        zoomCameraJoinSent = ceiling
         // Absent, not false, on an ordinary join (the core reads it per join).
         if endOtherMeeting { payload["endOtherMeeting"] = true }
         ShellLog.write("joining meeting \(meetingId)\(endOtherMeeting ? " (end my other Zoom session)" : "")")
@@ -2698,7 +2929,7 @@ final class AppModel: ObservableObject {
             audio.append(audioMixCommand())
             lastSyncedStripIds = stripIds
         }
-        if let routing = routingBaseCommand(), let sends = routing["sends"] as? [JSONObject],
+        if let routing = routingBaseCommand(), let sends = Self.routingMemo(routing),
            !(lastRoutingBaseSent.map { NSArray(array: $0).isEqual(to: sends) } ?? false) {
             routingBaseTask?.cancel()
             audio.append(routing)
@@ -2707,7 +2938,7 @@ final class AppModel: ObservableObject {
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
-        let multiviewSources = Self.multiviewSourcePayloads(slots)
+        let multiviewSources = Self.multiviewSourcePayloads(slots, mediaAssets: mediaAssets)
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →
             // start_raw_media): without it every video subscription stays
@@ -2770,26 +3001,30 @@ final class AppModel: ObservableObject {
     }
 
     // The multiview roster on the wire: one tile per in-show slot that still has
-    // a source. `kind` is the MULTIVIEW vocabulary the core's resolveMultiviewFeed
+    // a source. `slot` is the 0-based slot number (Windows sends SlotNumber - 1,
+    // ShowInputRosterService.cs:735-755): without it the core numbers by list position,
+    // so a filtered list put slot 5's source in cell 3 of the source sheet. `kind` is the MULTIVIEW vocabulary the core's resolveMultiviewFeed
     // reads (native/src/core/MultiviewFeed.h): "capture" | "media" | anything else
     // = a Zoom participant. It is NOT the scene-route `mode` ("capture-input").
-    static func multiviewSourcePayloads(_ slots: [ShowInputSlot]) -> [JSONObject] {
+    static func multiviewSourcePayloads(_ slots: [ShowInputSlot], mediaAssets: [MediaAsset] = []) -> [JSONObject] {
         slots
             .filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
-            .map { slot in
-                slot.kind == "zoom"
-                    ? [
-                        "sourceId": "zoom:" + slot.sourceId,
-                        "kind": "participant-video",
-                        "participantId": slot.sourceId,
-                        "label": slot.name,
-                    ]
-                    : [
-                        "sourceId": "capture:" + slot.sourceId,
-                        "kind": "capture",
-                        "captureDeviceId": slot.sourceId,
-                        "label": slot.name,
-                    ]
+            .compactMap { slot -> JSONObject? in
+                switch slot.kind {
+                case "zoom":
+                    return ["sourceId": "zoom:" + slot.sourceId, "kind": "participant-video",
+                            "participantId": slot.sourceId, "slot": slot.id - 1, "label": slot.name]
+                case "media":
+                    // Windows ShowInputRosterService.cs:743-755, plus the path and kind so the
+                    // core can decode a still that only the wall shows (plan Task 5).
+                    guard let asset = mediaAssets.first(where: { $0.id == slot.sourceId }) else { return nil }
+                    return ["sourceId": "media:" + slot.sourceId, "kind": "media", "mediaAssetId": slot.sourceId,
+                            "mediaAssetPath": asset.filePath, "mediaAssetKind": asset.kind,
+                            "slot": slot.id - 1, "label": slot.name]
+                default:
+                    return ["sourceId": "capture:" + slot.sourceId, "kind": "capture",
+                            "captureDeviceId": slot.sourceId, "slot": slot.id - 1, "label": slot.name]
+                }
             }
     }
 
@@ -2904,7 +3139,7 @@ final class AppModel: ObservableObject {
 
     // Rects lifted from SceneCanvasLayoutService: single, two-up (0.02 gap),
     // pip (full frame + 0.28 corner inset).
-    private static let layoutRects: [String: [(Double, Double, Double, Double)]] = [
+    static let layoutRects: [String: [(Double, Double, Double, Double)]] = [
         "single": [(0, 0, 1, 1)],
         "two-up": [(0, 0, 0.49, 1), (0.51, 0, 0.49, 1)],
         "pip": [(0, 0, 1, 1), (0.68, 0.68, 0.28, 0.28)],
@@ -2942,6 +3177,31 @@ final class AppModel: ObservableObject {
                 Double(value & 0xff) / 255.0)
     }
 
+    /// The ONE place a scene route takes a slot's source, for every route builder
+    /// (preset, edited layer, solo cue). Zoom: fixed + participantId. Capture: the
+    /// "capture-input" route mode + captureDeviceId. Media (plan Task 4): fixed + the
+    /// mediaAsset* identity the core decodes from (the same shape as a media layer);
+    /// a missing asset leaves a fixed route with no source, which the core draws blank.
+    func bindSlot(_ slot: ShowInputSlot, to route: inout SceneRoute) {
+        switch slot.kind {
+        case "zoom":
+            route.mode = "fixed"
+            route.participantId = slot.sourceId
+        case "media":
+            route.mode = "fixed"
+            route.media = mediaAssets.first { $0.id == slot.sourceId }.map(Self.mediaRouteFields)
+        default:
+            route.mode = "capture-input"
+            route.captureDeviceId = slot.sourceId
+        }
+        route.chromaKey = chromaKeyNode(for: slot)
+    }
+
+    static func mediaRouteFields(_ asset: MediaAsset) -> JSONObject {
+        ["mediaAssetId": asset.id, "mediaAssetName": asset.name, "mediaAssetKind": asset.kind,
+         "mediaAssetPath": asset.filePath, "mediaAssetLoop": MediaRoutePlayback.isLoopingKind(asset.kind)]
+    }
+
     func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
         if Self.isSoloScene(sceneId) {
             // Each solo scene owns its source: re-cueing one never touches the
@@ -2954,13 +3214,7 @@ final class AppModel: ObservableObject {
                 routeId: sceneId + "-solo", mode: "fixed",
                 participantId: nil, captureDeviceId: nil,
                 rect: (0, 0, 1, 1), zIndex: 0)
-            if slot.kind == "zoom" {
-                route.participantId = slot.sourceId
-            } else {
-                route.mode = "capture-input"
-                route.captureDeviceId = slot.sourceId
-            }
-            route.chromaKey = chromaKeyNode(for: slot)
+            bindSlot(slot, to: &route)
             return [route.json]
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
@@ -2994,14 +3248,7 @@ final class AppModel: ObservableObject {
                 if let slotId = layer.slotId,
                    let slot = slots.first(where: { $0.id == slotId }),
                    slot.kind != "unassigned" {
-                    if slot.kind == "zoom" {
-                        route.mode = "fixed"
-                        route.participantId = slot.sourceId
-                    } else {
-                        route.mode = "capture-input"
-                        route.captureDeviceId = slot.sourceId
-                    }
-                    route.chromaKey = chromaKeyNode(for: slot)
+                    bindSlot(slot, to: &route)
                 }
                 var json = route.json
                 json["fitMode"] = layer.fitMode
@@ -3032,15 +3279,7 @@ final class AppModel: ObservableObject {
                 participantId: nil, captureDeviceId: nil,
                 rect: (rect.0, rect.1, rect.2, rect.3), zIndex: index)
             if index < inShow.count {
-                let slot = inShow[index]
-                if slot.kind == "zoom" {
-                    route.mode = "fixed"
-                    route.participantId = slot.sourceId
-                } else {
-                    route.mode = "capture-input"
-                    route.captureDeviceId = slot.sourceId
-                }
-                route.chromaKey = chromaKeyNode(for: slot)
+                bindSlot(inShow[index], to: &route)
             }
             return route.json
         }
@@ -3570,15 +3809,29 @@ final class AppModel: ObservableObject {
     // ── keyboard Take / FTB (audit §5) ───────────────────────────────────────
     let transportHotkeys = TransportHotkeyMonitor()
 
-    /// Installed only while the Studio tab is the active tab.
+    /// Installed while the Studio or Graphics tab is active: transport keys act on
+    /// Studio only (TransportKeys.decide checks), graphics F-keys on both (plan D7).
     func syncTransportHotkeys() {
-        transportHotkeys.setActive(selectedTab == .studio) { [weak self] nsEvent in
+        transportHotkeys.setActive(selectedTab == .studio || selectedTab == .overlays) { [weak self] nsEvent in
             guard let self else { return false }
             let key = TransportKeys.event(
                 from: nsEvent, isStudioTab: self.selectedTab == .studio,
                 firstResponder: nsEvent.window?.firstResponder)
-            return self.handleTransportKey(key)
+            return self.handleGraphicsKey(key) || self.handleTransportKey(key)
         }
+    }
+
+    /// Graphics F-keys (GraphicsHotkeyRouter): Studio and Graphics tabs, never
+    /// while a text field has focus, never under the quit prompt. A held key
+    /// fires once (repeats are swallowed so a hold never re-Shows).
+    func handleGraphicsKey(_ event: TransportKeyEvent) -> Bool {
+        guard selectedTab == .studio || selectedTab == .overlays, !quitPromptVisible, !quitFinishing,
+              case .function(let number) = event.kind,
+              let route = GraphicsHotkeys.route(function: number, modifiers: event.modifiers,
+                                                textFocus: event.isTextEntryFocus, rows: graphics.rows)
+        else { return false }
+        if event.isRepeat { return true }
+        return graphics.perform(route, subjectSourceId: programLowerThirdSubject()?.source.sourceId)
     }
 
     /// Executes a routed key against the real commands; returns whether it was
@@ -3798,7 +4051,7 @@ final class AppModel: ObservableObject {
         var rows: [RoutingRow] = []
         for slot in slots where slot.kind != "unassigned" {
             rows.append(RoutingRow(
-                id: (slot.kind == "zoom" ? "zoom:" : "capture:") + slot.sourceId,
+                id: slot.sourceKey ?? slot.sourceId,
                 label: "Input \(String(format: "%02d", slot.id)) · \(slot.name)",
                 inMultiview: slot.inShow,
                 multiviewToggleable: true))
@@ -3932,17 +4185,104 @@ final class AppModel: ObservableObject {
 
     // ── streaming (RTMP via the core's ffmpeg sender) ────────────────────────
 
-    private func streamDestinationSettings() -> [JSONObject] {
-        [[
-            "id": "rtmp", "label": "Stream", "protocol": "rtmp",
-            "url": streamUrl, "streamKey": streamKey,
-            // An explicit destination bitrate WINS over streamOutputProfile in
-            // the core (#606), so this must be the operator's value too.
-            "fps": 30, "targetBitrateMbps": streamBitrateMbps, "audioBitrateKbps": 160,
-            "videoCodec": "h264", "encoderMode": "auto",
-            "keyframeIntervalSeconds": 2.0, "rateControl": "cbr",
-            "h264Profile": "high", "bFrames": 2, "allowEnhancedRtmp": false,
-        ]]
+    /// The destination list as the wire sees it: `streamUrl` is the RTMP URL.
+    var streamConfig: StreamDestinationsConfig {
+        var config = streamDestinations
+        config.rtmpUrl = streamUrl
+        return config
+    }
+
+    var streamSecrets: StreamDestinationSecrets {
+        StreamDestinationSecrets(rtmpKey: streamKey, srtPassphrase: srtPassphrase)
+    }
+
+    /// What is being streamed: the Start-time freeze while live, else the editor.
+    var activeStreamConfig: StreamDestinationsConfig { liveStreamDestinations?.config ?? streamConfig }
+    var activeStreamSecrets: StreamDestinationSecrets { liveStreamDestinations?.secrets ?? streamSecrets }
+
+    /// "RTMP live, SRT reconnecting in 5 s": the footer's one-line summary of
+    /// the rows of the destinations being streamed (projection labels only).
+    var streamSummary: String {
+        let ids = StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets)
+        let parts = ids.map { id -> String in
+            let label = destinationRows[id]?.label ?? "Starting"
+            return "\(StreamDestinationPolicy.displayName(id)) \(label.prefix(1).lowercased() + label.dropFirst())"
+        }
+        return parts.isEmpty ? "starting" : parts.joined(separator: ", ")
+    }
+
+    /// The footer Stream stat's health word, from the projected rows only:
+    /// "Live" when every streamed destination is confirmed live, "Live 1/2"
+    /// when some are, else the first row's own label. Never the published
+    /// status, which can read "live" from a launch.
+    var streamHealthLabel: String {
+        let ids = StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets)
+        let rows = ids.map { destinationRows[$0] ?? DestinationStatus(label: "Starting", tone: .neutral) }
+        guard !rows.isEmpty else { return "Starting" }
+        let live = rows.filter(\.isLive).count
+        if live == rows.count { return "Live" }
+        if live > 0 { return "Live \(live)/\(rows.count)" }
+        return rows.first { $0.tone == .bad || $0.tone == .warn }?.label ?? rows[0].label
+    }
+
+    /// Why Start streaming cannot start (Windows ValidateSelectedDestinations), or nil.
+    var streamStartRefusal: String? { StreamDestinationPolicy.validateSelected(streamConfig, streamSecrets) }
+
+    /// One row per destination from the core's sender records. The labels are
+    /// decided from lifecycle + supervisor (never `status`). `streamStatus` /
+    /// `streamDetail` keep feeding the quit guard and the control surface: the
+    /// first stream sender (rtmp, srt, hls order) whose lifecycle is not
+    /// terminal, so a live SRT-only stream still guards a careless quit.
+    func applyStreamSenders(_ session: JSONObject) {
+        let desired = Set(streamingDesired
+                          ? StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets) : [])
+        var rows: [String: DestinationStatus] = [:]
+        var senders: [JSONObject] = []
+        for id in StreamDestinationPolicy.destinationIds {
+            let sender = DestinationStatusProjection.sender(id, in: session)
+            if let sender { senders.append(sender) }
+            rows[id] = DestinationStatusProjection.project(sender, desired: desired.contains(id))
+        }
+        if rows != destinationRows { destinationRows = rows }
+        let runtime = senders.compactMap { $0["runtimeDetail"] as? String }.first { !$0.isEmpty } ?? ""
+        if runtime != streamRuntimeDetail { streamRuntimeDetail = runtime }
+        // Warn, not fail closed (review default, recorded in the plan): an
+        // unguarded ffmpeg still streams, but it can outlive a crashed core.
+        let guards = senders.compactMap { $0["childGuard"] as? Bool }
+        let guarded: Bool? = guards.isEmpty ? nil : !guards.contains(false)
+        if guarded != streamChildGuard { streamChildGuard = guarded }
+        if guarded == false && !warnedUnguardedChild {
+            warnedUnguardedChild = true
+            pushWarning("stream: ffmpeg is running without its child guard; "
+                        + "if the media core crashes it can keep streaming. Reinstall CoreVideo Pro.")
+        }
+        func lifecycleState(_ sender: JSONObject) -> String {
+            (sender["lifecycle"] as? JSONObject)?["state"] as? String ?? ""
+        }
+        let chosen = senders.first { !["completed", "idle"].contains(lifecycleState($0)) } ?? senders.first
+        if let chosen {
+            streamStatus = chosen["status"] as? String ?? ""
+            let code = chosen["lastResultCode"] as? String ?? ""
+            let warning = chosen["warning"] as? String ?? ""
+            streamDetail = warning.isEmpty ? code : warning
+        } else if !streamingDesired {
+            streamStatus = ""
+            streamDetail = ""
+        }
+    }
+
+    /// Retry a destination the supervisor gave up on: the documented operator
+    /// reset (`recover-output-sender`), which always clears give-up.
+    func retryDestination(_ id: String) {
+        guard StreamDestinationPolicy.destinationIds.contains(id) else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        Task {
+            _ = try? await self.outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [["type": "recover-output-sender", "destination": id,
+                              "reason": "operator-retry"] as JSONObject],
+            ])
+        }
     }
 
     // start-program-output is FULL-STATE for the destination set, so record
@@ -3950,7 +4290,9 @@ final class AppModel: ObservableObject {
     func startProgramOutput(recording: Bool, streaming: Bool) -> JSONObject {
         var destinations: [String] = []
         if recording { destinations.append("recording") }
-        if streaming { destinations.append("rtmp") }
+        if streaming {
+            destinations += StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets)
+        }
         let isoIds = resolvedIsoSourceIds(recording: recording)
         var command: JSONObject = [
             "type": "start-program-output", "destinations": destinations,
@@ -3960,8 +4302,19 @@ final class AppModel: ObservableObject {
         ]
         if streaming {
             command["streamOutputProfile"] = streamOutputProfile()
-            command["destinationSettings"] = streamDestinationSettings()
+            // An explicit destination bitrate WINS over streamOutputProfile in the
+            // core (#606), so every row carries the operator's value.
+            // O1 (plan D6): the operator's advanced encoder settings overwrite the
+            // RTMP and HLS rows' fields; Windows sends none of them on the SRT row
+            // (StudioViewModel.StreamDestinations.cs), so neither does the Mac.
+            command["destinationSettings"] = StreamDestinationPolicy.destinationSettings(
+                activeStreamConfig, activeStreamSecrets, bitrateMbps: streamBitrateMbps)
+                .map { ($0["id"] as? String) == "srt" ? $0 : streamEncoder.apply(to: $0) }
         }
+        // O1: Windows sends recordingOutputProfile on every start
+        // (MediaCoreCommandBuilder.cs:743); without it the core records at its
+        // built-in 1080p60 whatever the operator chose.
+        if recording { command["recordingOutputProfile"] = recordingProfile.payload(fps: canvasFps) }
         return command
     }
 
@@ -3988,11 +4341,12 @@ final class AppModel: ObservableObject {
             streamDetail = ""
             return
         }
-        guard !streamKey.isEmpty, !streamUrl.isEmpty else {
-            pushWarning("stream: URL and key are required")
+        if let refusal = streamStartRefusal {
+            pushWarning("stream: \(refusal)")
             return
         }
-        StreamKeychain.save(streamKey)
+        streamSecretSaver(streamKey, "rtmp")
+        streamSecretSaver(srtPassphrase, StreamKeychain.srtPassphraseAccount)
         streamingDesired = true
         Task {
             do {
@@ -4013,7 +4367,82 @@ final class AppModel: ObservableObject {
     // The core's valid bus ids (MediaCore::isAudioRoutingBus). Rows are
     // sources, columns are buses; the command is FULL-STATE with a 25-sync
     // hold-last guard, so a partial send is worse than none.
-    static let routingBuses = ["master", "pgm-l", "pgm-r", "stream", "mon", "iso-1"]
+    // A6: the 15 fixed buses plus the operator's custom buses (AudioBuses.swift).
+    @Published private(set) var buses: [AudioBus] = AudioBusPolicy.fixedBuses
+    private var customBusCounter = 1
+    /// The LISTEN bus (exclusive; nil = none). Session state, re-sent with every
+    /// base matrix so a respawned core hears it again (Windows, plan D3).
+    @Published private(set) var listenBusId: String?
+    var routingBusIds: [String] { buses.map(\.id) }
+
+    @discardableResult
+    func addCustomBus() -> AudioBus {
+        let result = AudioBusPolicy.addCustom(buses, counter: customBusCounter)
+        buses = result.buses
+        customBusCounter = result.counter
+        return result.added
+    }
+
+    /// Unroutes the bus's crosspoints through the operator-edit path, drops it
+    /// (its bus sends go with it) and clears LISTEN if it was the listened bus.
+    @discardableResult
+    func removeBus(_ id: String) -> Bool {
+        guard let next = AudioBusPolicy.remove(id, from: buses) else { return false }
+        for (source, sendsByBus) in audioSends where sendsByBus[id] != nil {
+            audioSends[source]?[id] = nil
+            editRoute(source: source, bus: id, enabled: false, gainDb: 0)
+        }
+        for key in operatorRouteEdits.keys where key.bus == id { operatorRouteEdits[key] = nil }
+        if selectedSend?.bus == id { selectedSend = nil }
+        buses = next
+        if listenBusId == id { listenBusId = nil }
+        pushRoutingBase()
+        return true
+    }
+
+    @discardableResult
+    func renameBus(_ id: String, to label: String) -> Bool {
+        guard let next = AudioBusPolicy.rename(id, to: label, in: buses) else { return false }
+        buses = next
+        return true
+    }
+
+    @discardableResult
+    func setBusSend(_ id: String, target: String, enabled: Bool) -> Bool {
+        guard let next = AudioBusPolicy.setSend(id, target: target, enabled: enabled, in: buses) else { return false }
+        buses = next
+        pushRoutingBase()
+        return true
+    }
+
+    @discardableResult
+    func setBusOutputGain(_ id: String, gainDb: Double) -> Bool {
+        guard let next = AudioBusPolicy.setOutputGain(id, gainDb: gainDb, in: buses) else { return false }
+        buses = next
+        pushRoutingBase()
+        return true
+    }
+
+    func setListening(_ id: String, on: Bool) {
+        guard buses.contains(where: { $0.id == id }) else { return }
+        listenBusId = AudioBusPolicy.listen(current: listenBusId, bus: id, on: on)
+        pushRoutingBase()
+    }
+
+    /// Clear row: unroute one source from every bus (the grid's own removeSend).
+    func clearRoutes(source: String) {
+        for bus in (audioSends[source] ?? [:]).keys.sorted() { removeSend(source: source, bus: bus) }
+    }
+
+    /// Routed sources per bus (Windows RefreshBusRoutedCounts).
+    func routedCount(bus: String) -> Int { audioSends.values.filter { $0[bus] != nil }.count }
+
+    /// The base-matrix memo: the sends AND the bus state. Comparing only `sends`
+    /// would swallow a bus-send or LISTEN change (nothing else moved).
+    static func routingMemo(_ command: JSONObject?) -> [JSONObject]? {
+        guard let command, let sends = command["sends"] as? [JSONObject] else { return nil }
+        return sends + [["busSends": command["busSends"] ?? [], "monitorBusId": command["monitorBusId"] ?? ""]]
+    }
 
     @Published var audioSends: [String: [String: Double]] = [:]  // source → bus → dB
     @Published var selectedSend: (source: String, bus: String)?
@@ -4082,14 +4511,26 @@ final class AppModel: ObservableObject {
     func routingBaseCommand() -> JSONObject? {
         let sends = AudioConsolePolicy.baseRoutingSends(
             zoomAudioIds: zoomAudioSourceIds,
-            captureAudioIds: slots
-                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
-                .map { "capture:" + $0.sourceId },
+            captureAudioIds: consoleCaptureAudioIds,
             mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
-            operatorEdits: operatorRouteEdits)
-        guard !sends.isEmpty else { return nil }
+            operatorEdits: operatorRouteEdits,
+            zoomAudioMode: zoomAudioMode, meetingAudio: meetingAudioSubscribed)
+        let busSends = AudioBusPolicy.busSends(buses)
+        let monitorBusId = listenBusId ?? ""
+        // Never an EMPTY matrix (the core holds-last on a blank). A matrix whose
+        // sends are empty but that carries bus state is not empty: the core
+        // applies busSends/monitorBusId from it when it holds no sends
+        // (MediaCore.cpp:3245-3393), the nothing-routed case. It also goes out
+        // once more after the last bus state is turned off, so the core never
+        // keeps a LISTEN or bus send the operator cleared.
+        if sends.isEmpty {
+            let lastBusState = lastRoutingBaseSent?.last
+            let coreMayHoldBusState = !((lastBusState?["busSends"] as? [JSONObject]) ?? []).isEmpty
+                || !((lastBusState?["monitorBusId"] as? String) ?? "").isEmpty
+            guard !busSends.isEmpty || !monitorBusId.isEmpty || coreMayHoldBusState else { return nil }
+        }
         return ["type": "sync-audio-routing-matrix", "sends": sends,
-                "busSends": [] as [JSONObject], "monitorBusId": ""]
+                "busSends": busSends, "monitorBusId": monitorBusId]
     }
 
     private var routingBaseTask: Task<Void, Never>?
@@ -4123,7 +4564,7 @@ final class AppModel: ObservableObject {
 
     private func sendRoutingBaseNow() async {
         guard let command = routingBaseCommand() else { return }
-        let sends = command["sends"] as? [JSONObject] ?? []
+        let sends = Self.routingMemo(command) ?? []
         if let last = lastRoutingBaseSent, NSArray(array: last).isEqual(to: sends) { return }
         let envelope = routingBaseEnvelope(command)
         if let observer = routingBaseSendObserver {
@@ -4202,7 +4643,7 @@ final class AppModel: ObservableObject {
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
                 "commands": [[
                     "type": "sync-audio-routing-matrix", "sends": sends,
-                    "busSends": [] as [JSONObject], "monitorBusId": "",
+                    "busSends": AudioBusPolicy.busSends(buses), "monitorBusId": listenBusId ?? "",
                 ]],
             ])
         } catch {
@@ -4251,16 +4692,6 @@ final class AppModel: ObservableObject {
            control.applied[key] == target || (!enabled && control.applied[key] == nil) {
             return expectedRevision == control.revision ? .applied : .conflict(revision: control.revision)
         }
-        // The grid's own edits (selectOrRouteSend / setSendGain / removeSend).
-        if enabled, bus.hasPrefix("iso-") {
-            for (other, buses) in audioSends where other != source && buses[bus] != nil {
-                audioSends[other]?[bus] = nil
-                editRoute(source: other, bus: bus, enabled: false, gainDb: 0)
-            }
-        }
-        if enabled { audioSends[source, default: [:]][bus] = gainDb } else { audioSends[source]?[bus] = nil }
-        operatorRouteEdits[key] = target
-        pushRoutingBase()
         audioRouteControl.remoteEdit(source: source, bus: bus, enabled: enabled, gainDb: gainDb,
                                      expectedEpoch: expectedEpoch, expectedRevision: expectedRevision,
                                      operationId: operationId)
@@ -4277,12 +4708,164 @@ final class AppModel: ObservableObject {
             if audioRouteControl.outcome(of: operationId) != nil { break }
         }
         _ = await settle { audioRouteControl.outcome(of: operationId) != nil }
-        return audioRouteControl.outcome(of: operationId) ?? .unconfirmed
+        let outcome = audioRouteControl.outcome(of: operationId) ?? .unconfirmed
+        switch outcome {
+        case .conflict, .rejected:
+            // The core refused: change nothing (Windows). The grid, the operator
+            // intent and the unrevisioned base matrix are never written, and the
+            // remote draft is dropped so the next snapshot cannot resurface it.
+            // A snapshot during the exchange overlaid the draft onto the grid
+            // (applyRoutingSnapshot): put the cell back to what the core applied.
+            audioRouteControl.discardRemoteDraft(source: source, bus: bus, operationId: operationId)
+            if audioRouteControl.drafts[key] == nil {
+                if let applied = audioRouteControl.applied[key] { audioSends[source, default: [:]][bus] = applied.gainDb }
+                else { audioSends[source]?[bus] = nil }
+            }
+            audioRouteControlNotice = audioRouteControl.notice
+        case .applied, .unconfirmed:
+            // Applied, or possibly applied (no answer in the settle window): the
+            // grid's own edits (selectOrRouteSend / setSendGain / removeSend), so
+            // the base matrix carries it and a respawned core gets it back.
+            if enabled, bus.hasPrefix("iso-") {
+                for (other, buses) in audioSends where other != source && buses[bus] != nil {
+                    audioSends[other]?[bus] = nil
+                    editRoute(source: other, bus: bus, enabled: false, gainDb: 0)
+                }
+            }
+            if enabled { audioSends[source, default: [:]][bus] = gainDb } else { audioSends[source]?[bus] = nil }
+            operatorRouteEdits[key] = target
+            pushRoutingBase()
+        }
+        return outcome
     }
 
     func editMastering(_ apply: (inout MasteringParams) -> Void) {
         apply(&mastering)
         scheduleMixSync()
+    }
+
+    // ── mastering presets + A/B compare (A3; Windows SVM:3241-3443) ──────────
+
+    /// "A" or "B". Both slots start as the Neutral starting point (SVM:66-68).
+    @Published private(set) var masteringCompareSlot = "A"
+    @Published private(set) var masteringCompareA = MasteringPresetCatalog.neutral
+    @Published private(set) var masteringCompareB = MasteringPresetCatalog.neutral
+    @Published private(set) var masteringUserPresets: [MasteringUserPreset] = []
+    /// The Windows status sentence for the last rack action.
+    @Published var masteringStatus = ""
+
+    /// Windows ApplyMasteringSettings: the whole rack, stored into the ACTIVE
+    /// slot, one sync. Slider edits (editMastering) deliberately do not touch
+    /// the slot; currentPrefs() refreshes it from the live rack (SVM:12155-12160).
+    private func applyMasteringSettings(_ settings: MasteringParams) {
+        mastering = settings
+        if masteringCompareSlot == "B" { masteringCompareB = settings } else { masteringCompareA = settings }
+        scheduleMixSync()
+        persistPrefsNow()
+    }
+
+    /// Windows SelectMasteringCompareSlot: anything but "B" is "A"; the slot
+    /// being left keeps the live rack; the other slot's rack is recalled.
+    func selectMasteringCompareSlot(_ requested: String) {
+        let slot = requested.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "B" ? "B" : "A"
+        guard slot != masteringCompareSlot else { return }
+        if masteringCompareSlot == "B" { masteringCompareB = mastering } else { masteringCompareA = mastering }
+        masteringCompareSlot = slot
+        applyMasteringSettings(slot == "B" ? masteringCompareB : masteringCompareA)
+        masteringStatus = "Master processor recalled comparison \(slot)."
+    }
+
+    private static func titleCase(_ id: String) -> String {
+        let t = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return t.prefix(1).uppercased() + t.dropFirst()
+    }
+
+    @discardableResult
+    func applyMasteringPreset(_ presetId: String) -> Bool {
+        guard let settings = MasteringPresetCatalog.create(presetId) else { return false }
+        applyMasteringSettings(settings)
+        masteringStatus = "\(Self.titleCase(presetId)) mastering starting point applied to comparison \(masteringCompareSlot)."
+        return true
+    }
+
+    @discardableResult
+    func resetMasteringStage(_ stage: String) -> Bool {
+        guard let settings = MasteringPresetCatalog.resetStage(mastering, stage: stage) else { return false }
+        applyMasteringSettings(settings)
+        masteringStatus = "\(Self.titleCase(stage)) stage reset to neutral."
+        return true
+    }
+
+    @discardableResult
+    func saveMasteringUserPreset(name: String) -> MasteringUserPreset? {
+        guard let result = MasteringPresetLibrary.save(masteringUserPresets, name: name, settings: mastering) else {
+            masteringStatus = MasteringPresetLibrary.isBuiltInName(name)
+                ? "That name belongs to a built-in starting point — pick another."
+                : "Preset not saved — enter a short name (built-in names are reserved)."
+            return nil
+        }
+        masteringUserPresets = result.presets
+        masteringStatus = "Master preset \"\(result.saved.name)\" saved."
+        persistPrefsNow()
+        return result.saved
+    }
+
+    @discardableResult
+    func applyMasteringUserPreset(id: String?) -> Bool {
+        guard let preset = masteringUserPresets.first(where: { $0.id == id }) else {
+            masteringStatus = "Select a saved master preset first."
+            return false
+        }
+        applyMasteringSettings(preset.settings)
+        masteringStatus = "Master preset \"\(preset.name)\" applied to comparison \(masteringCompareSlot)."
+        return true
+    }
+
+    @discardableResult
+    func renameMasteringUserPreset(id: String?, to name: String) -> Bool {
+        guard let result = MasteringPresetLibrary.rename(masteringUserPresets, id: id, to: name) else {
+            masteringStatus = "Rename failed — the new name is empty, reserved, or already in use."
+            return false
+        }
+        masteringUserPresets = result.presets
+        masteringStatus = "Master preset renamed to \"\(result.renamed.name)\"."
+        persistPrefsNow()
+        return true
+    }
+
+    @discardableResult
+    func deleteMasteringUserPreset(id: String?) -> Bool {
+        guard let result = MasteringPresetLibrary.delete(masteringUserPresets, id: id) else {
+            masteringStatus = "Select a saved master preset first."
+            return false
+        }
+        masteringUserPresets = result.presets
+        masteringStatus = "Master preset \"\(result.deleted.name)\" deleted."
+        persistPrefsNow()
+        return true
+    }
+
+    /// The rack's slice of ShellPrefs (Windows SVM:12155-12163): the active
+    /// slot is serialised from the live rack.
+    func storeMastering(into prefs: inout ShellPrefs) {
+        prefs.masteringCurrent = mastering
+        prefs.masteringCompareA = masteringCompareSlot == "A" ? mastering : masteringCompareA
+        prefs.masteringCompareB = masteringCompareSlot == "B" ? mastering : masteringCompareB
+        prefs.masteringCompareSlot = masteringCompareSlot
+        prefs.masteringUserPresets = masteringUserPresets.isEmpty ? nil : masteringUserPresets
+    }
+
+    /// Windows RestoreMasteringFromPreferences (SVM:12513-12578). Runs inside
+    /// applyRestoredPrefs, before any core connects, so the FIRST mix command a
+    /// core receives carries the saved rack. No sync here.
+    func restoreMastering(from prefs: ShellPrefs) {
+        masteringUserPresets = MasteringPresetLibrary.loaded(prefs.masteringUserPresets)
+        guard let current = prefs.masteringCurrent else { return }
+        let live = MasteringPresetLibrary.clamped(current)
+        masteringCompareSlot = prefs.masteringCompareSlot?.uppercased() == "B" ? "B" : "A"
+        masteringCompareA = MasteringPresetLibrary.clamped(prefs.masteringCompareA ?? current)
+        masteringCompareB = MasteringPresetLibrary.clamped(prefs.masteringCompareB ?? current)
+        mastering = live
     }
 
     // ── media bin + logo bug ─────────────────────────────────────────────────
@@ -4297,6 +4880,11 @@ final class AppModel: ObservableObject {
             asset.durationMs = known[asset.filePath]
             return asset
         }
+        // A media slot follows its asset: online when the bin lists it, offline (never
+        // substituted) when it left. The wall and scenes re-sync only when that changed.
+        let mediaSlotsBefore = slots.filter { $0.kind == "media" }
+        refreshSlotHealth()
+        if slots.filter({ $0.kind == "media" }) != mediaSlotsBefore { recomputeFromSlots() }
         mediaDurationProbeGeneration += 1
         let generation = mediaDurationProbeGeneration
         let unprobed = mediaAssets.filter { $0.supportsPlayback && $0.durationMs == nil }
@@ -4593,6 +5181,7 @@ final class AppModel: ObservableObject {
             if scene.backgroundAssetId == id { references.append("scene \(scene.name) background") }
         }
         if logoBug?.id == id { references.append("logo bug") }
+        for slot in slots where slot.kind == "media" && slot.sourceId == id { references.append("input \(slot.id)") }
         return references
     }
 
@@ -4752,11 +5341,18 @@ final class AppModel: ObservableObject {
             meetingAudio: meetingAudioSubscribed,
             zoomAudioIds: AudioConsolePolicy.rosterOrdered(
                 zoomAudioSourceIds, roster: roster.map(\.id)),
-            captureAudioIds: slots
-                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
-                .map { "capture:" + $0.sourceId },
+            captureAudioIds: consoleCaptureAudioIds,
             mediaStrip: sceneHasMediaRoute(programSceneId, isProgram: true)
                 || sceneHasMediaRoute(previewSceneId, isProgram: false))
+    }
+
+    /// Capture-kind console sources: every capture slot with a paired mic, then
+    /// the local audio source while it is configured (A5; Windows
+    /// BuildExpectedAudioSourceIds adds local-machine-audio after the captures).
+    var consoleCaptureAudioIds: [String] {
+        slots.filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
+            .map { "capture:" + $0.sourceId }
+            + (LocalAudioPolicy.isConfigured(localAudio, devices: audioInputs) ? [LocalAudioPolicy.sourceId] : [])
     }
 
     /// Whether a bus's scene carries a FIXED media route — read off the real route
@@ -4797,7 +5393,7 @@ final class AppModel: ObservableObject {
     func markAudioConsoleDeliveredForTesting() {
         lastSyncedStripIds = Set(strips.map(\.id))
         scheduledStripIds = nil
-        lastRoutingBaseSent = routingBaseCommand()?["sends"] as? [JSONObject]
+        lastRoutingBaseSent = Self.routingMemo(routingBaseCommand())
     }
 
     /// A ONE-SHOT COMMAND MUST BE RE-APPLIED ON EVERY CORE GENERATION (CLAUDE.md).
@@ -4824,13 +5420,13 @@ final class AppModel: ObservableObject {
         lastRoutingBaseSent = nil
         strips = AudioConsolePolicy.mergeStrips(
             echo: [], prior: strips, remembered: rememberedStripSettings,
-            expected: expectedAudioSourceIds)
+            expected: expectedAudioSourceIds, zoomMuted: zoomMutedIds)
         var commands: [JSONObject] = [audioMixCommand()]
         let routing = routingBaseCommand()
         if let routing { commands.append(routing) }
         commands.append(captureAudioSourcesCommand())
         lastSyncedStripIds = Set(strips.map(\.id))
-        lastRoutingBaseSent = routing?["sends"] as? [JSONObject]
+        lastRoutingBaseSent = Self.routingMemo(routing)
         if let observer = audioReassertObserver { observer(commands); return }
         guard let bridge else { return }
         Task { [weak self] in
@@ -4898,10 +5494,14 @@ final class AppModel: ObservableObject {
     /// the core never holds a routed source without a strip (a late guest, a newly
     /// paired mic) and never keeps a strip for a source that is gone.
     /// Internal: the harness drives it.
+    /// Who is muted IN ZOOM right now, from the roster only (a roster miss is
+    /// not a mute). Feeds AudioStrip.sourceMuted, never the A1's mute.
+    var zoomMutedIds: Set<String> { Set(roster.filter(\.muted).map(\.id)) }
+
     func refreshStrips() {
         strips = AudioConsolePolicy.mergeStrips(
             echo: lastMixEcho, prior: strips, remembered: rememberedStripSettings,
-            expected: expectedAudioSourceIds)
+            expected: expectedAudioSourceIds, zoomMuted: zoomMutedIds)
         for strip in strips { rememberedStripSettings[strip.id] = strip }
         // Schedule once per new SET (order is presentation, never a reason to
         // sync): snapshots arrive faster than the 150 ms debounce, and
@@ -4958,7 +5558,7 @@ final class AppModel: ObservableObject {
                 "insertSettings": inserts.settingsJson,
             ]
         }
-        return ["type": "sync-participant-audio-mix", "limiterEnabled": true,
+        return ["type": "sync-participant-audio-mix", "limiterEnabled": mastering.limiterEnabled,
                 "mastering": mastering.json, "channels": channels]
     }
 
@@ -4988,6 +5588,9 @@ final class AppModel: ObservableObject {
     /// live outputs defer the quit behind the in-app confirmation.
     func handleQuitRequest() -> NSApplication.TerminateReply {
         sourceGrades.flush()
+        // The 5 s autosave would lose anything changed just before quit (a
+        // mastering slider, an A/B pick): write the operator's prefs now.
+        persistPrefsNow()
         switch quitGate.request(quitOutputs) {
         case .quitNow: return .terminateNow
         case .ask:
@@ -5103,7 +5706,7 @@ final class AppModel: ObservableObject {
     }
 
     /// The grade store's request path: the test seam, else the bridge.
-    private func gradeRequest(_ body: JSONObject) async throws -> JSONObject {
+    func gradeRequest(_ body: JSONObject) async throws -> JSONObject {
         if let seam = quitRequestForTesting { return try await seam(body, 6) }
         guard let bridge else { throw BridgeError.notRunning }
         return try await bridge.request(body)
@@ -5221,6 +5824,10 @@ final class AppModel: ObservableObject {
                                 "type": "set-recording-targets", "targetFolder": folder,
                                 "filenamePrefix": recordPrefix.isEmpty ? "show" : recordPrefix,
                                 "format": recordFormat, "quality": "high",
+                                // O1 (Windows MediaCoreCommandBuilder.cs:799-805).
+                                "targetBitrateMbps": recordingProfile.targetBitrateMbps,
+                                "audioBitrateKbps": recordingProfile.audioBitrateKbps,
+                                "renderProfile": recordingProfile.payload(fps: canvasFps),
                                 "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy,
                             ],
                             ["type": "start-recording-session", "sessionId": UUID().uuidString,
@@ -5414,6 +6021,9 @@ final class AppModel: ObservableObject {
     }
 
     /// The capture connect/disconnect path through its harness seam.
+    /// Z2's door to the same capture request path (CaptureAudioSync.swift).
+    func captureRequestForSync(_ body: JSONObject) async throws -> JSONObject { try await captureRequest(body) }
+
     private func captureRequest(_ body: JSONObject) async throws -> JSONObject {
         if let seam = captureRequestForTesting { return try await seam(body) }
         guard let bridge else { throw BridgeError.notRunning }
@@ -5551,6 +6161,58 @@ final class AppModel: ObservableObject {
     }
 }
 
+// The environment the shell adds when it launches the core: pure, so the
+// shell suite can pin it (ShellTestsGraphicsFonts). Moved out of AppModel's
+// launch unchanged, plus COREVIDEO_GRAPHICS_FONTS_DIR.
+enum CoreLaunchEnvironment {
+    static func extras(paths: ShellPaths.Paths, processEnvironment: [String: String],
+                       zoomPublicAppKey: String?) -> [String: String] {
+        var env: [String: String] = [:]
+        if let enginePath = paths.engineBinaryPath {
+            env["COREVIDEO_ZOOM_ENGINE_PATH"] = enginePath
+        }
+        if let key = zoomPublicAppKey, !key.isEmpty {
+            env["COREVIDEO_ZOOM_PUBLIC_APP_KEY"] = key
+        }
+        // The core waits this long for SDK auth, then again for the join
+        // verdict. Its built-in default is 7 s, which the Windows shell has
+        // never used (MediaCorePaths.cs sets 45000). Unset here, a Mac join
+        // reported "Timed out waiting for Zoom meeting join result." 7 s in,
+        // a moment before Zoom's real answer (2026-11-15, signed 1.0.0).
+        env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = processEnvironment["COREVIDEO_ZOOM_JOIN_WAIT_MS"]
+            ?? ZoomJoinStatus.coreJoinWaitMs
+        // VST3 discovery. `resolvePluginHostExecutablePath` (MediaCore.cpp) only
+        // does sibling-of-the-exe lookup under _WIN32, so on macOS the core finds
+        // the host ONLY through this env var — without it pluginHost.status is
+        // permanently "absent". Likewise `scanRoots` (plugin-host.cpp) reads the
+        // Windows COMMONPROGRAMFILES vars plus this single override, so a macOS
+        // scan walks nothing unless we name a root. See VstInserts.swift.
+        if let hostPath = paths.pluginHostPath {
+            env["COREVIDEO_PLUGIN_HOST_PATH"] = hostPath
+        }
+        if processEnvironment["COREVIDEO_VST3_SCAN_PATH"] == nil {
+            env["COREVIDEO_VST3_SCAN_PATH"] = VstScanRoots.effectiveRoot
+        }
+        // Graphics fonts (Metal graphics backend G2). On a pkg install the core
+        // runs from /Library/Application Support/CoreVideo Pro/ (CoreLocation),
+        // where make-macos-pkg.sh stages ONLY the binary, so the core's own
+        // lookup (GraphicsFonts/ beside the executable) finds nothing and Segoe
+        // UI graphics would fail strict. Name the app's folder explicitly.
+        if let override = processEnvironment["COREVIDEO_GRAPHICS_FONTS_DIR"], !override.isEmpty {
+            env["COREVIDEO_GRAPHICS_FONTS_DIR"] = override
+        } else if let fonts = paths.graphicsFontsDirectory {
+            env["COREVIDEO_GRAPHICS_FONTS_DIR"] = fonts
+        }
+        // Streaming helpers (mac streaming Phase 2): the same pkg layout means
+        // nothing sits beside the core, so name the bundle's corevideo-child-guard
+        // and the directory of its LGPL ffmpeg (an operator's own
+        // COREVIDEO_FFMPEG_BIN_DIR wins). Without these the core ran Homebrew's
+        // GPL ffmpeg, or none, and ran it unguarded.
+        env.merge(ShellPaths.streamingEnvironment(paths, inherited: processEnvironment)) { $1 }
+        return env
+    }
+}
+
 // Locates the core + engine relative to the app bundle (Resources) or the
 // repo build tree (dev runs from run-mac-shell.sh).
 enum ShellPaths {
@@ -5558,6 +6220,15 @@ enum ShellPaths {
         var corePath: String?
         var engineBinaryPath: String?
         var pluginHostPath: String?  // corevideo-plugin-host (VST3 scan on macOS)
+        /// The app's bundled graphics fonts (Selawik for Segoe UI). The core
+        /// looks beside its own executable, which the pkg-installed copy in
+        /// /Library has not got, so the launch names this folder explicitly.
+        var graphicsFontsDirectory: String?
+        /// corevideo-child-guard and the directory holding the bundled ffmpeg,
+        /// in the app's Resources (mac streaming Phase 2). The pkg runs the core
+        /// from /Library/Application Support, where neither sits beside it.
+        var childGuardPath: String?
+        var bundledFfmpegDirectory: String?
         /// True when corePath is the pkg-installed copy the camera extension can
         /// verify (CoreLocation); false means the camera refuses this core's frames.
         var coreCameraEligible = false
@@ -5608,7 +6279,47 @@ enum ShellPaths {
         paths.pluginHostPath = pluginHostCandidates.first {
             FileManager.default.isExecutableFile(atPath: $0)
         }
+        paths.graphicsFontsDirectory = graphicsFontsDirectory(bundleResources: bundleResources, repoRoot: repoRoot())
+        var helpers = streamingHelpers(resources: bundleResources) {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+        if helpers.childGuardPath == nil {
+            // Dev runs: the guard is built beside the dev core.
+            let dev = repoRoot() + "/native/build-metal/corevideo-child-guard"
+            if FileManager.default.isExecutableFile(atPath: dev) { helpers.childGuardPath = dev }
+        }
+        paths.childGuardPath = helpers.childGuardPath
+        paths.bundledFfmpegDirectory = helpers.bundledFfmpegDirectory
         return paths
+    }
+
+    /// The app's GraphicsFonts folder, else a dev build's (run-mac-shell.sh).
+    static func graphicsFontsDirectory(bundleResources: String, repoRoot: String) -> String? {
+        [bundleResources + "/GraphicsFonts", repoRoot + "/native/build-metal/GraphicsFonts"].first {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: $0, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+    }
+
+    /// The bundle's guard and ffmpeg, if this app carries them.
+    static func streamingHelpers(resources: String, exists: (String) -> Bool) -> Paths {
+        var paths = Paths()
+        guard !resources.isEmpty else { return paths }
+        let guardPath = resources + "/corevideo-child-guard"
+        if exists(guardPath) { paths.childGuardPath = guardPath }
+        if exists(resources + "/ffmpeg") { paths.bundledFfmpegDirectory = resources }
+        return paths
+    }
+
+    /// Environment the core needs to use the bundle's guard and ffmpeg wherever
+    /// the core itself runs from. An operator's own COREVIDEO_FFMPEG_BIN_DIR wins.
+    static func streamingEnvironment(_ paths: Paths, inherited: [String: String]) -> [String: String] {
+        var env: [String: String] = [:]
+        if let guardPath = paths.childGuardPath { env["COREVIDEO_CHILD_GUARD_PATH"] = guardPath }
+        if let directory = paths.bundledFfmpegDirectory, inherited["COREVIDEO_FFMPEG_BIN_DIR"] == nil {
+            env["COREVIDEO_FFMPEG_BIN_DIR"] = directory
+        }
+        return env
     }
 
     static func repoRoot() -> String {

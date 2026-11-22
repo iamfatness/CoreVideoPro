@@ -76,6 +76,11 @@ struct RtmpFfmpegArgsConfig {
   // QA only: duplicate the exact muxed packets to a local FLV during an RTMP
   // send. This isolates our muxer timeline from receiver/transcode timing.
   std::string localFlvTapPath;
+  // rtmps:// only: verify the server certificate against this PEM bundle and
+  // the URL's host name. Empty = ffmpeg's TLS default, which VERIFIES NOTHING
+  // with the bundled static OpenSSL (review finding 6, mac streaming Phase 2).
+  // The POSIX sender passes macOS's root bundle, /etc/ssl/cert.pem.
+  std::string tlsCaFile;
   // Real program audio over a second FFmpeg input. When `hasAudio` is false the
   // builder falls back to the silent `anullsrc` source so the FLV mux still
   // carries a valid AAC track.
@@ -161,6 +166,10 @@ inline void appendFfmpegMuxerOutput(std::ostringstream& args, const RtmpFfmpegAr
          << " -hls_segment_filename " << quoteRtmpArgument(hlsSegmentUrl(config.endpoint))
          << " -method PUT -f hls " << quoteRtmpArgument(config.endpoint);
     return;
+  }
+  if (!config.tlsCaFile.empty() && config.endpoint.rfind("rtmps://", 0) == 0) {
+    // Protocol options: the rtmp protocol hands them to its tls:// transport.
+    args << " -tls_verify 1 -ca_file " << quoteRtmpArgument(config.tlsCaFile);
   }
   args << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
        << quoteRtmpArgument(config.endpoint);

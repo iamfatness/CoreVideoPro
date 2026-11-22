@@ -584,6 +584,8 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   recordingWriteQueueDepth_ = core.recordingWriteQueueDepth_;
   recordingWriterStatus_ = core.recordingWriterStatus_;
   renderedProgramSources_ = core.renderedProgramSources_;
+  renderedPreviewSources_ = core.renderedPreviewSources_;
+  sourceSheet_ = core.sourceSheet_;
   renderedSceneAttributionState_ = core.renderedSceneAttributionState_;
   renderedSceneAttributionTicks_ = core.renderedSceneAttributionTicks_;
   routeCount_ = core.routeCount_;
@@ -748,6 +750,14 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
       {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"renderPlanId", lastProgramFrame_.renderPlanId},
       {"compositorRenderer", lastProgramFrame_.renderer},
+      {"sourceSheet", sourceSheetJson()},
+      // Always present (the multiviewer-node rule): what the core put on the Preview plan
+      // it last built for a render, empty when no Preview scene is up.
+      {"previewFrame",
+       rpc::Json::Object{
+           {"sceneId", renderedPreviewSources_.sceneId()},
+           {"videoSources", renderedPreviewSources_.videoSources()},
+       }},
       {"programFrame",
        rpc::Json::Object{
            {"sceneId", renderedProgramSources_.sceneId()},
@@ -2459,6 +2469,32 @@ rpc::Json CoreStateCapture::takeRecordsState() const {
   };
 }
 
+// Sources Phase 2 (S6). Published unconditionally (active:false when the Sources tab holds
+// no demand): a node that appears only when active is absent in exactly the case worth seeing.
+// `active` also requires an EXPORTED surface: a compositor without the pass (D3D11 or the
+// stub, ICompositor's default) runs the plan but has no sheet, and must not claim one.
+rpc::Json CoreStateCapture::sourceSheetJson() const {
+  const bool exported = sourceSheet_.texture.iosurfaceId != 0 || !sourceSheet_.texture.sharedHandleHex.empty();
+  rpc::Json::Array cells;
+  for (const auto& cell : sourceSheet_.cells) {
+    cells.emplace_back(rpc::Json::Object{{"slot", cell.slot}, {"sourceId", cell.sourceId}, {"state", cell.state}});
+  }
+  return rpc::Json::Object{
+      {"active", sourceSheet_.active && exported},
+      {"texture", rpc::Json::Object{{"iosurfaceId", static_cast<double>(sourceSheet_.texture.iosurfaceId)},
+                                    {"sharedHandleHex", sourceSheet_.texture.sharedHandleHex},
+                                    {"width", sourceSheet_.texture.width},
+                                    {"height", sourceSheet_.texture.height},
+                                    {"format", sourceSheet_.texture.format},
+                                    {"frameNumber", static_cast<double>(sourceSheet_.texture.frameNumber)}}},
+      {"columns", kSourceSheetColumns},
+      {"rows", kSourceSheetRows},
+      {"cellWidth", kSourceSheetCellWidth},
+      {"cellHeight", kSourceSheetCellHeight},
+      {"cells", std::move(cells)},
+  };
+}
+
 rpc::Json CoreStateCapture::zoomSubscriptionChurnState() const {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->subscriptionChurnState();
@@ -2957,6 +2993,9 @@ rpc::Json CoreStateCapture::outputSenderSessionState(const AudioOutputObservatio
     }
     if (!sender.runtimeDetail.empty()) {
       senderJson.emplace("runtimeDetail", sender.runtimeDetail);
+    }
+    if (sender.childGuarded.has_value()) {
+      senderJson.emplace("childGuard", *sender.childGuarded);
     }
     // PR19: the output supervisor's per-destination state, verbatim. /snapshot
     // serves sessionState as-is, so this is the whole path from "a destination

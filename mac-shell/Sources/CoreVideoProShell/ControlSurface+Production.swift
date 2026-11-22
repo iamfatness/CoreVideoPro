@@ -8,16 +8,14 @@ import Foundation
 extension AppModelControlSurface {
     /// Windows' legacy lower third (StudioControlSurface.cs:482-490): accepted
     /// intent, never "the pixels landed" — on-air is the core's `visible`.
+    /// Routed through the one lower-third entry (LowerThirdAuthority.swift), so a
+    /// control client, the footer and the drawer can never disagree about who owns
+    /// the lower third (#1166). Toggle follows whoever renders Program now.
     @MainActor
-    static func setLowerThird(_ model: AppModel, on: Bool?) -> ControlInvokeResult {
-        let target = on ?? !model.lowerThirdVisible
-        guard target else {
-            model.hideLowerThird()   // idempotent while a retire is in flight
-            return .success
-        }
-        model.showLowerThird()
-        return model.lowerThirdCommandStatus == LowerThirdKeyReadout.needsSource
-            ? .fail(LowerThirdKeyReadout.needsSource) : .success
+    static func setLowerThird(_ model: AppModel, on: Bool?) async -> ControlInvokeResult {
+        let target = on ?? !model.lowerThirdIntentVisible
+        let result = await model.applyLowerThirdIntent(visible: target)
+        return result.accepted ? .success : .fail(result.reason)
     }
 
     static let automaticCaptionsUnavailable =
@@ -56,6 +54,13 @@ extension AppModelControlSurface {
     @MainActor
     static func setMastering(_ model: AppModel, on: Bool) -> ControlInvokeResult {
         model.editMastering { $0.enabled = on }
+        return .success
+    }
+
+    /// audio.masterLimiter.set (Windows StudioControlSurface.cs:659-661: set, succeed).
+    @MainActor
+    static func setMasterLimiter(_ model: AppModel, on: Bool) -> ControlInvokeResult {
+        model.editMastering { $0.limiterEnabled = on }
         return .success
     }
 
@@ -133,8 +138,8 @@ extension AppModelControlSurface {
         guard gain.isFinite, (-60...10).contains(gain) else { return .fail("gainDb must be between -60 and +10.") }
         guard case .success(let revision?) = safeRevision(arg(5)) else { return .fail(revisionError) }
         // A Mac text: the Mac's full-state matrix would drop an unknown bus silently.
-        guard AppModel.routingBuses.contains(bus) else {
-            return .fail("busId must be one of \(AppModel.routingBuses.joined(separator: ", ")).")
+        guard model.routingBusIds.contains(bus) else {
+            return .fail("busId must be one of \(model.routingBusIds.joined(separator: ", ")).")
         }
         switch await model.requestAudioRouteControl(source: source, bus: bus, enabled: arg(2) as? Bool ?? false,
                                                     gainDb: gain, expectedEpoch: epoch, expectedRevision: revision,

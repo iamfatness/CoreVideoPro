@@ -2,6 +2,7 @@
 #include "core/SourceGradeState.h"
 #include "modules/MonitorInputCache.h"
 #include <gtest/gtest.h>
+#include <set>
 using namespace corevideo;
 namespace {
 struct PreviewCompositor : modules::ICompositor {
@@ -276,4 +277,36 @@ TEST(GradePreviewControl, DraftPreparationRefusalPreservesTheAcceptedPreview) {
   EXPECT_EQ(accepted.revision, 1);
   ASSERT_TRUE(accepted.lowerThirdPreview.has_value());
   EXPECT_EQ(accepted.lowerThirdPreview->text, "Accepted title");
+}
+
+// Grading Phase 2, Task 5 (shared, reaches Windows): the grade-preview texture objects carry the
+// macOS IOSurface id ONLY when one is set, so a Windows event keeps exactly its old key set
+// (the ProgramFramePreview.cpp program-shared-texture rule).
+TEST(GradePreviewControl, TextureObjectsCarryAnIOSurfaceIdOnlyWhenOneIsSet) {
+  core::GradePreviewController control; PreviewCompositor compositor;
+  const auto now = core::GradePreviewController::Clock::now();
+  ASSERT_TRUE(control.configure(demand("a", 1), {}, true, now));
+  compositor.result = std::make_shared<modules::MonitorRenderResult>();
+  modules::GradePreviewSurface surface; surface.demand = {"a", "p1", 1, {}};
+  surface.status = "ready"; surface.sourceEpoch = 3;
+  surface.texture.sharedHandleHex = "0x10"; surface.texture.width = 64; surface.texture.height = 36;
+  surface.scopes.texture.sharedHandleHex = "0x20"; surface.scopes.texture.width = 1536; surface.scopes.texture.height = 512;
+  compositor.result->gradePreviews.push_back(surface);
+  control.tick({}, compositor, 1, now);
+  auto events = control.drain(); ASSERT_EQ(events.size(), 1u);
+  const std::set<std::string> windowsKeys{"sharedHandleHex", "width", "height", "format", "frameNumber"};
+  auto keys = [](const rpc::Json& object) { std::set<std::string> out; for (const auto& [k, v] : object.asObject()) out.insert(k); return out; };
+  EXPECT_EQ(keys(*events[0].get("texture")), windowsKeys) << "a Windows preview texture is unchanged";
+  EXPECT_EQ(keys(*events[0].get("scopes")->get("texture")), windowsKeys) << "a Windows scope texture is unchanged";
+
+  compositor.result->gradePreviews[0].texture = {}; compositor.result->gradePreviews[0].texture.iosurfaceId = 4242;
+  compositor.result->gradePreviews[0].texture.width = 64; compositor.result->gradePreviews[0].texture.height = 36;
+  compositor.result->gradePreviews[0].scopes.texture = {}; compositor.result->gradePreviews[0].scopes.texture.iosurfaceId = 4343;
+  compositor.result->gradePreviews[0].scopes.texture.width = 1536; compositor.result->gradePreviews[0].scopes.texture.height = 512;
+  compositor.result->gradePreviews[0].sourceFrameId = 2;
+  control.tick({}, compositor, 2, now + std::chrono::milliseconds(150));
+  events = control.drain(); ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].get("texture")->getNumber("iosurfaceId"), 4242.0);
+  EXPECT_EQ(events[0].get("scopes")->get("texture")->getNumber("iosurfaceId"), 4343.0);
+  EXPECT_EQ(events[0].get("scopes")->getNumber("sampleWidth"), 256.0) << "a Mac scope surface is a measurement";
 }

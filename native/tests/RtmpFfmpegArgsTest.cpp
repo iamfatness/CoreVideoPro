@@ -487,3 +487,37 @@ TEST(EncodedVideoTransportStream, H264EnvelopePreservesFrameGapsAndDeclaresAvc) 
   ASSERT_TRUE(stream.packetize(chunk, wire));
   EXPECT_EQ(pesPts(videoPes(wire)), uint64_t{9000});
 }
+
+// Review finding 6 (mac streaming Phase 2): the bundled ffmpeg's static
+// OpenSSL has no trust store, so without these an rtmps:// stream accepted ANY
+// certificate (proven against a local self-signed s_server; with them the same
+// server is refused with "certificate verify failed", a host-name mismatch is
+// refused, and YouTube/Facebook ingests verify against /etc/ssl/cert.pem).
+TEST(RtmpFfmpegArgs, RtmpsVerifiesTheServerCertificateAgainstTheGivenBundle) {
+  corevideo::modules::RtmpFfmpegArgsConfig config;
+  config.endpoint = "rtmps://a.rtmps.youtube.com/live2/key";
+  config.tlsCaFile = "/etc/ssl/cert.pem";
+  const std::string args = corevideo::modules::buildRtmpFfmpegArguments(config);
+  const auto verify = args.find(" -tls_verify 1 -ca_file \"/etc/ssl/cert.pem\"");
+  ASSERT_NE(verify, std::string::npos) << args;
+  EXPECT_LT(verify, args.find(" -f flv ")) << "protocol options precede the output they apply to: " << args;
+}
+
+TEST(RtmpFfmpegArgs, PlainRtmpAndAnUnsetBundleCarryNoTlsOptions) {
+  corevideo::modules::RtmpFfmpegArgsConfig plain;
+  plain.endpoint = "rtmp://a.rtmp.youtube.com/live2/key";
+  plain.tlsCaFile = "/etc/ssl/cert.pem";
+  EXPECT_EQ(corevideo::modules::buildRtmpFfmpegArguments(plain).find("tls_verify"), std::string::npos);
+  corevideo::modules::RtmpFfmpegArgsConfig unset;
+  unset.endpoint = "rtmps://a.rtmps.youtube.com/live2/key";
+  EXPECT_EQ(corevideo::modules::buildRtmpFfmpegArguments(unset).find("tls_verify"), std::string::npos)
+      << "Windows passes no bundle and keeps its ffmpeg's own TLS behaviour";
+}
+
+TEST(RtmpFfmpegArgs, ACaBundlePathWithSpacesIsQuotedAsOneArgument) {
+  corevideo::modules::RtmpFfmpegArgsConfig config;
+  config.endpoint = "rtmps://ingest.example.com/app/key";
+  config.tlsCaFile = "/Library/Application Support/CoreVideo Pro/ca.pem";
+  const std::string args = corevideo::modules::buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-ca_file \"/Library/Application Support/CoreVideo Pro/ca.pem\""), std::string::npos) << args;
+}

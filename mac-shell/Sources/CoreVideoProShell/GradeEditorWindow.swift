@@ -54,8 +54,16 @@ struct SourceGradeEditorPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(editor.headerTitle).font(.grotesk(15, .semibold))
-            Text(GradeEditorModel.previewNotice).font(.grotesk(11)).foregroundStyle(Studio.amber)
+            Text(editor.previewStatus).font(.grotesk(11))
+                .foregroundStyle(editor.previewSupported ? Studio.secondary : Studio.amber)
                 .fixedSize(horizontal: false, vertical: true)
+            if editor.previewSupported {
+                ScopeRoiToolbar(editor: editor)
+                GradePreviewMonitor(editor: editor)
+                Toggle("Compare original (monitor only)", isOn: $editor.compareOriginal)     // CGE:47
+                    .font(.grotesk(12))
+                    .accessibilityLabel("Compare original for \(editor.sourceName), monitor only")
+            }
             MonoLabel("BUILT-IN LOOK")
             Picker("", selection: Binding(get: { editor.lut }, set: { editor.lut = $0; editor.edited() })) {
                 ForEach(SourceColorGrade.looks, id: \.self) { Text($0).tag($0) }
@@ -127,22 +135,20 @@ struct GradeInspectorSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Grade").font(.grotesk(13, .semibold))
+            Text(SourceInspectorGradeCopy.pictureTitle).font(.grotesk(13, .semibold))
             if let context {
+                Text(SourceInspectorGradeCopy.pictureBody).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(GradeInspectorSection.line(store.summary(for: context.gradeSourceId)))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Grade…") {
-                    switch model.openGradeEditor(sourceId: context.gradeSourceId) {
-                    case .opened(let editor):
-                        model.gradeNotice = ""
-                        openWindow(id: PopoutWindow.sourceGrade, value: editor.sourceId)
-                    case .refused(let text):
-                        model.gradeNotice = text
-                    }
+                Button(SourceInspectorGradeCopy.openButton) {
+                    model.openGradeWorkspace(slotId: context.slotId) { openWindow(id: PopoutWindow.sourceGrade, value: $0) }
                 }
                 .buttonStyle(GhostButtonStyle())
-                .accessibilityLabel("Grade input \(context.slotId)")
+                .accessibilityLabel("Open the grade workspace for input \(context.slotId)")
+                Text(SourceInspectorGradeCopy.roiNote).font(.grotesk(10)).foregroundStyle(Studio.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Choose a source for this input to grade it.")
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
@@ -193,6 +199,8 @@ struct AdvancedGradePanel: View {
             HStack(spacing: 6) {
                 Button("+ Primaries") { editor.addPrimaries() }.buttonStyle(GhostButtonStyle())
                     .accessibilityLabel("Add a primaries adjustment")
+                Button("+ Curves") { editor.addCurves() }.buttonStyle(GhostButtonStyle())
+                    .accessibilityLabel("Add a curves adjustment")
                 Picker("", selection: Binding(get: { editor.selectedAdjustmentId ?? "" },
                                               set: { editor.selectedAdjustmentId = $0.isEmpty ? nil : $0 })) {
                     ForEach(editor.document?.operations ?? []) { Text($0.displayName).tag($0.id) }
@@ -219,9 +227,14 @@ struct AdvancedGradePanel: View {
                         labelledSlider(label, value: selected[keyPath: path], range: range, step: step, format: "%.2f",
                                        help: help) { value in editor.editSelected { $0[keyPath: path] = value } }
                     }
+                } else if selected.kind == "curves" {
+                    GradeCurvePanel(editor: editor)
                 } else {
-                    Text(GradeEditorModel.laterEditingNotice).font(.grotesk(11)).foregroundStyle(Studio.amber)
+                    Text("3D LUT · \(selected.displayName)").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 }
+            }
+            if editor.previewSupported {
+                GradeScopeControls(editor: editor)
             }
             HStack(spacing: 6) {
                 Button("Undo") { editor.undo() }.keyboardShortcut("z", modifiers: .command)
@@ -243,6 +256,7 @@ struct AdvancedGradePanel: View {
                 .accessibilityLabel("Paste grade")
                 Button("Save preset…") { savePreset() }.accessibilityLabel("Save grade preset")
                 Button("Load preset…") { loadPreset() }.accessibilityLabel("Load grade preset")
+                Button("Import LUT…") { importLut() }.accessibilityLabel("Import a .cube LUT")
             }
             .buttonStyle(GhostButtonStyle())
             if !presetNotice.isEmpty {
@@ -275,6 +289,19 @@ struct AdvancedGradePanel: View {
         catch { presetNotice = "Preset was not saved: \(error.localizedDescription)" }
     }
 
+    /// ColorGradeEditorWindow.Advanced.cs:94-100: a .cube file up to 2 MB, named after the file.
+    private func importLut() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "cube") ?? .data]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= GradeEditorModel.maxCubeFileBytes else { presetNotice = "LUT exceeds 2 MB."; return }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { presetNotice = "LUT could not be read."; return }
+        editor.importCube(text: text, name: url.deletingPathExtension().lastPathComponent)
+        presetNotice = editor.selectedAdjustment?.kind == "cube" ? "" : editor.status
+    }
+
     private func loadPreset() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.init(filenameExtension: "cvgrade") ?? .json]
@@ -286,5 +313,136 @@ struct AdvancedGradePanel: View {
             presetNotice = "Preset could not be read."; return
         }
         presetNotice = editor.paste(text) ? "" : editor.status
+    }
+}
+
+/// The private native preview (G5): the editor's IOSurface, shown with the existing presenter.
+struct GradePreviewMonitor: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color(red: 2 / 255, green: 3 / 255, blue: 4 / 255))
+            if editor.previewSurfaceId != 0 {
+                SurfaceView(surfaceId: editor.previewSurfaceId)
+            }
+            ScopeRoiOverlay(editor: editor)                 // G7: editor-only region guide
+        }
+        .frame(height: 270)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
+        .accessibilityLabel("Private grade preview of \(editor.sourceName)")
+    }
+}
+
+/// Scopes (G6): the toggles and modes (CGE:88-89,102-103) and, when on, the scope image with the
+/// three captions the shell draws itself (spec §5.6) and the Windows scope line.
+struct GradeScopeControls: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Scopes", isOn: $editor.scopesEnabled).font(.grotesk(12)).accessibilityLabel("Scopes")
+            Toggle("Analyze original", isOn: $editor.scopesOriginal).font(.grotesk(12))
+                .accessibilityLabel("Analyze the original source")
+            picker("Histogram", GradeEditorModel.histogramModes, $editor.histogramMode)
+            picker("Waveform", GradeEditorModel.waveformModes, $editor.waveformMode)
+            picker("Expand scope", GradeEditorModel.scopeViews, $editor.scopeView)
+            ScopeRoiPrecision(editor: editor)
+            if editor.scopesEnabled {
+                Text(editor.scopeRegionLabel).font(.grotesk(11, .semibold)).foregroundStyle(Studio.textPrimary)
+                    .accessibilityLabel("Scope region: \(editor.scopeRegionLabel)")
+                HStack(spacing: 0) {
+                    ForEach(GradeEditorModel.scopeCaptions, id: \.self) {
+                        Text($0).font(.plexMono(9)).foregroundStyle(Studio.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                ZStack {
+                    Rectangle().fill(Color(red: 3 / 255, green: 3 / 255, blue: 3 / 255))
+                    if editor.scopeSurfaceId != 0 { SurfaceView(surfaceId: editor.scopeSurfaceId) }
+                }
+                .aspectRatio(3, contentMode: .fit)
+                .accessibilityLabel("Histogram, waveform and vectorscope")
+                Text(editor.scopeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func picker(_ label: String, _ options: [String], _ value: Binding<Int>) -> some View {
+        Picker(label, selection: value) {
+            ForEach(options.indices, id: \.self) { Text(options[$0]).tag($0) }
+        }
+        .font(.grotesk(12))
+        .accessibilityLabel(label)
+    }
+}
+
+/// G7: the ROI tools above the preview (ColorGradeEditorWindow.xaml:14-19).
+struct ScopeRoiToolbar: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                tool("Draw rectangle", shape: "rectangle")
+                tool("Draw circle", shape: "circle")
+                Button("Select / move") { editor.armRoi(nil) }
+                    .buttonStyle(GhostButtonStyle(tint: editor.roiDrawingShape == nil ? Studio.accent : Studio.textPrimary))
+                    .accessibilityLabel("Select or move the scope region")
+                Button("Clear") { editor.armRoi(nil); editor.clearScopeRoi() }
+                    .buttonStyle(GhostButtonStyle())
+                    .help("Measure the full frame")
+                    .accessibilityLabel("Clear the scope region and measure the full frame")
+            }
+            Text(editor.roiToolHint).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func tool(_ label: String, shape: String) -> some View {
+        Button(label) { editor.armRoi(shape) }
+            .buttonStyle(GhostButtonStyle(tint: editor.roiDrawingShape == shape ? Studio.accent : Studio.textPrimary))
+            .accessibilityLabel(label)
+    }
+}
+
+/// G7: "Precision settings" (ColorGradeEditorWindow.xaml:90-99).
+struct ScopeRoiPrecision: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        DisclosureGroup("Precision settings") {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Use selected region (scopes only)", isOn: $editor.scopeRoiEnabled).font(.grotesk(12))
+                    .accessibilityLabel("Use selected region, scopes only")
+                Toggle("Show ROI guide (editor only)", isOn: $editor.scopeRoiGuideVisible).font(.grotesk(12))
+                    .accessibilityLabel("Show ROI guide, editor only")
+                let r = editor.scopeRoi
+                slider("ROI left", r.x, max: 1 - r.width, axis: 0)
+                slider("ROI top", r.y, max: 1 - r.height, axis: 1)
+                slider("ROI width", r.width, max: 1 - r.x, axis: 2)
+                slider("ROI height", r.height, max: 1 - r.y, axis: 3)
+                Button("Reset region to center") { editor.resetScopeRoi() }
+                    .buttonStyle(GhostButtonStyle())
+                    .accessibilityLabel("Reset region to center")
+            }
+            .padding(.top, 4)
+        }
+        .font(.grotesk(12))
+    }
+
+    private func slider(_ label: String, _ value: Double, max: Double, axis: Int) -> some View {
+        let lower = axis >= 2 ? 0.000001 : 0
+        let upper = Swift.max(lower + 0.000001, max)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label).font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                Spacer()
+                Text(String(format: "%.1f%%", value * 100)).font(.plexMono(11)).foregroundStyle(Studio.textPrimary)
+            }
+            Slider(value: Binding(get: { min(Swift.max(value, lower), upper) }, set: { editor.setRoiNumber(axis, $0) }),
+                   in: lower...upper)
+                .accessibilityLabel(label)
+        }
     }
 }

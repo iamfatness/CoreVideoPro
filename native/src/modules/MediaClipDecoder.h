@@ -15,10 +15,13 @@
 // this: it keeps MediaFoundationMediaFrameSourceAdapter.cpp.
 namespace corevideo::modules {
 
-enum class ClipReadStatus { Ready, Pending, EndOfStream, Failed };
+enum class ClipReadStatus { Ready, Pending, EndOfStream, Failed, NoVideoTrack };
 
 struct ClipVideoSample {
   std::shared_ptr<const std::vector<uint8_t>> bgra;  // tightly packed, stride width*4, STRAIGHT alpha
+  // OR a native GPU image and no CPU bytes (the Mac zero-copy reader, N4). The
+  // decoder moves it into VideoFrame::gpuPixels untouched; nothing copies it.
+  std::shared_ptr<const GpuVideoFrame> gpu;
   int width = 0, height = 0;
   int64_t pts100ns = 0;        // media time within THIS reader, 0 at the start of the file
   int64_t duration100ns = 0;
@@ -34,6 +37,8 @@ struct ClipAudioSample {       // used from the audio slice (N2)
 //  Pending     -> nothing yet (opening, or the reader queue is behind).
 //  EndOfStream -> sticky.
 //  Failed      -> sticky; `error` is an operator-facing cause.
+//  NoVideoTrack-> sticky, video readers only: the file opened and has no video
+//                 track (an audio bed). Not a failure; nothing warns.
 // Destroying a reader cancels its work and returns only after its queue is
 // drained: no callback may run after the destructor returns.
 class IClipVideoReader {
@@ -46,6 +51,9 @@ class IClipAudioReader {
  public:
   virtual ~IClipAudioReader() = default;
   virtual ClipReadStatus take(ClipAudioSample& out, std::string& error) = 0;
+  // The asset's duration as the audio reader knows it; -1 until known. Read
+  // only for an audio-only asset, which has no video reader to ask.
+  [[nodiscard]] virtual int64_t duration100ns() const { return -1; }
 };
 
 class IClipReaderFactory {
@@ -85,6 +93,7 @@ class MediaClipDecoder final : public IMediaDecoder, public IMediaVideoPrefetch 
   [[nodiscard]] int64_t playbackPositionMs() const override;
   [[nodiscard]] int64_t mediaDurationMs() const override;
   [[nodiscard]] bool mediaEnded() const override;
+  [[nodiscard]] bool mediaHasVideo() const override;
   // Test-only observation, never read by production code.
   [[nodiscard]] int videoReadersOpenedForTest() const;
 

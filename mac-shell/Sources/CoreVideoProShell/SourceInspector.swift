@@ -105,11 +105,12 @@ struct SourceInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Plan D8: the tool row's toggle is the one close control (Windows
+            // SourcesWorkspaceControl.cs:74,152); a second same-named button here confused VoiceOver.
             HStack {
                 Text("Input \(slotId)").font(.grotesk(15, .semibold))
                 Spacer()
-                Button("Close inspector") { model.sourcesWorkspace.columns.inspectorOpen = false }
-                    .buttonStyle(GhostButtonStyle())
+                InspectorGradeHeaderButton(slotId: slotId, assigned: slot.map { $0.kind != "unassigned" } ?? false)
             }
             if let slot {
                 header(slot)
@@ -151,16 +152,15 @@ struct SourceInspector: View {
     private func header(_ slot: ShowInputSlot) -> some View {
         let facts = model.sourceFacts.box(slot.id).facts
         return VStack(alignment: .leading, spacing: 6) {
-            RoundedRectangle(cornerRadius: 8).fill(Studio.field)
-                .overlay(Text("Preview unavailable").font(.grotesk(11)).foregroundStyle(Studio.textDim))
-                .frame(width: 320, height: 180)
+            SourceThumbnail(slot: slot, box: model.sourceFacts.box(slot.id), width: 320, height: 180)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
                 Text(facts.chip).font(.plexMono(10, .semibold))
                     .foregroundStyle(SlotSignalFacts.signalColor(facts.chip))
-                Text(facts.format).font(.plexMono(10))
-                if let age = facts.frameAgeMs {
-                    Text(String(format: "%.1f s old", age / 1000)).font(.plexMono(10)).foregroundStyle(Studio.amber)
+                Text(facts.formatWithRate).font(.plexMono(10))
+                if !facts.formatDetail.isEmpty {
+                    Text(facts.formatDetail).font(.plexMono(10))
+                        .foregroundStyle(facts.formatStale ? Studio.amber : Studio.secondary)
                 }
             }
             Text(SourceAssignmentHint.text(assigned: slot.kind != "unassigned", missing: slot.offline,
@@ -290,7 +290,9 @@ struct SourceInspector: View {
                 .menuStyle(.borderlessButton).fixedSize()
                 .accessibilityLabel("Input \(slot.id) microphone")
             } else {
-                Text(slot.kind == "zoom" ? "Zoom source audio" : "No source").font(.grotesk(12))
+                Text(slot.kind == "zoom" ? "Zoom source audio"
+                     : slot.kind == "media" ? "Media audio plays through the Media strip" : "No source")
+                    .font(.grotesk(12))
             }
             Text("Gain, mute and processing live on the Audio page.")
                 .font(.grotesk(11)).foregroundStyle(Studio.secondary)

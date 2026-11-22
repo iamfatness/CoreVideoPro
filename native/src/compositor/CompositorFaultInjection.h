@@ -99,4 +99,29 @@ inline void setVcamTapPrepFailureForTest(bool fail) noexcept {
   vcamTapPrepFailureFlag().store(fail, std::memory_order_release);
 }
 
+// ── Overlay raster preparation hook (Metal graphics backend G1) ────────────────
+// Same guarding as above: a plain function pointer, null when disarmed, armed only
+// by an in-process call from native/tests/. Invoked ONCE at the start of every
+// overlay raster preparation (on the preparation worker, never per frame). Tests
+// use it to count preparations and to block the worker, which is how
+// `MetalCompositor.ABlockedOverlayPreparationNeverStallsTheRenderTick` proves the
+// render tick never waits for a raster. A blocking hook must carry its own hard
+// timeout: a seam that can wedge the process it diagnoses is not a diagnostic.
+using OverlayRasterPrepareHookFn = void (*)();
+
+inline std::atomic<OverlayRasterPrepareHookFn>& overlayRasterPrepareHookSlot() noexcept {
+  static std::atomic<OverlayRasterPrepareHookFn> slot{nullptr};
+  return slot;
+}
+
+inline void invokeOverlayRasterPrepareHook() noexcept {
+  if (auto* fn = overlayRasterPrepareHookSlot().load(std::memory_order_acquire)) {
+    fn();
+  }
+}
+
+inline void setOverlayRasterPrepareHookForTest(OverlayRasterPrepareHookFn fn) noexcept {
+  overlayRasterPrepareHookSlot().store(fn, std::memory_order_release);
+}
+
 }  // namespace corevideo::compositor

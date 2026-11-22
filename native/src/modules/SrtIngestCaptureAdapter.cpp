@@ -96,14 +96,15 @@ HANDLE ingestJobObject() {
 #endif
 
 std::string resolveFfmpegExecutable() {
-#ifdef _WIN32
-  constexpr const char* kExeName = "ffmpeg.exe";
+#if !defined(_WIN32)
+  // The SAME order as the senders (PosixExecutableLocator.h, resolveFfmpeg):
+  // COREVIDEO_FFMPEG_BIN_DIR, this adapter's old COREVIDEO_FFMPEG_DIR as an
+  // alias, then the bundled copy beside the core, then PATH and Homebrew.
+  auto found = posix_exec::resolveFfmpeg(posix_exec::FfmpegSearch{});
+  return found.empty() ? std::string("ffmpeg") : found;  // not found: rely on PATH, as before
 #else
-  constexpr const char* kExeName = "ffmpeg";
-#endif
-  // Explicit override first, then the location the app stages beside itself, then
-  // PATH. Kept deliberately small: this is the same binary the RTMP/SRT senders
-  // already depend on.
+  constexpr const char* kExeName = "ffmpeg.exe";
+  // Explicit override first, then the location the app stages beside itself.
   if (const char* dir = std::getenv("COREVIDEO_FFMPEG_DIR"); dir && dir[0] != '\0') {
     std::filesystem::path candidate = std::filesystem::path(dir) / kExeName;
     std::error_code ec;
@@ -111,7 +112,6 @@ std::string resolveFfmpegExecutable() {
       return candidate.string();
     }
   }
-#ifdef _WIN32
   for (const char* root : {"C:\\ffmpeg\\bin"}) {
     std::filesystem::path candidate = std::filesystem::path(root) / kExeName;
     std::error_code ec;
@@ -119,16 +119,8 @@ std::string resolveFfmpegExecutable() {
       return candidate.string();
     }
   }
-#else
-  // PATH, then the Homebrew/MacPorts bin dirs (a Finder/Dock launch's PATH
-  // has neither). Shared with the RTMP/SRT senders: PosixExecutableLocator.h.
-  if (auto found = posix_exec::findOnPathThenFallbacks(
-          kExeName, std::getenv("PATH"), posix_exec::defaultFfmpegFallbackDirectories());
-      !found.empty()) {
-    return found;
-  }
-#endif
   return kExeName;  // rely on PATH
+#endif
 }
 
 struct NetworkIngestSourceConfig {

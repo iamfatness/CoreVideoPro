@@ -1,5 +1,7 @@
 #include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/HlsOutputPolicy.h"
+#include "modules/RtmpFfmpegArgs.h"
+#include "modules/SrtFfmpegArgs.h"
 
 #include <gtest/gtest.h>
 
@@ -126,6 +128,42 @@ TEST(FfmpegSenderDiagnostics, RecoveryResetsFailureAndPreservesFirstPipeFault) {
   failure.record(BitstreamFailure::PipeWrite);
   failure.record(BitstreamFailure::QueueOverflow);
   EXPECT_EQ(failure.reason(), BitstreamFailure::PipeWrite);
+}
+
+// Review finding (mac streaming Phase 2): the one-shot "[rtmp] ffmpeg <args>"
+// log line carried the stream key. Built through the REAL argument builder so
+// the test sees the URL exactly as the sender would log it.
+TEST(FfmpegSenderDiagnostics, TheLoggedInvocationNeverCarriesTheStreamKey) {
+  RtmpFfmpegArgsConfig config;
+  config.endpoint = "rtmp://a.rtmp.youtube.com/live2/k3y";  // a 3-char key: below the scrub's floor
+  const std::string args = buildRtmpFfmpegArguments(config);
+  ASSERT_NE(args.find("live2/k3y"), std::string::npos) << "the fixture must contain the raw key: " << args;
+  const auto logged = redactFfmpegInvocation(args, config.endpoint, "rtmp://a.rtmp.youtube.com/live2/***", "k3y", "");
+  EXPECT_EQ(logged.find("k3y"), std::string::npos) << logged;
+  EXPECT_NE(logged.find("rtmp://a.rtmp.youtube.com/live2/***"), std::string::npos)
+      << "the host survives: it is the diagnostic";
+}
+
+TEST(FfmpegSenderDiagnostics, TheLoggedInvocationNeverCarriesTheSrtPassphraseOrStreamId) {
+  SrtEndpointConfig endpoint;
+  endpoint.host = "ingest.example.net";
+  endpoint.port = 9000;
+  endpoint.passphrase = "correct horse battery";
+  endpoint.keyLength = 16;
+  endpoint.streamId = "#!::r=live/show,m=publish";
+  const auto url = buildSrtUrl(endpoint);
+  ASSERT_TRUE(url.valid);
+  RtmpFfmpegArgsConfig config;
+  config.container = "mpegts";
+  config.endpoint = url.url;
+  const std::string args = buildRtmpFfmpegArguments(config);
+  const auto logged = redactFfmpegInvocation(args, url.url, redactedSrtUrl(url.url), "", endpoint.passphrase,
+                                             endpoint.streamId);
+  EXPECT_EQ(logged.find("horse"), std::string::npos) << logged;
+  EXPECT_EQ(logged.find(percentEncodeSrtValue(endpoint.passphrase)), std::string::npos) << logged;
+  EXPECT_EQ(logged.find("live/show"), std::string::npos) << logged;
+  EXPECT_EQ(logged.find(percentEncodeSrtValue(endpoint.streamId)), std::string::npos) << logged;
+  EXPECT_NE(logged.find("ingest.example.net"), std::string::npos) << logged;
 }
 
 }  // namespace

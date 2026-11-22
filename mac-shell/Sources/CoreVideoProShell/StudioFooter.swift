@@ -298,7 +298,7 @@ struct FooterGraphicsGroup: View {
             FooterStatLabel("Graphics")
             HStack(spacing: 0) {
                 Button {
-                    onAir ? model.hideLowerThird() : model.showLowerThird()
+                    model.toggleLowerThirdIntent()   // the one lower-third entry (spec 5.5)
                 } label: {
                     HStack(spacing: 6) {
                         Text("L3")
@@ -352,14 +352,12 @@ struct FooterGraphicsGroup: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Position").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Picker("", selection: $model.lowerThirdPosition) {
-                    Text("Lower left").tag("lower-left")
-                    Text("Lower right").tag("lower-right")
-                    Text("Center").tag("center")
+                    ForEach(LowerThirdPositions.all, id: \.value) { Text($0.label).tag($0.value) }
                 }.labelsHidden()
             }
             HStack(spacing: 10) {
-                msStepper("Build in", $model.overlays.buildInMs)
-                msStepper("Build out", $model.overlays.buildOutMs)
+                msStepper("Build in", Binding(get: { model.overlays.buildInMs }, set: { model.setBuildInMs($0) }))
+                msStepper("Build out", Binding(get: { model.overlays.buildOutMs }, set: { model.setBuildOutMs($0) }))
             }
             Text("in \(model.overlays.buildInMs) ms \u{00B7} out \(model.overlays.buildOutMs) ms")
                 .font(.plexMono(10)).foregroundStyle(Studio.textDim)
@@ -379,7 +377,6 @@ struct FooterGraphicsGroup: View {
             Stepper(value: value, in: 50...2000, step: 50) {
                 Text("\(value.wrappedValue) ms").font(.plexMono(11))
             }
-            .onChange(of: value.wrappedValue) { _ in model.overlays.motionTiming = MotionTiming.custom.rawValue }
         }
     }
 }
@@ -427,13 +424,13 @@ struct FooterOutputsGroup: View {
                     name: streaming ? "Stop streaming" : "Start streaming",
                     optionsName: "Streaming output options",
                     help: streaming
-                        ? "Stop streaming (RTMP)\(model.streamDetail.isEmpty ? "" : " \u{2014} " + model.streamDetail)"
-                        : "Start streaming (RTMP, 6 Mbps)",
+                        ? "Stop streaming \u{2014} \(model.streamSummary)"
+                        : "Start streaming",
                     active: streaming, activeFill: Studio.blue,
                     flyoutShown: $streamShown,
                     action: {
-                        // No key yet: open the settings instead of a doomed start.
-                        if !streaming && model.streamKey.isEmpty { streamShown = true }
+                        // Nothing valid to start: open the options instead of a doomed start.
+                        if !streaming && model.streamStartRefusal != nil { streamShown = true }
                         else { model.toggleStreaming() }
                     }
                 ) {
@@ -533,8 +530,8 @@ struct FooterOutputsGroup: View {
     private var streamFlyout: some View {
         FooterFlyout(title: "Streaming output") {
             FooterMutedText(streaming
-                            ? "Streaming \u{2014} \(model.streamStatus.isEmpty ? "starting" : model.streamStatus)"
-                            : (model.streamKey.isEmpty ? "Add a stream key to go live." : "Ready to stream."))
+                            ? "Streaming \u{2014} \(model.streamSummary)"
+                            : (model.streamStartRefusal ?? "Ready to stream."))
             VStack(alignment: .leading, spacing: 8) {
                 TextField("RTMP URL", text: $model.streamUrl)
                     .textFieldStyle(StudioFieldStyle())
@@ -543,19 +540,15 @@ struct FooterOutputsGroup: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Destinations").font(.grotesk(11)).foregroundStyle(Studio.secondary)
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.square.fill")
-                        .font(.system(size: 12))  // design-lint: allow
-                        .foregroundStyle(Studio.blue)
-                    Text("RTMP").font(.grotesk(12, .semibold)).foregroundStyle(Studio.textPrimary)
-                }
-                Text("SRT and HLS destinations are Windows-only for now.")
-                    .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                // One row per destination; the status is the core's lifecycle +
+                // supervisor (never "live" from a launch). SRT/HLS fields: More.
+                DestinationRowsView()
             }
             HStack {
                 Text(ProductionSettingsPolicy.streamRecipeLabel(
                     bitrateMbps: model.streamBitrateMbps,
-                    height: model.coreOutputProfile?.height ?? model.canvasHeight))
+                    height: model.coreOutputProfile?.height ?? model.canvasHeight,
+                    encoder: model.streamEncoder))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
@@ -569,7 +562,7 @@ struct FooterOutputsGroup: View {
                     streamShown = false
                 }
                 .buttonStyle(AccentButtonStyle())
-                .disabled(!streaming && (model.streamKey.isEmpty || model.streamUrl.isEmpty))
+                .disabled(!streaming && model.streamStartRefusal != nil)
             }
         }
     }
@@ -845,8 +838,7 @@ struct FooterTelemetry: View {
                        value: model.streamingDesired ? (model.streamDegradationLine ?? "6 Mbps") : "\u{2014}",
                        valueColor: model.streamingDesired && model.streamDegradationLine != nil
                            ? Studio.amber : Studio.textPrimary,
-                       health: model.streamingDesired
-                           ? (model.streamStatus.isEmpty ? "Starting" : model.streamStatus) : "Idle",
+                       health: model.streamingDesired ? model.streamHealthLabel : "Idle",
                        healthColor: model.streamingDesired ? Studio.blue : Studio.secondary,
                        width: 100)
             FooterMasterCard()
@@ -956,6 +948,8 @@ enum FooterSnapshotHarness {
         model.recordingDroppedFrames = 3
         model.streamingDesired = true
         model.streamStatus = "live"
+        model.streamKey = "snapshot-harness-key"
+        model.destinationRows = ["rtmp": DestinationStatus(label: "Live", tone: .good, isLive: true)]
         model.lowerThirdName = "Jordan Wallace"
         model.lowerThirdKeyedName = "Jordan Wallace"
         model.lowerThirdPhase = "on-air"

@@ -260,6 +260,7 @@ extension ShellTests {
     @MainActor static func gradeModel(file: String? = nil) -> AppModel {
         AppModel.gradeFilePathForTesting = file ?? tempGradeFile()
         defer { AppModel.gradeFilePathForTesting = nil }
+        GradePreviewSession.autoTick = false      // Phase 2: tests tick preview sessions by hand
         return AppModel()
     }
     @MainActor static func awaitApply(_ store: SourceGradeStore, _ grade: SourceColorGrade,
@@ -751,18 +752,17 @@ extension ShellTests {
         guard let fixtures = loadGradeFixtures(), let documents = fixtures["documents"] as? [[String: Any]] else {
             expect(false, "contracts/grade.fixtures.json must be readable from the harness"); return
         }
-        var checked = 0, skipped = 0
+        var checked = 0
         for entry in documents {
             let name = entry["name"] as? String ?? "?"
-            if entry["needsCubeParser"] as? Bool == true { skipped += 1; continue }   // D8, until G3
+            // Phase 2 Task 1 (G3) retired the D8 skip: needsCubeParser rows are checked too.
             let data = try! JSONSerialization.data(withJSONObject: entry["json"]!, options: [.fragmentsAllowed])
             let valid: Bool
             do { try JSONDecoder().decode(AdvancedGradeDocument.self, from: data).validate(); valid = true } catch { valid = false }
             expectEqual(valid, (entry["portable"] as? String) == "valid", "portable verdict: \(name)")
             checked += 1
         }
-        expectEqual(checked, 24, "every non-cube-parser fixture was checked")
-        expectEqual(skipped, 1, "exactly the cube-parser fixtures are deferred to G3")
+        expectEqual(checked, 25, "every document fixture is checked, cube-parser rows included (G3)")
     }
 
     static func testTheSwiftEncodingIsWhatTheCoreAccepts() {

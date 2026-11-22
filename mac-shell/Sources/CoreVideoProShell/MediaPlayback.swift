@@ -109,6 +109,15 @@ enum MediaRoutePlayback {
 
     /// What Cue says for a file the Mac core refuses (plan default D1), the
     /// decoder's own sentence.
+    /// The Media status line, or nil when it would only repeat the summary line (plan D9).
+    static func statusLine(status: String, summary: String) -> String? {
+        let trimmed = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        let said = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Equal, or the summary with a tail ("X ready to cue" / "X ready to cue or audition").
+        guard !trimmed.isEmpty, said.isEmpty || !trimmed.hasPrefix(said) else { return nil }
+        return status
+    }
+
     static let webmRefusal =
         "AVFoundation cannot open .webm files; WebM playback on Mac needs FFmpeg, which this build does not use yet."
 }

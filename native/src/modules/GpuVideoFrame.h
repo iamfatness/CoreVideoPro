@@ -6,7 +6,10 @@ namespace corevideo::modules {
 // Optional immutable native image. Backend handles never enter IPC/contracts.
 // CPU payloads remain independent representations for software and ISO readers.
 struct GpuVideoFrame {
-  enum class Backend { D3D11Bgra, D3D11I420 };
+  // AppleIOSurfaceBgra: an IOSurface-backed 32BGRA CVPixelBuffer retained by
+  // modules/PixelBufferVideoFrame.h (macOS media zero-copy, N4). Never produced
+  // on Windows.
+  enum class Backend { D3D11Bgra, D3D11I420, AppleIOSurfaceBgra };
   virtual ~GpuVideoFrame() = default;
   Backend backend = Backend::D3D11Bgra;
   int width = 0, height = 0;
