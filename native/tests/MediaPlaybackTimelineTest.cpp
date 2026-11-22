@@ -1056,11 +1056,14 @@ TEST(MediaTransports, ANonLoopingClipEndsOnItsLastFrameWithItsWholeAudio) {
 // An audio-only asset has one (transparent) picture for its whole life, so "no
 // new frame for 6 s" says nothing about it; its audio is the evidence that it
 // is still playing. Fixture invariants: the video reader reports NoVideoTrack;
-// 7 s of timecoded audio (value = (ms + 1) / 4096), so the bed is still
+// 9 s of timecoded audio (value = (ms + 1) / 4096), so the bed is still
 // playing at 6.6 s - past kEndedBackstopNoNewFrameMs - by construction.
 // ---------------------------------------------------------------------------
 namespace {
-constexpr int kBedAudioMs = 7000;
+// 9 s, so the bed is still playing for 2.4 s after the 6.6 s check below: the
+// check samples the FIRST observation at or after 6.6 s, never a narrow window
+// a loaded box can skip (review 2026-11-21 item 3).
+constexpr int kBedAudioMs = 9000;
 class BedNoVideoReader final : public IClipVideoReader {
  public:
   ClipReadStatus take(ClipVideoSample&, std::string&) override { return ClipReadStatus::NoVideoTrack; }
@@ -1111,9 +1114,10 @@ TEST(MediaTransports, AnAudioOnlyBedOutlivesTheNoNewFrameBackstop) {
   auto e = opened.front().entry;
   const auto start = steadyNowMs();
   int lastHeardMs = -1;
-  bool liveAt6600 = false, sawTransparent = false;
+  bool liveAt6600 = false, judged6600 = false, sawTransparent = false;
+  int64_t judgedAtMs = -1;
   int64_t endedAtMs = -1;
-  while (steadyNowMs() - start < 9000) {
+  while (steadyNowMs() - start < 11000) {
     const auto now = steadyNowMs();
     if (const auto frame = MediaTransports::selectVideo(*e, now * 10000)) {
       sawTransparent = sawTransparent || (frame->hasPixels() && (*frame->pixels)[3] == 0);
@@ -1124,15 +1128,23 @@ TEST(MediaTransports, AnAudioOnlyBedOutlivesTheNoNewFrameBackstop) {
       }
     }
     const auto status = statusOf(t, "media:test");
-    if (status && now - start >= 6600 && now - start < 6700 && status->state == MediaTransportState::Live) liveAt6600 = true;
+    if (status && !judged6600 && now - start >= 6600) {
+      judged6600 = true;
+      judgedAtMs = now - start;
+      liveAt6600 = status->state == MediaTransportState::Live;
+    }
     if (endedAtMs < 0 && status && status->state == MediaTransportState::Ended) endedAtMs = now - start;
+    if (endedAtMs >= 0 && !judged6600) { judged6600 = true; judgedAtMs = endedAtMs; liveAt6600 = false; }  // ended early
     if (endedAtMs >= 0) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
   std::fprintf(stderr, "[audio-bed] ended at %lld ms, last audio ms heard %d of %d\n",
                static_cast<long long>(endedAtMs), lastHeardMs, kBedAudioMs);
   EXPECT_TRUE(sawTransparent) << "the bed's picture is transparent";
-  EXPECT_TRUE(liveAt6600) << "the bed was ended by the no-new-frame backstop while still playing";
+  ASSERT_TRUE(judged6600 && judgedAtMs < kBedAudioMs - 500)
+      << "harness starved: first observation after 6.6 s came at " << judgedAtMs << " ms, too late to judge";
+  EXPECT_TRUE(liveAt6600) << "the bed was ended by the no-new-frame backstop while still playing (observed at "
+                          << judgedAtMs << " ms)";
   ASSERT_GE(endedAtMs, 0) << "the bed never reached Ended after its audio ran out";
   EXPECT_GE(endedAtMs, kBedAudioMs - 100);
   EXPECT_GE(lastHeardMs, kBedAudioMs - 1 - 20) << "the bed's audio tail was cut";
