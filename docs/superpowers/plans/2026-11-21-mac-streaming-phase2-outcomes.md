@@ -161,10 +161,75 @@ mtime, so ninja kept the MUTATED binary and a clean run looked broken. Restore w
 4. The pre-existing POSIX descriptor inheritance (spec correction 5 in the plan) was also observed live:
    the naive red run left two orphaned probe children holding each other's stdin open.
 
+## Review round (2026-11-22)
+
+An independent review found seven issues. All seven were real, and all are fixed. The first agent stopped
+partway through finding 1 (a reboot killed it). This round finished finding 1 from its uncommitted
+work and did the other six.
+
+| # | Finding | Fix | Commit |
+|---|---|---|---|
+| 1 | **Blocker.** A pkg install runs the core from `/Library/Application Support/CoreVideo Pro/`. Nothing sits beside it there, so the core ran Homebrew's GPL ffmpeg (or none) with no child guard | The shell names both through `CoreLaunchEnvironment.extras`: `COREVIDEO_CHILD_GUARD_PATH` and `COREVIDEO_FFMPEG_BIN_DIR`. An operator's own ffmpeg dir still wins. The sender publishes `childGuard`; the shell warns once per core and shows it on Diagnostics. `mac-stream-e2e.py --lone-core` runs a copy of the core outside the bundle | `3d233f0c` |
+| 2 | The one-shot `[rtmp] ffmpeg <args>` log line printed the stream key and the SRT passphrase / Stream ID in plain text (the RTMP leak predates this lane) | `redactFfmpegInvocation` replaces the whole raw endpoint with its redacted form, so a key of any length is covered, then scrubs each secret, encoded forms included | `4aee1574` |
+| 3 | Linux CI: `PosixChildProcess.ASiblingNeverHoldsAnotherChildsStdinOpen`. `POSIX_SPAWN_CLOEXEC_DEFAULT` is Apple-only | glibc ≥ 2.34: stage mapped fds above every target with `F_DUPFD_CLOEXEC`, `dup2` into place, then `addclose` the gaps and `addclosefrom_np` the rest | `c3e35ecf` |
+| 4 | Destination fields stayed editable while streaming. A recording toggle resends the full destination set, which restarted SRT with half-typed settings | The destinations and secrets are frozen when streaming starts (`liveStreamDestinations`). Everything describing what is streaming reads the frozen copy. The SRT/HLS editor and row toggles lock (`streamDestinationsLocked`) | `b7ea731f` |
+| 5 | The GPLv3 text was missing (LGPLv3 is written as additional permissions on the GPLv3) and nothing said where the source is | The notices add `FFMPEG-COPYING.GPLv3` and `SOURCE.txt`. `build-macos-ffmpeg.sh --source-bundle` stages the 3 pinned tarballs, the build script, the lock and `SHA256SUMS`. `release-macos.sh` stages them into `<release>/ffmpeg-source/` and refuses an app missing any notice (owner decision: publish them as assets on every Mac GitHub release) | `abb8c351` |
+| 6 | RTMPS verified no certificate: the static OpenSSL has no trust store | POSIX sender: `-tls_verify 1 -ca_file /etc/ssl/cert.pem` for `rtmps://` only. Windows is unchanged | `ef304d6d` |
+| 7 | The pid race: `interrupt()` (another thread) read and signalled `ffmpegPid_` unlocked while the writer reaped and cleared it. A late interrupt could SIGTERM a recycled pid's process group | `ffmpegPidMutex_` serializes signal against reap. The stop path takes the pid under the lock before its long reap, so the lock is never held across a sleep | `2b568130` |
+
+### Evidence
+
+- **Counts after the round** (final tree):
+  - Native `./native/build-metal/corevideo-native-tests`: **2116 passed, 0 failed**. That is 2110 plus 6
+    new tests: 2 redaction, 3 RTMPS args, 1 interrupt race.
+  - Shell: **5860 checks, 0 failed** (two new `streaming/*` cases from this round, on top of the ones
+    the killed agent had written).
+  - `COREVIDEO_SHELL_SELFCHECK=1`: PASS.
+- **Blocker (1), end to end** (`scripts/qa/mac-stream-e2e.py`, dev bundle carrying the cached LGPL ffmpeg,
+  local receivers only):
+  - The plain bundle passes.
+  - `--lone-core` (a copy of the core with nothing beside it, as the pkg installs it, plus the shell's
+    environment) **passes**: the bundled ffmpeg, `childGuard=True`, real RTMP+SRT pixels, nothing left
+    running after SIGKILL.
+  - `--lone-core --no-shell-env` **fails exactly as the review said**: `runtimeDetail=available:/opt/homebrew/bin/ffmpeg`,
+    `childGuard=False`.
+  - A 12 s run under heavy load did not reach `producing` in any mode. The default 20 s runs on a
+    quieter machine all behaved as listed above.
+- **RTMPS (6)**, run with the bundled ffmpeg 8.1.3 against local `openssl s_server`:
+  - Without the options, a self-signed server is ACCEPTED (the bug).
+  - With `/etc/ssl/cert.pem` it fails with `certificate verify failed`.
+  - With a trusted local CA the handshake succeeds (the server received the 1537-byte RTMP C0+C1).
+  - A host-name mismatch is refused.
+  - TLS-only handshakes (no stream key sent) to `a.rtmps.youtube.com` and `live-api-s.facebook.com` verify
+    against `/etc/ssl/cert.pem`. The control, the same handshake against a throwaway CA, fails verification.
+- **Source bundle (5)**: `--source-bundle` staged all five files and `shasum -c SHA256SUMS` passes. The
+  ffmpeg 8.1.3 tarball contains `COPYING.GPLv3`.
+- **Linux (3)**: compile-checked on macOS with a glibc version shim (the code compiles). The Linux run
+  itself is **unverified** until CI: this Mac has no container runtime.
+- **Race (7)**: the new test hammers `interrupt()` through a stop of a child that ignores SIGTERM: 10/10
+  passes. It can only catch the data race under the TSan job, and TSan was not run locally.
+
+### Defaults taken
+
+- An unguarded helper **warns** (once per core, plus a Diagnostics row) instead of refusing to stream.
+- The editor stays locked while `streamingObservedLive` is true even after a stop request, so it cannot
+  change under a stream that is still finishing.
+- A missing `/etc/ssl/cert.pem` (only possible off macOS) leaves rtmps on ffmpeg's default; the args log
+  shows which happened.
+
+### Toolchain note
+
+The reboot came with a Command Line Tools update (23:32, 2026-11-21) that pointed
+`CommandLineTools/SDKs/MacOSX.sdk` at **MacOSX27.2**. Xcode's `ld-1267` rejects that SDK's `.tbd`
+files ("unknown architecture"), so `native/build-metal` failed to link. Building with
+`SDKROOT=/Applications/Xcode.app/.../MacOSX26.5.sdk` works. Other lanes will hit the same failure.
+
 ## Owner follow-ups
 
-- **Written offer of source** for the LGPL binary needs a contact address (or ship the three pinned
-  tarballs beside the pkg). Not invented here.
+- **Source assets:** upload every file in `<release>/ffmpeg-source/` to each Mac GitHub release (the
+  release script stages them; it does not upload). `SOURCE.txt` points readers at
+  `github.com/iamfatness/CoreVideoPro/releases`. If that repository is not public, the notice needs a
+  different location or a written offer with a contact address.
 - Move the ffmpeg build into CI (the spec's recommendation) once the release path is proven.
 - Decide whether the Zoom engine, plugin host and browser host should also start through the guard (they
   rely on their own stdin EOF today; B1 covers the browser host).
