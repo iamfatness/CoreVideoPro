@@ -204,6 +204,7 @@ if(APPLE)
   target_sources(corevideo_native PRIVATE
     src/compositor/MetalCompositorAdapter.mm
     src/compositor/CoreTextOverlayRaster.mm
+    src/compositor/MetalPixelBufferTextures.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
@@ -211,6 +212,7 @@ if(APPLE)
   set_source_files_properties(
     src/compositor/MetalCompositorAdapter.mm
     src/compositor/CoreTextOverlayRaster.mm
+    src/compositor/MetalPixelBufferTextures.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
@@ -322,7 +324,7 @@ if(COREVIDEO_WITH_METAL)
     message(FATAL_ERROR "COREVIDEO_WITH_METAL supports the macOS Metal adapter only.")
   endif()
   target_link_libraries(corevideo_native PUBLIC
-    "-framework Metal" "-framework Foundation" "-framework IOSurface")
+    "-framework Metal" "-framework Foundation" "-framework IOSurface" "-framework CoreVideo")
 endif()
 
 if(COREVIDEO_WITH_AVF_ENCODER)
@@ -1101,6 +1103,9 @@ if(BUILD_TESTING)
     # with a malloc pass-through that counts only on a thread that arms it.
     target_sources(corevideo-native-tests PRIVATE tests/MetalOverlayRasterTest.mm)
     set_source_files_properties(tests/MetalOverlayRasterTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # Zero-copy IOSurface media frames into the Metal compositor (N4).
+    target_sources(corevideo-native-tests PRIVATE tests/MetalZeroCopyTest.mm)
+    set_source_files_properties(tests/MetalZeroCopyTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   endif()
   if(COREVIDEO_WITH_AVF_MEDIA_DECODER AND NOT COREVIDEO_STUB)
     # Real AVFoundation decode against fixtures written at test time.

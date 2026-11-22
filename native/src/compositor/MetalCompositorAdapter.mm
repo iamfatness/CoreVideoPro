@@ -59,12 +59,14 @@
 #include "graphics/GraphicsTemplate.h"
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
+#include "compositor/MetalPixelBufferTextures.h"
 
 namespace corevideo::modules {
 namespace {
 
 bool frameHasContent(const VideoFrame& frame) {
-  return frame.hasPixels() || frame.hasI420();
+  // A zero-copy media frame (N4) is content: its picture is an IOSurface.
+  return frame.hasPixels() || frame.hasI420() || compositor::MetalPixelBufferTextures::canSample(frame);
 }
 
 uint32_t previewPixelSignature(const ProgramFramePreviewPixels& preview) {
@@ -276,6 +278,9 @@ class MetalCompositor final : public ICompositor {
     int width = 0;
     int height = 0;
     int64_t lastUsedFrame = 0;
+    // Zero-copy (N4): the source's current IOSurface binding; `bgra` is its
+    // texture. Never uploaded into: a CPU frame for this source recreates.
+    std::shared_ptr<compositor::PixelBufferBinding> zeroCopy;
   };
 
   // A render pass target backed by an IOSurface, so the composited result is
@@ -316,6 +321,7 @@ class MetalCompositor final : public ICompositor {
       return fail("no Metal device");
     }
     queue_ = [device_ newCommandQueue];
+    pixelBufferTextures_ = std::make_unique<compositor::MetalPixelBufferTextures>(device_);
     NSError* error = nil;
     id<MTLLibrary> library =
         [device_ newLibraryWithSource:[NSString stringWithUTF8String:kMetalCompositorShaderSource]
@@ -847,6 +853,8 @@ class MetalCompositor final : public ICompositor {
                       bool waitForCompletion) {
     @autoreleasepool {
       id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
+      // Leases every zero-copy surface this pass samples until the GPU is done.
+      if (pixelBufferTextures_) pixelBufferTextures_->beginPass(commandBuffer);
       MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
       pass.colorAttachments[0].texture = target.texture;
       pass.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -1203,10 +1211,14 @@ class MetalCompositor final : public ICompositor {
     }
     auto& tex = sourceTextures_[frame.participantId];
     tex.lastUsedFrame = frameNumber_;
+    if (pixelBufferTextures_ && compositor::MetalPixelBufferTextures::canSample(frame)) {
+      return acquireZeroCopyTex(frame, tex);
+    }
     const bool isI420 = frame.hasI420();
     const int width = isI420 ? frame.i420Width : frame.pixelWidth;
     const int height = isI420 ? frame.i420Height : frame.pixelHeight;
     const bool needsCreate =
+        tex.zeroCopy != nullptr ||  // never upload into a decoder's IOSurface
         tex.isI420 != isI420 || tex.width != width || tex.height != height ||
         (isI420 ? tex.y == nil : tex.bgra == nil);
     if (needsCreate) {
@@ -1246,7 +1258,33 @@ class MetalCompositor final : public ICompositor {
     return &tex;
   }
 
+  // ZERO-COPY (N4): the decoder's IOSurface wrapped as the source texture, no
+  // upload. The binding is leased to the current pass by bind(); the cache
+  // entry only remembers it so a held frame is not re-wrapped every pass.
+  SourceTex* acquireZeroCopyTex(const VideoFrame& frame, SourceTex& tex) {
+    auto binding = pixelBufferTextures_->bind(frame, tex.zeroCopy);
+    if (!binding) {
+      tex = SourceTex{};
+      tex.lastUsedFrame = frameNumber_;
+      return nullptr;  // the layer shows its slate, never a stale picture
+    }
+    if (binding == tex.zeroCopy) {
+      ++stats_.cacheHits;
+    } else {
+      ++stats_.zeroCopyBinds;
+      tex = SourceTex{};
+      tex.lastUsedFrame = frameNumber_;
+      tex.zeroCopy = binding;
+      tex.bgra = binding->texture;
+      tex.width = frame.gpuPixels->width;
+      tex.height = frame.gpuPixels->height;
+    }
+    tex.frameId = frame.frameId;
+    return &tex;
+  }
+
   bool uploadScratchTex(const VideoFrame& frame, SourceTex& out) {
+    if (!frame.hasPixels() && !frame.hasI420()) return false;  // a zero-copy frame is never uploaded
     out.isI420 = frame.hasI420();
     if (out.isI420) {
       out.width = frame.i420Width;
@@ -1701,6 +1739,7 @@ class MetalCompositor final : public ICompositor {
     gradeCubeTextures_.emplace(cube->hash,texture); return texture;
   }
   id<MTLDevice> device_ = nil;
+  std::unique_ptr<compositor::MetalPixelBufferTextures> pixelBufferTextures_;
   id<MTLCommandQueue> queue_ = nil;
   id<MTLRenderPipelineState> solidPipeline_ = nil;
   id<MTLRenderPipelineState> texturedPipeline_ = nil;
