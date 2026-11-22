@@ -57,6 +57,13 @@ extension AppModelControlSurface {
         return .success
     }
 
+    /// audio.masterLimiter.set (Windows StudioControlSurface.cs:659-661: set, succeed).
+    @MainActor
+    static func setMasterLimiter(_ model: AppModel, on: Bool) -> ControlInvokeResult {
+        model.editMastering { $0.limiterEnabled = on }
+        return .success
+    }
+
     @MainActor
     static func setMasteringTarget(_ model: AppModel, index: Int) -> ControlInvokeResult {
         let lufs = masteringTargets[min(max(index, 0), masteringTargets.count - 1)]

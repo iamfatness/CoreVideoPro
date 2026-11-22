@@ -593,7 +593,7 @@ extension ShellTests {
             let address = ControlOscAddressMap.stateAddress(field.replacingOccurrences(of: "{slot}", with: "7"))
             expect(addresses.contains(address), "supported feedback field \(field) is encoded (\(address))")
         }
-        expectEqual(supported.count, 21, "after RC3: 21 supported feedback rows")
+        expectEqual(supported.count, 22, "Phase 2: 22 supported feedback rows (+masterLimiterOn)")
     }
 
     @MainActor

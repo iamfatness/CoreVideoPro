@@ -173,6 +173,14 @@ struct ShellPrefs: Codable, Equatable {
     var autoAssignInputs: Bool?
     // Sources table column visibility + inspector open (sources plan Task 6).
     var sourcesWorkspace: SourcesColumnPrefs?
+    // Mastering rack (A3, Windows ProductionOutputPreferencesStore.cs:225-232):
+    // the live rack, both compare slots, the active slot and the user presets.
+    // nil = never saved; the model keeps its defaults.
+    var masteringCurrent: MasteringParams?
+    var masteringCompareA: MasteringParams?
+    var masteringCompareB: MasteringParams?
+    var masteringCompareSlot: String?
+    var masteringUserPresets: [MasteringUserPreset]?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -241,6 +249,12 @@ struct ShellPrefs: Codable, Equatable {
         monitorDeviceName = ((try? c.decodeIfPresent(String.self, forKey: .monitorDeviceName)) ?? nil)
         autoAssignInputs = ((try? c.decodeIfPresent(Bool.self, forKey: .autoAssignInputs)) ?? nil)
         sourcesWorkspace = ((try? c.decodeIfPresent(SourcesColumnPrefs.self, forKey: .sourcesWorkspace)) ?? nil)
+        masteringCurrent = ((try? c.decodeIfPresent(MasteringParams.self, forKey: .masteringCurrent)) ?? nil)
+        masteringCompareA = ((try? c.decodeIfPresent(MasteringParams.self, forKey: .masteringCompareA)) ?? nil)
+        masteringCompareB = ((try? c.decodeIfPresent(MasteringParams.self, forKey: .masteringCompareB)) ?? nil)
+        masteringCompareSlot = ((try? c.decodeIfPresent(String.self, forKey: .masteringCompareSlot)) ?? nil)
+        masteringUserPresets = ((try? c.decodeIfPresent([MasteringUserPreset].self,
+                                                        forKey: .masteringUserPresets)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -298,6 +312,12 @@ struct ShellPrefs: Codable, Equatable {
         p.autoAssignInputs = false
         var columns = SourcesColumnPrefs(); columns.showAudio = false
         p.sourcesWorkspace = columns
+        var rack = MasteringParams(); rack.glueMultiband = true; rack.lowPassHz = 15000; rack.limiterEnabled = false
+        p.masteringCurrent = rack
+        p.masteringCompareA = MasteringPresetCatalog.create("podcast")
+        p.masteringCompareB = rack
+        p.masteringCompareSlot = "B"
+        p.masteringUserPresets = [MasteringUserPreset(id: "user-abc", name: "Sunday Show", settings: rack)]
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"

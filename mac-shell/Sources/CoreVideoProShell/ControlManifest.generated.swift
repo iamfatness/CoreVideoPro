@@ -509,7 +509,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "audio.masterLimiter.set", title: "Master limiter", description: "Enable/disable the master limiter.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "AUD", label: "Audio parity")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.mastering.set", title: "Mastering", description: "Enable/disable the master-bus mastering chain.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
@@ -612,7 +612,7 @@ enum ControlManifestGenerated {
         ("autoCaptions", .supported),
         ("audioMonitorOn", .supported),
         ("audioMonitorVolume", .supported),
-        ("masterLimiterOn", .blocked(workstream: "AUD", label: "Audio parity")),
+        ("masterLimiterOn", .supported),
         ("input/{slot}/inShow", .supported),
         ("input/{slot}/kind", .supported),
         ("input/{slot}/source", .supported),

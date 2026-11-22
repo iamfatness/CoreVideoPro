@@ -96,7 +96,7 @@ extension ShellTests {
             expect(false, "contracts/control.platforms.json is readable from the checkout"); return
         }
         // Each slice updates this number: RC1 13, after RC2 25, after RC3 36.
-        expectEqual(fileSupported.count, 36, "supported rows in the platform file")
+        expectEqual(fileSupported.count, 37, "supported rows in the platform file (Phase 2: +audio.masterLimiter.set)")
         expectEqual(AppModelControlSurface.supportedActionIds, fileSupported,
                     "the dispatcher's ids equal the platform file's supported rows (Windows SupportedActionIds twin)")
         expectEqual(Set(ControlCatalog.actions.map(\.id)), fileSupported,
@@ -143,7 +143,7 @@ extension ShellTests {
             expectEqual(json(response.body)["error"] as? String, expected, "\(id) says why, in the operator's words")
             checked += 1
         }
-        expectEqual(checked, 74, "110 - 36 unavailable ids checked (each slice updates this)")
+        expectEqual(checked, 73, "110 - 37 unavailable ids checked (each slice updates this)")
         expectEqual(surface.invocations.count, 0, "an unavailable action never reaches the surface")
         let bogus = route(router, "POST", "/invoke", #"{"action":"bogus.id"}"#)
         expectEqual(bogus.status, 400, "an id in neither file keeps Windows' 400")
@@ -168,7 +168,7 @@ extension ShellTests {
         expectEqual(response.status, 200, "GET /manifest")
         expect(NSDictionary(dictionary: json(response.body)).isEqual(to: expected),
                "GET /manifest is the shared file with only the Mac-supported actions and feedback fields")
-        expectEqual(supportedFields.count, 21, "RC3: twenty-one feedback fields (each slice updates this)")
+        expectEqual(supportedFields.count, 22, "Phase 2: twenty-two feedback fields, +masterLimiterOn (each slice updates this)")
         for retired in ["automation.magic", "automation.toggle", "automation.autoTake.set"] {
             expect(!response.body.contains(retired), "retired \(retired) is not advertised")
         }
@@ -308,7 +308,7 @@ extension ShellTests {
                 return supported.contains(row) ? ControlOscMessage(address: ControlOscAddressMap.stateAddress(field), args: [arg(a)]) : nil
             }
             expectEqual(ControlOscFeedback.encode(feedback["state"] as? [String: Any] ?? [:]), want, "osc feedback lines (Windows order, supported rows)")
-            expectEqual(want.count, 25, "after RC3: 17 scalar lines + 8 input lines")
+            expectEqual(want.count, 26, "Phase 2: 18 scalar lines (+masterLimiterOn) + 8 input lines")
             ran += 1
         }
         // OSC `f` arrives as Float (D14); coercion follows Windows' float cases.

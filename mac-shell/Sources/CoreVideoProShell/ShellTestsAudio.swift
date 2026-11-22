@@ -17,6 +17,12 @@ extension ShellTests {
             ("audio-mastering/library-save-rename-delete", testMasteringLibraryIsWindows),
             ("audio-mastering/library-clamp-and-load", testMasteringLibraryClampAndLoad),
             ("audio-mastering/wire-all-fields-and-limiter", testMasteringWireCarriesEveryFieldAndTheLimiter),
+            // Task 3: A/B, presets on the model, persistence before the first mix, the limiter action.
+            ("audio-mastering/restore-before-first-mix", testMasteringRestoredBeforeTheFirstMixCommand),
+            ("audio-mastering/ab-compare", testMasteringCompareSlotsAreWindows),
+            ("audio-mastering/preset-into-active-slot", testMasteringPresetLandsInTheActiveSlot),
+            ("audio-mastering/prefs-active-slot-is-live", testMasteringPrefsSerialiseTheActiveSlotFromTheLiveRack),
+            ("control/master-limiter", testControlMasterLimiterAction),
         ]
     }
 
@@ -169,5 +175,109 @@ extension ShellTests {
         expectEqual(mastering.count, 20, "exactly the 20 Windows keys")
         expect(mastering["limiterEnabled"] == nil, "limiterEnabled is never inside mastering")
         expectEqual(command["limiterEnabled"] as? Bool, false, "top-level limiter follows the rack")
+    }
+
+    // ── Task 3 ───────────────────────────────────────────────────────────────
+
+    /// The regression A2 exists for: the rack "silently resets to bypass" on a
+    /// relaunch. A restored rack must be what the FIRST mix command carries.
+    @MainActor
+    static func testMasteringRestoredBeforeTheFirstMixCommand() {
+        var rack = MasteringParams()
+        rack.enabled = true; rack.glueAmount = 0.62; rack.lowPassHz = 16000; rack.limiterEnabled = false
+        var prefs = ShellPrefs()
+        prefs.masteringCurrent = rack
+        prefs.masteringCompareA = MasteringPresetCatalog.create("podcast")
+        prefs.masteringCompareSlot = "b"
+        prefs.masteringUserPresets = [MasteringUserPreset(id: "user-1", name: "Show", settings: rack),
+                                      MasteringUserPreset(id: "user-2", name: "Neutral", settings: rack)]
+        // Through the real file round trip, not just the struct.
+        let data = (try? JSONEncoder().encode(prefs)) ?? Data()
+        let decoded = (try? JSONDecoder().decode(ShellPrefs.self, from: data)) ?? ShellPrefs()
+        let model = AppModel()
+        model.applyRestoredPrefs(decoded)
+        let command = model.audioMixCommand()
+        let mastering = command["mastering"] as? JSONObject ?? [:]
+        expectEqual(mastering["enabled"] as? Bool, true, "first command: rack in")
+        expectEqual((mastering["glueAmount"] as? NSNumber)?.doubleValue, 0.62, "first command: saved glue")
+        expectEqual((mastering["lowPassHz"] as? NSNumber)?.doubleValue, 16000, "first command: saved low-pass")
+        expectEqual(command["limiterEnabled"] as? Bool, false, "first command: saved limiter")
+        expectEqual(model.masteringCompareSlot, "B", "slot B restored (any case)")
+        expectEqual(model.masteringCompareB, rack, "a missing B falls back to current")
+        expectEqual(model.masteringCompareA.targetLufs, -16, "A is the saved podcast rack")
+        expectEqual(model.masteringUserPresets.map(\.id), ["user-1"], "presets restored, built-in name dropped")
+
+        let fresh = AppModel()
+        fresh.applyRestoredPrefs(ShellPrefs())
+        expectEqual(fresh.mastering, MasteringParams(), "no saved rack: defaults kept")
+        expectEqual(fresh.masteringCompareSlot, "A", "no saved rack: slot A")
+    }
+
+    /// Windows SelectMasteringCompareSlot (SVM:3241-3268).
+    @MainActor
+    static func testMasteringCompareSlotsAreWindows() {
+        let model = AppModel()
+        model.editMastering { $0.glueAmount = 0.7 }
+        model.selectMasteringCompareSlot("b")
+        expectEqual(model.masteringCompareSlot, "B", "\"b\" selects B")
+        expectEqual(model.mastering, MasteringPresetCatalog.neutral, "B recalls its own (neutral) rack")
+        expectEqual(model.masteringCompareA.glueAmount, 0.7, "the slot left keeps the live rack")
+        expectEqual(model.masteringStatus, "Master processor recalled comparison B.", "Windows status")
+        model.editMastering { $0.glueAmount = 0.2 }
+        model.selectMasteringCompareSlot("x")
+        expectEqual(model.masteringCompareSlot, "A", "anything but B is A")
+        expectEqual(model.mastering.glueAmount, 0.7, "switching back recalls A's tweak")
+        expectEqual(model.masteringCompareB.glueAmount, 0.2, "B kept its tweak")
+        model.masteringStatus = ""
+        model.editMastering { $0.glueAmount = 0.9 }
+        model.selectMasteringCompareSlot("A")
+        expectEqual(model.masteringStatus, "", "same slot: nothing happens")
+        expectEqual(model.mastering.glueAmount, 0.9, "same slot: the live rack is untouched")
+    }
+
+    @MainActor
+    static func testMasteringPresetLandsInTheActiveSlot() {
+        let model = AppModel()
+        model.selectMasteringCompareSlot("B")
+        expect(model.applyMasteringPreset("Podcast"), "podcast applies")
+        expectEqual(model.masteringStatus, "Podcast mastering starting point applied to comparison B.", "Windows status")
+        model.selectMasteringCompareSlot("A")
+        model.selectMasteringCompareSlot("B")
+        expectEqual(model.mastering, MasteringPresetCatalog.create("podcast")!, "B is podcast after a round trip")
+        expect(!model.applyMasteringPreset("loud"), "an unknown preset changes nothing")
+        guard let saved = model.saveMasteringUserPreset(name: "Gala") else { expect(false, "save"); return }
+        model.selectMasteringCompareSlot("A")
+        expect(model.applyMasteringUserPreset(id: saved.id), "user preset applies")
+        expectEqual(model.masteringCompareA, MasteringPresetCatalog.create("podcast")!, "user preset lands in A")
+        expect(model.resetMasteringStage("tone"), "reset tone")
+        expectEqual(model.masteringCompareA.presenceDb, 0, "reset lands in the active slot too")
+        expectEqual(model.masteringStatus, "Tone stage reset to neutral.", "Windows status")
+        expect(model.saveMasteringUserPreset(name: "streaming") == nil, "built-in name refused")
+        expectEqual(model.masteringStatus, "That name belongs to a built-in starting point — pick another.", "Windows text")
+    }
+
+    @MainActor
+    static func testMasteringPrefsSerialiseTheActiveSlotFromTheLiveRack() {
+        let model = AppModel()
+        model.selectMasteringCompareSlot("B")
+        model.editMastering { $0.glueAmount = 0.55 }
+        let prefs = model.currentPrefs()
+        expectEqual(prefs.masteringCurrent?.glueAmount, 0.55, "current is the live rack")
+        expectEqual(prefs.masteringCompareB?.glueAmount, 0.55, "the active slot is serialised from the live rack")
+        expectEqual(prefs.masteringCompareA, MasteringParams(), "the other slot as stored (the live rack when A was left)")
+        expectEqual(prefs.masteringCompareSlot, "B", "slot")
+    }
+
+    /// Windows StudioControlSurface.cs:659-661 + ControlState.MasterLimiterOn.
+    @MainActor
+    static func testControlMasterLimiterAction() {
+        let model = AppModel()
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        expectEqual(invoke(surface, "audio.masterLimiter.set", [false]), .success, "limiter off accepted")
+        expect(!model.mastering.limiterEnabled, "the rack's limiter is off")
+        expectEqual(model.audioMixCommand()["limiterEnabled"] as? Bool, false, "and reaches the wire")
+        expectEqual(AppModelControlSurface.state(model).dictionary["masterLimiterOn"] as? Bool, false, "state: off")
+        expectEqual(invoke(surface, "audio.masterLimiter.set", [true]), .success, "limiter on")
+        expectEqual(AppModelControlSurface.state(model).dictionary["masterLimiterOn"] as? Bool, true, "state: on")
     }
 }

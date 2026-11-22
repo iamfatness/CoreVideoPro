@@ -785,6 +785,7 @@ final class AppModel: ObservableObject {
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
         storeProductionSettings(into: &prefs)
+        storeMastering(into: &prefs)
         prefs.recordingFolder = recordingFolderChoice.isEmpty ? nil : recordingFolderChoice
         prefs.scenes = railScenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
@@ -851,6 +852,7 @@ final class AppModel: ObservableObject {
             gradeTemperature = prefs.colorGrade[3]
         }
         vstChannelSelection = prefs.vstChannelSelections ?? [:]
+        restoreMastering(from: prefs)
         joinMeetingId = prefs.joinMeetingId
         displayName = prefs.displayName
         monitorEnabled = prefs.monitorEnabled
@@ -4345,6 +4347,130 @@ final class AppModel: ObservableObject {
     func editMastering(_ apply: (inout MasteringParams) -> Void) {
         apply(&mastering)
         scheduleMixSync()
+    }
+
+    // ── mastering presets + A/B compare (A3; Windows SVM:3241-3443) ──────────
+
+    /// "A" or "B". Both slots start as the Neutral starting point (SVM:66-68).
+    @Published private(set) var masteringCompareSlot = "A"
+    @Published private(set) var masteringCompareA = MasteringPresetCatalog.neutral
+    @Published private(set) var masteringCompareB = MasteringPresetCatalog.neutral
+    @Published private(set) var masteringUserPresets: [MasteringUserPreset] = []
+    /// The Windows status sentence for the last rack action.
+    @Published var masteringStatus = ""
+
+    /// Windows ApplyMasteringSettings: the whole rack, stored into the ACTIVE
+    /// slot, one sync. Slider edits (editMastering) deliberately do not touch
+    /// the slot; currentPrefs() refreshes it from the live rack (SVM:12155-12160).
+    private func applyMasteringSettings(_ settings: MasteringParams) {
+        mastering = settings
+        if masteringCompareSlot == "B" { masteringCompareB = settings } else { masteringCompareA = settings }
+        scheduleMixSync()
+        persistPrefsNow()
+    }
+
+    /// Windows SelectMasteringCompareSlot: anything but "B" is "A"; the slot
+    /// being left keeps the live rack; the other slot's rack is recalled.
+    func selectMasteringCompareSlot(_ requested: String) {
+        let slot = requested.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "B" ? "B" : "A"
+        guard slot != masteringCompareSlot else { return }
+        if masteringCompareSlot == "B" { masteringCompareB = mastering } else { masteringCompareA = mastering }
+        masteringCompareSlot = slot
+        applyMasteringSettings(slot == "B" ? masteringCompareB : masteringCompareA)
+        masteringStatus = "Master processor recalled comparison \(slot)."
+    }
+
+    private static func titleCase(_ id: String) -> String {
+        let t = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return t.prefix(1).uppercased() + t.dropFirst()
+    }
+
+    @discardableResult
+    func applyMasteringPreset(_ presetId: String) -> Bool {
+        guard let settings = MasteringPresetCatalog.create(presetId) else { return false }
+        applyMasteringSettings(settings)
+        masteringStatus = "\(Self.titleCase(presetId)) mastering starting point applied to comparison \(masteringCompareSlot)."
+        return true
+    }
+
+    @discardableResult
+    func resetMasteringStage(_ stage: String) -> Bool {
+        guard let settings = MasteringPresetCatalog.resetStage(mastering, stage: stage) else { return false }
+        applyMasteringSettings(settings)
+        masteringStatus = "\(Self.titleCase(stage)) stage reset to neutral."
+        return true
+    }
+
+    @discardableResult
+    func saveMasteringUserPreset(name: String) -> MasteringUserPreset? {
+        guard let result = MasteringPresetLibrary.save(masteringUserPresets, name: name, settings: mastering) else {
+            masteringStatus = MasteringPresetLibrary.isBuiltInName(name)
+                ? "That name belongs to a built-in starting point — pick another."
+                : "Preset not saved — enter a short name (built-in names are reserved)."
+            return nil
+        }
+        masteringUserPresets = result.presets
+        masteringStatus = "Master preset \"\(result.saved.name)\" saved."
+        persistPrefsNow()
+        return result.saved
+    }
+
+    @discardableResult
+    func applyMasteringUserPreset(id: String?) -> Bool {
+        guard let preset = masteringUserPresets.first(where: { $0.id == id }) else {
+            masteringStatus = "Select a saved master preset first."
+            return false
+        }
+        applyMasteringSettings(preset.settings)
+        masteringStatus = "Master preset \"\(preset.name)\" applied to comparison \(masteringCompareSlot)."
+        return true
+    }
+
+    @discardableResult
+    func renameMasteringUserPreset(id: String?, to name: String) -> Bool {
+        guard let result = MasteringPresetLibrary.rename(masteringUserPresets, id: id, to: name) else {
+            masteringStatus = "Rename failed — the new name is empty, reserved, or already in use."
+            return false
+        }
+        masteringUserPresets = result.presets
+        masteringStatus = "Master preset renamed to \"\(result.renamed.name)\"."
+        persistPrefsNow()
+        return true
+    }
+
+    @discardableResult
+    func deleteMasteringUserPreset(id: String?) -> Bool {
+        guard let result = MasteringPresetLibrary.delete(masteringUserPresets, id: id) else {
+            masteringStatus = "Select a saved master preset first."
+            return false
+        }
+        masteringUserPresets = result.presets
+        masteringStatus = "Master preset \"\(result.deleted.name)\" deleted."
+        persistPrefsNow()
+        return true
+    }
+
+    /// The rack's slice of ShellPrefs (Windows SVM:12155-12163): the active
+    /// slot is serialised from the live rack.
+    func storeMastering(into prefs: inout ShellPrefs) {
+        prefs.masteringCurrent = mastering
+        prefs.masteringCompareA = masteringCompareSlot == "A" ? mastering : masteringCompareA
+        prefs.masteringCompareB = masteringCompareSlot == "B" ? mastering : masteringCompareB
+        prefs.masteringCompareSlot = masteringCompareSlot
+        prefs.masteringUserPresets = masteringUserPresets.isEmpty ? nil : masteringUserPresets
+    }
+
+    /// Windows RestoreMasteringFromPreferences (SVM:12513-12578). Runs inside
+    /// applyRestoredPrefs, before any core connects, so the FIRST mix command a
+    /// core receives carries the saved rack. No sync here.
+    func restoreMastering(from prefs: ShellPrefs) {
+        masteringUserPresets = MasteringPresetLibrary.loaded(prefs.masteringUserPresets)
+        guard let current = prefs.masteringCurrent else { return }
+        let live = MasteringPresetLibrary.clamped(current)
+        masteringCompareSlot = prefs.masteringCompareSlot?.uppercased() == "B" ? "B" : "A"
+        masteringCompareA = MasteringPresetLibrary.clamped(prefs.masteringCompareA ?? current)
+        masteringCompareB = MasteringPresetLibrary.clamped(prefs.masteringCompareB ?? current)
+        mastering = live
     }
 
     // ── media bin + logo bug ─────────────────────────────────────────────────

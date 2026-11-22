@@ -163,6 +163,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMultiviewTileCount(model, count: int(0))
         case "audio.mastering.set":
             return setMastering(model, on: bool(0))
+        case "audio.masterLimiter.set":
+            return setMasterLimiter(model, on: bool(0))
         case "audio.mastering.target":
             return setMasteringTarget(model, index: int(0))
         case "audio.vst.scan":
@@ -211,6 +213,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "multiview.layout.set", "multiview.tileCount.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "audio.monitor.set", "audio.monitor.volume", "audio.route.set",
+        // Phase 2 (A3)
+        "audio.masterLimiter.set",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).
@@ -309,6 +313,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             "lowerThirdOnAir": model.lowerThirdVisible,   // the core's observed `visible`
             "multiviewTileCount": model.multiviewTileCount,
             "masteringOn": model.mastering.enabled,
+            "masterLimiterOn": model.mastering.limiterEnabled,   // Phase 2 (A3)
             "masteringTarget": masteringTargetIndex(model.mastering.targetLufs),
             // No caption source exists on the Mac: the true value is false.
             "autoCaptions": false,
