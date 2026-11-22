@@ -2,6 +2,7 @@
 // editor window, at most three (the Windows rule). Every send goes through SourceGradeStore,
 // which keeps one apply in flight per source; nothing here talks to the core directly.
 
+import CoreGraphics
 import Foundation
 
 @MainActor
@@ -54,7 +55,15 @@ final class GradeEditorModel: ObservableObject, Identifiable {
 
     static let draftStatus = "Draft — Apply Live sends this grade to the show."   // VM.Advanced.cs:75
     static let adjustmentLimitText = "A grade can contain up to eight adjustments." // :119
-    static let laterEditingNotice = "Curves and LUT editing arrive in a later update."  // D9
+    /// GradeAdjustmentControl.cs:46, with Command in place of Ctrl (spec §5.4).
+    static let curveHelp = "Click to add; drag to shape. Home/End selects an endpoint; ⌘+arrows selects a point. "
+        + "Arrows adjust by 0.1%; Shift by 1%. Delete removes an interior point. Endpoints move vertically. Linear interpolation."
+    static let curveChannels = ["Master", "Red", "Green", "Blue"]
+    static let maxCubeFileBytes = 2_000_000                       // ColorGradeEditorWindow.Advanced.cs:97
+
+    // G3 (Phase 2 Task 2): the curve channel being edited and its selected point.
+    @Published var curveChannel = 0 { didSet { if curveChannel != oldValue { curveSelection = -1 } } }
+    @Published private(set) var curveSelection = -1
 
     /// Set by AppModel: "Apply and Done" closes the editor through it.
     var onClose: (() -> Void)?
@@ -131,11 +140,57 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         if on { liveEditing = false; status = Self.draftStatus }
     }
 
-    func addPrimaries() {
+    func addPrimaries() { addAdjustment(kind: "primaries") }
+    /// "+ Curves" (VM.Advanced.cs:115-121).
+    func addCurves() { addAdjustment(kind: "curves") }
+
+    private func addAdjustment(kind: String) {
         let operations = document?.operations ?? []
         guard operations.count < 8 else { status = Self.adjustmentLimitText; return }
-        let added = GradeOperation()
-        if editDocument(withOperations: operations + [added]) { selectedAdjustmentId = added.id }
+        var added = GradeOperation(); added.kind = kind
+        if editDocument(withOperations: operations + [added]) { selectedAdjustmentId = added.id; curveSelection = -1 }
+    }
+
+    // ── G3: curves ───────────────────────────────────────────────────────────
+
+    /// The selected curves adjustment's channel as an editing value (nil when none is selected).
+    var curveEditing: GradeCurveEditing? {
+        guard let op = selectedAdjustment, op.kind == "curves", op.curves.indices.contains(curveChannel) else { return nil }
+        return GradeCurveEditing(points: op.curves[curveChannel], selectedIndex: curveSelection)
+    }
+
+    /// VM.Advanced.cs:107-112 SetCurve: one validated edit (a refusal keeps the draft and says why).
+    func setCurve(channel: Int, points: [GradeCurvePoint]) {
+        guard (0..<4).contains(channel), selectedAdjustment?.kind == "curves" else { return }
+        editSelected { $0.curves[channel] = points }
+    }
+
+    private func applyCurve(_ change: (inout GradeCurveEditing) -> Bool) {
+        guard var editing = curveEditing else { return }
+        let changed = change(&editing)
+        curveSelection = editing.selectedIndex
+        if changed { setCurve(channel: curveChannel, points: editing.points) }
+    }
+    func curvePress(at point: CGPoint, size: CGSize) { applyCurve { $0.press(at: point, size: size) } }
+    func curveDrag(to point: CGPoint, size: CGSize) { applyCurve { $0.drag(to: point, size: size) } }
+    func curveKey(_ key: CurveKey, shift: Bool, command: Bool) { applyCurve { $0.key(key, shift: shift, command: command) } }
+    func curveRemoveSelected() { applyCurve { $0.removeSelected() } }
+    /// "Reset channel".
+    func curveResetChannel() { applyCurve { editing in editing.reset(); return true } }
+    /// The "Point input" / "Point output" numbers (GradeAdjustmentControl.cs:50-55).
+    func curveSetSelectedPoint(x: Double, y: Double) { applyCurve { $0.setSelected(x: x, y: y) } }
+
+    /// "Import LUT" (VM.Advanced.cs:181-190): parse first, then the eight-adjustment limit, then add a
+    /// named cube adjustment carrying the exact text and its SHA-256, selected. Refusals keep the draft.
+    func importCube(text: String, name: String) {
+        do { _ = try CubeLutParser.parse(text) }
+        catch let error as GradeValidationError { status = error.message; return }
+        catch { status = error.localizedDescription; return }
+        let operations = document?.operations ?? []
+        guard operations.count < 8 else { status = Self.adjustmentLimitText; return }
+        var op = GradeOperation()
+        op.kind = "cube"; op.name = name; op.cubeText = text; op.cubeSha256 = GradeDocumentRef.sha256Hex(text)
+        if editDocument(withOperations: operations + [op]) { selectedAdjustmentId = op.id }
     }
 
     func moveSelected(_ direction: Int) {

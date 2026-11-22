@@ -15,6 +15,12 @@ extension ShellTests {
             ("grade2/cube-shared-verdicts", testCubeFixturesHaveTheSharedVerdicts),
             ("grade2/cube-csharp-messages", testCubeParserUsesTheWindowsMessages),
             ("grade2/cube-document-validation", testADocumentWithAMalformedCubeIsRefused),
+            // Task 2 (G3): curves editor and LUT import.
+            ("grade2/curve-press-adds-and-selects", testCurvePressAddsSelectsAndRefusesCrowding),
+            ("grade2/curve-drag-clamps", testCurveDragKeepsEndpointsAndOrder),
+            ("grade2/curve-keys", testCurveKeysSelectNudgeAndDelete),
+            ("grade2/editor-curves-validated-one-undo", testEditorCurveEditsAreValidatedAndOneUndoPerGesture),
+            ("grade2/editor-import-cube", testImportCubeAddsASelectedLutOrSaysWhy),
         ]
     }
 
@@ -72,5 +78,136 @@ extension ShellTests {
         catch let error as GradeValidationError {
             expectEqual(error.message, "LUT sample count or domain is invalid.", "the parser runs before the hash (AdvancedGradeDocument.cs:86-90)")
         } catch { expect(false, "unexpected error type") }
+    }
+
+    // ── Task 2 ───────────────────────────────────────────────────────────────
+    // Fixture invariants: a 400x200 view (y grows DOWN, as in GradeCurveControl.cs), so curve point
+    // (x, y) sits at view (400x, 200(1-y)); the 13 px hit radius is 0.0325 of the width.
+
+    static func curvePoint(_ x: Double, _ y: Double) -> GradeCurvePoint { GradeCurvePoint(x: x, y: y) }
+
+    static func testCurvePressAddsSelectsAndRefusesCrowding() {
+        let size = CGSize(width: 400, height: 200)
+        var curve = GradeCurveEditing()
+        expectEqual(curve.points, [curvePoint(0, 0), curvePoint(1, 1)], "a new curve is the identity line")
+        var changed = curve.press(at: CGPoint(x: 200, y: 50), size: size)
+        expect(changed, "a click on empty space adds a point")
+        expectEqual(curve.points.count, 3, "three points")
+        expectEqual(curve.points[1], curvePoint(0.5, 0.75), "the point lands where clicked (y flipped)")
+        expectEqual(curve.selectedIndex, 1, "and is selected")
+        changed = curve.press(at: CGPoint(x: 205, y: 55), size: size)
+        expect(!changed && curve.selectedIndex == 1, "a click within 13 px selects the existing point instead")
+        changed = curve.press(at: CGPoint(x: 0.6, y: 190), size: size)
+        expect(!changed && curve.selectedIndex == 0, "a click on an endpoint selects it")
+        curve = GradeCurveEditing(points: [curvePoint(0, 0), curvePoint(0.5, 0.5), curvePoint(1, 1)])
+        changed = curve.press(at: CGPoint(x: 200.4 + 0.0019 * 400 + 14, y: 0), size: size)
+        expect(changed, "a point 14 px away in x is far enough")
+        var crowded = GradeCurveEditing(points: [curvePoint(0, 0), curvePoint(0.5, 0.5), curvePoint(1, 1)])
+        crowded.selectedIndex = -1
+        // x within 0.002 of an existing point but outside the hit radius vertically: refused.
+        changed = crowded.press(at: CGPoint(x: 200.4, y: 0), size: size)
+        expect(!changed, "a point within 0.002 in x of another is not added (GradeCurveControl.cs:91)")
+        var full = GradeCurveEditing(points: (0..<16).map { curvePoint(Double($0) / 15, Double($0) / 15) })
+        changed = full.press(at: CGPoint(x: 13, y: 20), size: size)
+        expect(!changed && full.points.count == 16, "16 points is the cap")
+        var edge = GradeCurveEditing()
+        _ = edge.press(at: CGPoint(x: 399.9, y: 100), size: CGSize(width: 400, height: 200))
+        expect(edge.points.allSatisfy { $0.x == 0 || $0.x == 1 || $0.x <= 0.999 }, "an added point's x is clamped to 0.999")
+    }
+
+    static func testCurveDragKeepsEndpointsAndOrder() {
+        let size = CGSize(width: 400, height: 200)
+        var curve = GradeCurveEditing(points: [curvePoint(0, 0), curvePoint(0.3, 0.3), curvePoint(0.6, 0.6), curvePoint(1, 1)])
+        curve.selectedIndex = 0
+        _ = curve.drag(to: CGPoint(x: 120, y: 100), size: size)
+        expectEqual(curve.points[0], curvePoint(0, 0.5), "an endpoint moves vertically only")
+        curve.selectedIndex = 3
+        _ = curve.drag(to: CGPoint(x: 10, y: 0), size: size)
+        expectEqual(curve.points[3], curvePoint(1, 1), "the last point keeps x = 1")
+        curve.selectedIndex = 1
+        _ = curve.drag(to: CGPoint(x: 380, y: 260), size: size)
+        let p = curve.points[1]
+        expect(p.x < 0.6 && p.x > 0.599, "an interior point stops just short of its right neighbour, got \(p.x)")
+        expectEqual(p.y, 0, "y is clamped to 0…1")
+        expect(Float(p.x) < Float(0.6), "the order still holds as Float, which is what every validator compares")
+        var op = GradeOperation(); op.kind = "curves"; op.curves[0] = curve.points
+        expect((try? AdvancedGradeDocument(operations: [op]).validate()) != nil, "a dragged curve is always a valid document")
+    }
+
+    static func testCurveKeysSelectNudgeAndDelete() {
+        var curve = GradeCurveEditing(points: [curvePoint(0, 0), curvePoint(0.5, 0.5), curvePoint(1, 1)])
+        expect(!curve.key(.right, shift: false, command: false), "an arrow with nothing selected only selects")
+        expectEqual(curve.selectedIndex, 0, "…the first point")
+        _ = curve.key(.end, shift: false, command: false)
+        expectEqual(curve.selectedIndex, 2, "End selects the last endpoint")
+        _ = curve.key(.left, shift: false, command: true)
+        expectEqual(curve.selectedIndex, 1, "Command+Left steps the selection (Ctrl on Windows)")
+        expect(curve.key(.up, shift: false, command: false), "Up nudges")
+        expect(abs(curve.points[1].y - 0.501) < 1e-9, "by 0.1%")
+        _ = curve.key(.right, shift: true, command: false)
+        expect(abs(curve.points[1].x - 0.51) < 1e-9, "Shift nudges by 1%")
+        _ = curve.key(.home, shift: false, command: false)
+        expect(!curve.key(.delete, shift: false, command: false) && curve.points.count == 3, "an endpoint cannot be deleted")
+        curve.selectedIndex = 1
+        expect(curve.key(.delete, shift: false, command: false), "Delete removes an interior point")
+        expectEqual(curve.points, [curvePoint(0, 0), curvePoint(1, 1)], "back to the line")
+        expectEqual(curve.selectedIndex, -1, "nothing selected after a delete")
+        curve = GradeCurveEditing(points: [curvePoint(0, 0.2), curvePoint(0.5, 0.9), curvePoint(1, 0.4)])
+        curve.reset()
+        expectEqual(curve.points, [curvePoint(0, 0), curvePoint(1, 1)], "Reset channel restores the line")
+    }
+
+    @MainActor static func testEditorCurveEditsAreValidatedAndOneUndoPerGesture() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        editor.setAdvancedExpanded(true)
+        editor.addCurves()
+        expectEqual(editor.selectedAdjustment?.kind, "curves", "+ Curves adds and selects a curves adjustment")
+        editor.curveChannel = 1                                    // Red
+        let size = CGSize(width: 400, height: 200)
+        editor.beginGesture()
+        editor.curvePress(at: CGPoint(x: 200, y: 100), size: size)
+        editor.curveDrag(to: CGPoint(x: 200, y: 60), size: size)
+        editor.curveDrag(to: CGPoint(x: 200, y: 40), size: size)
+        editor.endGesture()
+        let red = editor.selectedAdjustment?.curves[1] ?? []
+        expectEqual(red.count, 3, "the red curve gained a point")
+        expect(abs((red.count == 3 ? red[1].y : 0) - 0.8) < 1e-9, "dragged to y 0.8")
+        expectEqual(editor.selectedAdjustment?.curves[0], GradeOperation.identityCurves[0], "master untouched")
+        editor.undo()
+        expectEqual(editor.selectedAdjustment?.curves[1], GradeOperation.identityCurves[1],
+                    "one undo removes the whole add-and-drag gesture")
+        editor.setCurve(channel: 2, points: [curvePoint(0, 0), curvePoint(0.5, 0.5), curvePoint(0.5, 0.6), curvePoint(1, 1)])
+        expectEqual(editor.selectedAdjustment?.curves[2], GradeOperation.identityCurves[2], "an unordered curve is refused")
+        expectEqual(editor.status, "Curve inputs must be strictly ordered.", "with the validator's message")
+        expect(!GradeEditorModel.curveHelp.contains("Ctrl"), "the Mac help says Command, not Ctrl")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        expectEqual(core.requests("set-source-grade").count, 0, "advanced edits are a draft")
+    }
+
+    @MainActor static func testImportCubeAddsASelectedLutOrSaysWhy() {
+        let model = gradeModel()
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        editor.setAdvancedExpanded(true)
+        let text = "LUT_3D_SIZE 2\n0 0 1\n0 0 1\n0 1 1\n0 1 1\n1 0 0\n1 0 0\n1 1 0\n1 1 0\n"
+        editor.importCube(text: text, name: "Swap")
+        let op = editor.selectedAdjustment
+        expectEqual(op?.kind, "cube", "the import is a cube adjustment")
+        expectEqual(op?.name, "Swap", "named after the file")
+        expectEqual(op?.cubeText, text, "carrying the exact text")
+        expectEqual(op?.cubeSha256, GradeDocumentRef.sha256Hex(text), "and its SHA-256")
+        let before = editor.document
+        editor.importCube(text: "LUT_3D_SIZE 2\n0 0 0\n", name: "Bad")
+        expectEqual(editor.document, before, "a bad LUT leaves the draft unchanged")
+        expectEqual(editor.status, "LUT sample count or domain is invalid.", "and says why (the parser's words)")
+        for _ in 0..<7 { editor.addPrimaries() }
+        expectEqual(editor.document?.operations.count, 8, "eight adjustments")
+        editor.importCube(text: text, name: "Ninth")
+        expectEqual(editor.document?.operations.count, 8, "a ninth is refused")
+        expectEqual(editor.status, "A grade can contain up to eight adjustments.", "VM.Advanced.cs:185")
     }
 }

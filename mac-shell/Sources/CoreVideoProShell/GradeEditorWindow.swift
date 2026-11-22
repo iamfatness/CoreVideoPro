@@ -193,6 +193,8 @@ struct AdvancedGradePanel: View {
             HStack(spacing: 6) {
                 Button("+ Primaries") { editor.addPrimaries() }.buttonStyle(GhostButtonStyle())
                     .accessibilityLabel("Add a primaries adjustment")
+                Button("+ Curves") { editor.addCurves() }.buttonStyle(GhostButtonStyle())
+                    .accessibilityLabel("Add a curves adjustment")
                 Picker("", selection: Binding(get: { editor.selectedAdjustmentId ?? "" },
                                               set: { editor.selectedAdjustmentId = $0.isEmpty ? nil : $0 })) {
                     ForEach(editor.document?.operations ?? []) { Text($0.displayName).tag($0.id) }
@@ -219,8 +221,10 @@ struct AdvancedGradePanel: View {
                         labelledSlider(label, value: selected[keyPath: path], range: range, step: step, format: "%.2f",
                                        help: help) { value in editor.editSelected { $0[keyPath: path] = value } }
                     }
+                } else if selected.kind == "curves" {
+                    GradeCurvePanel(editor: editor)
                 } else {
-                    Text(GradeEditorModel.laterEditingNotice).font(.grotesk(11)).foregroundStyle(Studio.amber)
+                    Text("3D LUT · \(selected.displayName)").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 }
             }
             HStack(spacing: 6) {
@@ -243,6 +247,7 @@ struct AdvancedGradePanel: View {
                 .accessibilityLabel("Paste grade")
                 Button("Save preset…") { savePreset() }.accessibilityLabel("Save grade preset")
                 Button("Load preset…") { loadPreset() }.accessibilityLabel("Load grade preset")
+                Button("Import LUT…") { importLut() }.accessibilityLabel("Import a .cube LUT")
             }
             .buttonStyle(GhostButtonStyle())
             if !presetNotice.isEmpty {
@@ -273,6 +278,19 @@ struct AdvancedGradePanel: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do { try editor.copyGrade().write(to: url, atomically: true, encoding: .utf8); presetNotice = "" }
         catch { presetNotice = "Preset was not saved: \(error.localizedDescription)" }
+    }
+
+    /// ColorGradeEditorWindow.Advanced.cs:94-100: a .cube file up to 2 MB, named after the file.
+    private func importLut() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "cube") ?? .data]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= GradeEditorModel.maxCubeFileBytes else { presetNotice = "LUT exceeds 2 MB."; return }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { presetNotice = "LUT could not be read."; return }
+        editor.importCube(text: text, name: url.deletingPathExtension().lastPathComponent)
+        presetNotice = editor.selectedAdjustment?.kind == "cube" ? "" : editor.status
     }
 
     private func loadPreset() {
