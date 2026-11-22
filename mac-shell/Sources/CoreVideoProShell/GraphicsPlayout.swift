@@ -331,6 +331,40 @@ final class GraphicsPlayout {
         return (nil, nil)
     }
 
+    static let designInstallTimeout = "The design did not finish installing. Check the graphics library and try again."
+
+    /// Spec 5.3 / GraphicsDesignService.EnsureInstalledForPlaylistAsync (:179-190): after a core
+    /// restart, install the DESIGN template versions the show references that this core lacks,
+    /// from the pin, else the show's design entry. Non-design pins stay lazy (ensureCore), as on
+    /// Windows. Holds the playout gate so it never races an operator's Show installing the same
+    /// pin, but is not an operator action: no busy flag, no status (the model reports a failure).
+    /// No eviction when the library is full: the Mac has no designs to evict until G8.
+    func ensureDesignsInstalled(_ references: [GraphicsTemplateReference], designs: [GraphicsTemplatePin]) async -> GraphicsOperationResult {
+        await acquire()
+        defer { epoch = ""; release() }
+        do {
+            epoch = try available().coreEpoch
+            var problems: [String] = []
+            for reference in references where Self.isDesignTemplateId(reference.templateId) {
+                if try current(epoch).template(reference.templateId, reference.templateVersion) != nil { continue }
+                let matches = { (pin: GraphicsTemplatePin) in
+                    pin.templateId == reference.templateId && pin.templateVersion == reference.templateVersion
+                }
+                guard let pin = pins().first(where: matches) ?? designs.first(where: matches) else { continue }
+                let (installed, refusal) = try await install(pin, epoch: epoch)
+                if installed == nil { problems.append(refusal?.reason ?? Self.designInstallTimeout) }
+            }
+            var seen = Set<String>()
+            let distinct = problems.filter { seen.insert($0).inserted }
+            return distinct.isEmpty ? GraphicsOperationResult(accepted: true, reason: "Designs in use are installed.")
+                                    : refuse(distinct.joined(separator: " "))
+        } catch let failure as GraphicsPlayoutFailure {
+            return refuse(failure.message)
+        } catch {
+            return refuse(error.localizedDescription)
+        }
+    }
+
     /// ConfigureClock (:256-266): apply the row's clock when it differs from what the
     /// core already has. Non-fatal: a template without a clock refuses and the graphic still plays.
     func configureClock(_ row: GraphicsRow, _ instance: GraphicsInstance) async throws {
