@@ -249,18 +249,29 @@ struct MediaClipDecoder::Impl {
         }
         continue;
       }
-      if (!sample.bgra || sample.width <= 0 || sample.height <= 0 ||
-          sample.bgra->size() < static_cast<size_t>(sample.width) * static_cast<size_t>(sample.height) * 4u) {
+      const bool gpuSample = sample.gpu && sample.gpu->width > 0 && sample.gpu->height > 0;
+      const bool cpuSample = sample.bgra && sample.width > 0 && sample.height > 0 &&
+          sample.bgra->size() >= static_cast<size_t>(sample.width) * static_cast<size_t>(sample.height) * 4u;
+      if (!gpuSample && !cpuSample) {
         return false;  // consumed and dropped; the clip holds its last frame
       }
       VideoFrame frame;
       frame.participantId = sourceId;
-      frame.width = frame.pixelWidth = frame.naturalWidth = sample.width;
-      frame.height = frame.pixelHeight = frame.naturalHeight = sample.height;
-      frame.pixelStride = sample.width * 4;
       frame.timestampMs = timestampMs;
       frame.frameId = ++frameId;
-      frame.pixels = std::move(sample.bgra);
+      if (cpuSample) {
+        frame.width = frame.pixelWidth = frame.naturalWidth = sample.width;
+        frame.height = frame.pixelHeight = frame.naturalHeight = sample.height;
+        frame.pixelStride = sample.width * 4;
+        frame.pixels = std::move(sample.bgra);
+      } else {
+        // ZERO-COPY (N4): the reader's native image, untouched. No CPU
+        // dimensions are claimed (pixelWidth stays 0), so nothing mistakes it
+        // for a CPU payload.
+        frame.width = frame.naturalWidth = sample.gpu->width;
+        frame.height = frame.naturalHeight = sample.gpu->height;
+        frame.gpuPixels = std::move(sample.gpu);
+      }
       state.lastFrame = std::move(frame);
       state.decodedPts = sample.pts100ns;
       state.decodedDuration = sample.duration100ns;
@@ -395,7 +406,7 @@ struct MediaClipDecoder::Impl {
     const auto timestampMs = now100ns / 10000;
     configure(request, now100ns);
     const auto deliver = [&](const VideoFrame& frame) {
-      if (!frame.hasPixels()) return false;
+      if (!frame.hasContent()) return false;
       out = frame;
       out.participantId = sourceId;
       out.timestampMs = timestampMs;
@@ -406,7 +417,7 @@ struct MediaClipDecoder::Impl {
       if (!state.stillLoaded && !state.stillFailed) {
         VideoFrame still;
         std::string error;
-        if (readers && readers->decodeStill(state.path, still, error) && still.hasPixels()) {
+        if (readers && readers->decodeStill(state.path, still, error) && still.hasContent()) {
           still.frameId = ++frameId;
           state.lastFrame = std::move(still);
           state.stillLoaded = true;
@@ -424,16 +435,16 @@ struct MediaClipDecoder::Impl {
       // PAUSED AFTER IT ROLLED: hold the frame on air and read nothing; the
       // reader stays where it is, so Play continues with the next sample
       // (MF:790-799).
-      const VideoFrame& held = state.presentedFrame.hasPixels() ? state.presentedFrame : state.lastFrame;
-      if (state.wasPlaying && held.hasPixels()) return deliver(held);
+      const VideoFrame& held = state.presentedFrame.hasContent() ? state.presentedFrame : state.lastFrame;
+      if (state.wasPlaying && held.hasContent()) return deliver(held);
       // NEVER PLAYED (a cue poster): exactly one sample, then held (MF:800-819).
-      if (!state.lastFrame.hasPixels()) (void)takeNewSample(request, sourceId, timestampMs, /*cue=*/true);
+      if (!state.lastFrame.hasContent()) (void)takeNewSample(request, sourceId, timestampMs, /*cue=*/true);
       return deliver(state.lastFrame);
     }
     // PLAYING. A cue that starts to roll continues from the reader's next
     // sample, no reopen (MF:820-824). On the direct path the poster is the
     // presented frame until the next sample comes due.
-    if (!state.wasPlaying && state.lastFrame.hasPixels() && !state.presentedFrame.hasPixels()) {
+    if (!state.wasPlaying && state.lastFrame.hasContent() && !state.presentedFrame.hasContent()) {
       state.presentedFrame = state.lastFrame;
     }
     state.wasPlaying = true;

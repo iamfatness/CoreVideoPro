@@ -45,11 +45,14 @@ class IMediaVideoPrefetch {
   // judged exactly as before.
   virtual bool mediaHasVideo() const { return true; }
 };
+// Every gate below is hasContent(), not hasPixels() (N4): a media frame may be
+// a native GPU image with no CPU payload (the Mac zero-copy decoder). Frames
+// with CPU pixels - every Windows media frame - take the same branch as before.
 class MediaVideoPresentation {
  public:
   bool hasRoom() const { return queued_.size() < 3; }
   void push(ScheduledMediaVideo sample) {
-    if (!hasRoom() || !sample.frame.hasPixels()) return;
+    if (!hasRoom() || !sample.frame.hasContent()) return;
     if (hasIdentity_ && sample.frame.frameId == lastFrameId_) return;
     hasIdentity_ = true; lastFrameId_ = sample.frame.frameId;
     queued_.push_back(std::move(sample));
@@ -64,7 +67,7 @@ class MediaVideoPresentation {
   // whatever the queued due times say. With nothing on air yet (a cue poster),
   // the first prepared frame is shown and then held.
   const VideoFrame& hold() {
-    if (!current_.hasPixels() && !queued_.empty()) { current_ = std::move(queued_.front().frame); queued_.pop_front(); }
+    if (!current_.hasContent() && !queued_.empty()) { current_ = std::move(queued_.front().frame); queued_.pop_front(); }
     return current_;
   }
   // Resume: frames prepared before the pause were scheduled against the old
@@ -83,12 +86,12 @@ class MediaVideoPresentation {
   void dropQueued() { queued_.clear(); hasIdentity_ = false; }
   void shift(int64_t delta100ns) { for (auto& sample : queued_) sample.due100ns += delta100ns; }
   const VideoFrame& current() const { return current_; }
-  bool hasFrame() const { return current_.hasPixels() || !queued_.empty(); }
+  bool hasFrame() const { return current_.hasContent() || !queued_.empty(); }
   size_t queued() const { return queued_.size(); }
   // Decoder-owner metadata maintenance only. Does not change playout times,
   // queue membership or frame order; the render selector never calls this.
   void refreshPrepared(const std::function<void(VideoFrame&)>& refresh) {
-    if (current_.hasPixels()) refresh(current_);
+    if (current_.hasContent()) refresh(current_);
     for (auto& sample : queued_) refresh(sample.frame);
   }
  private:

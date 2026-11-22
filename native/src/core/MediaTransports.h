@@ -390,7 +390,7 @@ class MediaTransports final {
     const auto& selected = hold ? entry.video.hold() : entry.video.select(timestamp100ns);
     entry.wake = true;
     entry.changed.notify_all();
-    if (!selected.hasPixels()) return std::nullopt;
+    if (!selected.hasContent()) return std::nullopt;  // a GPU-only media frame is content (N4)
     if (selected.frameId != entry.lastPresentedFrameId) {
       entry.lastPresentedFrameId = selected.frameId;
       entry.presentedVideoFrames += 1;

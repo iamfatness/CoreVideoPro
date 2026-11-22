@@ -1137,3 +1137,86 @@ TEST(MediaTransports, AnAudioOnlyBedOutlivesTheNoNewFrameBackstop) {
   EXPECT_GE(endedAtMs, kBedAudioMs - 100);
   EXPECT_GE(lastHeardMs, kBedAudioMs - 1 - 20) << "the bed's audio tail was cut";
 }
+
+// ---------------------------------------------------------------------------
+// N4 (plan 2026-11-21 Task 4). A GPU-ONLY media frame - a native image with no
+// CPU payload, as the Mac zero-copy decoder hands over - is content to every
+// gate the owner has. Fixture invariants: FakeGpuOnlyFrame is 1920x1080 and
+// the frames carry NO pixels and NO i420, so only hasGpuPixels() can admit them.
+// ---------------------------------------------------------------------------
+#include "core/MediaAssetSource.h"
+namespace {
+struct FakeGpuOnlyFrame final : corevideo::modules::GpuVideoFrame {
+  FakeGpuOnlyFrame() { width = 1920; height = 1080; }
+};
+VideoFrame gpuOnlyFrame(const std::string& id, int64_t frameId) {
+  VideoFrame f;
+  f.participantId = id;
+  f.width = f.naturalWidth = 1920;
+  f.height = f.naturalHeight = 1080;
+  f.frameId = frameId;
+  f.gpuPixels = std::make_shared<const FakeGpuOnlyFrame>();
+  return f;
+}
+class GpuOnlyDecoder final : public IMediaDecoder, public IMediaVideoPrefetch {
+ public:
+  std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest& request, int64_t) override {
+    return {gpuOnlyFrame(request.sourceId, ++next_)};
+  }
+  std::vector<ScheduledMediaVideo> prefetchMediaVideo(const MediaDecodeRequest& request, int64_t nowMs) override {
+    if (!request.playing && next_ > 0) return {};
+    return {{gpuOnlyFrame(request.sourceId, ++next_), nowMs * 10000}};
+  }
+  std::vector<AudioFrame> pollMediaAudioFrames(const MediaDecodeRequest&, int64_t) override { return {}; }
+  std::vector<std::string> warnings() const override { return {}; }
+ private:
+  int64_t next_ = 0;
+};
+}  // namespace
+
+TEST(MediaVideoPresentation, AGpuOnlyFrameIsQueuedHeldAndSelected) {
+  corevideo::modules::MediaVideoPresentation p;
+  p.push({gpuOnlyFrame("media:g", 1), 100});
+  EXPECT_EQ(p.queued(), 1u) << "push dropped a GPU-only frame";
+  EXPECT_TRUE(p.hasFrame());
+  EXPECT_EQ(p.hold().frameId, 1) << "hold could not show a GPU-only poster";
+  // A paused clip whose on-air frame is GPU-only must NOT advance to the next
+  // prepared frame (hold() would, if it saw no content on air).
+  p.push({gpuOnlyFrame("media:g", 2), 200});
+  EXPECT_EQ(p.hold().frameId, 1) << "hold advanced past a GPU-only on-air frame";
+  EXPECT_EQ(p.select(250).frameId, 2);
+  EXPECT_TRUE(p.current().hasGpuPixels());
+  EXPECT_EQ(p.queued(), 0u);
+  EXPECT_TRUE(p.hasFrame()) << "a GPU-only frame on air with nothing queued is still a frame";
+  int refreshed = 0;
+  p.refreshPrepared([&](VideoFrame&) { ++refreshed; });
+  EXPECT_EQ(refreshed, 1) << "refreshPrepared skipped the GPU-only frame on air";
+}
+
+TEST(MediaTransports, AGpuOnlyDecoderFrameReachesTheBusAndHolds) {
+  MediaTransports t(corevideo::testing::mediaFactoryOf<GpuOnlyDecoder>());
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  corevideo::core::MediaAssetSource source("media:test", opened.front().entry);
+  corevideo::core::SourceTick tick;
+  for (const auto deadline = steadyNowMs() + 2000; steadyNowMs() < deadline && tick.video.empty();) {
+    tick = source.poll(steadyNowMs() * 10000);
+    if (tick.video.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_EQ(tick.video.size(), 1u) << "selectVideo refused a GPU-only frame";
+  EXPECT_TRUE(tick.video.front().hasGpuPixels());
+  EXPECT_FALSE(tick.video.front().hasPixels());
+  EXPECT_EQ(source.descriptor().width, 1920) << "the bus descriptor size comes from the GPU image";
+  EXPECT_EQ(source.descriptor().height, 1080);
+  // Pause: the on-air GPU frame is held, same id.
+  std::string reason;
+  ASSERT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason)) << reason;
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  const auto held = MediaTransports::selectVideo(*opened.front().entry, steadyNowMs() * 10000);
+  ASSERT_TRUE(held.has_value());
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  const auto later = MediaTransports::selectVideo(*opened.front().entry, steadyNowMs() * 10000);
+  ASSERT_TRUE(later.has_value());
+  EXPECT_EQ(later->frameId, held->frameId) << "a paused GPU-only clip must hold its frame";
+}

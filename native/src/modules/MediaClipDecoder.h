@@ -19,6 +19,9 @@ enum class ClipReadStatus { Ready, Pending, EndOfStream, Failed, NoVideoTrack };
 
 struct ClipVideoSample {
   std::shared_ptr<const std::vector<uint8_t>> bgra;  // tightly packed, stride width*4, STRAIGHT alpha
+  // OR a native GPU image and no CPU bytes (the Mac zero-copy reader, N4). The
+  // decoder moves it into VideoFrame::gpuPixels untouched; nothing copies it.
+  std::shared_ptr<const GpuVideoFrame> gpu;
   int width = 0, height = 0;
   int64_t pts100ns = 0;        // media time within THIS reader, 0 at the start of the file
   int64_t duration100ns = 0;

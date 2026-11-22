@@ -66,8 +66,11 @@ class MediaAssetSource final : public ISource {
         return tick;
       }
       if (descriptor_.width <= 0 || descriptor_.height <= 0) {
-        descriptor_.width = frame->pixelWidth > 0 ? frame->pixelWidth : frame->i420Width;
-        descriptor_.height = frame->pixelHeight > 0 ? frame->pixelHeight : frame->i420Height;
+        // A GPU-only media frame (N4) has no CPU dimensions: its image says.
+        descriptor_.width = frame->pixelWidth > 0 ? frame->pixelWidth
+            : frame->i420Width > 0 ? frame->i420Width : frame->hasGpuPixels() ? frame->gpuPixels->width : frame->width;
+        descriptor_.height = frame->pixelHeight > 0 ? frame->pixelHeight
+            : frame->i420Height > 0 ? frame->i420Height : frame->hasGpuPixels() ? frame->gpuPixels->height : frame->height;
       }
       counters_.framesIngested += 1;
       counters_.lastFrameId = frame->frameId;

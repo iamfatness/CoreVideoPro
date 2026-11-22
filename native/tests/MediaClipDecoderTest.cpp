@@ -22,6 +22,7 @@ struct Script {
   bool stallAfterLast = false;  // Pending forever instead of EndOfStream
   int failingReader = 0;        // the Nth reader opened (1-based) fails on its first take; 0 = none
   bool noVideoTrack = false;    // the asset opens and has no video track (an audio bed)
+  bool gpuSamples = false;      // samples carry a GPU image and NO CPU bytes (the Mac zero-copy reader)
   int64_t duration100ns = 10 * kFrame;
 };
 // Audio script (Task 6). Fixture invariants (rule 1): 48 kHz interleaved stereo;
@@ -46,6 +47,8 @@ struct Shared {
   std::vector<int64_t> audioStarts100ns;
   const int64_t* nowMs = nullptr;  // the rig's clock
 };
+// A GPU image whose `generation` carries the sample's colour byte (index + 1).
+struct TaggedGpuImage final : GpuVideoFrame {};
 int timecodeMs(float sample) { return static_cast<int>(std::lround(sample * 4096.f)) - 1; }
 class FakeAudioReader final : public IClipAudioReader {
  public:
@@ -89,7 +92,13 @@ class FakeReader final : public IClipVideoReader {
     if (next_ >= s_->script.samples)
       return s_->script.stallAfterLast ? ClipReadStatus::Pending : ClipReadStatus::EndOfStream;
     out.width = 4; out.height = 2;
-    out.bgra = std::make_shared<std::vector<uint8_t>>(4u * 2u * 4u, static_cast<uint8_t>(next_ + 1));
+    if (s_->script.gpuSamples) {
+      auto gpu = std::make_shared<TaggedGpuImage>();
+      gpu->width = 4; gpu->height = 2; gpu->generation = static_cast<uint64_t>(next_ + 1);  // the colour-byte scheme
+      out.gpu = std::move(gpu);
+    } else {
+      out.bgra = std::make_shared<std::vector<uint8_t>>(4u * 2u * 4u, static_cast<uint8_t>(next_ + 1));
+    }
     out.pts100ns = next_ * kFrame; out.duration100ns = kFrame;
     ++next_; s_->takesReady += 1;
     return ClipReadStatus::Ready;
@@ -596,4 +605,33 @@ TEST(MediaClipDecoder, AnAudioOnlyClipEndsWhenItsAudioEndsAndALoopNeverDoes) {
     }
     EXPECT_TRUE(rig.d->warnings().empty());
   }
+}
+
+// N4 (plan 2026-11-21 Task 4). A reader that hands over a GPU image and no CPU
+// bytes (the Mac zero-copy reader) produces frames that carry that image and
+// no pixels, through every row: cue poster, roll, pause hold.
+TEST(MediaClipDecoder, AGpuSampleBecomesAGpuFrameWithNoCpuPixels) {
+  Script video; video.gpuSamples = true;
+  Rig rig(video);
+  const auto tag = [](const VideoFrame& f) { return f.gpuPixels ? static_cast<int>(f.gpuPixels->generation) : -1; };
+  const auto poster = rig.d->pollMediaFrames(clip(false), 1'000);
+  ASSERT_EQ(poster.size(), 1u) << "a GPU-only cue poster was dropped";
+  EXPECT_TRUE(poster[0].hasGpuPixels());
+  EXPECT_FALSE(poster[0].hasPixels());
+  EXPECT_EQ(tag(poster[0]), 1) << "the poster is sample 0";
+  EXPECT_EQ(rig.d->pollMediaFrames(clip(false), 1'010).size(), 1u) << "the held poster is re-served";
+  const auto rolled = rig.next(clip(true));
+  EXPECT_EQ(tag(rolled.frame), 2) << "rolling continues from sample 1";
+  EXPECT_EQ(rolled.frame.width, 4);
+  // Pause on the DIRECT-poll path (the path whose paused branch serves a held
+  // frame; on the prefetch path the owner holds its own presented frame).
+  rig.now = 1'200;
+  const auto onAir = rig.d->pollMediaFrames(clip(true), rig.now);  // presents by media time
+  ASSERT_EQ(onAir.size(), 1u);
+  EXPECT_TRUE(onAir[0].hasGpuPixels());
+  rig.d->syncMediaClock(clip(false), rig.now);
+  const auto held = rig.d->pollMediaFrames(clip(false), rig.now + 50);
+  ASSERT_EQ(held.size(), 1u) << "a paused GPU-only clip lost its on-air frame";
+  EXPECT_EQ(held[0].frameId, onAir[0].frameId);
+  EXPECT_EQ(tag(held[0]), tag(onAir[0]));
 }

@@ -1250,6 +1250,7 @@ struct CompositorSourceTexStats {
   uint64_t cacheHits = 0;       // draws served from the cache with no upload
   uint64_t textureCreates = 0;  // per-source GPU texture set (re)creations
   uint64_t scratchUploads = 0;  // legacy shared-scratch uploads (frames with no stable source id)
+  uint64_t zeroCopyBinds = 0;   // native GPU images wrapped as a texture with NO upload (Metal IOSurface, N4)
 };
 
 // One immutable monitor job. Geometry/tally and pixels travel together; a late
