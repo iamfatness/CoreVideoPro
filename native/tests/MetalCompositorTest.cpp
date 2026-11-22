@@ -726,6 +726,7 @@ struct OverlayPrepareHookScope {
     gOverlayPrepareBlocked = block;
     corevideo::compositor::setOverlayRasterPrepareHookForTest(&overlayPrepareHook);
   }
+  void block() { gOverlayPrepareBlocked = true; }
   void release() {
     {
       std::lock_guard<std::mutex> lock(gOverlayPrepareMutex);
@@ -879,6 +880,39 @@ TEST(MetalCompositor, LegacyLowerThirdTextLandsInsideItsBand) {
   // Above the overlay the black source is untouched.
   const auto above = canvasPixel(frame.preview, 160, 40);
   EXPECT_LE(above[0] + above[1] + above[2], 6);
+}
+
+// #1073 parity: a Tiles name line (holdLastRaster) keeps drawing its previous
+// raster, scaled to the new band, while the resized raster prepares. Never
+// the bare accent bar. The un-held overlay beside it is the control: under
+// the same resize it shows the fallback and no text.
+TEST(MetalCompositor, AHeldNameLineKeepsItsTextWhileTheResizedRasterPrepares) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  OverlayPrepareHookScope hook(/*block=*/false);
+  auto plan = overlayPlan("plan-held-name");
+  auto held = overlayLayer("held", {0.f, 0.f, 1.f, 0.4f}, "HELD NAME", "");
+  held.overlay.holdLastRaster = true;
+  plan.layers.push_back(held);
+  plan.layers.push_back(overlayLayer("plain", {0.f, 0.5f, 1.f, 0.4f}, "PLAIN NAME", ""));
+  const std::vector<VideoFrame> frames{bgraFrame("bg", 64, 36, 0, 0, 0)};
+  const auto ready = renderUntilOverlayReady(*compositor, plan, frames);
+  ASSERT_FALSE(hasWarning(ready, "graphics-preparing"));
+  ASSERT_GE(brightIn(ready.preview, nameLine(0, 0, 320, 72)), 20);
+  ASSERT_GE(brightIn(ready.preview, nameLine(0, 90, 320, 72)), 20);
+
+  hook.block();
+  plan.layers[1].rect = {0.f, 0.f, 1.f, 0.45f};   // held: 72 -> 81 px tall
+  plan.layers[2].rect = {0.f, 0.5f, 1.f, 0.45f};  // plain: same resize
+  for (int tick = 0; tick < 5; ++tick) {
+    const auto frame = compositor->render(plan, frames);
+    ASSERT_TRUE(hasWarning(frame, "graphics-preparing")) << "tick " << tick;
+    EXPECT_GE(brightIn(frame.preview, nameLine(0, 0, 320, 81)), 20)
+        << "tick " << tick << ": the held name line lost its text while resizing";
+    EXPECT_EQ(brightIn(frame.preview, nameLine(0, 90, 320, 81)), 0)
+        << "tick " << tick << ": the un-held control cannot have text yet";
+    const auto bar = canvasPixel(frame.preview, 3, 120);
+    EXPECT_GT(bar[2], 200) << "the un-held control draws the accent-bar fallback";
+  }
 }
 
 TEST(MetalCompositor, AnAppearanceBandIsDrawnOnceNotTwice) {

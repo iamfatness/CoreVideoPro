@@ -52,6 +52,7 @@
 #include "compositor/MetalCompositorShaders.h"
 #include "modules/Interfaces.h"
 #include "compositor/CoreTextOverlayRaster.h"
+#include "compositor/OverlayRasterRetention.h"
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 
@@ -93,6 +94,7 @@ class MetalCompositor final : public ICompositor {
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
+    retainedOverlayRasters_.prune(static_cast<uint64_t>(frameNumber_));
     const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -1389,6 +1391,22 @@ class MetalCompositor final : public ICompositor {
     id<MTLTexture> overlayTex = overlayRaster_.rasterOverlayTexture(
         device_, overlay, rect, targetWidth_, targetHeight_, {}, !layer.plan.graphicsInstanceId.empty(),
         layer.plan.graphicsPreparedResource);
+    if (overlay.holdLastRaster) {
+      // #1073 Tiles name line (D3D11CompositorAdapter.cpp parity): a reflow
+      // resizes every band at once and preparation is bounded, so "preparing"
+      // can last several frames on a big wall. Draw the layer's previous
+      // raster (the viewport scales it to the new band) until the new one is
+      // ready, and never the bare accent bar: a tick with no text is worse
+      // than a name a few frames old. The lease keeps the texture alive.
+      const int widthPx = static_cast<int>(std::lround(double(rect.width) * targetWidth_));
+      const int heightPx = static_cast<int>(std::lround(double(rect.height) * targetHeight_));
+      const void* drawable = retainedOverlayRasters_.resolve(
+          layer.plan.layerId, overlayTex ? (__bridge const void*)overlayTex : nullptr,
+          overlayTex ? overlayRaster_.lease() : nullptr, widthPx, heightPx,
+          static_cast<uint64_t>(frameNumber_));
+      overlayTex = drawable ? (__bridge id<MTLTexture>)drawable : nil;
+      if (!overlayTex) return;
+    }
     if (!layer.plan.graphicsInstanceId.empty() && !overlayTex) return;
 
     // Brand band quad: only when the raster does not paint the band itself
@@ -1520,6 +1538,9 @@ class MetalCompositor final : public ICompositor {
 #endif
   std::unordered_map<std::string, SourceTex> sourceTextures_;
   CompositorSourceTexStats stats_;
+  // Previous ready raster per holdLastRaster layer (bridged texture pointer
+  // kept alive by the raster lease stored beside it).
+  compositor::OverlayRasterRetention<const void> retainedOverlayRasters_;
   // Last member: its preparation worker joins first on destruction. It holds
   // its own strong device reference per request, so device_ order is moot.
   CoreTextOverlayRaster overlayRaster_;
