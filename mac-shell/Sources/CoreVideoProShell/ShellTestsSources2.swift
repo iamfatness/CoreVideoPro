@@ -20,6 +20,10 @@ extension ShellTests {
             ("sources2-r1/epoch-change-resets", testANewMeetingEpochResetsEveryZoomRow),
             ("sources2-r1/retired-epoch-ignored-after-core-restart", testARetiredEpochIsIgnoredAfterACoreRestart),
             ("sources2-r1/stale-format-ages-out", testAStaleFormatShowsItsAgeAndNoRate),
+            // Task 3: R2 cap note and REC chip.
+            ("sources2-r2/cap-note-table", testTheCapNoteFollowsTheWindowsRuleForEveryCombination),
+            ("sources2-r2/cap-from-core-not-preference", testTheCapNoteReadsTheCoresAppliedCap),
+            ("sources2-r2/rec-chip-four-states-wired", testTheRecChipShowsTheFourWriterStatesFromSnapshots),
         ]
     }
 
@@ -139,5 +143,76 @@ extension ShellTests {
         expectEqual(facts.fps, "—", "a stale rate is never shown as live")
         expectEqual(facts.formatDetail, "age 2.3s stale", "the row says how old the picture is")
         expectEqual(facts.formatWithRate, "1920×1080", "the format keeps its size and drops the rate")
+    }
+
+    // ── Task 3: R2 ──────────────────────────────────────────────────────────
+
+    /// Windows ApplyCameraCap (MultiviewInputRowsProjection.cs:144-159), quantified over every
+    /// tier × observed size × fps cap × observed fps. The oracle is written here from the
+    /// Windows source, not from the implementation (plan-authoring rule 2).
+    static func testTheCapNoteFollowsTheWindowsRuleForEveryCombination() {
+        let tiers: [(Int, String, Int, Int)] = [(0, "360p", 640, 360), (1, "720p", 1280, 720), (2, "1080p", 1920, 1080)]
+        let sizes = [(640, 360), (1280, 720), (1920, 1080)]
+        for (tier, label, capW, capH) in tiers {
+            for (w, h) in sizes {
+                for capFps in [30, 60] {
+                    for fps in [25, 60] {
+                        var parts: [String] = []
+                        if w < capW || h < capH { parts.append("up to \(label) requested") }
+                        if capFps < 60 && fps > capFps { parts.append("local max \(capFps) fps") }
+                        let oracle = parts.joined(separator: " · ")
+                        let note = SourceRowFactsProjection.capNote(width: w, height: h, fps: fps,
+                                                                     cap: ZoomAppliedCap(tier: tier, fps: capFps))
+                        expectEqual(note, oracle, "tier \(tier) observed \(w)×\(h)@\(fps) fps cap \(capFps)")
+                    }
+                }
+            }
+        }
+        expectEqual(SourceRowFactsProjection.capNote(width: 640, height: 360, fps: 30, cap: nil), "",
+                    "no applied cap from the core: no note")
+    }
+
+    /// D6: "the ceiling accepted at this meeting's join, never a pending preference" (Windows
+    /// SetAppliedCameraCap :130). The Mac reads the core's applied cap from zoomSubscriptionChurn.
+    @MainActor
+    static func testTheCapNoteReadsTheCoresAppliedCap() {
+        let model = liveGuestModel()                                 // delivers 1920×1080@60
+        model.handleEventForTesting(formatEvent(w: 640, h: 360, fps: 30, atMs: 200))
+        model.applySnapshotForTesting(["zoomSubscriptionChurn": ["engine": true, "cameraMaxResolution": 1,
+                                                                "cameraMaxFps": 60] as JSONObject])
+        expectEqual(model.sourceFacts.box(1).facts.formatDetail, "up to 720p requested",
+                    "the core applied 720p; the guest delivers 360p")
+        model.handleEventForTesting(formatEvent(w: 1280, h: 720, fps: 30, atMs: 300))
+        expectEqual(model.sourceFacts.box(1).facts.formatDetail, "", "delivering the cap: no note")
+        model.applySnapshotForTesting(["zoomSubscriptionChurn": ["engine": true, "cameraMaxResolution": 2,
+                                                                "cameraMaxFps": 24] as JSONObject])
+        expectEqual(model.sourceFacts.box(1).facts.formatDetail, "up to 1080p requested · local max 24 fps",
+                    "a later applied cap re-labels the same observed format")
+        model.applySnapshotForTesting(["zoomSubscriptionChurn": ["engine": false] as JSONObject])
+        expectEqual(model.sourceFacts.box(1).facts.formatDetail, "", "no engine: no applied cap, no note")
+    }
+
+    /// Windows IsoChipUsesObservedWriterLifecycle (:413) through the real snapshot path, plus the
+    /// Mac "unreported" rule (spec §4.9: never OFF). Recorded node shapes: CoreStateCapture.cpp:2001-2070.
+    /// CONFIRMATORY: passes on fc675541 (Phase 1 wired the chip); it pins the wired path for R2.
+    @MainActor
+    static func testTheRecChipShowsTheFourWriterStatesFromSnapshots() {
+        let model = liveGuestModel()
+        func recording(_ state: String, _ health: String, stream: String) -> JSONObject {
+            ["recording": ["sessionId": "s", "status": "recording", "active": true,
+                           "lifecycle": ["state": state, "health": health],
+                           "streams": [["kind": "iso", "sourceId": "zoom:42", "status": stream]]] as JSONObject]
+        }
+        let cases: [(JSONObject, String)] = [
+            (recording("preparing", "healthy", stream: "writing"), "ARMED"),
+            (recording("producing", "healthy", stream: "writing"), "REC"),
+            (recording("producing", "healthy", stream: "warning"), "ERROR"),
+            (recording("completed", "healthy", stream: "writing"), "OFF"),
+            (recording("producing", "healthy", stream: "unreported"), "—"),
+        ]
+        for (snapshot, chip) in cases {
+            model.applySnapshotForTesting(snapshot)
+            expectEqual(model.sourceFacts.box(1).facts.writer, chip, "writer chip \(chip)")
+        }
     }
 }

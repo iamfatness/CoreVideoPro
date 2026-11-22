@@ -80,6 +80,26 @@ struct ZoomFormatFact: Equatable {
     }
 }
 
+/// The Zoom camera ceiling the core APPLIED at this meeting's join (plan D6):
+/// `zoomSubscriptionChurn.cameraMaxResolution` (SDK tier 0/1/2) and `cameraMaxFps`
+/// (ZoomEngineRuntime.cpp:250-265, 1424-1425). Never a shell preference.
+struct ZoomAppliedCap: Equatable {
+    let tier: Int
+    let fps: Int
+
+    /// From the `zoomSubscriptionChurn` node. nil when there is no engine or no cap fields.
+    static func parse(churn: JSONObject) -> ZoomAppliedCap? {
+        guard churn["engine"] as? Bool != false,
+              let tier = (churn["cameraMaxResolution"] as? NSNumber)?.intValue,
+              let fps = (churn["cameraMaxFps"] as? NSNumber)?.intValue else { return nil }
+        return ZoomAppliedCap(tier: min(max(tier, 0), 2), fps: fps)
+    }
+
+    /// Windows ZoomCameraResolutionPreference.FromSdkTier / Dimensions.
+    var label: String { ["360p", "720p", "1080p"][tier] }
+    var dimensions: (width: Int, height: Int) { [(640, 360), (1280, 720), (1920, 1080)][tier] }
+}
+
 struct BusSourceRow: Equatable {
     let sourceId: String
     let kind: String
@@ -163,6 +183,7 @@ struct SourceRowFactsProjection {
     private var program: Set<String> = []
     private var preview: Set<String> = []
     private var writers: [String: String] = [:]
+    private var appliedCap: ZoomAppliedCap?
 
     init(slotIds: [Int] = Array(1...10)) {
         self.slotIds = slotIds
@@ -239,6 +260,11 @@ struct SourceRowFactsProjection {
         self.preview = preview
     }
 
+    /// The core's applied Zoom camera cap (plan D6); nil clears the note.
+    mutating func applyCap(_ cap: ZoomAppliedCap?) {
+        appliedCap = cap
+    }
+
     /// sourceKey → recording|armed|error|unknown (IsoWriterChip.observe).
     mutating func applyWriters(_ chips: [String: String]) {
         writers = chips
@@ -311,6 +337,7 @@ struct SourceRowFactsProjection {
             return participant.talking
         }
         facts.fps = frame.fps > 0 ? String(frame.fps) : "—"
+        facts.formatDetail = Self.capNote(width: frame.width, height: frame.height, fps: frame.fps, cap: appliedCap)
         facts.signal = participant.talking ? "TALKING" : "LIVE"
         return participant.talking
     }
@@ -318,6 +345,17 @@ struct SourceRowFactsProjection {
     // ── shared rules ────────────────────────────────────────────────────
 
     /// "age 2.3s stale" (Windows FormatDetailLabel, one decimal).
+    /// Windows ApplyCameraCap (MultiviewInputRowsProjection.cs:144-159), verbatim copy.
+    /// A request ceiling is a note beside the format, never a measurement.
+    static func capNote(width: Int, height: Int, fps: Int, cap: ZoomAppliedCap?) -> String {
+        guard let cap else { return "" }
+        let (capWidth, capHeight) = cap.dimensions
+        var parts: [String] = []
+        if width < capWidth || height < capHeight { parts.append("up to \(cap.label) requested") }
+        if cap.fps < 60 && fps > cap.fps { parts.append("local max \(cap.fps) fps") }
+        return parts.joined(separator: " · ")
+    }
+
     static func ageDetail(_ ageMs: Double) -> String {
         String(format: "age %.1fs stale", ageMs / 1000)
     }

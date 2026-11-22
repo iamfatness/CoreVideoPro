@@ -78,7 +78,8 @@ extension AppModel {
             Set((frame["videoSources"] as? [JSONObject] ?? []).compactMap { $0["sourceId"] as? String })
         }
         let recording = snapshot["recording"] as? JSONObject
-        guard sources != nil || program != nil || recording != nil else { return }
+        let churn = snapshot["zoomSubscriptionChurn"] as? JSONObject
+        guard sources != nil || program != nil || recording != nil || churn != nil else { return }
         let now = sourceFactsNowMs
         let captures = Self.captureSignals(captureDevices)
         let preview = program != nil ? previewSourceKeys() : []
@@ -88,6 +89,7 @@ extension AppModel {
             }
             if let program { projection.applyTally(program: program, preview: preview) }
             if let recording { projection.applyWriters(IsoWriterChip.observe(recording)) }
+            if let churn { projection.applyCap(ZoomAppliedCap.parse(churn: churn)) }
         }
     }
 }
