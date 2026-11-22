@@ -203,12 +203,14 @@ add_library(corevideo_native
 if(APPLE)
   target_sources(corevideo_native PRIVATE
     src/compositor/MetalCompositorAdapter.mm
+    src/compositor/CoreTextOverlayRaster.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm)
   set_source_files_properties(
     src/compositor/MetalCompositorAdapter.mm
+    src/compositor/CoreTextOverlayRaster.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
@@ -1069,6 +1071,13 @@ if(BUILD_TESTING)
     # AVAssetReader decode helper for the Mac ISO recording pixel tests.
     target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
     set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  endif()
+  if(COREVIDEO_WITH_METAL AND NOT COREVIDEO_STUB)
+    # CoreTextOverlayRaster full-resolution pixel tests (ObjC++: they read the
+    # prepared MTLTexture back). This file also replaces global operator new
+    # with a malloc pass-through that counts only on a thread that arms it.
+    target_sources(corevideo-native-tests PRIVATE tests/MetalOverlayRasterTest.mm)
+    set_source_files_properties(tests/MetalOverlayRasterTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   endif()
   if(COREVIDEO_WITH_AVF_MEDIA_DECODER AND NOT COREVIDEO_STUB)
     # Real AVFoundation decode against fixtures written at test time.
