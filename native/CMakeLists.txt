@@ -216,6 +216,16 @@ if(APPLE)
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  # Core Text font resolution + measurement for native graphics (plain C++).
+  target_sources(corevideo_native PRIVATE src/graphics/GraphicsTextCoreText.cpp)
+  # Bundled graphics fonts (Selawik for Segoe UI; native/resources/graphics-fonts/
+  # SOURCE.md) ride beside every macOS build's executables in GraphicsFonts/,
+  # exactly where the .app keeps them beside the core
+  # (Contents/Resources/GraphicsFonts, scripts/make-macos-shell-bundle.sh).
+  file(GLOB COREVIDEO_GRAPHICS_FONT_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/graphics-fonts/*.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/graphics-fonts/OFL.txt")
+  file(COPY ${COREVIDEO_GRAPHICS_FONT_FILES} DESTINATION "${CMAKE_BINARY_DIR}/GraphicsFonts")
   # StillMediaFrameCache decodes stills via ImageIO on Apple (WIC analogue);
   # it compiles on every config, so the frameworks link unconditionally here.
   target_link_libraries(corevideo_native PUBLIC
@@ -994,6 +1004,7 @@ if(BUILD_TESTING)
     tests/EngineIpcShmNameTest.cpp
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
+    tests/GraphicsFontResolverTest.cpp
     tests/MetalSourceGradePixelTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp

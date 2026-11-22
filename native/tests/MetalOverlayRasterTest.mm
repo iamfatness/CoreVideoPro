@@ -382,6 +382,33 @@ TEST(MetalOverlayRaster, AMissingFontWithAnAppearanceWarnsAndStillDraws) {
   EXPECT_EQ(strict.warning, "Requested graphics font is unavailable; choose an installed font.");
 }
 
+// Owner decision 2026-11-21: a Windows family in the substitution table
+// resolves (Segoe UI -> bundled Selawik) with a warning and NEVER fails, strict
+// mode included. The appearance default family is "Segoe UI".
+TEST(MetalOverlayRaster, SegoeUiResolvesToBundledSelawikWithAWarningEvenWhenStrict) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  CompositorOverlayContent overlay;
+  overlay.appearance.enabled = true;
+  overlay.appearance.fontFamily = "Segoe UI";
+  overlay.appearance.backgroundOpacity = 0;
+  overlay.appearance.showLogo = false;
+  overlay.text = "SUBSTITUTED";
+  const int w = 400, h = 100;
+  for (const bool strict : {false, true}) {
+    const auto prepared = waitPrepared(raster, device, overlay, w, h, strict);
+    ASSERT_EQ(prepared.state, "ready") << "strict=" << strict << " " << prepared.warning;
+    EXPECT_EQ(prepared.warning, "Font Segoe UI is not installed on this Mac; using Selawik.");
+    const auto px = readBack(prepared.texture);
+    const auto layout = computeOverlayTileLayout(overlay, w, h);
+    int ink = 0;
+    for (int y = 0; y < h; ++y)
+      for (int x = int(w * 0.1f); x < w; ++x)
+        if (inRect(layout.textLines[0].rect, x, y) && px.alpha(x, y) > 128) ++ink;
+    EXPECT_GE(ink, 100) << "strict=" << strict;
+  }
+}
+
 }  // namespace
 
 #endif

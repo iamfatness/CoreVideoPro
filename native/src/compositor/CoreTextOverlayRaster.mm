@@ -13,6 +13,7 @@
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
+#include "graphics/GraphicsTextCoreText.h"
 #include "graphics/GraphicsTemplate.h"
 #include "modules/OverlayTileRaster.h"
 
@@ -44,78 +45,13 @@ CfRef<CFStringRef> cfString(const std::string& text) {
       reinterpret_cast<const UInt8*>(text.data()), CFIndex(text.size()), kCFStringEncodingUTF8, false));
 }
 
-// ── Font resolution: the ONE seam G2's GraphicsFontResolver replaces ─────────
-//
-// Order: (1) the exact family installed in the system collection; (2) the
-// explicit substitution table; (3) unavailable. Core Text's own automatic
-// fallback is never used for the PRIMARY family, so the same document always
-// resolves the same way. Glyph fallback for characters a family lacks is
-// still Core Text's cascade.
-//
-// G2 (owner decision, 2026-11-21): the table becomes Segoe UI / Segoe UI
-// Semibold -> bundled Selawik (after the OFL licence check), Bahnschrift,
-// Cambria, Consolas -> chosen system fonts, plus bundled-font registration.
-// A table substitution WARNS and never fails. Until then it is empty.
-struct FontSubstitution {
-  std::string_view requested;
-  std::string_view macFamily;
-};
-constexpr std::array<FontSubstitution, 0> kFontSubstitutions{};
-
-// The family a missing legacy font falls back to (plan default D1): the
-// fallback the shipped Mac raster already used.
+// Font resolution and font creation live in graphics/GraphicsTextCoreText so
+// GraphicsTemplate's measurement and this raster resolve identically (owner's
+// substitution table, bundled Selawik, warn never fail for a table hit).
 constexpr const char* kFallbackFontFamily = "Helvetica Neue";
 
-bool familyInstalled(const std::string& family) {
-  if (family.empty()) return false;
-  const auto name = cfString(family);
-  if (!name) return false;
-  const void* keys[] = {kCTFontFamilyNameAttribute};
-  const void* values[] = {name.get()};
-  CfRef<CFDictionaryRef> attributes(CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1,
-      &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
-  CfRef<CTFontDescriptorRef> descriptor(CTFontDescriptorCreateWithAttributes(attributes.get()));
-  const void* mandatoryKeys[] = {kCTFontFamilyNameAttribute};
-  CfRef<CFSetRef> mandatory(CFSetCreate(kCFAllocatorDefault, mandatoryKeys, 1, &kCFTypeSetCallBacks));
-  CfRef<CTFontDescriptorRef> match(CTFontDescriptorCreateMatchingFontDescriptor(descriptor.get(), mandatory.get()));
-  return bool(match);
-}
-
-struct ResolvedFontFamily {
-  std::string family;
-  bool available = false;     // requested family, or a table substitute, is installed
-  bool substituted = false;   // came from kFontSubstitutions
-};
-
-ResolvedFontFamily resolveRasterFont(const std::string& requested) {
-  if (familyInstalled(requested)) return {requested, true, false};
-  for (const auto& row : kFontSubstitutions) {
-    if (row.requested == requested && familyInstalled(std::string(row.macFamily)))
-      return {std::string(row.macFamily), true, true};
-  }
-  return {kFallbackFontFamily, false, false};
-}
-
-// Nearest real face in `family` to `weight` (0 regular, 0.3 semibold). Core
-// Text does not synthesize bold; a family with no heavier face draws regular.
-CfRef<CTFontRef> createFont(const std::string& family, CGFloat weight, CGFloat size) {
-  auto name = cfString(family);
-  if (!name) name = cfString(kFallbackFontFamily);
-  CFNumberRef weightNumber = CFNumberCreate(kCFAllocatorDefault, kCFNumberCGFloatType, &weight);
-  const void* traitKeys[] = {kCTFontWeightTrait};
-  const void* traitValues[] = {weightNumber};
-  CfRef<CFDictionaryRef> traits(CFDictionaryCreate(kCFAllocatorDefault, traitKeys, traitValues, 1,
-      &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
-  CFRelease(weightNumber);
-  const void* keys[] = {kCTFontFamilyNameAttribute, kCTFontTraitsAttribute};
-  const void* values[] = {name.get(), traits.get()};
-  CfRef<CFDictionaryRef> attributes(CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2,
-      &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
-  CfRef<CTFontDescriptorRef> descriptor(CTFontDescriptorCreateWithAttributes(attributes.get()));
-  const void* mandatoryKeys[] = {kCTFontFamilyNameAttribute};
-  CfRef<CFSetRef> mandatory(CFSetCreate(kCFAllocatorDefault, mandatoryKeys, 1, &kCFTypeSetCallBacks));
-  CfRef<CTFontDescriptorRef> match(CTFontDescriptorCreateMatchingFontDescriptor(descriptor.get(), mandatory.get()));
-  return CfRef<CTFontRef>(CTFontCreateWithFontDescriptor(match ? match.get() : descriptor.get(), size, nullptr));
+CfRef<CTFontRef> createFont(const std::string& family, int weight, CGFloat size) {
+  return CfRef<CTFontRef>(graphics::createGraphicsFont(family, weight, size));
 }
 
 CfRef<CGColorRef> colorFromArgb(uint32_t argb, CGColorSpaceRef space) {
@@ -146,7 +82,7 @@ bool drawLegacyTextLine(CGContextRef context, CGColorSpaceRef space, const Overl
   }
   if (!text) return false;
   const CGFloat fontSize = line.fontSize > 0.f ? line.fontSize : std::max(4.f, line.rect.height * 0.72f);
-  const auto font = createFont(family, emphasis ? 0.3 : 0.0, fontSize);
+  const auto font = createFont(family, emphasis ? 600 : 400, fontSize);
   if (!font) return false;
   const auto color = colorFromArgb(line.colorArgb, space);
   const void* keys[] = {kCTFontAttributeName, kCTForegroundColorAttributeName};
@@ -359,13 +295,13 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
 
     // Font: the Windows check runs only for an appearance; elsewhere a missing
     // family falls back silently, as DirectWrite's does (plan D1).
-    const auto font = resolveRasterFont(layout.fontFamily);
+    const auto font = graphics::resolveGraphicsFontFamily(layout.fontFamily);
     if (overlay.appearance.enabled && !font.available) {
       if (request.strictResources)
         return {{}, 0, "Requested graphics font is unavailable; choose an installed font."};
       warning = std::string("Font unavailable; using ") + kFallbackFontFamily + ".";
     } else if (font.substituted) {
-      warning = "Font " + layout.fontFamily + " is not installed on this Mac; using " + font.family + ".";
+      warning = graphics::graphicsFontSubstitutionWarning(layout.fontFamily, font.family);
     }
     layout.fontFamily = font.family;
 

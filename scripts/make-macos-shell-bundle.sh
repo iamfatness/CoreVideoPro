@@ -138,6 +138,15 @@ mkdir -p "$APP/Contents/Resources"
 # Brand fonts (design handoff non-negotiable: Space Grotesk + IBM Plex Mono)
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp mac-shell/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
+# Graphics fonts the CORE registers at runtime (process scope) for template
+# graphics: Selawik for Segoe UI (owner decision 2026-11-21), shipped with its
+# SIL OFL 1.1 text. They sit beside corevideo-native (GraphicsFonts/ next to the
+# executable is the core's lookup), NOT in Fonts/, which ATSApplicationFontsPath
+# registers for the shell's own UI. Resources only: sealed by the app signature
+# below, no code to sign. Provenance: native/resources/graphics-fonts/SOURCE.md.
+mkdir -p "$APP/Contents/Resources/GraphicsFonts"
+cp native/resources/graphics-fonts/*.ttf native/resources/graphics-fonts/OFL.txt \
+   "$APP/Contents/Resources/GraphicsFonts/"
 # App icon (regenerate with scripts/make-app-icon.swift + iconutil)
 cp mac-shell/Resources/AppIcon.icns "$APP/Contents/Resources/" 2>/dev/null || true
 if need_helper "$CORE_DIR/corevideo-native" "media core"; then
