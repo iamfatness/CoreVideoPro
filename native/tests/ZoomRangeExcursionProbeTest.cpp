@@ -69,3 +69,36 @@ TEST(ZoomRangeExcursionProbeDiag, DumpDecisionInputs) {
     std::fprintf(stderr, "[diag] cond1=%d cond2=%d\n", int(std::abs(b - c) < 2.0),
                  int(std::abs(fl - (b + c) / 2.0) > 4.0));
 }
+
+// Round 2: which call shape loses the first two observe() side effects?
+namespace {
+template <typename F> int runShape(F prime) {
+    ZoomRangeExcursionProbe probe;
+    std::vector<std::uint8_t> full(6400, 32), compressed(6400, 43);
+    prime(probe, full, compressed);
+    const auto ev = probe.observe(full.data(), full.data(), full.size(), false, false);
+    return int(ev.has_value());
+}
+}
+TEST(ZoomRangeExcursionProbeDiag, CallShapes) {
+    using V = std::vector<std::uint8_t>;
+    const int inlineMacro = runShape([](ZoomRangeExcursionProbe &p, V &f, V &c) {
+        EXPECT_FALSE(p.observe(f.data(), f.data(), f.size(), false, false));
+        EXPECT_FALSE(p.observe(c.data(), c.data(), c.size(), false, false));
+    });
+    const int castDiscard = runShape([](ZoomRangeExcursionProbe &p, V &f, V &c) {
+        (void)static_cast<bool>(p.observe(f.data(), f.data(), f.size(), false, false));
+        (void)static_cast<bool>(p.observe(c.data(), c.data(), c.size(), false, false));
+    });
+    const int voidDiscard = runShape([](ZoomRangeExcursionProbe &p, V &f, V &c) {
+        (void)p.observe(f.data(), f.data(), f.size(), false, false);
+        (void)p.observe(c.data(), c.data(), c.size(), false, false);
+    });
+    const int stored = runShape([](ZoomRangeExcursionProbe &p, V &f, V &c) {
+        auto a = p.observe(f.data(), f.data(), f.size(), false, false);
+        auto b = p.observe(c.data(), c.data(), c.size(), false, false);
+        std::fprintf(stderr, "[diag2] stored a=%d b=%d\n", int(a.has_value()), int(b.has_value()));
+    });
+    std::fprintf(stderr, "[diag2] inlineMacro=%d castDiscard=%d voidDiscard=%d stored=%d (expect all 1)\n",
+                 inlineMacro, castDiscard, voidDiscard, stored);
+}
