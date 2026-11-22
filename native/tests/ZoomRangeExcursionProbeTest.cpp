@@ -125,3 +125,51 @@ TEST(ZoomRangeExcursionProbeDiag, OptionalBoolConversion) {
     // And the exact failing statement, last, so the lines above always print.
     std::fprintf(stderr, "[diag3] assertTrueWouldPass=%d\n", int(static_cast<bool>(event)));
 }
+
+// Round 4: byte-identical clones of the first failing test. If the plain clone
+// fails and the optimize-off clone passes, MSVC 19.52's optimizer miscompiles
+// this function body (the probe itself is correct in every other context).
+TEST(ZoomRangeExcursionProbeDiag, CloneOptimized) {
+    ZoomRangeExcursionProbe probe;
+    std::vector<std::uint8_t> full(6400, 32), compressed(6400, 43);
+    EXPECT_FALSE(probe.observe(full.data(), full.data(), full.size(), false, false));
+    EXPECT_FALSE(probe.observe(compressed.data(), compressed.data(), compressed.size(), false, false));
+    const auto event = probe.observe(full.data(), full.data(), full.size(), false, false);
+    std::fprintf(stderr, "[diag4] optimized clone event=%d\n", int(event.has_value()));
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->before.publishedMean, 32);
+    EXPECT_EQ(event->flash.publishedMean, 43);
+    EXPECT_EQ(event->after.publishedMean, 32);
+    EXPECT_FALSE(event->flash.sdkLimited);
+    EXPECT_EQ(event->flash.rawMean, 43);
+}
+#if defined(_MSC_VER)
+#pragma optimize("", off)
+#endif
+TEST(ZoomRangeExcursionProbeDiag, CloneUnoptimized) {
+    ZoomRangeExcursionProbe probe;
+    std::vector<std::uint8_t> full(6400, 32), compressed(6400, 43);
+    EXPECT_FALSE(probe.observe(full.data(), full.data(), full.size(), false, false));
+    EXPECT_FALSE(probe.observe(compressed.data(), compressed.data(), compressed.size(), false, false));
+    const auto event = probe.observe(full.data(), full.data(), full.size(), false, false);
+    std::fprintf(stderr, "[diag4] unoptimized clone event=%d\n", int(event.has_value()));
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->before.publishedMean, 32);
+    EXPECT_EQ(event->flash.publishedMean, 43);
+    EXPECT_EQ(event->after.publishedMean, 32);
+    EXPECT_FALSE(event->flash.sdkLimited);
+    EXPECT_EQ(event->flash.rawMean, 43);
+}
+#if defined(_MSC_VER)
+#pragma optimize("", on)
+#endif
+// Same as the optimized clone but without the post-assert EXPECTs: does the
+// optimizer use the later event-> reads to break the earlier calls?
+TEST(ZoomRangeExcursionProbeDiag, CloneNoTrailingReads) {
+    ZoomRangeExcursionProbe probe;
+    std::vector<std::uint8_t> full(6400, 32), compressed(6400, 43);
+    EXPECT_FALSE(probe.observe(full.data(), full.data(), full.size(), false, false));
+    EXPECT_FALSE(probe.observe(compressed.data(), compressed.data(), compressed.size(), false, false));
+    const auto event = probe.observe(full.data(), full.data(), full.size(), false, false);
+    std::fprintf(stderr, "[diag4] no-trailing-reads clone event=%d\n", int(event.has_value()));
+}
