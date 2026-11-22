@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -53,6 +54,9 @@
 #include "modules/Interfaces.h"
 #include "compositor/CoreTextOverlayRaster.h"
 #include "compositor/OverlayRasterRetention.h"
+#include "graphics/GraphicsCrawl.h"
+#include "graphics/GraphicsMotion.h"
+#include "graphics/GraphicsTemplate.h"
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 
@@ -92,6 +96,11 @@ class MetalCompositor final : public ICompositor {
 
   std::string rendererName() const override { return "metal"; }
 
+  // Metal graphics backend G2: templates are rastered by CoreTextOverlayRaster,
+  // and this adapter emits the facts GraphicsInstances consumes (5.9), so the
+  // core's graphics-* gate and the graphics-instances capability open.
+  bool supportsGraphicsInstances() const override { return true; }
+
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
     retainedOverlayRasters_.prune(static_cast<uint64_t>(frameNumber_));
@@ -126,13 +135,31 @@ class MetalCompositor final : public ICompositor {
     // throttled FULL renders only, which is also what feeds the encoder.
     const bool fullTick = !renderPlan.skipCpuReadback;
     overlayRaster_.beginFrame();
+    // Facts (draw-submitted, composition-eligible, ready, subject draws) are
+    // collected on the PROGRAM pass only, as on Windows.
+    traceFrame_ = &frame;
     renderPassInto(program_, deterministicPlan, frames, /*waitForCompletion=*/fullTick);
+    traceFrame_ = nullptr;
     // Same frame warnings as D3D11CompositorAdapter::render: an overlay still
     // preparing (or failed) is named on the Program frame and degrades health.
     if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
     if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
     if (!frame.warnings.empty()) frame.health = "degraded";
+    // Admit accepted Program resource work before private/Cue requests. These
+    // nonblocking preparations do not turn a healthy Program into degradation
+    // (D3D11CompositorAdapter::render parity).
+    for (const auto& candidate : deterministicPlan.graphicsPreparations) {
+      const auto& r = candidate.rect;
+      overlayRaster_.rasterOverlayTexture(device_, candidate.overlay, {r.x, r.y, r.width, r.height}, targetWidth_,
+                                          targetHeight_, candidate.layerId, true, candidate.graphicsPreparedResource);
+      frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
+          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource(),
+          candidate.overlay.graphicsContentHash, candidate.overlay.hasGraphicsContentHash});
+    }
     overlayRaster_.beginFrame();
+    // Graphics automation reads the plan it was composed from.
+    if (renderPlan.observeGraphicsSubjects)
+      frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(deterministicPlan);
 #if COREVIDEO_WITH_MAC_VIRTUALCAM
     // EVERY tick, light ticks included: the camera is a 60 fps per-frame
     // output, and the light display tick IS the 60 Hz tick. No CPU wait here.
@@ -821,6 +848,7 @@ class MetalCompositor final : public ICompositor {
       pass.colorAttachments[0].storeAction = MTLStoreActionStore;
       pass.colorAttachments[0].clearColor = MTLClearColorMake(0.047, 0.067, 0.094, 1.0);
       id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+      graphicsSourceDrawCount_ = 0;  // the bound-source record is per pass
       const auto layers = resolveLayers(deterministicPlan, frames);
       for (const auto& layer : layers) {
         drawLayer(encoder, layer, deterministicPlan);
@@ -1263,7 +1291,13 @@ class MetalCompositor final : public ICompositor {
     }
 
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
-      drawOverlayLayer(encoder, layer, renderPlan, rect, layerAlpha);
+      const bool composited = drawOverlayLayer(encoder, layer, renderPlan, rect, layerAlpha);
+      if (traceFrame_ && composited && !layer.plan.graphicsInstanceId.empty()) {
+        const auto resource = overlayRaster_.preparedResource();
+        if (resource && resource != layer.plan.graphicsPreparedResource)
+          traceFrame_->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "ready", "", resource});
+        traceFrame_->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "draw-submitted", ""});
+      }
       return;
     }
 
@@ -1339,6 +1373,26 @@ class MetalCompositor final : public ICompositor {
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     resetScissor(encoder);
 
+    // Graphics source binding (D3D11 parity): record which source generation
+    // was ACTUALLY drawn textured this pass, so a bound graphic draws only over
+    // its own guest's pixels; and publish subject draws for automation.
+    const bool textured = sourceTex != nullptr;
+    const bool subjectKind = layer.plan.kind == "participant-video" || layer.plan.kind == "screen-share";
+    if (textured && layer.frame && layer.frame->sourceGeneration && subjectKind && layerAlpha > 0)
+      recordGraphicsSourceDraw(*layer.frame);
+    if (traceFrame_ && renderPlan.observeGraphicsSubjects && textured && layer.frame && layerAlpha > 0 && subjectKind &&
+        traceFrame_->graphicsFacts.size() < 128) {
+      const bool sharing = layer.plan.kind == "screen-share" ||
+          layer.frame->participantId.rfind("capture:screen:", 0) == 0 ||
+          layer.frame->participantId.rfind("capture:window:", 0) == 0;
+      const char* state = sharing ? "share-draw-submitted" : "source-draw-submitted";
+      const auto identity = "source:" + layer.frame->participantId;
+      if (std::none_of(traceFrame_->graphicsFacts.begin(), traceFrame_->graphicsFacts.end(), [&](const auto& fact) {
+            return fact.state == state && fact.instanceId == identity && fact.revision == layer.frame->sourceGeneration;
+          }))
+        traceFrame_->graphicsFacts.push_back({identity, layer.frame->sourceGeneration, state, ""});
+    }
+
     // bus health on air (#535 slice 4a, R4): a failed OR stalled-with-no-frame
     // source's slate carries its display name so an operator can tell WHICH
     // source died at a glance (D3D11 drawFailedSlateName parity).
@@ -1402,20 +1456,27 @@ class MetalCompositor final : public ICompositor {
     resetScissor(encoder);
   }
 
-  void drawOverlayLayer(id<MTLRenderCommandEncoder> encoder,
+  // Returns true when a prepared raster was composited (the draw-submitted
+  // fact). Mirrors D3D11CompositorAdapter::drawOverlayLayer.
+  bool drawOverlayLayer(id<MTLRenderCommandEncoder> encoder,
                         const ResolvedLayer& layer,
                         const CompositorRenderPlan& renderPlan,
                         const compositor::LayerRect& rect,
                         float layerAlpha) {
+    // A bound graphic draws only when its source was drawn this pass at the
+    // bound generation: never over a replaced or stale guest.
+    if (layer.plan.graphicsBoundSourceGeneration &&
+        !hasGraphicsSourceDraw(layer.plan.graphicsBoundParticipantId, layer.plan.graphicsBoundSourceGeneration))
+      return false;
     const auto& overlay = layer.plan.overlay;
     const auto key = compositor::computeOverlayKeyTransform(overlay.keyPhase, overlay.keyProgress,
                                                             overlay.keyPosition, rect.height);
     if (!key.visible || key.alpha <= 0.001f) {
-      return;
+      return false;
     }
     const float alpha = std::clamp(layerAlpha * key.alpha, 0.f, 1.f);
     if (alpha <= 0.f) {
-      return;
+      return false;
     }
 
     compositor::LayerRect animated = rect;
@@ -1454,9 +1515,14 @@ class MetalCompositor final : public ICompositor {
           overlayTex ? overlayRaster_.lease() : nullptr, widthPx, heightPx,
           static_cast<uint64_t>(frameNumber_));
       overlayTex = drawable ? (__bridge id<MTLTexture>)drawable : nil;
-      if (!overlayTex) return;
+      if (!overlayTex) return false;
     }
-    if (!layer.plan.graphicsInstanceId.empty() && !overlayTex) return;
+    if (!layer.plan.graphicsInstanceId.empty() && !overlayTex) return false;
+    if (layer.plan.graphicsAwaitingEntrance) {
+      if (traceFrame_)
+        traceFrame_->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "composition-eligible", ""});
+      return false;
+    }
 
     // Brand band quad: only when the raster does not paint the band itself
     // (an appearance-styled lower third paints its own rounded band). Drawing
@@ -1468,8 +1534,12 @@ class MetalCompositor final : public ICompositor {
 
     // Composite the prepared raster over the band. Sizing/caching uses the
     // un-animated rect so a build-in/out sweep scales the SAME cached texture.
-    if (overlayTex) {
+    bool composited = false;
+    if (overlayTex && overlayRaster_.activeRuns() && !overlay.holdLastRaster) {
+      composited = drawOverlayRuns(encoder, layer, renderPlan, overlayTex, *overlayRaster_.activeRuns(), animated, clip, alpha);
+    } else if (overlayTex) {
       drawOverlayTexture(encoder, layer, renderPlan, overlayTex, animated, clip, alpha);
+      composited = true;
     } else {
       setScissorFromRect(encoder, clip);
       if (overlay.isCaption) {
@@ -1481,6 +1551,94 @@ class MetalCompositor final : public ICompositor {
       }
     }
     resetScissor(encoder);
+    return composited;
+  }
+
+  // Spec 5.8: an atlas raster draws each run from its slice. Motion and crawl
+  // are core decisions (overlay.graphicsMotion, overlay.graphicsCrawlDistance);
+  // the math is the shared headers', so this is the D3D11 loop with Metal's
+  // three state calls. A crawl scroll is a per-frame destination change over a
+  // static atlas: no re-raster while it runs.
+  bool drawOverlayRuns(id<MTLRenderCommandEncoder> encoder,
+                       const ResolvedLayer& layer,
+                       const CompositorRenderPlan& renderPlan,
+                       id<MTLTexture> atlas,
+                       const graphics::GraphicsRunLayout& layout,
+                       const compositor::LayerRect& animated,
+                       const compositor::LayerRect& clip,
+                       float alpha) {
+    const auto& overlay = layer.plan.overlay;
+    if (!layout.drawing || layout.width <= 0 || layout.height <= 0 || layout.atlasWidth <= 0 || layout.atlasHeight <= 0)
+      return false;
+    bool composited = false;
+    const auto state = overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
+    const auto toRect = [&](const graphics::GraphicsBox& box) {
+      return compositor::LayerRect{animated.x + float(box.x / layout.width) * animated.width,
+                                   animated.y + float(box.y / layout.height) * animated.height,
+                                   float(box.width / layout.width) * animated.width,
+                                   float(box.height / layout.height) * animated.height};
+    };
+    for (size_t i = 0; i < layout.runs.size() && i < layout.slices.size(); ++i) {
+      const auto& run = layout.runs[i];
+      const auto& slice = layout.slices[i];
+      if (slice.width <= 0 || slice.height <= 0) continue;
+      const auto sample = graphics::sampleRun(*layout.drawing, run.unit, state);
+      if (sample.opacity <= 0) continue;
+      auto source = run.source;
+      auto mask = sample.clip;
+      const auto& item = layout.drawing->primitives[run.first];
+      if (item.crawlStart && layout.drawing->crawl) {
+        const auto& crawl = *layout.drawing->crawl;
+        const auto distance = overlay.graphicsCrawlDistance;
+        if (distance && *distance >= crawl.passWidth) continue;
+        source.x = crawl.window.x + (distance ? graphics::crawlItemX(crawl.window.width, *item.crawlStart,
+                                                                     source.width, *distance, crawl.rightward)
+                                              : *item.crawlStart);
+        const auto window = sample.transform.apply(crawl.clip);
+        if (graphics::intersect(sample.transform.apply(source), window).width <= 0) continue;
+        mask = mask ? graphics::intersect(*mask, window) : window;
+      }
+      const auto destination = toRect(sample.transform.apply(source));
+      if (destination.width <= 0 || destination.height <= 0) continue;
+      auto scissor = clip;
+      if (mask) {
+        const auto bounds = toRect(*mask);
+        const float x = std::max(clip.x, bounds.x), y = std::max(clip.y, bounds.y);
+        scissor = {x, y, std::min(clip.x + clip.width, bounds.x + bounds.width) - x,
+                   std::min(clip.y + clip.height, bounds.y + bounds.height) - y};
+      }
+      if (scissor.width <= 0 || scissor.height <= 0) continue;
+      setScissorFromRect(encoder, scissor);
+      setViewportFromRect(encoder, destination);
+      setLayerConstants(encoder, layer, renderPlan, 0xffffffffu, alpha * float(sample.opacity),
+                        float(slice.width) / layout.atlasWidth, float(slice.height) / layout.atlasHeight,
+                        float(slice.x) / layout.atlasWidth, float(slice.y) / layout.atlasHeight);
+      [encoder setRenderPipelineState:overlayPipeline_];
+      [encoder setFragmentTexture:atlas atIndex:0];
+      [encoder setFragmentSamplerState:sampler_ atIndex:0];
+      [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      composited = true;
+    }
+    return composited;
+  }
+
+  void recordGraphicsSourceDraw(const VideoFrame& frame) {
+    if (frame.participantId.size() > 512) return;
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i) {
+      if (graphicsSourceDraws_[i].id != frame.participantId) continue;
+      if (graphicsSourceDraws_[i].generation != frame.sourceGeneration) graphicsSourceDraws_[i].generation = 0;
+      return;
+    }
+    if (graphicsSourceDrawCount_ < graphicsSourceDraws_.size()) {
+      auto& draw = graphicsSourceDraws_[graphicsSourceDrawCount_++];
+      draw.id = frame.participantId;
+      draw.generation = frame.sourceGeneration;
+    }
+  }
+  bool hasGraphicsSourceDraw(const std::string& id, uint64_t generation) const {
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i)
+      if (graphicsSourceDraws_[i].id == id && graphicsSourceDraws_[i].generation == generation) return true;
+    return false;
   }
 
   // One premultiplied (One, 1-SrcAlpha) draw of a prepared overlay texture
@@ -1590,6 +1748,13 @@ class MetalCompositor final : public ICompositor {
   // Previous ready raster per holdLastRaster layer (bridged texture pointer
   // kept alive by the raster lease stored beside it).
   compositor::OverlayRasterRetention<const void> retainedOverlayRasters_;
+  // Program pass only: where drawLayer pushes graphics facts (null otherwise).
+  ProgramFrame* traceFrame_ = nullptr;
+  // Fixed-size per-pass record of drawn sources (no per-tick allocation once
+  // each slot's id string has capacity), D3D11 graphicsSourceDraws_ parity.
+  struct GraphicsSourceDraw { std::string id; uint64_t generation = 0; };
+  std::array<GraphicsSourceDraw, 256> graphicsSourceDraws_;
+  size_t graphicsSourceDrawCount_ = 0;
   // Last member: its preparation worker joins first on destruction. It holds
   // its own strong device reference per request, so device_ order is moot.
   CoreTextOverlayRaster overlayRaster_;

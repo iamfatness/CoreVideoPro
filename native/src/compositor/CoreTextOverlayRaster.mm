@@ -267,6 +267,17 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
   CGContextSetAlpha(cg, CGFloat(p.opacity));
   CGContextClipToRect(cg, CGRectMake(b.x, b.y, b.width, layoutHeight));  // D2D1_DRAW_TEXT_OPTIONS_CLIP
   CGContextSetTextMatrix(cg, CGAffineTransformMakeScale(1, -1));
+  // Small text: DirectWrite hints and contrast-enhances grayscale glyphs, so a
+  // 4 px social-card line still reads; unhinted Core Text coverage is much
+  // lighter there. Core Graphics font smoothing (stem dilation, which works on
+  // a grayscale alpha target) is the closest native analogue. Applied only
+  // under 16 device pixels per em, where hinting dominates, so larger text
+  // keeps its true weight for the G4 parity measurement (plan default D9).
+  const CGAffineTransform ctm = CGContextGetCTM(cg);
+  const double devicePixelsPerEm = p.fontSize * std::sqrt(std::fabs(ctm.a * ctm.d - ctm.b * ctm.c));
+  const bool smallText = devicePixelsPerEm < 16;
+  CGContextSetAllowsFontSmoothing(cg, smallText);
+  CGContextSetShouldSmoothFonts(cg, smallText);
   for (size_t n = 0; n < text.lines().size(); ++n) {
     CGContextSetTextPosition(cg, CGFloat(lineX(text.lines()[n])), CGFloat(baseline(n)));
     CTLineDraw(text.lines()[n].line, cg);
@@ -510,6 +521,19 @@ std::shared_ptr<const graphics::GraphicsRunLayout> CoreTextOverlayRaster::active
 std::shared_ptr<const graphics::GraphicsPreparedResource> CoreTextOverlayRaster::preparedResource() {
   if (!activeLease_ || !activeLease_->asset || std::string_view(lastState_) != "ready") return {};
   if (activeResource_) return activeResource_;
+  // Same prepared texture -> same resource object, with no allocation, while
+  // anyone (an instance that adopted it) still holds it. Keyed by the cache
+  // result's address: a live weak entry proves that result is still alive, so
+  // the address cannot have been reused. Mac-side only (plan G2 D7); the
+  // Windows raster still allocates per call.
+  const void* source = activeLease_.get();
+  for (const auto& entry : resourceCache_) {
+    if (entry.source != source) continue;
+    if (auto cached = entry.resource.lock()) {
+      activeResource_ = std::move(cached);
+      return activeResource_;
+    }
+  }
   auto resource = std::make_shared<graphics::GraphicsPreparedResource>();
   resource->backend = graphics::GraphicsPreparedResource::Backend::Metal;
   resource->deviceIdentity = activeDevice_; resource->signature = activeSignature_;
@@ -520,6 +544,8 @@ std::shared_ptr<const graphics::GraphicsPreparedResource> CoreTextOverlayRaster:
     resource->crawl = graphics::GraphicsCrawlPlayback{crawl.speed, crawl.passWidth, crawl.loop};
   }
   activeResource_ = resource;
+  resourceCache_[resourceCacheNext_] = {source, resource};
+  resourceCacheNext_ = (resourceCacheNext_ + 1) % resourceCache_.size();
   return resource;
 }
 

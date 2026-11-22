@@ -627,6 +627,41 @@ TEST(MetalOverlayRaster, ALayeredTemplatePreparesAnAtlasWithOneSlicePerRun) {
   EXPECT_EQ(inkedSlices, int(runs->slices.size())) << "every run is drawn into its own slice";
 }
 
+// G2's facts loop calls preparedResource() for every preparation on every
+// Program tick. Once anyone holds the resource (the instance adopts it), the
+// same prepared texture must yield the SAME resource pointer, with no heap
+// allocation. Identity matters too: the adapter only pushes a "ready" fact
+// when the resource differs from the plan's accepted one (D3D11 parity).
+TEST(MetalOverlayRaster, PreparedResourceIsStableAndAllocationFree) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  const auto overlay = lowerThird("PREPARED RESOURCE NAME LONGER THAN SSO", "STABLE IDENTITY ACROSS TICKS");
+  ASSERT_EQ(waitPrepared(raster, device, overlay, 400, 80).state, "ready");
+  const auto held = raster.preparedResource();
+  ASSERT_TRUE(held);
+  EXPECT_EQ(held->backend, corevideo::graphics::GraphicsPreparedResource::Backend::Metal);
+  EXPECT_EQ(held->width, 400);
+  EXPECT_EQ(held->height, 80);
+  size_t allocations = 0;
+  bool same = true;
+  for (int tick = 0; tick < 50; ++tick) {
+    raster.beginFrame();
+    raster.rasterOverlayTexture(device, overlay, {0.f, 0.f, 1.f, 1.f}, 400, 80);
+    tAllocCount = 0;
+    tAllocCountArmed = true;
+    const auto again = raster.preparedResource();
+    tAllocCountArmed = false;
+    allocations += tAllocCount;
+    same = same && again == held;
+  }
+  EXPECT_TRUE(same) << "the same prepared texture must keep one resource identity";
+  EXPECT_EQ(allocations, 0u) << "preparedResource() allocated on the per-tick path";
+  // Different content is a different resource.
+  const auto other = lowerThird("ANOTHER NAME", "ANOTHER TITLE");
+  ASSERT_EQ(waitPrepared(raster, device, other, 400, 80).state, "ready");
+  EXPECT_NE(raster.preparedResource(), held);
+}
+
 }  // namespace
 
 #endif
