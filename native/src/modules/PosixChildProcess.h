@@ -13,7 +13,10 @@
 //    descriptors the request names, nothing else. Before this, every ffmpeg
 //    inherited every earlier sibling's pipe write ends, so closing the core's
 //    end of one child's stdin never delivered EOF while a sibling lived.
-//    (Linux has no such flag; callers mark their own pipes close-on-exec.)
+//    Linux has no such flag: with glibc >= 2.34 spawn instead stages each
+//    mapped descriptor above every target (F_DUPFD_CLOEXEC), dup2s it into
+//    place, then closes every other descriptor in the child (addclose for the
+//    gaps below the highest target, addclosefrom_np above it).
 // 3. Bounded stop by process group. Each child leads its own group
 //    (pgid == pid), so signalGroup/stopGroup reach the guard AND its target;
 //    SIGKILLing only the guard would orphan the target.
@@ -37,6 +40,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <algorithm>
 
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -143,24 +148,56 @@ inline SpawnResult spawn(const SpawnRequest& request) {
   for (int signal : {SIGPIPE, SIGTERM, SIGINT, SIGHUP}) sigaddset(&defaults, signal);
   posix_spawnattr_setsigdefault(&attributes, &defaults);
 
+  std::vector<FdMapping> mappings = request.fds;
+  if (guarded) mappings.push_back({lifeline, kLifelineChildFd});
   bool stdinMapped = false;
-  const auto map = [&](int parentFd, int childFd) {
+  for (const auto& mapping : mappings) stdinMapped = stdinMapped || mapping.childFd == 0;
+
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+#define COREVIDEO_SPAWN_CLOSEFROM 1
+  // No CLOEXEC_DEFAULT here. Stage every source above every target so no
+  // dup2 can clobber a source still to be mapped, then close the rest.
+  int highestTarget = 2;
+  for (const auto& mapping : mappings) highestTarget = std::max(highestTarget, mapping.childFd);
+  std::vector<int> staged;
+  staged.reserve(mappings.size());
+  const auto releaseStaged = [&] {
+    for (int fd : staged) ::close(fd);
+  };
+  for (auto& mapping : mappings) {
+    const int copy = ::fcntl(mapping.parentFd, F_DUPFD_CLOEXEC, highestTarget + 1);
+    if (copy < 0) {
+      result.error = errno;
+      releaseStaged();
+      posix_spawn_file_actions_destroy(&actions);
+      posix_spawnattr_destroy(&attributes);
+      return result;
+    }
+    staged.push_back(copy);
+    mapping.parentFd = copy;
+  }
+#endif
+  for (const auto& mapping : mappings) {
 #if defined(__APPLE__)
-    if (parentFd == childFd) {
-      posix_spawn_file_actions_addinherit_np(&actions, childFd);
-      return;
+    if (mapping.parentFd == mapping.childFd) {
+      posix_spawn_file_actions_addinherit_np(&actions, mapping.childFd);
+      continue;
     }
 #endif
-    posix_spawn_file_actions_adddup2(&actions, parentFd, childFd);
-  };
-  for (const auto& mapping : request.fds) {
-    map(mapping.parentFd, mapping.childFd);
-    stdinMapped = stdinMapped || mapping.childFd == 0;
+    posix_spawn_file_actions_adddup2(&actions, mapping.parentFd, mapping.childFd);
   }
   if (!stdinMapped) posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
   posix_spawn_file_actions_addopen(&actions, 1, request.stdoutPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   posix_spawn_file_actions_addopen(&actions, 2, request.stderrPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (guarded) map(lifeline, kLifelineChildFd);
+#if defined(COREVIDEO_SPAWN_CLOSEFROM)
+  // glibc ignores a close action on an in-range descriptor that is not open.
+  for (int fd = 3; fd <= highestTarget; ++fd) {
+    const bool isTarget = std::any_of(mappings.begin(), mappings.end(),
+                                      [fd](const FdMapping& mapping) { return mapping.childFd == fd; });
+    if (!isTarget) posix_spawn_file_actions_addclose(&actions, fd);
+  }
+  posix_spawn_file_actions_addclosefrom_np(&actions, highestTarget + 1);
+#endif
 
   const std::string lifelineArg = std::to_string(kLifelineChildFd);
   std::vector<char*> argv;
@@ -180,6 +217,10 @@ inline SpawnResult spawn(const SpawnRequest& request) {
   const int rc = ::posix_spawn(&pid, path, &actions, &attributes, argv.data(), environ);
   posix_spawn_file_actions_destroy(&actions);
   posix_spawnattr_destroy(&attributes);
+#if defined(COREVIDEO_SPAWN_CLOSEFROM)
+  releaseStaged();
+#undef COREVIDEO_SPAWN_CLOSEFROM
+#endif
   if (rc != 0) {
     result.error = rc;
     return result;
