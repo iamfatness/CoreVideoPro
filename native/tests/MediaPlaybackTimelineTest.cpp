@@ -1150,6 +1150,92 @@ TEST(MediaTransports, AnAudioOnlyBedOutlivesTheNoNewFrameBackstop) {
   EXPECT_GE(lastHeardMs, kBedAudioMs - 1 - 20) << "the bed's audio tail was cut";
 }
 
+// Review round (2026-11-22), item 2. An audio bed that stalls past the 6 s
+// no-progress backstop (a NAS hiccup, a loaded box, a consumer that stopped
+// pulling) went Ended FOR GOOD: the recovery branch only fired on a new video
+// frame, which a bed never has, and Ended stopped polling its audio. A video
+// clip in the same position recovers by itself, keeping its position. The
+// worker runs on a VIRTUAL clock here, so the 6 s window is crossed in one
+// lossless jump; the real-time bounds below are generous waits for a worker
+// iteration, not measurements. Fixture invariants: the fake reports no video,
+// never reports EOS, hands over one transparent 2x2 picture once, and a 20 ms
+// stereo window per audio poll unless stalled.
+namespace {
+struct BedStall { std::atomic<bool> stalled{false}; std::atomic<int> windows{0}; };
+class StallableBedDecoder final : public IMediaDecoder, public IMediaVideoPrefetch {
+ public:
+  explicit StallableBedDecoder(std::shared_ptr<BedStall> stall) : stall_(std::move(stall)) {}
+  std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest&, int64_t) override { return {}; }
+  std::vector<ScheduledMediaVideo> prefetchMediaVideo(const MediaDecodeRequest& request, int64_t nowMs) override {
+    if (sentPicture_) return {};
+    sentPicture_ = true;
+    VideoFrame f;
+    f.participantId = request.sourceId;
+    f.width = f.pixelWidth = f.naturalWidth = 2;
+    f.height = f.pixelHeight = f.naturalHeight = 2;
+    f.pixelStride = 8;
+    f.frameId = 1;
+    f.pixels = std::make_shared<const std::vector<uint8_t>>(16u, uint8_t{0});
+    return {{std::move(f), nowMs * 10000}};
+  }
+  std::vector<AudioFrame> pollMediaAudioFrames(const MediaDecodeRequest& request, int64_t timestampMs) override {
+    if (!request.playing || stall_->stalled.load()) return {};
+    stall_->windows.fetch_add(1);
+    AudioFrame a;
+    a.participantId = request.sourceId;
+    a.channels = 2;
+    a.sampleCount = 960;
+    a.timestampMs = timestampMs;
+    a.pcm.assign(1920u, 0.25f);
+    return {std::move(a)};
+  }
+  bool mediaHasVideo() const override { return false; }
+  bool mediaEnded() const override { return false; }
+ private:
+  std::shared_ptr<BedStall> stall_;
+  bool sentPicture_ = false;
+};
+}  // namespace
+
+TEST(MediaTransports, AnAudioBedStalledPastTheBackstopRecoversWhenItsAudioComesBack) {
+  auto stall = std::make_shared<BedStall>();
+  std::atomic<int64_t> virtualMs{1'000'000};
+  MediaTransports t(corevideo::testing::mediaFactoryOf<StallableBedDecoder>(stall));
+  t.setWorkerClockForTesting([&virtualMs] { return virtualMs.load(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  int heard = 0;
+  // Drives the bus side on the virtual clock (1 virtual ms per real ms) until
+  // `done` holds or `realMs` of real time pass.
+  const auto pump = [&](const std::function<bool(MediaTransportState)>& done, int realMs) {
+    for (const auto deadline = steadyNowMs() + realMs; steadyNowMs() < deadline;) {
+      const auto now = virtualMs.fetch_add(1) + 1;
+      MediaTransports::selectVideo(*e, now * 10000);
+      for (const auto& window : t.popAudio(now)) {
+        if (!window.pcm.empty() && window.pcm.front() != 0.f) ++heard;
+      }
+      const auto status = statusOf(t, "media:test");
+      if (status && done(status->state)) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  ASSERT_TRUE(pump([&](MediaTransportState s) { return s == MediaTransportState::Live && heard > 0; }, 3000))
+      << "the bed never went Live with audible audio";
+
+  stall->stalled.store(true);
+  virtualMs.fetch_add(6500);  // past kEndedBackstopNoNewFrameMs in one jump
+  ASSERT_TRUE(pump([](MediaTransportState s) { return s == MediaTransportState::Ended; }, 3000))
+      << "fixture: a bed with no audio for 6.5 s must reach the backstop's Ended";
+
+  const int heardBefore = heard;
+  stall->stalled.store(false);
+  EXPECT_TRUE(pump([&](MediaTransportState s) { return s == MediaTransportState::Live && heard > heardBefore; }, 3000))
+      << "the bed stayed Ended (and silent) after its audio came back";
+}
+
 // ---------------------------------------------------------------------------
 // N4 (plan 2026-11-21 Task 4). A GPU-ONLY media frame - a native image with no
 // CPU payload, as the Mac zero-copy decoder hands over - is content to every
