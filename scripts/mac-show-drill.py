@@ -460,6 +460,11 @@ def main():
     parser.add_argument("--source-grades", action="store_true",
                         help="after configure, apply a per-source grade (warm-film, exposure +2) to every "
                              "wall participant (query-source-grade, then set-source-grade) and gate as usual")
+    parser.add_argument("--lower-third", action="store_true",
+                        help="keep a legacy lower third on Program for the whole run: new text every "
+                             "second (a fresh overlay raster preparation each time) and a hide/re-show "
+                             "every five seconds, so the render tick is measured with the overlay "
+                             "raster cycling (Metal graphics backend G1, spec 7.4)")
     parser.add_argument("--ffmpeg", default=None,
                         help="ffmpeg bin dir or exe for --media fixtures "
                              "(default: COREVIDEO_FFMPEG_BIN_DIR, then PATH)")
@@ -591,6 +596,17 @@ def main():
             solo = "mv-solo-a" if tick % 10 == 0 else "mv-solo-b"
             response = step("recue", [{"type": "set-preview-scene", "sceneId": solo,
                                        "routes": [route("solo-0")]}], elapsed)
+        elif args.lower_third:
+            # Every poll tick (2 Hz) carries the overlay; the text changes once a
+            # second and every fifth second the lower third is taken out, so the
+            # raster both re-prepares and builds in/out under load.
+            second = tick // 2
+            shown = second % 5 != 4
+            response = step("lower-third", [{"type": "set-overlay-asset",
+                                             "overlayId": "overlay:lower-third",
+                                             "enabled": shown,
+                                             "text": f"DRILL GUEST {second}",
+                                             "title": "CoreVideo show drill"}], elapsed)
         else:
             response = step("poll", [], elapsed)
         # Both ends of the operator-traffic window, for the --media block. The
