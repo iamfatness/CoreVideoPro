@@ -58,6 +58,7 @@ struct SourceGradeEditorPane: View {
                 .foregroundStyle(editor.previewSupported ? Studio.secondary : Studio.amber)
                 .fixedSize(horizontal: false, vertical: true)
             if editor.previewSupported {
+                ScopeRoiToolbar(editor: editor)
                 GradePreviewMonitor(editor: editor)
                 Toggle("Compare original (monitor only)", isOn: $editor.compareOriginal)     // CGE:47
                     .font(.grotesk(12))
@@ -325,6 +326,7 @@ struct GradePreviewMonitor: View {
             if editor.previewSurfaceId != 0 {
                 SurfaceView(surfaceId: editor.previewSurfaceId)
             }
+            ScopeRoiOverlay(editor: editor)                 // G7: editor-only region guide
         }
         .frame(height: 270)
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
@@ -345,7 +347,10 @@ struct GradeScopeControls: View {
             picker("Histogram", GradeEditorModel.histogramModes, $editor.histogramMode)
             picker("Waveform", GradeEditorModel.waveformModes, $editor.waveformMode)
             picker("Expand scope", GradeEditorModel.scopeViews, $editor.scopeView)
+            ScopeRoiPrecision(editor: editor)
             if editor.scopesEnabled {
+                Text(editor.scopeRegionLabel).font(.grotesk(11, .semibold)).foregroundStyle(Studio.textPrimary)
+                    .accessibilityLabel("Scope region: \(editor.scopeRegionLabel)")
                 HStack(spacing: 0) {
                     ForEach(GradeEditorModel.scopeCaptions, id: \.self) {
                         Text($0).font(.plexMono(9)).foregroundStyle(Studio.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -369,5 +374,75 @@ struct GradeScopeControls: View {
         }
         .font(.grotesk(12))
         .accessibilityLabel(label)
+    }
+}
+
+/// G7: the ROI tools above the preview (ColorGradeEditorWindow.xaml:14-19).
+struct ScopeRoiToolbar: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                tool("Draw rectangle", shape: "rectangle")
+                tool("Draw circle", shape: "circle")
+                Button("Select / move") { editor.armRoi(nil) }
+                    .buttonStyle(GhostButtonStyle(tint: editor.roiDrawingShape == nil ? Studio.accent : Studio.textPrimary))
+                    .accessibilityLabel("Select or move the scope region")
+                Button("Clear") { editor.armRoi(nil); editor.clearScopeRoi() }
+                    .buttonStyle(GhostButtonStyle())
+                    .help("Measure the full frame")
+                    .accessibilityLabel("Clear the scope region and measure the full frame")
+            }
+            Text(editor.roiToolHint).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func tool(_ label: String, shape: String) -> some View {
+        Button(label) { editor.armRoi(shape) }
+            .buttonStyle(GhostButtonStyle(tint: editor.roiDrawingShape == shape ? Studio.accent : Studio.textPrimary))
+            .accessibilityLabel(label)
+    }
+}
+
+/// G7: "Precision settings" (ColorGradeEditorWindow.xaml:90-99).
+struct ScopeRoiPrecision: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        DisclosureGroup("Precision settings") {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Use selected region (scopes only)", isOn: $editor.scopeRoiEnabled).font(.grotesk(12))
+                    .accessibilityLabel("Use selected region, scopes only")
+                Toggle("Show ROI guide (editor only)", isOn: $editor.scopeRoiGuideVisible).font(.grotesk(12))
+                    .accessibilityLabel("Show ROI guide, editor only")
+                let r = editor.scopeRoi
+                slider("ROI left", r.x, max: 1 - r.width, axis: 0)
+                slider("ROI top", r.y, max: 1 - r.height, axis: 1)
+                slider("ROI width", r.width, max: 1 - r.x, axis: 2)
+                slider("ROI height", r.height, max: 1 - r.y, axis: 3)
+                Button("Reset region to center") { editor.resetScopeRoi() }
+                    .buttonStyle(GhostButtonStyle())
+                    .accessibilityLabel("Reset region to center")
+            }
+            .padding(.top, 4)
+        }
+        .font(.grotesk(12))
+    }
+
+    private func slider(_ label: String, _ value: Double, max: Double, axis: Int) -> some View {
+        let lower = axis >= 2 ? 0.000001 : 0
+        let upper = Swift.max(lower + 0.000001, max)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label).font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                Spacer()
+                Text(String(format: "%.1f%%", value * 100)).font(.plexMono(11)).foregroundStyle(Studio.textPrimary)
+            }
+            Slider(value: Binding(get: { min(Swift.max(value, lower), upper) }, set: { editor.setRoiNumber(axis, $0) }),
+                   in: lower...upper)
+                .accessibilityLabel(label)
+        }
     }
 }

@@ -153,6 +153,95 @@ final class GradeEditorModel: ObservableObject, Identifiable {
 
     func closePreview() { previewSession?.close(); previewSession = nil }
 
+    // ── G7 (Phase 2 Task 9): region of interest, ColorGradeEditorViewModel.Roi.cs ──
+    /// Set by AppModel after seeding: persists the region per person (ScopePreferences.cs:19-22).
+    var onScopeRoiChanged: ((GradeScopeRoi) -> Void)?
+    /// "Show ROI guide (editor only)" (Roi.cs:35-36).
+    @Published var scopeRoiGuideVisible = true
+    /// The armed drawing tool ("rectangle" / "circle"), nil = Select / move (ScopeRoiControl.DrawingShape).
+    @Published var roiDrawingShape: String?
+
+    /// ArmRoi (ColorGradeEditorWindow.Roi.cs:41-45): drawing needs the scopes on and the panel open.
+    func armRoi(_ shape: String?) {
+        if shape != nil { setAdvancedExpanded(true); scopesEnabled = true }
+        scopeRoiGuideVisible = true
+        roiDrawingShape = shape
+    }
+
+    /// OnRoiNumberChanged (ColorGradeEditorWindow.Roi.cs:30-39): one precision slider moved
+    /// (0 left, 1 top, 2 width, 3 height); a circle follows the axis that moved, round in pixels.
+    func setRoiNumber(_ axis: Int, _ value: Double) {
+        var roi = scopeRoi
+        switch axis {
+        case 0: roi.x = value
+        case 1: roi.y = value
+        case 2: roi.width = value
+        default: roi.height = value
+        }
+        if roi.shape == "circle", previewPixelWidth > 0, previewPixelHeight > 0 {
+            let diameter = axis == 3 ? roi.height * Double(previewPixelHeight) : roi.width * Double(previewPixelWidth)
+            roi = ScopeRoiGeometry.circleSize(roi, diameter: diameter, source: (previewPixelWidth, previewPixelHeight))
+        }
+        setScopeRoi(roi)
+    }
+
+    /// RoiToolHint (Roi.cs:22-24).
+    var roiToolHint: String {
+        if let shape = roiDrawingShape { return "Drag to draw a \(shape) over the subject. Escape cancels." }
+        return scopeRoi.enabled
+            ? "Drag inside to move; drag a handle to resize. Scopes measure the selection; grading affects the whole source."
+            : "Choose a shape, then drag over the subject to measure its scopes."
+    }
+
+    var scopeRegionLabel: String {
+        guard scopeRoi.enabled else { return "Full frame" }
+        func pct(_ v: Double) -> String { String(format: "%.1f%%", v * 100) }
+        return "\(scopeRoi.shape == "circle" ? "Circle" : "Rectangle") ROI · \(pct(scopeRoi.x)), \(pct(scopeRoi.y)) · "
+            + "\(pct(scopeRoi.width)) × \(pct(scopeRoi.height)) · selection \(scopeRoi.revision)"
+    }
+
+    /// Roi.cs:30-34: turning the region on from full frame centres it.
+    var scopeRoiEnabled: Bool {
+        get { scopeRoi.enabled }
+        set {
+            var next = scopeRoi; next.enabled = newValue
+            if newValue && !scopeRoi.enabled && scopeRoi.width == 1 && scopeRoi.height == 1 {
+                next = GradeScopeRoi(enabled: true, x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+            }
+            setScopeRoi(next)
+        }
+    }
+
+    /// Roi.cs:38-45: a new selection revision only for a real, valid change.
+    func setScopeRoi(_ roi: GradeScopeRoi) {
+        var candidate = roi; candidate.revision = 0
+        var current = scopeRoi; current.revision = 0
+        guard roi.isValid, candidate != current else { return }
+        candidate.revision = scopeRoi.revision + 1
+        scopeRoi = candidate
+        scopeStatus = "Updating scope region; waiting for matching native measurement."
+        requestPreview()
+        onScopeRoiChanged?(candidate)
+    }
+
+    /// The preview texture's pixel size: the ROI overlay's source geometry. Kept across a moment
+    /// with no texture so a gesture in flight can finish (ColorGradeEditorWindow.Roi.cs:16-19).
+    @Published private(set) var previewPixelWidth = 0
+    @Published private(set) var previewPixelHeight = 0
+
+    /// RefreshRoi (Roi.cs:9-13): a circle stays round in pixels when the picture's shape changes.
+    func observePreviewSize(width: Int, height: Int) {
+        guard width > 0, height > 0 else { return }
+        if width != previewPixelWidth { previewPixelWidth = width }
+        if height != previewPixelHeight { previewPixelHeight = height }
+        if scopeRoi.shape == "circle", abs(scopeRoi.width * Double(width) - scopeRoi.height * Double(height)) > 0.01 {
+            setScopeRoi(ScopeRoiGeometry.circleSize(scopeRoi, diameter: scopeRoi.width * Double(width), source: (width, height)))
+        }
+    }
+
+    func resetScopeRoi() { setScopeRoi(GradeScopeRoi(enabled: true, x: 0.25, y: 0.25, width: 0.5, height: 0.5)) }
+    func clearScopeRoi() { setScopeRoi(GradeScopeRoi()) }
+
     private func previewUnavailable(_ reason: String) {
         previewStatus = "Native preview unavailable: \(reason)"
         previewSurfaceId = 0
@@ -182,6 +271,9 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         let surface = ((event["texture"] as? JSONObject)?["iosurfaceId"] as? NSNumber)?.uint32Value ?? 0
         guard ["ready", "held", "stale"].contains(status), surface != 0 else { previewSurfaceId = 0; return }
         previewSurfaceId = surface
+        let texture = event["texture"] as? JSONObject
+        observePreviewSize(width: (texture?["width"] as? NSNumber)?.intValue ?? 0,
+                           height: (texture?["height"] as? NSNumber)?.intValue ?? 0)
         if status == "ready" || status == "held" { store.observePreviewEpoch(sourceId: sourceId, epoch: epoch) }
     }
 
@@ -496,6 +588,16 @@ extension AppModel {
                 return try await self.gradeRequest(body)
             })
         editor.onClose = { [weak self] in self?.closeGradeEditor(sourceId: sourceId) }
+        // G7: capture the stable identity ONCE (StudioViewModel.ScopePreferences.cs:13-23) — never
+        // save a departed guest's region under whoever later reuses this transient source id.
+        let identity = gradeIdentity(for: sourceId)
+        if let key = identity?.stableKey, let binding = identity?.binding {
+            if let saved = sourceGrades.scopeRegion(forKey: key) { editor.setScopeRoi(saved) }
+            editor.onScopeRoiChanged = { [weak self] roi in
+                guard let self, self.gradeIdentity(for: sourceId)?.binding == binding else { return }
+                self.sourceGrades.rememberScopeRegion(roi, key: key)
+            }
+        }
         gradeEditors[sourceId] = editor
         return .opened(editor)
     }

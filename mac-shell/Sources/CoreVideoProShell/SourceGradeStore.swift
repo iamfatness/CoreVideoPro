@@ -451,6 +451,13 @@ final class SourceGradeStore: ObservableObject {
     }
 
     func isGraded(_ sourceId: String) -> Bool { sessions[sourceId] != nil }
+
+    // ── G7: per-person scope regions (an editor preference, never part of a grade) ──
+    func scopeRegion(forKey key: String) -> GradeScopeRoi? { file.scopeRegions[key] }
+    func rememberScopeRegion(_ roi: GradeScopeRoi, key: String) {
+        file.rememberScopeRegion(roi, key: key)
+        scheduleSave()
+    }
 }
 
 extension AppModel {

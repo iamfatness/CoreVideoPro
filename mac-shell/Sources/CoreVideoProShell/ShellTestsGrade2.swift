@@ -33,6 +33,14 @@ extension ShellTests {
             ("grade2/preview-epoch-hint", testAPreviewEpochSavesTheFirstQuery),
             ("grade2/preview-supported-notice", testTheNoPreviewNoticeFollowsTheCore),
             ("grade2/preview-core-reset", testACoreRespawnReconnectsThePreview),
+            // Task 9 (G7): region of interest.
+            ("grade2/roi-model-and-measurement", testScopeRoiModelMatchesTheWindowsRecord),
+            ("grade2/roi-geometry", testScopeRoiGeometryIsTheWindowsGeometry),
+            ("grade2/roi-gestures", testRoiGesturesDrawMoveResizeAndCancel),
+            ("grade2/roi-keys", testRoiArrowKeysMoveAndShiftResizes),
+            ("grade2/roi-editor-revision-and-wire", testTheEditorBumpsTheRoiRevisionOnlyOnARealChange),
+            ("grade2/roi-persistence", testScopeRegionsPersistPerPersonAndNeverUnderSomeoneElse),
+            ("grade2/roi-tools-precision-and-round-circle", testRoiToolsPrecisionSlidersAndARoundCircle),
         ]
     }
 
@@ -489,5 +497,212 @@ extension ShellTests {
         tickPreview(editor, at: t0.addingTimeInterval(0.1))
         expectEqual(core.previews.count, before + 1, "the new core gets a full demand at once")
         expect(core.previews.last?["renewOnly"] == nil, "in full (the lease died with the old core)")
+    }
+
+    // ── Task 9 ───────────────────────────────────────────────────────────────
+    // Fixture invariants: a 1920x1080 source in a 1000x450 host is pillarboxed to (100,0,800,450)
+    // (ScopeRoiGeometryTests.cs:20-25), so host x = 100 + 800·nx and host y = 450·ny.
+
+    static func near(_ a: Double, _ b: Double, _ tol: Double = 1e-8) -> Bool { abs(a - b) <= tol }
+
+    static func testScopeRoiModelMatchesTheWindowsRecord() {
+        let roi = GradeScopeRoi(enabled: true, x: 0.123456789, y: 0.19999999999999998, width: 0.22499999999999998,
+                                height: 0.4, revision: 7, shape: "circle")
+        var wire = roi; wire.x = 0.123457; wire.y = 0.2; wire.width = 0.225
+        expect(roi.matchesMeasurement(wire), "six-digit native formatting still matches (ScopeRoiGeometryTests.cs:9-11)")
+        var stale = wire; stale.revision = 6
+        expect(!roi.matchesMeasurement(stale), "a stale revision does not")
+        var rect = wire; rect.shape = "rectangle"
+        expect(!roi.matchesMeasurement(rect), "another shape does not")
+        var wider = wire; wider.width = 0.226
+        expect(!roi.matchesMeasurement(wider), "another size does not")
+        let edge = GradeScopeRoi(enabled: true, x: 1279.0 / 1280, y: 0, width: 1.0 / 1280, height: 0.1, revision: 7)
+        var reported = edge; reported.x = 0.999219
+        expect(!reported.isValid && edge.matchesMeasurement(reported), "a rounded reply a hair past the edge still matches")
+        expectEqual(GradeScopeRoi(enabled: true, x: 0.1, y: 0.2, width: 0.2, height: 0.3, revision: 4, shape: "circle").expectedSampleCount,
+                    28960, "circle sample count (ScopeRoi.h sampleCount)")
+        expectEqual(GradeScopeRoi().expectedSampleCount, 36864, "full frame 256x144")
+        var ellipse = roi; ellipse.shape = "ellipse"
+        expect(!ellipse.isValid, "only rectangle and circle")
+        let px = GradeScopeRoi(enabled: true, x: 0.75, y: 0.5, width: 1.0 / 64, height: 1.0 / 64).pixels(width: 64, height: 64)
+        expect(px?.x == 48 && px?.y == 32 && px?.width == 1 && px?.height == 1, "the core's pixel rule (ScopeRoi.h:30-35)")
+    }
+
+    static func testScopeRoiGeometryIsTheWindowsGeometry() {
+        let fit = ScopeRoiGeometry.fitImage(host: CGSize(width: 800, height: 800), source: (1920, 1080))
+        expectEqual(fit, CGRect(x: 0, y: 175, width: 800, height: 450), "letterbox")
+        expectEqual(ScopeRoiGeometry.fitImage(host: CGSize(width: 1000, height: 450), source: (1920, 1080)),
+                    CGRect(x: 100, y: 0, width: 800, height: 450), "pillarbox")
+        expectEqual(ScopeRoiGeometry.fitImage(host: CGSize(width: 1000, height: 450), source: (0, 1080)), .zero, "no source")
+        for (x, y, ex, ey) in [(0.2, 0.2, 0.6, 0.7), (0.6, 0.7, 0.2, 0.2), (0.2, 0.7, 0.6, 0.2), (0.6, 0.2, 0.2, 0.7)] {
+            let r = ScopeRoiGeometry.draw(start: (x, y), end: (ex, ey), source: (1920, 1080), shape: "circle")
+            expect(r.isValid && near(r.width * 1920, 540) && near(r.height * 1080, 540),
+                   "a circle is round in source pixels drawn \(x),\(y)→\(ex),\(ey)")
+            expect(r.x >= min(x, ex) && r.y >= min(y, ey) && r.x + r.width <= max(x, ex) + 1e-9 && r.y + r.height <= max(y, ey) + 1e-9,
+                   "and stays inside the drag")
+        }
+        for shape in ["circle", "rectangle"] {
+            let r = ScopeRoiGeometry.draw(start: (1, 1), end: (1, 1), source: (1920, 1080), shape: shape)
+            expect(r.isValid && near(r.width * 1920, 1) && near(r.height * 1080, 1), "a click at the edge is a valid 1-pixel \(shape)")
+            expect(ScopeRoiGeometry.draw(start: (-1, -1), end: (2, 2), source: (1920, 1080), shape: shape).isValid, "outside clamps")
+        }
+        let sized = ScopeRoiGeometry.circleSize(GradeScopeRoi(enabled: true, x: 0.8, y: 0.8, width: 0.1, height: 0.1, revision: 3, shape: "circle"),
+                                                diameter: 1000, source: (1920, 1080))
+        expect(sized.isValid && near(sized.width * 1920, 216) && near(sized.height * 1080, 216) && sized.revision == 3,
+               "a precision resize fits the image and links the axes (ScopeRoiGeometryTests.cs:48-53)")
+    }
+
+    static func testRoiGesturesDrawMoveResizeAndCancel() {
+        let host = CGSize(width: 1000, height: 450)
+        func h(_ nx: Double, _ ny: Double) -> CGPoint { CGPoint(x: 100 + 800 * nx, y: 450 * ny) }
+        var gesture = ScopeRoiGesture(source: (1920, 1080))
+        gesture.drawingShape = "rectangle"
+        expect(!gesture.begin(at: CGPoint(x: 50, y: 100), host: host), "a press in the pillarbox does nothing")
+        expect(gesture.begin(at: h(0.2, 0.2), host: host), "a press on the picture starts drawing")
+        expectEqual(gesture.update(to: h(0.2 + 1.0 / 800, 0.2), host: host), nil, "under 3 px is not a drag yet")
+        let drawn = gesture.update(to: h(0.6, 0.5), host: host)
+        expect(drawn != nil && near(drawn!.x, 0.2) && near(drawn!.width, 0.4) && near(drawn!.height, 0.3) && drawn!.enabled,
+               "a rectangle from the drag")
+        gesture.complete()
+        expectEqual(gesture.drawingShape, nil, "completing returns to Select / move (ScopeRoiControl.cs CompleteDrawingGesture)")
+        expect(gesture.begin(at: h(0.4, 0.35), host: host), "a press inside the region moves it")
+        let moved = gesture.update(to: h(0.9, 0.35), host: host)
+        expect(moved != nil && near(moved!.x, 0.6) && near(moved!.width, 0.4), "a move clamps to the right edge")
+        gesture.complete()
+        expect(gesture.begin(at: h(1.0, 0.5), host: host), "a press on the right-bottom corner resizes")
+        let resized = gesture.update(to: h(0.8, 0.4), host: host)
+        expect(resized != nil && near(resized!.x, 0.6) && near(resized!.width, 0.2) && near(resized!.height, 0.2), "corner resize")
+        gesture.cancel()
+        expect(near(gesture.roi.width, 0.4), "Escape restores the region from before the gesture")
+        var circle = ScopeRoiGesture(source: (1920, 1080))
+        circle.drawingShape = "circle"
+        _ = circle.begin(at: h(0.1, 0.1), host: host)
+        let c = circle.update(to: h(0.5, 0.9), host: host)!
+        circle.complete()
+        expect(near(c.width * 1920, c.height * 1080, 1e-6), "a drawn circle is round in pixels")
+        _ = circle.begin(at: h(c.x + c.width, c.y + c.height / 2), host: host)       // right edge handle
+        let r = circle.update(to: h(c.x + c.width * 0.75, c.y + c.height / 2), host: host)!
+        expect(near(r.width * 1920, r.height * 1080, 1e-6), "resizing a circle keeps it round (ScopeRoiControl.cs:118-124)")
+        expect(r.width < c.width, "and smaller")
+    }
+
+    static func testRoiArrowKeysMoveAndShiftResizes() {
+        var gesture = ScopeRoiGesture(source: (1920, 1080))
+        gesture.roi = GradeScopeRoi(enabled: true, x: 0.5, y: 0.5, width: 0.1, height: 0.1)
+        _ = gesture.key(dx: 1, dy: 0, shift: false)
+        expect(near(gesture.roi.x, 0.5 + 1.0 / 1920), "Right moves one source pixel")
+        _ = gesture.key(dx: 0, dy: 1, shift: true)
+        expect(near(gesture.roi.height, 0.1 + 1.0 / 1080), "Shift+Down grows one source pixel")
+        gesture.roi = GradeScopeRoi(enabled: true, x: 0.95, y: 0.5, width: 0.05, height: 0.1)
+        _ = gesture.key(dx: 1, dy: 0, shift: false)
+        expect(near(gesture.roi.x, 0.95), "a move never leaves the picture")
+        gesture.roi = GradeScopeRoi(enabled: true, x: 0.2, y: 0.2, width: 100.0 / 1920, height: 100.0 / 1080, shape: "circle")
+        _ = gesture.key(dx: 1, dy: 0, shift: true)
+        expect(near(gesture.roi.width * 1920, 101, 1e-6) && near(gesture.roi.height * 1080, 101, 1e-6), "a circle grows in both axes")
+        var off = ScopeRoiGesture(source: (1920, 1080))
+        expect(!off.key(dx: 1, dy: 0, shift: false), "keys do nothing without a region")
+    }
+
+    @MainActor static func testTheEditorBumpsTheRoiRevisionOnlyOnARealChange() {
+        let core = FakePreviewCore()
+        guard let (model, editor) = previewEditor(core) else { expect(false, "opens"); return }
+        defer { withExtendedLifetime(model) {} }
+        expectEqual(editor.scopeRegionLabel, "Full frame", "no region")
+        editor.scopeRoiEnabled = true
+        expectEqual(editor.scopeRoi, GradeScopeRoi(enabled: true, x: 0.25, y: 0.25, width: 0.5, height: 0.5, revision: 1),
+                    "turning the region on from full frame centres it (ColorGradeEditorViewModel.Roi.cs:32-33)")
+        editor.setScopeRoi(GradeScopeRoi(enabled: true, x: 0.25, y: 0.25, width: 0.5, height: 0.5, revision: 99))
+        expectEqual(editor.scopeRoi.revision, 1, "the same region is not a new measurement (only the revision differs)")
+        editor.setScopeRoi(GradeScopeRoi(enabled: true, x: 0.3, y: 0.25, width: 0.5, height: 0.5))
+        expectEqual(editor.scopeRoi.revision, 2, "a real change bumps the selection revision")
+        expectEqual(editor.scopeStatus, "Updating scope region; waiting for matching native measurement.", "Roi.cs:43")
+        editor.setScopeRoi(GradeScopeRoi(enabled: true, x: 0.8, y: 0, width: 0.5, height: 0.5))
+        expectEqual(editor.scopeRoi.revision, 2, "an invalid region is refused")
+        expectEqual(editor.scopeRegionLabel, "Rectangle ROI · 30.0%, 25.0% · 50.0% × 50.0% · selection 2", "Roi.cs:29")
+        editor.setAdvancedExpanded(true); editor.scopesEnabled = true
+        tickPreview(editor, at: Date())
+        let wire = core.previews.last?["scopeRoi"] as? JSONObject
+        expectEqual(wire?["enabled"] as? Bool, true, "the region rides the preview demand")
+        expectEqual(FakeGradeCore.int(wire?["revision"]), 2, "with its selection revision")
+        editor.clearScopeRoi()
+        expect(!editor.scopeRoi.enabled && editor.scopeRoi.revision == 3, "Clear measures the full frame (a new revision)")
+        editor.resetScopeRoi()
+        expect(editor.scopeRoi.enabled && near(editor.scopeRoi.x, 0.25) && editor.scopeRoi.revision == 4, "Reset region to center")
+    }
+
+    @MainActor static func testScopeRegionsPersistPerPersonAndNeverUnderSomeoneElse() {
+        let path = tempGradeFile()
+        var file = SourceGradeFile()
+        for i in 0..<70 { file.rememberScopeRegion(GradeScopeRoi(enabled: true, x: 0.1, y: 0.1, width: 0.2, height: 0.2, revision: 9),
+                                                   key: "capture:cam-\(i)") }
+        expectEqual(file.scopeRegions.count, 64, "at most 64 regions, oldest retired")
+        expect(file.scopeRegions["capture:cam-0"] == nil && file.scopeRegions["capture:cam-69"] != nil, "oldest first")
+        expectEqual(file.scopeRegions["capture:cam-69"]?.revision, 0, "stored with revision 0 (ScopePreferences.cs:21)")
+        try? file.save(to: path)
+        var raw = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path)))) as? JSONObject ?? [:]
+        var regions = raw["scopeRegions"] as? JSONObject ?? [:]
+        regions["capture:bad"] = ["enabled": true, "x": 0.9, "y": 0, "width": 0.5, "height": 0.5, "revision": 0, "shape": "rectangle"]
+        regions["mystery:key"] = ["enabled": true, "x": 0, "y": 0, "width": 1, "height": 1, "revision": 0, "shape": "rectangle"]
+        raw["scopeRegions"] = regions
+        try? JSONSerialization.data(withJSONObject: raw).write(to: URL(fileURLWithPath: path))
+        let loaded = SourceGradeFile.load(from: path).file
+        expectEqual(loaded.scopeRegions.count, 64, "an invalid region and a foreign key are dropped on load")
+        expect(loaded.scopeRegions["capture:bad"] == nil, "invalid dropped")
+
+        // Through the model: the region is seeded on open and saved under the key captured at open.
+        let core = FakePreviewCore()
+        let model = gradeModel(file: tempGradeFile())
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["gradePreview": ["supported": true]])
+        model.applyZoomForTesting(["meetingState": "in-meeting",
+                                   "participants": [["userId": "16778240", "displayName": "Guest", "videoOn": true,
+                                                     "persistentId": "P-a", "sourceGeneration": 1]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "16778240") else { expect(false, "opens"); return }
+        editor.setScopeRoi(GradeScopeRoi(enabled: true, x: 0.1, y: 0.2, width: 0.3, height: 0.3, shape: "circle"))
+        expectEqual(model.sourceGrades.scopeRegion(forKey: "zoom-person:P-a")?.x, 0.1, "saved under the person's stable key")
+        model.closeGradeEditor(sourceId: "16778240")
+        guard case .opened(let again) = model.openGradeEditor(sourceId: "16778240") else { expect(false, "reopens"); return }
+        expect(again.scopeRoi.enabled && near(again.scopeRoi.x, 0.1) && again.scopeRoi.shape == "circle",
+               "reopening restores the region (ScopePreferences.cs:18)")
+        model.applyZoomForTesting(["meetingState": "in-meeting",
+                                   "participants": [["userId": "16778240", "displayName": "Someone else", "videoOn": true,
+                                                     "persistentId": "P-b", "sourceGeneration": 1]]])
+        again.setScopeRoi(GradeScopeRoi(enabled: true, x: 0.5, y: 0.5, width: 0.1, height: 0.1))
+        expect(model.sourceGrades.scopeRegion(forKey: "zoom-person:P-b") == nil, "never written under the new person")
+        expectEqual(model.sourceGrades.scopeRegion(forKey: "zoom-person:P-a")?.x, 0.1, "and the departed person's region is untouched")
+    }
+
+    @MainActor static func testRoiToolsPrecisionSlidersAndARoundCircle() {
+        let core = FakePreviewCore()
+        guard let (model, editor) = previewEditor(core) else { expect(false, "opens"); return }
+        defer { withExtendedLifetime(model) {} }
+        editor.scopeRoiGuideVisible = false
+        editor.armRoi("circle")
+        expect(editor.advancedExpanded && editor.scopesEnabled && editor.scopeRoiGuideVisible && editor.roiDrawingShape == "circle",
+               "arming a tool opens the panel, turns scopes and the guide on (Roi.cs:41-45)")
+        expectEqual(editor.roiToolHint, "Drag to draw a circle over the subject. Escape cancels.", "Roi.cs:22")
+        editor.armRoi(nil)
+        expectEqual(editor.roiToolHint, "Choose a shape, then drag over the subject to measure its scopes.", "Roi.cs:24")
+        // A 1920x1080 preview texture arrives; a circle is then edited through the sliders.
+        editor.observePreviewSize(width: 1920, height: 1080)
+        editor.setScopeRoi(GradeScopeRoi(enabled: true, x: 0.1, y: 0.1, width: 216.0 / 1920, height: 216.0 / 1080, shape: "circle"))
+        editor.setRoiNumber(2, 432.0 / 1920)
+        expect(near(editor.scopeRoi.width * 1920, 432) && near(editor.scopeRoi.height * 1080, 432),
+               "the width slider resizes a circle in both axes, round in pixels (Roi.cs:34-37)")
+        editor.setRoiNumber(3, 108.0 / 1080)
+        expect(near(editor.scopeRoi.width * 1920, 108) && near(editor.scopeRoi.height * 1080, 108), "and the height slider by height")
+        let before = editor.scopeRoi.revision
+        editor.setRoiNumber(0, 0.2)
+        expect(near(editor.scopeRoi.x, 0.2) && editor.scopeRoi.revision == before + 1, "left moves it, one new selection")
+        // The picture changes shape (a portrait source): the circle is re-made round (Roi.cs:9-13).
+        editor.observePreviewSize(width: 1080, height: 1920)
+        expect(near(editor.scopeRoi.width * 1080, editor.scopeRoi.height * 1920, 0.01), "a circle stays round when the picture's shape changes")
+        let rect = GradeScopeRoi(enabled: true, x: 0.1, y: 0.1, width: 0.3, height: 0.2)
+        editor.setScopeRoi(rect)
+        let rev = editor.scopeRoi.revision
+        editor.observePreviewSize(width: 1920, height: 1080)
+        expectEqual(editor.scopeRoi.revision, rev, "a rectangle is left alone")
+        editor.setRoiNumber(2, 0.5)
+        expect(near(editor.scopeRoi.width, 0.5) && near(editor.scopeRoi.height, 0.2), "a rectangle's width slider moves width only")
     }
 }
