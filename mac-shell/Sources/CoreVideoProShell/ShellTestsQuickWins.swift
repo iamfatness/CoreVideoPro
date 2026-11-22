@@ -459,23 +459,41 @@ extension ShellTests {
         expect(streamOnly["recordingOutputProfile"] == nil, "a stream-only start does not carry the recording profile")
     }
 
-    /// Every field StreamEncoderSettings owns reaches the RTMP destination row,
-    /// driven through the real start command, one field at a time.
-    /// Mutation: apply(to:) skipping bFrames -> red on that field.
+    /// Every field StreamEncoderSettings owns reaches the RTMP and HLS destination
+    /// rows the streaming lane's StreamDestinationPolicy builds, driven through the
+    /// real start command, one field at a time. The SRT row carries none of them,
+    /// as on Windows (StudioViewModel.StreamDestinations.cs).
+    /// Mutations: apply(to:) skipping bFrames -> red on that field; applying to
+    /// every row -> red on SRT; applying to none -> red on RTMP and HLS.
     @MainActor
     private static func testO1DestinationRowCarriesEveryEncoderField() {
         let model = AppModel()
         model.streamEncoder = o1Encoder
-        let row = (model.startProgramOutput(recording: false, streaming: true)["destinationSettings"]
-            as? [JSONObject])?.first ?? [:]
+        model.streamKey = "rtmp-key-1"
+        model.streamDestinations.srtEnabled = true
+        model.streamDestinations.srtHost = "receiver.example.com"
+        model.streamDestinations.srtKeyLength = "16"
+        model.srtPassphrase = "srt-passphrase-1"
+        model.streamDestinations.hlsEnabled = true
+        model.streamDestinations.hlsPlaylistUrl = "https://ingest.example.com/live/playlist.m3u8"
+        let rows = model.startProgramOutput(recording: false, streaming: true)["destinationSettings"]
+            as? [JSONObject] ?? []
+        func row(_ id: String) -> JSONObject { rows.first { $0["id"] as? String == id } ?? [:] }
+        expectEqual(rows.map { $0["id"] as? String ?? "" }, ["rtmp", "srt", "hls"], "every valid destination has a row")
         let expected: [String: String] = ["audioBitrateKbps": "128", "keyframeIntervalSeconds": "4.0",
                                           "rateControl": "vbr", "h264Profile": "main", "bFrames": "0"]
         expectEqual(Set(expected.keys), Set(StreamEncoderSettings.ownedKeys), "the fixture covers every owned key")
-        for key in StreamEncoderSettings.ownedKeys {
-            expectEqual(row[key].map { "\($0)" }, expected[key], "the destination row carries \(key)")
+        for id in ["rtmp", "hls"] {
+            for key in StreamEncoderSettings.ownedKeys {
+                expectEqual(row(id)[key].map { "\($0)" }, expected[key], "the \(id) row carries \(key)")
+            }
+            expectEqual(row(id)["targetBitrateMbps"] as? Double, model.streamBitrateMbps,
+                        "the \(id) bitrate is still the operator's")
+            expectEqual(row(id)["fps"] as? Int, 30, "the \(id) stream keeps the destination's 30 fps (plan D3)")
         }
-        expectEqual(row["targetBitrateMbps"] as? Double, model.streamBitrateMbps, "the bitrate is still the operator's")
-        expectEqual(row["fps"] as? Int, 30, "the stream keeps the destination's 30 fps (plan D3)")
+        for key in StreamEncoderSettings.ownedKeys {
+            expect(row("srt")[key] == nil, "the srt row carries no \(key), as on Windows")
+        }
     }
 
     /// Garbage is sanitized field by field; prefs round-trip; the footer recipe
