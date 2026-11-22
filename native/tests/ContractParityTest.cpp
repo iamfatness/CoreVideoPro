@@ -1,6 +1,7 @@
 #include "core/MediaCore.h"
 #include "core/Protocol.h"
 #include "contracts/Lifecycle.h"
+#include "graphics/GraphicsMotion.h"
 #include "modules/Interfaces.h"
 #include "rpc/BoundedResponseLane.h"
 
@@ -318,14 +319,17 @@ TEST(ContractParity, EveryRequestTheShellsSendIsHandledByTheCore) {
   // feeds a "zoom-source-format" through handleEventForTesting), so a core event
   // type is accepted too. Events have their own parity test below; the cost is
   // that a request mistakenly named after one of the few event types would not
-  // be caught here.
+  // be caught here. A graphics motion spec ({"type": "fade", ...} in a lower
+  // third's in/out) uses the same key, so the core's own motion types are
+  // accepted the same way (graphics/GraphicsMotion.h kGraphicsMotionTypes).
   const auto events = toSet(corevideo::core::kCoreEventTypes);
   const auto swiftTypes = matches(
       readRepoTree("mac-shell/Sources/CoreVideoProShell", ".swift", /*skipSwiftShellTests=*/true),
       "\"type\":\\s*\"([a-z0-9-]+)\"");
   ASSERT_FALSE(swiftTypes.empty());
   for (const auto& name : swiftTypes) {
-    EXPECT_TRUE(requests.contains(name) || commands.contains(name) || events.contains(name))
+    EXPECT_TRUE(requests.contains(name) || commands.contains(name) || events.contains(name) ||
+                corevideo::graphics::isGraphicsMotionType(name))
         << "Swift shell sends a type the core does not handle: " << name;
   }
 }

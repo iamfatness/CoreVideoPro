@@ -2,7 +2,10 @@
 
 #include "graphics/GraphicsTimeline.h"
 #include "rpc/Json.h"
+#include <algorithm>
+#include <array>
 #include <optional>
+#include <string_view>
 
 namespace corevideo::graphics {
 struct GraphicsBox { double x = 0, y = 0, width = 0, height = 0; };
@@ -11,6 +14,15 @@ inline GraphicsBox intersect(GraphicsBox a, GraphicsBox b) {
   a.x = (std::max)(a.x, b.x); a.y = (std::max)(a.y, b.y); a.width = (std::max)(0., right - a.x); a.height = (std::max)(0., bottom - a.y); return a;
 }
 enum class GraphicsMotionPhase { Settled, In, Out, Hidden };
+
+// Every layer motion type a template may name (the GraphicsTemplate validator's
+// one list). The contract-parity test also accepts these where a shell's motion
+// spec carries a "type" field, so it never reads one as a request.
+inline constexpr std::array<std::string_view, 7> kGraphicsMotionTypes{
+    "cut", "fade", "rise", "slide", "wipe", "grow", "pop"};
+inline bool isGraphicsMotionType(std::string_view type) {
+  return std::find(kGraphicsMotionTypes.begin(), kGraphicsMotionTypes.end(), type) != kGraphicsMotionTypes.end();
+}
 
 struct GraphicsLayerMotion {
   std::string type = "cut", easing = "ease-out", direction = "left";

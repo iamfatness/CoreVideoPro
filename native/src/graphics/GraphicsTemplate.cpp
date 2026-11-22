@@ -577,7 +577,7 @@ GraphicsLayerMotion GraphicsLayerMotion::read(const Json& value) {
   motion.type = string("type", "");
   const bool slide = motion.type == "slide", grow = motion.type == "grow", rise = motion.type == "rise";
   const bool cut = motion.type == "cut";
-  need(cut || slide || grow || rise || motion.type == "fade" || motion.type == "wipe" || motion.type == "pop", error);
+  need(isGraphicsMotionType(motion.type), error);
   motion.easing = string("easing", "ease-out");
   need(motion.easing == "linear" || motion.easing == "ease-in" ||
       motion.easing == "ease-out" || motion.easing == "ease-in-out", error);
