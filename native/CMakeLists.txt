@@ -205,6 +205,7 @@ if(APPLE)
     src/compositor/MetalCompositorAdapter.mm
     src/compositor/CoreTextOverlayRaster.mm
     src/compositor/MetalPixelBufferTextures.mm
+    src/compositor/MetalGradePreview.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
@@ -213,6 +214,7 @@ if(APPLE)
     src/compositor/MetalCompositorAdapter.mm
     src/compositor/CoreTextOverlayRaster.mm
     src/compositor/MetalPixelBufferTextures.mm
+    src/compositor/MetalGradePreview.mm
     src/modules/AVFoundationEncoderAdapter.mm
     src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
@@ -1022,6 +1024,7 @@ if(BUILD_TESTING)
     tests/GraphicsTextMeasureTest.cpp
     tests/MetalSourceGradePixelTest.cpp
     tests/MetalGradeLutPixelTest.cpp
+    tests/MetalGradePreviewTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp
     tests/MacCaptureSupportTest.cpp

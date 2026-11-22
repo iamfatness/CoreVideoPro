@@ -51,6 +51,7 @@
 #include "compositor/CompositorShaderParams.h"
 #include "compositor/AdvancedGrade.h"
 #include "compositor/MetalCompositorShaders.h"
+#include "compositor/MetalGradePreview.h"
 #include "modules/Interfaces.h"
 #include "compositor/CoreTextOverlayRaster.h"
 #include "compositor/OverlayRasterRetention.h"
@@ -252,6 +253,22 @@ class MetalCompositor final : public ICompositor {
   ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan,
                                             const std::vector<VideoFrame>& frames) override {
     return renderSecondaryPass(multiview_, renderPlan, frames);
+  }
+
+  // Private per-source grade previews and scopes (grading Phase 2, G5/G6): delegated whole to
+  // MetalGradePreview, which renders on its own thread, queue and textures, never this one's.
+  bool supportsGradePreview() const override { return gradePreview_ != nullptr; }
+  void submitGradePreviews(MonitorRenderRequest request) override {
+    if (gradePreview_) gradePreview_->submit(std::move(request));
+  }
+  std::shared_ptr<const MonitorRenderResult> latestGradePreviews() const override {
+    return gradePreview_ ? gradePreview_->latest() : nullptr;
+  }
+  MonitorRenderDiagnostics gradePreviewDiagnostics() const override {
+    return gradePreview_ ? gradePreview_->diagnostics() : MonitorRenderDiagnostics{};
+  }
+  void setMonitorShedDivisor(int divisor) override {
+    if (gradePreview_) gradePreview_->setMonitorShedDivisor(divisor);
   }
 
   // Third compositor pass: the PREVIEW scene into its own IOSurface-backed
@@ -1788,6 +1805,7 @@ class MetalCompositor final : public ICompositor {
   IdentifiedVcamFrameSink identifiedVcamSink_;
 #endif
   std::unordered_map<std::string, SourceTex> sourceTextures_;
+  std::unique_ptr<MetalGradePreview> gradePreview_ = MetalGradePreview::create();
   CompositorSourceTexStats stats_;
   // Previous ready raster per holdLastRaster layer (bridged texture pointer
   // kept alive by the raster lease stored beside it).
