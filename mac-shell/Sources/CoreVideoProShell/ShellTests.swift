@@ -12,8 +12,11 @@
 // rather than toward coverage percentage. Every case below maps to a real defect
 // that reached the owner in a live session or shipped to main.
 
+import CameraExtensionKit
 import Combine
 import AppKit
+import SwiftUI
+import SystemExtensions
 import Foundation
 
 enum ShellTests {
@@ -435,6 +438,466 @@ enum ShellTests {
         expect(roundTrip == nil, "every ShellPrefs field must survive encode->decode: \(detail)")
     }
 
+    // ── camera extension activation policy (roadmap M9.2) ────────────────────
+    private static let extDomain = "OSSystemExtensionErrorDomain"
+
+    private static func testCameraExtensionErrorMapping() {
+        func map(_ code: Int, _ canceledByUs: Bool = false) -> CameraExtensionState {
+            CameraExtensionPolicy.state(forActivationError: extDomain, code: code,
+                                        canceledByUs: canceledByUs)
+        }
+        expectEqual(map(3), .notInApplications, "code 3 = unsupported parent bundle location")
+        let unsigned = CameraExtensionState.unavailable("This copy of CoreVideo Pro isn't signed to install the camera.")
+        expectEqual(map(2), unsigned, "code 2 = missing entitlement")
+        expectEqual(map(8), unsigned, "code 8 = invalid code signature")
+        expectEqual(map(10), .unavailable("macOS policy blocked the camera extension."), "code 10 = system policy")
+        expectEqual(map(11, true), .active, "code 11 we canceled (same version) = already active")
+        expectEqual(map(11, false), .failed("Couldn't install the virtual camera (code 11)."),
+                    "code 11 not canceled by us is a real failure")
+        expectEqual(map(13), .needsApproval, "code 13 = authorization required")
+        expectEqual(map(9), .failed("Couldn't install the virtual camera (code 9)."), "anything else fails with its code")
+        expectEqual(CameraExtensionPolicy.state(forActivationError: "other", code: 3, canceledByUs: false),
+                    .failed("Couldn't install the virtual camera (code 3)."), "a foreign domain is never mapped")
+    }
+
+    private static func testCameraExtensionPreflight() {
+        let msg = "This build can't install the virtual camera (development build without a provisioning profile)."
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/Users/x/Downloads/CoreVideo Pro.app", hasEmbeddedProfile: true),
+                    .notInApplications, "Downloads is not /Applications")
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/ApplicationsX/CoreVideo Pro.app", hasEmbeddedProfile: true),
+                    .notInApplications, "/ApplicationsX is not /Applications/")
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/Users/x/Applications/CoreVideo Pro.app", hasEmbeddedProfile: true),
+                    .notInApplications, "a nested Applications folder is not /Applications/")
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/Applications/CoreVideo Pro.app", hasEmbeddedProfile: false),
+                    .unavailable(msg), "no provisioning profile")
+        expect(CameraExtensionPolicy.preflight(bundlePath: "/Applications/CoreVideo Pro.app", hasEmbeddedProfile: true) == nil,
+               "installed with a profile passes preflight")
+    }
+
+    private static func testCameraExtensionReplacement() {
+        expectEqual(CameraExtensionPolicy.replacement(existingVersion: "100", newVersion: "100"), .keep, "same version keeps")
+        expectEqual(CameraExtensionPolicy.replacement(existingVersion: "100", newVersion: "101"), .replace, "upgrade replaces")
+        expectEqual(CameraExtensionPolicy.replacement(existingVersion: "101", newVersion: "100"), .replace,
+                    "downgrade replaces (older install)")
+    }
+
+    private static func testCameraExtensionProperties() {
+        typealias P = (enabled: Bool, awaitingApproval: Bool, uninstalling: Bool)
+        let f = CameraExtensionPolicy.state(forProperties:)
+        expectEqual(f([]), .notInstalled, "no entries = not installed")
+        expectEqual(f([P(true, false, false)]), .active, "enabled = active")
+        expectEqual(f([P(true, false, true), P(false, true, false)]), .needsApproval,
+                    "enabled but uninstalling does not count; awaiting approval wins next")
+        expectEqual(f([P(false, false, false), P(true, false, true)]), .notInstalled, "nothing usable")
+        expectEqual(f([P(false, true, false), P(true, false, false)]), .active, "any enabled entry wins")
+    }
+
+    private static func testCameraExtensionSettingsLink() {
+        let security = "x-apple.systempreferences:com.apple.preference.security?Security"
+        let login = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+        for v in [13, 14] { expectEqual(CameraExtensionPolicy.settingsURL(osMajor: v).absoluteString, security, "macOS \(v)") }
+        for v in [15, 26] { expectEqual(CameraExtensionPolicy.settingsURL(osMajor: v).absoluteString, login, "macOS \(v)") }
+        expectEqual(CameraExtensionPolicy.settingsInstruction(osMajor: 15),
+                    "System Settings \u{203A} General \u{203A} Login Items & Extensions \u{203A} Camera Extensions", "15+ text")
+        expectEqual(CameraExtensionPolicy.settingsInstruction(osMajor: 14),
+                    "System Settings \u{203A} Privacy & Security, then click Allow next to the CoreVideo Pro message", "13-14 text")
+    }
+
+    private static func testCameraExtensionFakeRecordsCalls() {
+        let fake = FakeCameraExtensionActivator(script: [.activating, .needsApproval, .active])
+        var seen: [CameraExtensionState] = []
+        fake.activate { seen.append($0) }
+        expectEqual(seen, [.activating, .needsApproval, .active], "scripted states are delivered in order")
+        fake.deactivate { seen.append($0) }
+        fake.query { seen.append($0) }
+        expectEqual(fake.calls, ["activate", "deactivate", "query"], "calls are recorded")
+    }
+
+    private static func testCameraExtensionReducerSequences() {
+        typealias R = CameraExtensionRequestReducer
+        func run(_ kind: R.Kind, _ events: [R.Event], replace: (String, String)? = nil) -> [CameraExtensionState] {
+            var r = R(kind: kind)
+            if let (e, n) = replace { _ = r.replacement(existingVersion: e, newVersion: n) }
+            return events.compactMap { r.reduce($0) }
+        }
+        expectEqual(run(.activate, [.needsUserApproval, .finished(rebootRequired: false)]),
+                    [.needsApproval, .active], "activate -> approval -> completed")
+        expectEqual(run(.activate, [.finished(rebootRequired: true)]), [.needsReboot], "reboot result")
+        expectEqual(run(.activate, [.finished(rebootRequired: false)], replace: ("100", "101")),
+                    [.active], "activate -> replace -> completed")
+        expectEqual(run(.activate, [.failed(domain: extDomain, code: 11)], replace: ("100", "100")),
+                    [.active], "equal version -> cancel -> requestCanceled(11) -> active")
+        expectEqual(run(.activate, [.failed(domain: extDomain, code: 11)]),
+                    [.failed("Couldn't install the virtual camera (code 11).")], "11 without our cancel fails")
+        expectEqual(run(.query, [.foundProperties([(true, false, false)]), .finished(rebootRequired: false)]),
+                    [.active], "a query's didFinish never overwrites the properties state")
+        expectEqual(run(.query, [.finished(rebootRequired: false)]), [], "a bare query finish emits nothing")
+        expectEqual(run(.deactivate, [.finished(rebootRequired: false)]), [.notInstalled], "deactivate completes")
+        expectEqual(run(.activate, [.finished(rebootRequired: false), .failed(domain: extDomain, code: 13)]),
+                    [.active], "events after a request finished are ignored")
+    }
+
+    private static func testCameraExtensionActivatorKeepsRequestsApart() {
+        var submitted: [OSSystemExtensionRequest] = []
+        let a = SystemCameraExtensionActivator(bundlePath: "/Applications/CoreVideo Pro.app",
+                                               hasProfile: true, submit: { submitted.append($0) })
+        var act: [CameraExtensionState] = []
+        var qry: [CameraExtensionState] = []
+        a.activate { act.append($0) }
+        a.query { qry.append($0) }
+        expectEqual(submitted.count, 2, "both requests submitted")
+        guard submitted.count == 2 else { return }
+        let (r1, r2) = (submitted[0], submitted[1])
+        a.requestNeedsUserApproval(r1)
+        a.request(r2, foundProperties: [])
+        a.request(r1, didFinishWithResult: .completed)
+        a.request(r2, didFinishWithResult: .completed)  // late finish of the finished query
+        a.request(r1, didFailWithError: NSError(domain: extDomain, code: 13))  // finished request
+        expectEqual(act, [.activating, .needsApproval, .active], "activation keeps its own states")
+        expectEqual(qry, [.notInstalled], "query keeps its own state, never .active")
+        let stranger = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: "x", queue: .main)
+        a.requestNeedsUserApproval(stranger)
+        expectEqual(act.count, 3, "an unknown request is ignored")
+    }
+
+    // ── virtual camera shell side (roadmap M9.2 Task 6) ─────────────────────
+
+    private static func vcamCore(_ status: String, warning: String = "",
+                                 width: Int = 1920, height: Int = 1080,
+                                 framerState: String = "off", framerWarning: String = "") -> VirtualCameraReadModel {
+        var m = VirtualCameraReadModel()
+        m.enabled = true; m.status = status; m.warning = warning
+        m.width = width; m.height = height
+        m.framerState = framerState; m.framerWarning = framerWarning
+        return m
+    }
+
+    private static func testVirtualCameraLabelPrecedence() {
+        typealias P = VirtualCameraPresentation
+        let live = vcamCore("live")
+        // One row per precedence line.
+        expectEqual(P.label(intent: false, ext: .active, core: nil), "Virtual camera off", "1 intent off")
+        expectEqual(P.label(intent: true, ext: .activating, core: nil),
+                    "Installing the virtual camera\u{2026}", "2 activating")
+        expectEqual(P.label(intent: true, ext: .needsApproval, core: nil),
+                    "Allow CoreVideo Pro Camera in System Settings to finish setup.", "3 needs approval")
+        expectEqual(P.label(intent: true, ext: .notInApplications, core: nil),
+                    "Move CoreVideo Pro to the Applications folder to use the virtual camera.", "4 not in /Applications")
+        expectEqual(P.label(intent: true, ext: .needsReboot, core: nil),
+                    "Restart your Mac to finish updating the virtual camera.", "5 needs reboot")
+        expectEqual(P.label(intent: true, ext: .unavailable("U reason"), core: nil), "U reason", "6 unavailable")
+        expectEqual(P.label(intent: true, ext: .failed("F reason"), core: nil), "F reason", "6 failed")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("live", width: 1280, height: 720)),
+                    "Virtual camera live (1280x720)", "7 core live")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_EXTENSION_NOT_FOUND: no device")),
+                    "Connecting to CoreVideo Pro Camera\u{2026}", "8 not found")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_EXTENSION_LOST: sink vanished")),
+                    "Connecting to CoreVideo Pro Camera\u{2026}", "8 lost")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "SINK_START_FAILED: queue refused: busy")),
+                    "SINK_START_FAILED: queue refused: busy", "9 other warning is shown whole (Windows)")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared; restart CoreVideo Pro.")),
+                    "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared; restart CoreVideo Pro.",
+                    "9 a failed GPU tap preparation is shown whole, never as connecting")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_PRODUCER_REFUSED: CoreVideo Pro Camera refused this copy of CoreVideo Pro. Install the signed app in the Applications folder (CMIODeviceStartStream -4).")),
+                    "CoreVideo Pro Camera refused this copy of CoreVideo Pro. Reinstall CoreVideo Pro in the Applications folder.",
+                    "9 a refused producer says what fixes it, never 'connecting' or a bare -4")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed", warning: "plain words")),
+                    "plain words", "9 warning without a code prefix is shown whole")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed")),
+                    "Virtual camera failed", "9 empty warning: the Windows core-failure wording")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("starting")), "Virtual camera on", "10 starting")
+        expectEqual(P.label(intent: true, ext: .unknown, core: nil), "Virtual camera on", "10 no snapshot yet")
+        // Conflict rows.
+        expectEqual(P.label(intent: false, ext: .active, core: live), "Virtual camera off",
+                    "intent off beats a live core")
+        expectEqual(P.label(intent: true, ext: .needsApproval, core: live),
+                    "Allow CoreVideo Pro Camera in System Settings to finish setup.",
+                    "needsApproval beats a live core")
+        // Settings button only while approval is pending.
+        expect(P.showsSettingsButton(.needsApproval), "approval shows the settings button")
+        for s: CameraExtensionState in [.unknown, .notInstalled, .activating, .active, .needsReboot,
+                                        .notInApplications, .unavailable("x"), .failed("y")] {
+            expect(!P.showsSettingsButton(s), "no settings button for \(s)")
+        }
+        // Framer label ports VirtualCameraFramerStatusLabel.
+        expectEqual(P.framerLabel(framerEnabled: false, intent: true, core: live), "Framer off", "framer off")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: false, core: live),
+                    "Ready when webcam output is enabled", "framer armed, camera off")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: true,
+                                  core: vcamCore("live", framerState: "unavailable", framerWarning: "No Metal device")),
+                    "No Metal device", "framer unavailable shows its warning")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: true, core: vcamCore("live", framerState: "active")),
+                    "OH Framer active on webcam output", "framer active")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: true, core: nil),
+                    "Waiting for webcam frame", "framer waiting")
+    }
+
+    private static func testVirtualCameraReadModelParsesTheCoreShape() {
+        // Exactly the CoreStateCapture::virtualCameraState keys the brief names.
+        let node: JSONObject = [
+            "enabled": true, "status": "live", "deviceName": "CoreVideo Pro Camera",
+            "resolution": ["width": 1920, "height": 1080] as JSONObject, "fps": 60,
+            "framesPublished": 42.0, "framerState": "active", "framerWarning": "fw",
+            "warning": "w",
+        ]
+        guard let m = VirtualCameraReadModel.parse(["virtualCamera": node]) else {
+            expect(false, "a snapshot with the node parses"); return
+        }
+        expect(m.enabled, "enabled read")
+        expectEqual(m.status, "live", "status read")
+        expectEqual(m.width, 1920, "width from resolution.width")
+        expectEqual(m.height, 1080, "height from resolution.height")
+        expectEqual(m.framesPublished, 42, "framesPublished read (a JSON double)")
+        expectEqual(m.framerState, "active", "framerState read")
+        expectEqual(m.framerWarning, "fw", "framerWarning read")
+        expectEqual(m.warning, "w", "warning read")
+        expect(VirtualCameraReadModel.parse(["recording": [:] as JSONObject]) == nil,
+               "a snapshot without the node is nil, not a default 'off'")
+    }
+
+    private static func testSyncVirtualCameraWire() {
+        let wire = CoreCommands.syncVirtualCamera(
+            PersistedVirtualCamera(enabled: true, mirror: true, framerEnabled: true, deviceName: "Studio Cam"))
+        expectEqual(Set(wire.keys), ["type", "on", "mirror", "framerEnabled", "deviceName"], "exact keys")
+        expectEqual(wire["type"] as? String, "sync-virtual-camera", "type")
+        expectEqual(wire["on"] as? Bool, true, "on")
+        expectEqual(wire["mirror"] as? Bool, true, "mirror")
+        expectEqual(wire["framerEnabled"] as? Bool, true, "framerEnabled")
+        expectEqual(wire["deviceName"] as? String, "Studio Cam", "deviceName")
+        expect(wire["payload"] == nil, "root-level, not payload-wrapped")
+        let off = CoreCommands.syncVirtualCamera(PersistedVirtualCamera())
+        expectEqual(off["on"] as? Bool, false, "off is sent explicitly (the core defaults on to TRUE)")
+        // C11: the core ignores an empty name, so a blank field sends the default.
+        expectEqual(off["deviceName"] as? String, CameraConstants.defaultDeviceName, "blank name -> default")
+        let spaced = CoreCommands.syncVirtualCamera(PersistedVirtualCamera(enabled: true, deviceName: "   "))
+        expectEqual(spaced["deviceName"] as? String, CameraConstants.defaultDeviceName, "whitespace -> default")
+        // Cross-check the key names against MediaCore::syncVirtualCamera.
+        guard let fromCore = CoreCommands.syncVirtualCameraKeysFromCoreSource() else {
+            FileHandle.standardError.write(
+                "  SKIPPED sync-virtual-camera core cross-check (core source not alongside binary)\n"
+                    .data(using: .utf8)!)
+            return
+        }
+        expectEqual(Set(wire.keys).subtracting(["type"]), fromCore,
+                    "the shell's sync-virtual-camera keys are exactly what MediaCore::syncVirtualCamera reads")
+    }
+
+    private static func testVirtualCameraPrefsRoundTripAndOlderFile() {
+        let older = #"{"joinMeetingId":"555","streamUrl":"rtmp://x/live","cameraExtensionOptedIn":true}"#
+        guard let decoded = try? JSONDecoder().decode(ShellPrefs.self, from: Data(older.utf8)) else {
+            expect(false, "an older prefs file without virtualCamera decodes"); return
+        }
+        expect(decoded.virtualCamera == nil, "absent key decodes to nil")
+        expectEqual(decoded.joinMeetingId, "555", "other fields are kept")
+        expectEqual(decoded.cameraExtensionOptedIn, true, "opt-in kept")
+        var p = ShellPrefs()
+        p.virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true, framerEnabled: true, deviceName: "Cam B")
+        let back = try? JSONDecoder().decode(ShellPrefs.self, from: JSONEncoder().encode(p))
+        expectEqual(back?.virtualCamera, p.virtualCamera, "all four fields survive a round trip")
+        expect(ShellPrefs.roundTripSelfCheck() == nil, "the self-check still round-trips every field")
+    }
+
+    @MainActor
+    private static func testVirtualCameraResentOnNewCoreGeneration() {
+        let model = AppModel()
+        model.cameraExtension = FakeCameraExtensionActivator(script: [.active])
+        var sent: [JSONObject] = []
+        model.coreCommandCaptureForTesting = { sent.append($0) }
+        model.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        func vcamCommands() -> [JSONObject] {
+            sent.flatMap { ($0["commands"] as? [JSONObject]) ?? [] }
+                .filter { $0["type"] as? String == "sync-virtual-camera" }
+        }
+        expectEqual(vcamCommands().count, 1, "the toggle sends one sync-virtual-camera")
+        sent.removeAll()
+        // Two core generations through the real bridge-status path.
+        model.handleBridgeStatus(.connected(renderer: "test-gen-1"))
+        model.handleBridgeStatus(.exited(code: 9))
+        model.handleBridgeStatus(.connected(renderer: "test-gen-2"))
+        let resent = vcamCommands()
+        expectEqual(resent.count, 2, "each new core generation is re-sent the virtual camera state")
+        expect(resent.allSatisfy { $0["on"] as? Bool == true }, "the resend carries the operator's intent")
+        model.stopTimersForTesting()
+    }
+
+    /// Activation wiring: first enable opts in and activates; launch activates
+    /// when opted in and only queries otherwise; a silent query times out.
+    @MainActor
+    private static func testVirtualCameraActivationWiring() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(script: [.activating, .needsApproval])
+        model.cameraExtension = fake
+        model.coreCommandCaptureForTesting = { _ in }
+        expect(model.cameraExtensionOptedIn == nil, "never asked by default")
+        model.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake.calls, ["activate"], "enabling with the extension inactive activates it")
+        expectEqual(model.cameraExtensionOptedIn, true, "the first enable opts in")
+        expectEqual(model.cameraExtensionState, .needsApproval, "activation states reach the model")
+        expectEqual(model.virtualCameraLabel, "Allow CoreVideo Pro Camera in System Settings to finish setup.",
+                    "the label follows the activation state")
+        model.setVirtualCameraMirror(true)
+        model.setVirtualCameraFramer(true)
+        model.setVirtualCameraDeviceName("  Booth  ")
+        expect(model.virtualCamera.mirror && model.virtualCamera.framerEnabled, "setters update intent")
+
+        let optedIn = AppModel()
+        let fake2 = FakeCameraExtensionActivator(script: [.active])
+        optedIn.cameraExtension = fake2
+        optedIn.cameraExtensionOptedIn = true
+        optedIn.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake2.calls, ["installs", "activate"],
+                    "launch after an opt-in with nothing installed asks, then activates")
+
+        let fresh = AppModel()
+        let fake3 = FakeCameraExtensionActivator()
+        fresh.cameraExtension = fake3
+        fresh.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake3.calls, ["query"], "launch without an opt-in only queries")
+        expectEqual(fresh.cameraExtensionState, .notInstalled, "query result reaches the model")
+
+        final class SilentActivator: CameraExtensionActivating {
+            func query(_ done: @escaping (CameraExtensionState) -> Void) {}
+            func activate(_ update: @escaping (CameraExtensionState) -> Void) {}
+            func deactivate(_ update: @escaping (CameraExtensionState) -> Void) {}
+        }
+        let silent = AppModel()
+        silent.cameraExtension = SilentActivator()
+        silent.cameraExtensionQueryTimeout = 0.1
+        silent.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        expectEqual(silent.cameraExtensionState, .notInstalled, "a query that never answers times out to notInstalled")
+    }
+
+    /// Settings "Remove virtual camera": one deactivate, the opt-in cleared (so a
+    /// relaunch does not re-install it), intent off, and the core told once.
+    @MainActor
+    private static func testRemoveVirtualCameraCallsDeactivateAndClearsOptIn() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(script: [.active])
+        model.cameraExtension = fake
+        var sent: [JSONObject] = []
+        model.coreCommandCaptureForTesting = { sent.append($0) }
+        model.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(model.cameraExtensionOptedIn, true, "precondition: opted in")
+        sent.removeAll()
+        model.removeVirtualCamera()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake.calls.filter { $0 == "deactivate" }.count, 1, "exactly one deactivate call")
+        expectEqual(model.cameraExtensionOptedIn, false, "the opt-in is cleared")
+        expectEqual(model.virtualCamera.enabled, false, "intent is off")
+        expectEqual(model.cameraExtensionState, .notInstalled, "the deactivation result reaches the model")
+        let syncs = sent.flatMap { ($0["commands"] as? [JSONObject]) ?? [] }
+            .filter { $0["type"] as? String == "sync-virtual-camera" }
+        expectEqual(syncs.count, 1, "one sync-virtual-camera is sent")
+        expectEqual(syncs.first?["on"] as? Bool, false, "and it says off")
+        model.stopTimersForTesting()
+    }
+
+    /// A cancelled password or a failed deactivation leaves the extension
+    /// installed: the opt-in must survive and the Settings row must say so.
+    @MainActor
+    private static func testRemoveVirtualCameraFailureKeepsOptInAndReports() {
+        final class FailingDeactivator: CameraExtensionActivating {
+            let result: CameraExtensionState
+            init(_ r: CameraExtensionState) { result = r }
+            func query(_ done: @escaping (CameraExtensionState) -> Void) { done(.active) }
+            func activate(_ update: @escaping (CameraExtensionState) -> Void) { update(.active) }
+            func deactivate(_ update: @escaping (CameraExtensionState) -> Void) { update(result) }
+        }
+        for (name, result) in [("cancelled", CameraExtensionState.failed("Couldn't install the virtual camera (code 4).")),
+                               ("unavailable", CameraExtensionState.unavailable("macOS policy blocked the camera extension."))] {
+            let model = AppModel()
+            model.cameraExtension = FailingDeactivator(result)
+            model.coreCommandCaptureForTesting = { _ in }
+            model.setVirtualCamera(enabled: true)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            model.removeVirtualCamera()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            expectEqual(model.cameraExtensionOptedIn, true, "\(name): the opt-in is kept when removal fails")
+            expectEqual(model.virtualCamera.enabled, false, "\(name): intent is still off")
+            expectEqual(model.virtualCameraRemovalStatus, "Couldn't remove the virtual camera. It is still installed.",
+                        "\(name): the Settings row reports the failure")
+            model.stopTimersForTesting()
+        }
+        let ok = AppModel()
+        ok.cameraExtension = FakeCameraExtensionActivator(script: [.active])
+        ok.coreCommandCaptureForTesting = { _ in }
+        ok.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        ok.removeVirtualCamera()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expect(ok.virtualCameraRemovalStatus == nil, "success leaves no removal status")
+        ok.stopTimersForTesting()
+    }
+
+    /// The flyout toggles draw their own track: on and off must be told apart,
+    /// and the off track must be visible against the flyout's panel.
+    private static func testStudioToggleTrackIsVisibleInBothStates() {
+        func rgba(_ c: Color) -> (r: Double, g: Double, b: Double, a: Double) {
+            let n = NSColor(c).usingColorSpace(.sRGB) ?? .black
+            return (Double(n.redComponent), Double(n.greenComponent), Double(n.blueComponent), Double(n.alphaComponent))
+        }
+        func luminance(_ c: Color) -> Double {
+            let v = rgba(c)
+            func lin(_ x: Double) -> Double { x <= 0.03928 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) }
+            return 0.2126 * lin(v.r) + 0.7152 * lin(v.g) + 0.0722 * lin(v.b)
+        }
+        func contrast(_ a: Color, _ b: Color) -> Double {
+            let (x, y) = (luminance(a), luminance(b))
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        let on = StudioToggleStyle.trackColor(isOn: true)
+        let off = StudioToggleStyle.trackColor(isOn: false)
+        expect(on == Studio.accent, "on track is the accent")
+        expectEqual(rgba(off).a, 1, "off track is opaque (a translucent white vanishes on the panel)")
+        expect(contrast(off, Studio.panel) >= 2.5, "off track stands out from Studio.panel")
+        expect(contrast(on, off) >= 1.5, "on and off tracks are distinguishable")
+        expect(contrast(StudioToggleStyle.knobColor(isOn: false), off) >= 2.5, "off knob visible on its track")
+        expect(contrast(StudioToggleStyle.knobColor(isOn: true), on) >= 2.5, "on knob visible on its track")
+    }
+
+    @MainActor
+    private static func testVirtualCameraUnchangedNameSendsNothing() {
+        let model = AppModel()
+        model.cameraExtension = FakeCameraExtensionActivator(script: [.active])
+        var sent = 0
+        model.coreCommandCaptureForTesting = { _ in sent += 1 }
+        model.setVirtualCameraDeviceName("Booth")
+        expectEqual(sent, 1, "a new name is sent")
+        model.setVirtualCameraDeviceName("  Booth  ")
+        expectEqual(sent, 1, "the same name (after sanitizing) sends nothing")
+        model.setVirtualCameraDeviceName("")
+        expectEqual(sent, 2, "clearing the name is a change (back to the default)")
+        model.setVirtualCameraDeviceName(CameraConstants.defaultDeviceName)
+        expectEqual(sent, 2, "typing the default over a blank name sends nothing (same wire value)")
+    }
+
+    private static func testVirtualCameraProofNeedsTheSnapshotVariable() {
+        expect(!AppModel.vcamProofRequested(["COREVIDEO_SHELL_VCAM": "live"]), "VCAM alone is inert")
+        expect(!AppModel.vcamProofRequested(["COREVIDEO_SHELL_SNAPSHOT": "/tmp/x.png"]), "SNAPSHOT alone stages nothing")
+        expect(AppModel.vcamProofRequested(["COREVIDEO_SHELL_VCAM": "live", "COREVIDEO_SHELL_SNAPSHOT": "/tmp/x.png"]),
+               "both variables stage the proof")
+    }
+
+    private static func testCameraExtensionPrefsField() {
+        var p = ShellPrefs()
+        expect(p.cameraExtensionOptedIn == nil, "absent by default")
+        p.cameraExtensionOptedIn = true
+        let data = try! JSONEncoder().encode(p)
+        let back = try! JSONDecoder().decode(ShellPrefs.self, from: data)
+        expectEqual(back.cameraExtensionOptedIn, true, "opt-in survives a round trip")
+    }
+
     /// A corrupt or truncated file must fall back to defaults, not crash.
     private static func testPrefsToleratesGarbage() {
         let garbage = "{not json at all".data(using: .utf8)!
@@ -717,7 +1180,8 @@ enum ShellTests {
                "the OBS plugin's Keychain item must never be touched")
     }
 
-    /// The broker pins the app return URI; changing the scheme 400s every sign-in.
+    /// The corevideo:// FALLBACK (older brokers, manual links) keeps its exact
+    /// allowlisted spelling; the normal path is the loopback listener.
     private static func testOAuthReturnUriMatchesTheBrokerAllowlist() {
         expectEqual(ZoomOAuth.appReturnUri, "corevideo://oauth/callback",
                     "the broker allowlists exactly this return uri")
@@ -893,14 +1357,44 @@ enum ShellTests {
         expectEqual(pids, ["p9"], "only routes carrying a participantId contribute budget pids")
     }
 
+    /// Live defect 2026-11-16: an in-show webcam drew on Program and Preview but
+    /// its multiview tile stayed empty. The shell sent the scene-route MODE
+    /// ("capture-input") as the multiview KIND; the core only takes "capture"
+    /// (resolveMultiviewFeed), so the tile got no participantId and the
+    /// compositor never looked up the frame.
+    @MainActor
+    private static func testMultiviewSourceWireShape() {
+        var webcam = ShowInputSlot(id: 1)
+        webcam.kind = "capture"; webcam.sourceId = "cam-1"; webcam.name = "Desk cam"; webcam.inShow = true
+        var guest = ShowInputSlot(id: 2)
+        guest.kind = "zoom"; guest.sourceId = "p7"; guest.name = "Guest"; guest.inShow = true
+        var benched = ShowInputSlot(id: 3)
+        benched.kind = "capture"; benched.sourceId = "cam-2"
+        var gone = ShowInputSlot(id: 4)
+        gone.kind = "capture"; gone.sourceId = "cam-3"; gone.inShow = true; gone.offline = true
+        let payloads = AppModel.multiviewSourcePayloads([webcam, guest, benched, gone, ShowInputSlot(id: 5)])
+        expectEqual(payloads.count, 2, "only in-show slots that still have a source get a tile")
+        expectEqual(payloads[0]["kind"] as? String, "capture",
+                    "the core's multiview kind for a capture device (MultiviewFeed.h), not the route mode")
+        expectEqual(payloads[0]["captureDeviceId"] as? String, "cam-1", "the bare device id")
+        expectEqual(payloads[0]["sourceId"] as? String, "capture:cam-1", "the frame key")
+        expectEqual(payloads[0]["label"] as? String, "Desk cam", "the operator's name")
+        expectEqual(payloads[1]["kind"] as? String, "participant-video", "a Zoom guest")
+        expectEqual(payloads[1]["participantId"] as? String, "p7", "the raw participant id")
+        expectEqual(payloads[1]["sourceId"] as? String, "zoom:p7", "the frame key")
+    }
+
     @MainActor
     private static func testSpineSubscriptionWireShape() {
         let entries = [ZoomSourceBudget.Entry(participantId: "p1", purpose: "program"),
                        ZoomSourceBudget.Entry(participantId: "p2", purpose: "multiview")]
-        let payloads = AppModel.spineSubscriptionPayloads(entries)
+        let payloads = AppModel.spineSubscriptionPayloads(
+            entries, audioParticipantIds: [], meetingHasParticipants: false)
         expectEqual(payloads.count, 2, "one subscription per budget entry")
         expectEqual(payloads[0]["participantId"] as? String, "p1", "payload order is budget order")
-        expectEqual(payloads[0]["priority"] as? Int, 0, "priority is the budget index")
+        // Windows ZoomMediaSpinePayloadBuilder: video priorities are 10+i (0 is the
+        // meeting mix, 40+i the per-participant audio).
+        expectEqual(payloads[0]["priority"] as? Int, 10, "video priority is 10 + budget index")
         // participant-video is the tiered kind: the core grants 1080P to the first
         // 8 camera-on entries IN THIS ORDER (ZoomSubscriptionResolutionPolicy.h),
         // which is the entire point of the budget. Identity is purpose-free for
@@ -909,34 +1403,546 @@ enum ShellTests {
                     "the tiered kind — 1080P eligible, budget-order granted")
         expectEqual(payloads[0]["purpose"] as? String, "program", "the entry's real purpose")
         expectEqual(payloads[1]["purpose"] as? String, "multiview", "the entry's real purpose")
-        expectEqual(payloads[1]["priority"] as? Int, 1, "priority is the budget index")
+        expectEqual(payloads[1]["priority"] as? Int, 11, "video priority is 10 + budget index")
+    }
+
+    /// The live defect (2026-11-15): a real 9-guest meeting, raw media on, and
+    /// audioMixSession.participants == 0 — the Mac spine subscribed video only.
+    @MainActor
+    private static func testSpineSubscribesTheMeetingMixAndSourceAudio() {
+        let video = [ZoomSourceBudget.Entry(participantId: "101", purpose: "program")]
+        let payloads = AppModel.spineSubscriptionPayloads(
+            video, audioParticipantIds: ["101", "202"], meetingHasParticipants: true)
+        let mix = payloads.filter { $0["kind"] as? String == "meeting-audio" }
+        expectEqual(mix.count, 1, "exactly one meeting-audio subscription while in a meeting")
+        expectEqual(mix.first?["participantId"] as? String, "0",
+                    "the meeting mix rides the synthetic MeetingMixParticipantId, never a guest's id (#465)")
+        expectEqual(mix.first?["purpose"] as? String, "program", "Windows: meeting-audio purpose program")
+        expectEqual(mix.first?["priority"] as? Int, 0, "Windows: meeting-audio priority 0")
+        let audio = payloads.filter { $0["kind"] as? String == "participant-audio" }
+        expectEqual(audio.map { $0["participantId"] as? String ?? "" }, ["101", "202"],
+                    "one participant-audio per audio source, in source order")
+        expectEqual(audio.map { $0["purpose"] as? String ?? "" }, ["mix", "mix"],
+                    "participant-audio purpose is the constant \"mix\" (it is part of the engine identity)")
+        expectEqual(audio.map { $0["priority"] as? Int ?? -1 }, [40, 41],
+                    "Windows: participant-audio priority 40 + index")
+        let idle = AppModel.spineSubscriptionPayloads(
+            [], audioParticipantIds: [], meetingHasParticipants: false)
+        expect(idle.isEmpty, "no meeting participants: no meeting-audio subscription")
+    }
+
+    private static func testAudioSourceSetKeepsCameraOffAndRefusesNonSources() {
+        // p-off: a camera-off wall guest. p-nobody: in the room, routed nowhere.
+        // p-gone: still in a slot but left the meeting.
+        let ids = ZoomSourceBudget.audioParticipantIds(
+            programRouted: ["p-pgm"], previewRouted: ["p-pvw", "p-pgm"],
+            multiviewAssigned: ["p-off", "p-gone"], isoArmed: ["p-iso"],
+            present: ["p-pgm", "p-pvw", "p-off", "p-iso", "p-nobody"])
+        expectEqual(ids, ["p-pgm", "p-pvw", "p-off", "p-iso"],
+                    "Program -> Preview -> wall -> ISO order, deduped keep-first")
+        expect(ids.contains("p-off"), "a camera-OFF source keeps its audio (owner rule #478)")
+        expect(!ids.contains("p-nobody"), "a non-source is never subscribed for audio (sources only)")
+        expect(!ids.contains("p-gone"), "a participant who left is not a source")
+        let wall = (0..<14).map { "w\($0)" }
+        expectEqual(ZoomSourceBudget.audioParticipantIds(
+            programRouted: [], previewRouted: [], multiviewAssigned: wall, isoArmed: [],
+            present: Set(wall)).count, 14, "audio is uncapped (only video is capped at 10)")
+        let video = ZoomSourceBudget.videoEntries(
+            programRouted: [], previewRouted: [], multiviewAssigned: ["p-off"], isoArmed: [],
+            cameraOn: [])
+        expect(video.isEmpty, "the same camera-off source spends no VIDEO budget")
+    }
+
+    /// The REAL call site (pushSpine's subscription array): slots + roster in, the
+    /// audio set out — a camera-off wall guest is subscribed for audio, a guest in
+    /// no slot is not, and the meeting mix rides along.
+    @MainActor
+    private static func testPushSpineSubscribesWallAudioFromTheModel() {
+        let model = AppModel()
+        model.roster = [
+            RosterParticipant(id: "11", name: "On", hasVideo: true, muted: false,
+                              talking: false, assigned: true),
+            RosterParticipant(id: "22", name: "Off", hasVideo: false, muted: false,
+                              talking: false, assigned: true),
+            RosterParticipant(id: "33", name: "Audience", hasVideo: true, muted: false,
+                              talking: false, assigned: false),
+        ]
+        for (index, pid) in ["11", "22"].enumerated() {
+            model.slots[index].kind = "zoom"
+            model.slots[index].sourceId = pid
+            model.slots[index].inShow = true
+        }
+        let subs = model.resolveSpineSubscriptions()
+        func ids(_ kind: String) -> [String] {
+            subs.filter { $0["kind"] as? String == kind }.compactMap { $0["participantId"] as? String }
+        }
+        expectEqual(ids("meeting-audio"), ["0"], "in a meeting: the Zoom program mix is subscribed")
+        expectEqual(ids("participant-audio"), ["11", "22"],
+                    "every wall source gets audio, the camera-off one included")
+        expect(!ids("participant-audio").contains("33"), "a non-source gets no audio")
+        expectEqual(ids("participant-video"), ["11"], "only the camera-on source spends video")
+        expectEqual(model.zoomAudioSourceIds, ["11", "22"],
+                    "the console's Zoom source set is the one just subscribed")
+        expect(model.meetingAudioSubscribed, "the console knows the meeting mix is subscribed")
+    }
+
+    // ── audio console: the FADER LAW + #481 on Mac ──────────────────────────
+
+    /// A guest who starts sending audio AFTER the console's first channel sync is
+    /// not in the core's echo (it echoes only synced channels) — the strip must
+    /// come from the shell's own source set, or the FADER LAW drops the guest.
+    private static func testStripsComeFromTheSourceSetNotOnlyTheEcho() {
+        let expected = AudioConsolePolicy.expectedSourceIds(
+            meetingAudio: true, zoomAudioIds: ["11", "22"], captureAudioIds: ["capture:cam"],
+            mediaStrip: true)
+        expectEqual(expected, ["zoom-mix", "11", "22", "capture:cam", "media"],
+                    "zoom-mix, the Zoom audio sources, paired mics, and the media strip")
+        // The core echoes only what was synced before guest 22 arrived.
+        let echo: [JSONObject] = [
+            ["participantId": "zoom-mix", "outputLevel": 40, "status": "live"],
+            ["participantId": "11", "outputLevel": 30, "status": "live"],
+        ]
+        let strips = AudioConsolePolicy.mergeStrips(echo: echo, prior: [], expected: expected)
+        expectEqual(strips.map(\.id), expected, "every expected source has a strip, echoed or not")
+        expectEqual(strips.first { $0.id == "22" }?.status, "waiting-for-pcm",
+                    "a source with no PCM yet gets a waiting strip (Windows)")
+        expectEqual(strips.first { $0.id == "zoom-mix" }?.outputLevel, 40, "levels come from the echo")
+        expect(strips.contains { $0.id == "zoom-mix" }, "the Zoom program mix always has a fader")
+        expect(strips.contains { $0.id == "media" }, "a media route on a bus: the media strip exists")
+        expectEqual(AudioConsolePolicy.expectedSourceIds(
+            meetingAudio: false, zoomAudioIds: [], captureAudioIds: [], mediaStrip: false), [],
+            "no meeting and no media route: no zoom-mix and no media strip (Windows)")
+    }
+
+    private static func testStripSetIsExactlyTheModelledSources() {
+        let echo: [JSONObject] = [
+            ["participantId": "99"],               // a Zoom guest who is not a source
+            ["participantId": "media:clip-1"],     // a clip: governed by "media"
+            ["participantId": "capture:gone"],     // an unpaired mic the core still echoes
+            ["participantId": "zoom-mix"],         // the last meeting's mix
+        ]
+        let ids = AudioConsolePolicy.mergeStrips(
+            echo: echo, prior: [], expected: ["11", "media"]).map(\.id)
+        expectEqual(ids, ["11", "media"], "the strip set is exactly the modelled sources")
+    }
+
+    /// Review M1: a strip whose source is gone must leave, even though the core
+    /// keeps echoing the channel it was last sent.
+    @MainActor
+    private static func testUnpairedMicStripLeavesTheConsole() {
+        let model = AppModel()
+        model.slots[0].kind = "capture"; model.slots[0].sourceId = "cam"
+        model.slots[0].audioDeviceId = "mic"; model.slots[0].audioDeviceName = "Mic"
+        model.refreshStrips()
+        expect(model.strips.contains { $0.id == "capture:cam" }, "a paired mic has a strip")
+        model.markAudioConsoleDeliveredForTesting()
+        model.slots[0].audioDeviceId = ""      // unpaired
+        model.applySnapshotForTesting(["audioMixSession": ["participants": [
+            ["participantId": "capture:cam", "outputLevel": 0]]]])   // core still echoes it
+        expect(!model.strips.contains { $0.id == "capture:cam" }, "the unpaired mic's strip is gone")
+        expect(model.scheduledStripIds != nil, "...and the smaller set is synced to the core")
+    }
+
+    /// #481: the A1's mute is only set by the A1.
+    private static func testA1MuteIsNeverAdoptedFromTheEcho() {
+        // Before any channel sync the echo's `muted` is the voice-activity flag:
+        // every quiet guest reads muted. A new strip must start UNMUTED.
+        let first = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "muted": true, "manualGainDb": -6.0, "pan": 0.5]],
+            prior: [], expected: ["11"])
+        expectEqual(first.first?.muted, false, "a new channel starts unmuted (#481)")
+        expectEqual(first.first?.manualGainDb, 0, "a new channel starts at unity")
+        // The A1 mutes and trims; then the core restarts and echoes "unmuted".
+        var held = first.isEmpty ? [AudioStrip(id: "11", outputLevel: 0, manualGainDb: 0,
+                                               muted: false, solo: false, pan: 0, status: "")] : first
+        held[0].muted = true
+        held[0].manualGainDb = 4
+        let afterRestart = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "muted": false, "outputLevel": 0]],
+            prior: held, expected: ["11"])
+        expectEqual(afterRestart.first?.muted, true, "a core echo never un-mutes the A1's channel")
+        expectEqual(afterRestart.first?.manualGainDb, 4, "a core echo never resets the A1's fader")
+    }
+
+    @MainActor
+    private static func testConsoleSyncCarriesEveryStripAndTheA1State() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11", "22"]
+        model.meetingAudioSubscribed = true
+        model.refreshStrips()
+        expectEqual(model.scheduledStripIds, Set(["zoom-mix", "11", "22"]),
+                    "a changed strip SET schedules a full channel sync (late guests get a fader)")
+        model.editStrip("22") { $0.muted = true }
+        let channels = model.audioMixCommand()["channels"] as? [JSONObject] ?? []
+        expectEqual(channels.compactMap { $0["participantId"] as? String },
+                    ["zoom-mix", "11", "22"],
+                    "sync-participant-audio-mix carries a strip for every source (FADER LAW)")
+        expectEqual(channels.first { $0["participantId"] as? String == "22" }?["muted"] as? Bool, true,
+                    "the A1's mute rides the wire")
+        expectEqual(model.audioSourceLabel("zoom-mix"), "Zoom program mix", "Windows strip label")
+    }
+
+    // ── default routing: a fresh Mac console routed nothing ─────────────────
+
+    private static func testDefaultRoutingIsTheWindowsPerGuestTopology() {
+        let sends = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: ["11"], captureAudioIds: ["capture:cam"], mediaRouted: true,
+            operatorEdits: [:])
+        func buses(_ source: String) -> [String] {
+            sends.filter { $0["sourceId"] as? String == source }.compactMap { $0["busId"] as? String }.sorted()
+        }
+        let program = ["master", "mon", "pgm-l", "pgm-r", "stream"]
+        expectEqual(buses("11"), program, "a Zoom source's stem reaches program, stream and MON")
+        expectEqual(buses("capture:cam"), program, "a paired capture mic gets the same defaults")
+        expectEqual(buses("media"), program, "the media strip is routed by default (T1.6 alias)")
+        expectEqual(buses("zoom-mix"), [], "zoom-mix is NOT summed with the stems (doubled voices)")
+        expect(sends.allSatisfy { ($0["gainDb"] as? Double) == 0 }, "defaults are unity")
+        let edited = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: ["11"], captureAudioIds: [], mediaRouted: false,
+            operatorEdits: [
+                AudioRouteKey(source: "11", bus: "stream"): .init(enabled: false, gainDb: 0),
+                AudioRouteKey(source: "zoom-mix", bus: "iso-1"): .init(enabled: true, gainDb: -6),
+            ])
+        expect(!edited.contains { $0["sourceId"] as? String == "11" && $0["busId"] as? String == "stream" },
+               "an operator's removal wins over the default")
+        expect(edited.contains { $0["sourceId"] as? String == "zoom-mix" && $0["busId"] as? String == "iso-1"
+                && $0["gainDb"] as? Double == -6 }, "an operator's own crosspoint rides the base")
+    }
+
+    @MainActor
+    private static func testModelRoutesEverySourceToTheMonitorBus() {
+        let model = AppModel()
+        model.roster = [RosterParticipant(id: "22", name: "Off", hasVideo: false, muted: false,
+                                          talking: false, assigned: true)]
+        model.slots[0].kind = "zoom"; model.slots[0].sourceId = "22"; model.slots[0].inShow = true
+        _ = model.resolveSpineSubscriptions()
+        let sends = model.routingBaseCommand()?["sends"] as? [JSONObject] ?? []
+        expect(sends.contains { $0["sourceId"] as? String == "22" && $0["busId"] as? String == "mon" },
+               "the camera-off wall guest is on MON: the Monitor toggle produces sound")
+        expectEqual(model.routingBaseCommand()?["type"] as? String, "sync-audio-routing-matrix",
+                    "the base matrix uses the core's full-state routing command")
+    }
+
+    /// The one-shot rule: a respawned core starts with no channels, mastering or
+    /// routing. The next generation must get the whole console again — and the
+    /// A1's mute must survive the fresh core's "unmuted" echo.
+    @MainActor
+    private static func testCoreRestartReassertsTheWholeAudioConsole() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        model.meetingAudioSubscribed = true
+        model.refreshStrips()
+        model.editStrip("11") { $0.muted = true }
+        model.selectOrRouteSend(source: "zoom-mix", bus: "iso-1")
+        expect(model.operatorRouteEdits[AudioRouteKey(source: "zoom-mix", bus: "iso-1")]?.enabled == true,
+               "an operator crosspoint is kept as intent")
+        model.markAudioConsoleDeliveredForTesting()
+        expect(model.scheduledStripIds == nil && model.lastRoutingBaseSent != nil,
+               "precondition: everything delivered to the old core")
+        var batches: [[JSONObject]] = []
+        model.audioReassertObserver = { batches.append($0) }
+        model.onConnected()  // the respawned core's handshake
+        expectEqual(batches.count, 1, "a new core generation gets the console in ONE request")
+        let batch = batches.first ?? []
+        expectEqual(batch.map { $0["type"] as? String ?? "" },
+                    ["sync-participant-audio-mix", "sync-audio-routing-matrix", "sync-capture-audio-sources"],
+                    "mix FIRST, then routing, then the mics: a muted source is never heard at unity (M6)")
+        let channels = batch.first?["channels"] as? [JSONObject] ?? []
+        expectEqual(Set(channels.compactMap { $0["participantId"] as? String }),
+                    Set(["zoom-mix", "11"]), "the full channel list again")
+        expectEqual(channels.first { $0["participantId"] as? String == "11" }?["muted"] as? Bool, true,
+                    "the A1's mute is in the very first command the new core applies")
+        let resent = (batch.count > 1 ? batch[1]["sends"] as? [JSONObject] : nil) ?? []
+        expect(resent.contains { $0["sourceId"] as? String == "zoom-mix" && $0["busId"] as? String == "iso-1" },
+               "the base routing (with the operator's crosspoint) is re-sent to the new core")
+        // The fresh core echoes its defaults: unmuted, no gain.
+        model.applySnapshotForTesting(["audioMixSession": ["participants": [
+            ["participantId": "11", "muted": false, "outputLevel": 0]]]])
+        expectEqual(model.strips.first { $0.id == "11" }?.muted, true,
+                    "the restarted core's echo does not un-mute the A1's channel")
+        let base = model.routingBaseCommand()?["sends"] as? [JSONObject] ?? []
+        expect(base.contains { $0["sourceId"] as? String == "zoom-mix" && $0["busId"] as? String == "iso-1" },
+               "the operator's crosspoint rides the re-sent base matrix")
+    }
+
+    /// #481 pre-mute meter: a muted guest who is talking shows, dimmed.
+    private static func testMutedTalkingGuestShowsADimmedPreMuteMeter() {
+        expectEqual(AudioConsolePolicy.meterLevel(dbfs: -60), 0, "Windows scale: -60 dBFS is 0")
+        expectEqual(AudioConsolePolicy.meterLevel(dbfs: -24), 60, "Windows scale: -24 dBFS is 60")
+        expectEqual(AudioConsolePolicy.meterLevel(dbfs: 0), 100, "Windows scale: 0 dBFS is 100")
+        var prior = AudioStrip(id: "11", outputLevel: 0, manualGainDb: 0, muted: true,
+                               solo: false, pan: 0, status: "")
+        prior.inputLevel = 0
+        let merged = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "muted": true, "outputLevel": 0,
+                    "inputPeakDbfs": -12.0, "inputRmsDbfs": -18.0]],
+            prior: [prior], expected: ["11"])
+        let strip = merged.first ?? prior
+        expectEqual(strip.inputLevel, 80, "the core's pre-mute input peak reaches the strip")
+        let reading = AudioConsolePolicy.meterReading(strip)
+        expectEqual(reading.level, 80, "a muted, talking guest is not shown as silence")
+        expect(reading.dimmed, "...and the meter is dimmed: nothing reaches a bus")
+        var live = strip
+        live.muted = false
+        live.outputLevel = 55
+        expect(AudioConsolePolicy.meterReading(live) == (55, false), "unmuted: the output level, undimmed")
+        let native = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "inputLevel": 42]], prior: [], expected: ["11"])
+        expectEqual(native.first?.inputLevel, 42, "before any sync the native mixer's inputLevel is used")
+    }
+
+    /// Review I1: a cue or Take reorders the BUDGET (Program first) but must not
+    /// move the A1's faders, and an order-only change is not a new strip set.
+    @MainActor
+    private static func testStripOrderIsRosterOrderAndStableAcrossACue() {
+        let model = AppModel()
+        model.roster = ["11", "22"].map {
+            RosterParticipant(id: $0, name: "g\($0)", hasVideo: true, muted: false,
+                              talking: false, assigned: true)
+        }
+        model.meetingAudioSubscribed = true
+        model.zoomAudioSourceIds = ["22", "11"]   // 22 is on Program
+        model.refreshStrips()
+        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22"],
+                    "Zoom strips follow the roster, not the budget")
+        model.markAudioConsoleDeliveredForTesting()
+        model.zoomAudioSourceIds = ["11", "22"]   // a Take swaps Program and Preview
+        model.refreshStrips()
+        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22"],
+                    "a cue or Take does not move the A1's faders")
+        expect(model.scheduledStripIds == nil, "an order-only change sends no channel sync")
+    }
+
+    /// Review I2: a muted guest who leaves the source set for one push (off the
+    /// wall and back) comes back MUTED, not live at unity.
+    @MainActor
+    private static func testMutedGuestStaysMutedAcrossASourceSetExit() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        model.refreshStrips()
+        model.editStrip("11") { $0.muted = true; $0.manualGainDb = -8 }
+        model.zoomAudioSourceIds = []          // moved off the wall
+        model.refreshStrips()
+        expect(!model.strips.contains { $0.id == "11" }, "precondition: the strip is gone")
+        model.zoomAudioSourceIds = ["11"]      // ...and back
+        model.refreshStrips()
+        let back = model.strips.first { $0.id == "11" }
+        expectEqual(back?.muted, true, "the A1's mute survives a source-set exit")
+        expectEqual(back?.manualGainDb, -8, "the A1's fader survives a source-set exit")
+    }
+
+    /// Review M4 + I2: the memory is per MEETING. Zoom reuses user ids, so a new
+    /// meeting's guest 11 must not inherit the last meeting's mute or routing.
+    @MainActor
+    private static func testMeetingEndForgetsPerGuestAudioState() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        model.meetingAudioSubscribed = true
+        model.refreshStrips()
+        model.editStrip("11") { $0.muted = true }
+        model.selectOrRouteSend(source: "11", bus: "iso-1")
+        model.selectOrRouteSend(source: "zoom-mix", bus: "iso-2")
+        model.applyZoomForTesting(["meetingState": "in-meeting"])
+        expectEqual(model.rememberedStripSettings["11"]?.muted, true, "in a meeting: remembered")
+        model.applyZoomForTesting(["meetingState": ""])
+        expectEqual(model.rememberedStripSettings["11"]?.muted, true, "an UNKNOWN state never clears")
+        model.applyZoomForTesting(["meetingState": "idle"])
+        expect(model.rememberedStripSettings["11"] == nil, "meeting end forgets the guest's strip settings")
+        expect(model.operatorRouteEdits[AudioRouteKey(source: "11", bus: "iso-1")] == nil,
+               "meeting end forgets the guest's route edits")
+        expect(model.operatorRouteEdits[AudioRouteKey(source: "zoom-mix", bus: "iso-2")] != nil,
+               "non-guest route edits are kept")
+        expect(!model.strips.contains { $0.id == "11" || $0.id == "zoom-mix" },
+               "the meeting's strips leave the console at meeting end")
+        model.zoomAudioSourceIds = ["11"]      // next meeting, Zoom reuses id 11
+        model.refreshStrips()
+        expectEqual(model.strips.first { $0.id == "11" }?.muted, false,
+                    "a reused id starts unmuted in the next meeting")
+    }
+
+    /// Review I3: a send-gain drag must not put one full routing matrix per
+    /// slider tick into the core's 128-entry mailbox.
+    @MainActor
+    private static func testSendGainDragCoalescesTheRoutingPush() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        var sent: [JSONObject] = []
+        model.routingBaseSendObserver = { sent.append($0) }
+        // The 100 ms debounce runs on a harness timer: on a slow CI runner a
+        // "20 ms" spin overshot 100 ms and each such gap legitimately flushed
+        // (7 sends, 2026-11-22). The timer elapses only when the harness says so.
+        let timers = ManualTimers()
+        model.timerSleepForTesting = { await timers.sleep($0) }
+        model.selectOrRouteSend(source: "11", bus: "iso-1")
+        for tick in 0..<40 {   // a drag: the run loop turns between ticks, no timer elapses
+            model.setSendGain(source: "11", bus: "iso-1", gainDb: -Double(tick) / 4)
+            spin(until: { timers.pending > tick }, limit: 2)
+        }
+        expect(sent.isEmpty, "nothing is sent while the debounce has not elapsed")
+        // Fire every parked timer until the push lands: the last tick's task may
+        // park after a fire, and every earlier one is cancelled. Identical later
+        // pushes are deduplicated, so the count stays exact; a debounce that does
+        // not cancel (or does not wait) still sends one matrix per tick.
+        spin(until: { timers.fireAll(); return !sent.isEmpty }, limit: 2)
+        spin(until: { timers.fireAll(); return false }, limit: 0.1)
+        expectEqual(sent.count, 1, "a 40-tick drag sends ONE routing matrix (latest wins)")
+        let gain = ((sent.last?["commands"] as? [JSONObject])?.first?["sends"] as? [JSONObject])?
+            .first { $0["sourceId"] as? String == "11" && $0["busId"] as? String == "iso-1" }?["gainDb"] as? Double
+        expectEqual(gain, -39.0 / 4, "the one push carries the LAST slider value")
+        expectEqual(sent.last?["replaceableFullState"] as? Bool, true,
+                    "opted in to core mailbox coalescing")
+        expectEqual(sent.last?["coalescingKey"] as? String, "audio-routing-base",
+                    "coalescing needs a non-empty key (CommandMailbox::push)")
+    }
+
+    /// Review M3: Windows routes "media" only when PROGRAM has a fixed media
+    /// route, and shows its strip when Program or Preview does.
+    @MainActor
+    private static func testMediaRoutingFollowsTheProgramMediaRoute() {
+        let model = AppModel()
+        model.programSceneId = model.scenes[0].id
+        model.previewSceneId = model.scenes[1].id
+        func mediaSends() -> [JSONObject] {
+            (model.routingBaseCommand()?["sends"] as? [JSONObject] ?? [])
+                .filter { $0["sourceId"] as? String == "media" }
+        }
+        expect(mediaSends().isEmpty, "no media route on Program: media is not routed")
+        expect(!model.strips.contains { $0.id == "media" }, "no media route on a bus: no media strip")
+        model.logoBug = MediaAsset(id: "bug", name: "Bug", kind: "media-video", relativePath: "bug.mov", filePath: "/tmp/bug.mov",
+                                   naturalWidth: 200, naturalHeight: 100)
+        expect(model.sceneHasMediaRoute(model.programSceneId, isProgram: true),
+               "precondition: the logo bug is a fixed media route on Program")
+        expectEqual(mediaSends().count, 5, "a media route on Program: media gets the default sends")
+        expect(model.strips.contains { $0.id == "media" }, "...and the media strip appears")
+    }
+
+    /// The roster-membership trigger: a camera-OFF guest joining or leaving
+    /// changes the audio source set (and meeting-audio), so it must re-push the
+    /// spine even though no camera changed.
+    @MainActor
+    private static func testRosterMembershipChangeRepushesTheSpine() {
+        let model = AppModel()
+        func roster(_ ids: [String]) -> JSONObject {
+            ["meetingState": "in-meeting",
+             "participants": ids.map { ["userId": $0, "displayName": "g\($0)", "videoOn": false] }]
+        }
+        model.applyZoomForTesting(roster(["11"]))
+        let afterJoin = model.spineSyncRequests
+        expect(afterJoin >= 1, "the first camera-off guest re-pushes the spine")
+        model.applyZoomForTesting(roster(["11"]))
+        expectEqual(model.spineSyncRequests, afterJoin, "an unchanged roster pushes nothing")
+        model.applyZoomForTesting(roster(["11", "22"]))
+        expectEqual(model.spineSyncRequests, afterJoin + 1, "a camera-off guest joining re-pushes")
+        model.applyZoomForTesting(roster(["11"]))
+        expectEqual(model.spineSyncRequests, afterJoin + 2, "a camera-off guest leaving re-pushes")
+    }
+
+    /// Round-2 review: only TERMINAL meeting states clear per-guest audio memory.
+    @MainActor
+    private static func testOnlyTerminalMeetingStatesForgetGuestAudio() {
+        func primed() -> AppModel {
+            let model = AppModel()
+            model.zoomAudioSourceIds = ["11"]
+            model.meetingAudioSubscribed = true
+            model.refreshStrips()
+            model.editStrip("11") { $0.muted = true; $0.manualGainDb = -5 }
+            model.selectOrRouteSend(source: "11", bus: "iso-1")
+            model.applyZoomForTesting(["meetingState": "in_meeting"])
+            return model
+        }
+        for transient in ["joining", "leaving", "status-6", "status-12", "in-meeting", "reconnecting"] {
+            let model = primed()
+            model.applyZoomForTesting(["meetingState": transient])
+            expectEqual(model.rememberedStripSettings["11"]?.muted, true,
+                        "\(transient) mid-meeting keeps the guest's mute (breakout / waiting room / reconnect)")
+            expectEqual(model.rememberedStripSettings["11"]?.manualGainDb, -5, "\(transient) keeps the fader")
+            expect(model.operatorRouteEdits[AudioRouteKey(source: "11", bus: "iso-1")] != nil,
+                   "\(transient) keeps the guest's route edits")
+            expectEqual(model.strips.first { $0.id == "11" }?.muted, true, "\(transient) keeps the strip muted")
+        }
+        // Leave / meeting ended (engine "left" -> idle), the SDK's ended, and a
+        // lost engine or failed meeting (error) all clear.
+        for terminal in ["idle", "ended", "error", "left", "failed"] {
+            let model = primed()
+            model.applyZoomForTesting(["meetingState": terminal])
+            expect(model.rememberedStripSettings["11"] == nil, "\(terminal) forgets the guest's strip settings")
+            expect(model.operatorRouteEdits[AudioRouteKey(source: "11", bus: "iso-1")] == nil,
+                   "\(terminal) forgets the guest's route edits")
+        }
+    }
+
+    /// Round-2 review (I2 gap): a returning A1-muted guest's mute — and the base
+    /// routing — reach the core in a request AHEAD of the spine that re-subscribes
+    /// the guest's audio, never 150 ms after it.
+    @MainActor
+    private static func testReturningMutedGuestsMuteGoesAheadOfTheSpine() {
+        let model = AppModel()
+        model.roster = [RosterParticipant(id: "11", name: "G", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        model.slots[0].kind = "zoom"; model.slots[0].sourceId = "11"; model.slots[0].inShow = true
+        let first = model.spinePushRequests()
+        expect(((first.first?["commands"] as? [JSONObject]) ?? []).contains {
+            $0["type"] as? String == "sync-audio-routing-matrix" },
+            "a new guest's routing goes ahead of the spine (no raw unmuted fallback window)")
+        model.editStrip("11") { $0.muted = true }
+        model.markAudioConsoleDeliveredForTesting()
+        model.slots[0].inShow = false            // off the wall...
+        _ = model.spinePushRequests()
+        model.slots[0].inShow = true             // ...and back
+        let requests = model.spinePushRequests()
+        expectEqual(requests.map { $0["type"] as? String ?? "" },
+                    ["media-core-sync", "zoom-media-spine-sync"],
+                    "the console request goes AHEAD of the spine that re-subscribes the audio")
+        let commands = requests.first?["commands"] as? [JSONObject] ?? []
+        let mix = commands.first { $0["type"] as? String == "sync-participant-audio-mix" }
+        let channel = (mix?["channels"] as? [JSONObject])?.first { $0["participantId"] as? String == "11" }
+        expectEqual(channel?["muted"] as? Bool, true, "the returning guest's remembered mute is in it")
+        let subs = (requests.last?["spinePayload"] as? JSONObject)?["subscriptions"] as? [JSONObject] ?? []
+        expect(subs.contains { $0["kind"] as? String == "participant-audio" && $0["participantId"] as? String == "11" },
+               "the spine after it re-subscribes the guest's audio")
+        let again = model.spinePushRequests()
+        expectEqual(again.count, 1, "an unchanged console adds nothing ahead of the next spine")
+    }
+
+    /// Cross-checks the audio wire strings against the CORE's source, the way the
+    /// payload-wrapper contract test does: a rename in C++ fails here, not live.
+    @MainActor
+    private static func testAudioSubscriptionKindsMatchTheCoreSource() {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let runtime = try? String(contentsOf: root.appendingPathComponent(
+            "native/src/modules/ZoomEngineRuntime.cpp"), encoding: .utf8) else {
+            FileHandle.standardError.write(
+                "  SKIPPED audio-kind cross-check (core source not alongside the shell)\n"
+                    .data(using: .utf8)!)
+            return
+        }
+        guard let line = runtime.split(separator: "\n").first(where: {
+            $0.contains("const bool isAudioSubscription =")
+        }) else {
+            expect(false, "the core no longer declares isAudioSubscription — re-derive the audio kinds")
+            return
+        }
+        let quoted = line.split(separator: "\"").enumerated()
+            .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+        let emitted = Set(AppModel.spineSubscriptionPayloads(
+            [], audioParticipantIds: ["1"], meetingHasParticipants: true)
+            .compactMap { $0["kind"] as? String })
+        expectEqual(emitted, Set(quoted),
+                    "the shell's audio kinds are exactly the core's audio subscription kinds")
+        expect(runtime.contains("command.isolateAudio = kind == \"participant-audio\""),
+               "the core isolates per-guest audio on kind participant-audio")
+        expect(runtime.contains("std::string(\"zoom-mix\")"),
+               "the core ingests the meeting mix as the \"zoom-mix\" source (the strip id)")
+        expect(runtime.contains("kind + \"-\" + participantId + \"-\" + purpose"),
+               "audio identity includes purpose — why participant-audio purpose must stay constant")
     }
 
     // ── dropout policy (per-source, #535 slice 4a reaching Mac) ─────────────
 
-    @MainActor
-    private static func testSourcePolicyCommandsAreZoomOnlyAndOrdered() {
-        // Core contract (MediaCore::setSourcePolicy, #535 slice 4a): only
-        // "zoom:<pid>" may carry dropoutPolicy — a non-zoom id pushes a sticky
-        // scene warning EVERY sync; values are exactly "hold"/"black"; an explicit
-        // hold must be SENT (PRESENT-OR-KEEP: omission keeps the stored black).
-        var zoomB = ShowInputSlot(id: 1); zoomB.kind = "zoom"; zoomB.sourceId = "20"
-        zoomB.dropoutPolicy = "black"
-        var zoomA = ShowInputSlot(id: 2); zoomA.kind = "zoom"; zoomA.sourceId = "11"
-        zoomA.dropoutPolicy = "hold"
-        var capture = ShowInputSlot(id: 3); capture.kind = "capture"; capture.sourceId = "cam"
-        capture.dropoutPolicy = "black"   // unreachable via UI; the filter is the guard
-        var unset = ShowInputSlot(id: 4); unset.kind = "zoom"; unset.sourceId = "30"
-        _ = unset   // dropoutPolicy stays "" — must emit nothing
-        let commands = AppModel.sourcePolicyCommands(slots: [zoomB, zoomA, capture, unset])
-        expectEqual(commands.count, 2, "capture and policy-less slots emit nothing")
-        expectEqual(commands[0]["sourceId"] as? String, "zoom:11", "ordinal order by sourceId")
-        expectEqual(commands[0]["dropoutPolicy"] as? String, "hold",
-                    "an explicit hold is sent — it must overwrite an earlier black")
-        expectEqual(commands[1]["sourceId"] as? String, "zoom:20", "ordinal order by sourceId")
-        expectEqual(commands[1]["dropoutPolicy"] as? String, "black", "black rides verbatim")
-        expectEqual(commands[0]["type"] as? String, "set-source-policy", "the core's command name")
-    }
+    // testSourcePolicyCommandsAreZoomOnlyAndOrdered moved to ShellTestsSources.swift as
+    // sources-policy/commands-zoom-and-capture-with-names (sources plan Task 9: the core
+    // now takes a dropout policy on capture:<id>, and every command carries displayName).
 
     @MainActor
     private static func testSourcePoliciesFollowTheSceneGraphInTheBatch() {
@@ -1046,9 +2052,10 @@ enum ShellTests {
         expect(ok.deleteScene("s3") == nil, "off-air scene deletes")
         expectEqual(ok.scenes.map(\.id), ["s1", "s2"], "only the target removed")
         expectEqual(ok.programSceneId, "s2", "Program untouched by a delete")
-        // Deleting the Preview scene empties Preview, never moves Program.
+        // Deleting the Preview scene moves Preview to Program (Windows
+        // PreviewAfterRemoval), never moves Program.
         expect(ok.deleteScene("s1") == nil, "preview scene deletes")
-        expectEqual(ok.previewSceneId, "", "Preview empties")
+        expectEqual(ok.previewSceneId, "s2", "Preview moves to Program")
         expectEqual(ok.programSceneId, "s2", "Program still untouched")
     }
 
@@ -1071,6 +2078,8 @@ enum ShellTests {
         expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_TESTS": "1"]), "TESTS is a harness run")
         expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_SELFCHECK": "1"]),
                "SELFCHECK is a harness run (the shell log must not be written)")
+        expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_TAB_SNAPSHOT": "/tmp/x"]),
+               "TAB_SNAPSHOT is a harness run (its seed must not write the real shell log)")
         expect(!ShellHarness.detect(in: [:]), "a normal launch is not")
         expect(ShellHarness.isActive, "this run is a harness run")
         expect(ShellHarness.prefsIsolationFailure(path: "/x/real.json", realPath: "/x/real.json") != nil,
@@ -1105,8 +2114,11 @@ enum ShellTests {
         // AudioObservationPolicy.cs: <=250 fresh, <=1000 aging, else stale.
         let obs = AudioObservation(sequence: 3, status: "fresh", ageMs: 0)
         let t0 = Date(timeIntervalSince1970: 1_000)
+        // Elapsed time past the shell's own poll period (the allowance) counts.
+        let poll = AudioObservationPolicy.snapshotPollInterval
         func state(_ elapsedMs: Double) -> String {
-            AudioObservationPolicy.state(obs, receivedAt: t0, now: t0.addingTimeInterval(elapsedMs / 1000))
+            AudioObservationPolicy.state(obs, receivedAt: t0,
+                                         now: t0.addingTimeInterval(poll + elapsedMs / 1000))
         }
         expectEqual(state(250), "fresh", "250 ms is fresh")
         expectEqual(state(251), "aging", "251 ms is aging")
@@ -1115,9 +2127,9 @@ enum ShellTests {
         // Owner age is carried, not reset by receipt.
         let owned = AudioObservation(sequence: 3, status: "fresh", ageMs: 50)
         expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
-                    now: t0.addingTimeInterval(0.19)), "fresh", "50+190 fresh")
+                    now: t0.addingTimeInterval(poll + 0.19)), "fresh", "50+190 fresh")
         expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
-                    now: t0.addingTimeInterval(0.21)), "aging", "50+210 aging")
+                    now: t0.addingTimeInterval(poll + 0.21)), "aging", "50+210 aging")
         expectEqual(AudioObservationPolicy.state(
             AudioObservation(sequence: 4, status: "stale", ageMs: 2000), receivedAt: t0, now: t0),
                     "stale", "published age past 1 s is stale at receipt")
@@ -1136,6 +2148,107 @@ enum ShellTests {
         expect(AudioObservationPolicy.warning(obs, receivedAt: t0, now: t0) == nil, "fresh: no warning")
     }
 
+    // Owner report 2026-11-15 ("the bottom is bouncing with some odd error about
+    // audio"): the shell polls snapshots every 0.5 s, and the policy counted the
+    // time since RECEIPT against the 250 ms fresh budget, so healthy audio read
+    // "meters aging" for the back half of every poll — twice a second.
+    @MainActor
+    private static func testMeterWarningAllowsTheShellPollInterval() {
+        let t0 = Date(timeIntervalSince1970: 7_000)
+        let healthy = AudioObservation(sequence: 9, status: "fresh", ageMs: 20)
+        expect(AudioObservationPolicy.warning(healthy, receivedAt: t0,
+                                              now: t0.addingTimeInterval(0.4)) == nil,
+               "fresh snapshot received 400 ms ago (inside one poll): no warning")
+        expect(AudioObservationPolicy.warning(healthy, receivedAt: t0,
+                                              now: t0.addingTimeInterval(0.5)) == nil,
+               "exactly one poll period since receipt: no warning")
+        expectEqual(AudioObservationPolicy.warning(healthy, receivedAt: t0,
+                                                   now: t0.addingTimeInterval(2)) ?? "",
+                    "meters stale \u{2014} last values held",
+                    "received 2 s ago: a stalled core still goes stale")
+        expectEqual(AudioObservationPolicy.snapshotPollInterval, 0.5,
+                    "the allowance is the shell's own poll period")
+        let model = AppModel()
+        model.observeAudioObservation(
+            ["audioObservation": ["sequence": 1, "ageMs": 20, "status": "fresh"]], now: t0)
+        for step in stride(from: 0.0, through: 0.5, by: 0.05) {
+            expect(model.meterWarning(now: t0.addingTimeInterval(step)) == nil,
+                   "healthy audio between polls never warns (+\(step)s)")
+        }
+    }
+
+    // ── Studio footer parity (owner report 2026-11-15) ──────────────────────
+
+    @MainActor
+    private static func testStudioFooterReadoutsAreWindows() {
+        expectEqual(StudioFooterReadout.transitions.map(\.mode), ["cut", "fade", "dip", "wipe"],
+                    "transition menu is Cut / Fade / Dip / Wipe (all built by the shared core)")
+        for option in StudioFooterReadout.transitions {
+            expectEqual(AppModel.normalizeTakeTransitionMode(option.mode), option.mode,
+                        "\(option.label) survives the take-transition normalizer")
+        }
+        expectEqual(StudioFooterReadout.transitionDuration("cut"), "Instant", "cut has no duration")
+        expectEqual(StudioFooterReadout.transitionDuration("dip"), "\u{00B7} 300 ms", "dip is 300 ms")
+        var slots = (1...10).map { ShowInputSlot(id: $0) }
+        expectEqual(StudioFooterReadout.setupSummary(slots: slots, guests: 0),
+                    "0 inputs \u{00B7} 0 Zoom guests", "Windows SetupProgressSummary, empty")
+        slots[0].kind = "zoom"; slots[0].inShow = true
+        slots[1].kind = "capture"; slots[1].inShow = false
+        expectEqual(StudioFooterReadout.setupSummary(slots: slots, guests: 1),
+                    "1 input \u{00B7} 1 Zoom guest", "only in-show assigned slots count; singulars")
+        expectEqual(StudioFooterReadout.lufsLabel(-120), "LUFS \u{2014}", "no loudness yet")
+        expectEqual(StudioFooterReadout.lufsLabel(-16.44), "-16.4 LUFS", "measured loudness")
+        expectEqual(StudioFooterReadout.masterStatusLine(warning: "meters aging", limiterActive: true),
+                    "meters aging", "the meter warning takes the status line's place")
+        expectEqual(StudioFooterReadout.masterStatusLine(warning: nil, limiterActive: true),
+                    "Limiter reducing", "limiter state when healthy")
+        let taps: [String: Any] = ["audioRoutingMatrix": ["busTaps": [
+            ["busId": "pgm-l", "frames": 480, "peakDbfs": -6.0],
+            ["busId": "pgm-r", "frames": 480, "peakDbfs": -30.0],
+        ]]]
+        let sides = StudioFooterReadout.masterLevels(snapshot: taps, fallback: 5)
+        expectEqual(sides.left, 90, "L from the pgm-l tap (-6 dBFS on the -60..0 scale)")
+        expectEqual(sides.right, 50, "R from the pgm-r tap")
+        let none = StudioFooterReadout.masterLevels(snapshot: [:], fallback: 42)
+        expect(none.left == 42 && none.right == 42, "no taps: mono master level on both sides")
+        for text in [StudioFooterReadout.ndiUnavailable] {
+            expect(text.contains("isn't available on Mac yet"), "unavailable output says so plainly")
+            expect(!text.contains("Developer ID"), "the app IS Developer ID signed; never blame it")
+        }
+    }
+
+    /// The bounce itself: status that comes and goes must never resize the footer.
+    @MainActor
+    private static func testStudioFooterHeightIgnoresStatus() {
+        func height(_ configure: (AppModel) -> Void) -> CGFloat {
+            let model = AppModel()
+            configure(model)
+            let host = NSHostingView(rootView: StudioFooter().environmentObject(model)
+                .frame(width: 1600))
+            host.frame = NSRect(x: 0, y: 0, width: 1600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.height
+        }
+        let t0 = Date()
+        let calm = height { model in
+            model.observeAudioObservation(
+                ["audioObservation": ["sequence": 1, "ageMs": 20, "status": "fresh"]], now: t0)
+        }
+        expect(calm > 100, "footer measured (\(calm) pt)")
+        let warned = height { model in
+            model.observeAudioObservation(
+                ["audioObservation": ["sequence": 1, "ageMs": 5000, "status": "stale"]], now: t0)
+        }
+        expectEqual(warned, calm, "a meter warning does not change the footer height")
+        let busy = height { model in
+            FooterSnapshotHarness.seedLive(model, now: t0)
+            model.recordingWarning = "disk nearly full"
+            model.takeStatus = String(repeating: "Take failed: a very long reason ", count: 6)
+            model.lowerThirdPhase = "building-out"
+        }
+        expectEqual(busy, calm, "recording/stream/take/lower-third status does not change the height")
+    }
+
     @MainActor
     private static func testMeterWarningFollowsSnapshotAgeAndRecovers() {
         let model = AppModel()
@@ -1147,8 +2260,10 @@ enum ShellTests {
         expect(model.meterWarning(now: t0) == nil, "legacy/no envelope: no warning")
         model.observeAudioObservation(snap(1, 20), now: t0)
         expect(model.meterWarning(now: t0) == nil, "fresh observation: levels shown clean")
-        expect(model.meterWarning(now: t0.addingTimeInterval(0.5)) == "meters aging",
-               "no new snapshot for 500 ms: aging")
+        expect(model.meterWarning(now: t0.addingTimeInterval(0.5)) == nil,
+               "one shell poll period without a snapshot is expected, not aging")
+        expect(model.meterWarning(now: t0.addingTimeInterval(1.0)) == "meters aging",
+               "no new snapshot for 1 s (a missed poll): aging")
         expect(model.meterWarning(now: t0.addingTimeInterval(2)) ==
                "meters stale \u{2014} last values held", "no new snapshot for 2 s: stale")
         model.observeAudioObservation(snap(2, 3000), now: t0.addingTimeInterval(2))
@@ -1373,6 +2488,7 @@ enum ShellTests {
         model.overlays.defaultOverlayBehavior = behavior
         model.lowerThirdPhase = phase
         model.lowerThirdName = "Guest"
+        seedProgramSource(model)   // Key in names a rendered Program source (Tier 0.6)
         model.lowerThirdSettleOverrideNs = 5_000_000  // 5ms, not the real build-out wait
         var seen: [JSONObject] = []
         model.overlayCommandObserver = { seen.append($0) }
@@ -1687,6 +2803,22 @@ enum ShellTests {
     }
 
     @MainActor
+    /// Harness timer for AppModel.timerSleepForTesting: every sleep parks until
+    /// fireAll(). A cancelled debounce task resumes and sees Task.isCancelled.
+    final class ManualTimers {
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        /// Sleeps parked right now (not yet fired).
+        var pending: Int { waiters.count }
+        func sleep(_ nanoseconds: UInt64) async {
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        func fireAll() {
+            let ready = waiters
+            waiters = []
+            ready.forEach { $0.resume() }
+        }
+    }
+
     static func spin(until condition: () -> Bool, limit: TimeInterval) {
         let end = Date().addingTimeInterval(limit)
         while !condition(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
@@ -1795,8 +2927,11 @@ enum ShellTests {
         model.confirmQuit()
         spin(until: { !replies().isEmpty }, limit: 6)
         expectEqual(replies(), [true], "the quit completes")
-        expectEqual(core.commands, ["start-program-output", "set-recording-targets", "start-recording-session",
-                                    "stop-recording-session", "stop-encoder-session"],
+        // set-source-policy rides every scene sync for each assigned source since sources
+        // plan Task 9 (it carries the slate displayName); it is not part of the quit flow.
+        expectEqual(core.commands.filter { $0 != "set-source-policy" },
+                    ["start-program-output", "set-recording-targets", "start-recording-session",
+                     "stop-recording-session", "stop-encoder-session"],
                     "exactly: the take's start trio, the operator's stop, the quit's stream stop")
         let starts = core.sent.filter { ($0["type"] as? String) == "start-program-output" }
         expectEqual(starts.count, 1, "only the take's own start-program-output was sent")
@@ -2010,6 +3145,138 @@ enum ShellTests {
         model.quitFinishing = true     // Windows CanTake has no quit term (only Record/Stream do)
         expect(model.canTake, "CanTake ignores the quit guard")
         expectEqual(runTake(model).result, .success, "Take still runs")
+    }
+
+    // ── multiview cue -> Take (owner report 2026-11-15: "choosing a scene in the
+    // multiviewer doesn't allow you to take that from preview to program") ───
+    // Windows StudioViewModel.PreviewMultiviewTile: the solo scene is a REAL scene
+    // entry (EnsureMultiviewSoloScene), the id cued is the one NOT on Program, and
+    // each solo scene owns its own route, so a cue never changes what is on air.
+
+    @MainActor
+    static func soloModel(_ core: FakeTakeCore) -> AppModel {
+        let model = takeModel(core)    // Program s2, Preview s1
+        for (index, pid) in ["11", "22", "33"].enumerated() {
+            model.slots[index].kind = "zoom"
+            model.slots[index].sourceId = pid
+            model.slots[index].name = "Guest \(pid)"
+        }
+        return model
+    }
+
+    @MainActor
+    static func soloParticipant(_ model: AppModel, _ sceneId: String) -> String {
+        model.buildRoutes(for: sceneId).first?["participantId"] as? String ?? "<none>"
+    }
+
+    @MainActor
+    private static func testMultiviewCueCanBeTaken() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        expectEqual(model.previewSceneId, AppModel.soloSceneA, "a cue arms a solo scene on Preview")
+        expect(model.canTake, "a multiview cue can be Taken")
+        expectEqual(runTake(model).result, .success, "the Take succeeds")
+        expectEqual(model.programSceneId, AppModel.soloSceneA, "Program is the solo scene")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11", "Program shows the cued source")
+        expectEqual(model.previewSceneId, "s2", "the previous Program is on Preview")
+    }
+
+    @MainActor
+    private static func testMultiviewCueNeverChangesProgram() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A showing 11
+        model.previewMultiviewSlot(2)
+        expectEqual(model.previewSceneId, AppModel.soloSceneB,
+                    "the cue lands on the solo id NOT on Program")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "the on-air solo route is untouched by a cue")
+        expectEqual(soloParticipant(model, AppModel.soloSceneB), "22", "Preview shows the new cue")
+        expect(model.canTake, "the second cue can be Taken")
+        expectEqual(runTake(model).result, .success, "second Take succeeds")
+        expectEqual(model.programSceneId, AppModel.soloSceneB, "Program is solo B")
+        expectEqual(soloParticipant(model, AppModel.soloSceneB), "22", "Program shows 22")
+        model.previewMultiviewSlot(3)
+        expectEqual(model.previewSceneId, AppModel.soloSceneA, "back to solo A, off air")
+        expectEqual(soloParticipant(model, AppModel.soloSceneB), "22", "on-air route still 22")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "33", "Preview shows 33")
+    }
+
+    @MainActor
+    private static func testMultiviewRecueResyncsTheSameSoloScene() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        let syncs = model.sceneSyncRequestCount
+        model.previewMultiviewSlot(2)
+        expectEqual(model.previewSceneId, AppModel.soloSceneA,
+                    "Program is not solo, so the same solo id is reused (Windows)")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "22", "its route follows the new cue")
+        expect(model.sceneSyncRequestCount > syncs, "the re-cue still syncs the core")
+        expect(model.canTake, "the re-cue can be Taken")
+    }
+
+    @MainActor
+    private static func testTakeRollbackRefusedWhenASoloSceneWasRecuedMidTake() {
+        // Windows StudioViewModel.Transport.cs: the rollback snapshots BOTH scenes'
+        // routes and refuses if either changed while the Take was pending.
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A (11), Preview = s2
+        core.hold = true
+        core.failure = "gone"
+        let box = runTake(model, wait: false)
+        spin(until: { core.bodies.count >= 2 }, limit: 2)
+        expectEqual(model.programSceneId, "s2", "Take of s2 is pending")
+        model.previewMultiviewSlot(2)   // Program is s2 locally -> re-cues solo A
+        expectEqual(model.previewSceneId, AppModel.soloSceneA, "the mid-Take cue reuses solo A")
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(box.result, .failed("Take was not confirmed; newer local edits preserved. "
+                                        + "Verify live output. gone"),
+                    "a re-pointed solo scene refuses the rollback")
+        expectEqual(model.programSceneId, "s2",
+                    "solo A (now showing a source never Taken) is not put back on Program")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "22", "the newer cue is kept")
+    }
+
+    @MainActor
+    private static func testSoloSceneCapturesItsSourceWhenCued() {
+        // Windows BuildSoloRoute copies the participant / capture device id into
+        // the route at cue time; later slot edits never reach it.
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A showing 11
+        model.slots[0].kind = "unassigned"
+        model.slots[0].sourceId = ""
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "unassigning the slot does not black Program")
+        model.slots[0].kind = "zoom"
+        model.slots[0].sourceId = "44"
+        model.slots[0].name = "Guest 44"
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "reassigning the slot does not change Program")
+        expectEqual(model.busLabel(for: AppModel.soloSceneA), "Guest 11", "PGM still names the Taken source")
+    }
+
+    @MainActor
+    private static func testSoloScenesStayOutOfTheRailAndPrefs() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)
+        model.previewMultiviewSlot(2)
+        let solos: Set<String> = [AppModel.soloSceneA, AppModel.soloSceneB]
+        expect(model.railScenes.allSatisfy { !solos.contains($0.id) }, "rail hides solo scenes")
+        expectEqual(model.railScenes.map(\.id), ["s1", "s2", "s3"], "rail is the operator's scenes")
+        expectEqual(model.currentPrefs().scenes.map(\.id), ["s1", "s2", "s3"],
+                    "solo scenes are never persisted")
+        expectEqual(model.busLabel(for: AppModel.soloSceneA), "Guest 11", "PGM names the source")
+        expectEqual(model.busLabel(for: AppModel.soloSceneB), "Guest 22", "PVW names the source")
     }
 
     // ── Fade to Black (audit §2) + keyboard Take/FTB (audit §5) ──────────────
@@ -2601,12 +3868,71 @@ enum ShellTests {
         expect(!P.showAssignmentGuidance(tileCount: 3, multiviewSurfaceId: 0), "tiles present: no guidance")
     }
 
+    // ── CameraExtensionKit (roadmap M9.2) ────────────────────────────────────
+    private static func testStandbySlateMatchesTheCoreSlate() {
+        // Fixture invariant: 1080/12 = 90, top = (1080-90)/2 = 495, bottom = 585.
+        let s = StandbySlate.nv12(width: 1920, height: 1080)!
+        expectEqual(s.count, 3_110_400, "NV12 size")
+        expectEqual(s[494 * 1920], 24, "row above bar is field")
+        expectEqual(s[495 * 1920], 130, "first bar row")
+        expectEqual(s[584 * 1920 + 1919], 130, "last bar row, last column")
+        expectEqual(s[585 * 1920], 24, "row below bar is field")
+        expect(s[(1920 * 1080)...].allSatisfy { $0 == 128 }, "neutral chroma")
+        expect(StandbySlate.nv12(width: 1919, height: 1080) == nil, "odd width refused")
+        expect(StandbySlate.nv12(width: 1920, height: 1081) == nil, "odd height refused")
+        expect(StandbySlate.nv12(width: 0, height: 1080) == nil, "zero width refused")
+        expect(StandbySlate.nv12(width: 1920, height: -2) == nil, "negative height refused")
+    }
+    private static func testFrameSelectorHoldAndStop() {
+        var f = FrameSelector()
+        expectEqual(f.choice(atNanoseconds: 10), .slate, "never delivered -> slate")
+        f.producerDelivered(atNanoseconds: 1_000_000_000)
+        expectEqual(f.choice(atNanoseconds: 1_500_000_000), .program, "exactly 500 ms -> still program")
+        expectEqual(f.choice(atNanoseconds: 1_500_000_001), .slate, "500 ms + 1 ns -> slate")
+        expectEqual(f.choice(atNanoseconds: 999_999_999), .slate, "now before delivery -> slate (fail toward law 2)")
+        f.producerDelivered(atNanoseconds: 2_000_000_000); f.producerStopped()
+        expectEqual(f.choice(atNanoseconds: 2_000_000_001), .slate, "stop -> slate immediately, no hold")
+        f.producerDelivered(atNanoseconds: 3_000_000_000)
+        expectEqual(f.choice(atNanoseconds: 3_000_000_001), .program, "delivery after stop -> program")
+    }
+    private static func testDeviceNamePolicy() {
+        expectEqual(DeviceNamePolicy.sanitized("  Studio A \n"), "Studio A", "trimmed")
+        expectEqual(DeviceNamePolicy.sanitized("   "), "CoreVideo Pro Camera", "blank -> default")
+        expectEqual(DeviceNamePolicy.sanitized("A\u{0007}B"), "AB", "control chars dropped")
+        expectEqual(DeviceNamePolicy.sanitized(String(repeating: "\u{00E9}", count: 80)).unicodeScalars.count, 64, "capped at 64 scalars")
+    }
+    private static func testSlateClassifier() {
+        func classify(_ plane: [UInt8], _ w: Int, _ h: Int) -> Bool {
+            plane.withUnsafeBufferPointer {
+                SlateClassifier.isSlate(yPlane: $0, width: w, height: h, bytesPerRow: w)
+            }
+        }
+        let w = 1280, h = 720
+        let slate = StandbySlate.nv12(width: w, height: h)!
+        expect(classify(Array(slate[0..<(w * h)]), w, h), "the real slate is a slate")
+        expect(!classify([UInt8](repeating: 82, count: w * h), w, h), "BT.601 red (Y 82) is not a slate")
+        expect(!classify([UInt8](repeating: 24, count: w * h), w, h), "flat dark, no bar, is not a slate")
+        // Flat Y 130 everywhere: the middle row matches, rows h/4 and 3h/4 do not.
+        expect(!classify([UInt8](repeating: 130, count: w * h), w, h), "flat 130, no dark field, is not a slate")
+        // Padded rows: bytesPerRow > width must be honoured.
+        let stride = w + 64
+        var padded = [UInt8](repeating: 0, count: stride * h)
+        for row in 0..<h { for col in 0..<w { padded[row * stride + col] = slate[row * w + col] } }
+        let paddedResult = padded.withUnsafeBufferPointer {
+            SlateClassifier.isSlate(yPlane: $0, width: w, height: h, bytesPerRow: stride)
+        }
+        expect(paddedResult, "padded stride is honoured")
+    }
+
     @MainActor
     static func runAndExit() -> Never {
         // Before ANY test: a run whose prefs resolve to the real file aborts.
         ShellHarness.requireIsolatedPrefsOrExit()
         failures = []
         checks = 0
+        // No test runs a real core binary as a camera probe (cases that test
+        // the probe name their own executable).
+        FreshProcessCameraDeviceProbe.defaultExecutable = { nil }
 
         let cases: [(String, () -> Void)] = [
             ("monitor/revisioned-projection", testMonitorControlProjection),
@@ -2639,6 +3965,14 @@ enum ShellTests {
             ("oauth/expiry-slack", testExpiryLeavesSlackBeforeTheRealDeadline),
             ("oauth/keychain-identity", testKeychainServiceIsNeverTheObsPluginItem),
             ("oauth/return-uri", testOAuthReturnUriMatchesTheBrokerAllowlist),
+            ("oauth/loopback-request-line", testOAuthLoopbackParsesTheRequestLine),
+            ("oauth/loopback-page", testOAuthLoopbackPageSaysWhatHappened),
+            ("oauth/loopback-lifecycle", testOAuthLoopbackLifecycleIsOneShot),
+            ("oauth/loopback-broker-url", testOAuthBrokerUrlCarriesTheLoopbackReturnUri),
+            ("oauth/loopback-end-to-end", testOAuthLoopbackListenerEndToEnd),
+            ("zoom/join-status-late-truth", testZoomJoinStatusPrefersZoomsReasonOverATimeout),
+            ("zoom/join-status-rejoin", testZoomJoinStatusIgnoresTheOldFailureDuringARejoin),
+            ("oauth/state-before-error", testOAuthCallbackChecksStateBeforeError),
             ("encoder/no-unlicensed-codecs", testShellOffersOnlyEncodableCodecs),
             ("telemetry/dropped-frames", testDroppedFrameReadout),
             ("chromakey/enabled-only", testChromaKeyNodeOnlySentWhenEnabled),
@@ -2648,7 +3982,28 @@ enum ShellTests {
             ("budget/iso-dedupe-determinism", testBudgetIsoTierAndDeterminism),
             ("budget/route-shape", testRoutedZoomPidsReadTheRealRouteShape),
             ("budget/wire-shape", testSpineSubscriptionWireShape),
-            ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
+            ("multiview/source-wire-shape", testMultiviewSourceWireShape),
+            ("zoom-audio/spine-subscribes-audio", testSpineSubscribesTheMeetingMixAndSourceAudio),
+            ("zoom-audio/source-set", testAudioSourceSetKeepsCameraOffAndRefusesNonSources),
+            ("zoom-audio/kinds-vs-core", testAudioSubscriptionKindsMatchTheCoreSource),
+            ("zoom-audio/push-spine-call-site", testPushSpineSubscribesWallAudioFromTheModel),
+            ("audio-console/strips-from-source-set", testStripsComeFromTheSourceSetNotOnlyTheEcho),
+            ("audio-console/exactly-modelled-sources", testStripSetIsExactlyTheModelledSources),
+            ("audio-console/unpaired-mic-leaves", testUnpairedMicStripLeavesTheConsole),
+            ("audio-console/a1-mute-481", testA1MuteIsNeverAdoptedFromTheEcho),
+            ("audio-console/sync-carries-every-strip", testConsoleSyncCarriesEveryStripAndTheA1State),
+            ("audio-routing/default-topology", testDefaultRoutingIsTheWindowsPerGuestTopology),
+            ("audio-routing/model-mon-bus", testModelRoutesEverySourceToTheMonitorBus),
+            ("audio-console/core-restart-reasserts", testCoreRestartReassertsTheWholeAudioConsole),
+            ("audio-console/pre-mute-meter", testMutedTalkingGuestShowsADimmedPreMuteMeter),
+            ("audio-console/roster-order-stable", testStripOrderIsRosterOrderAndStableAcrossACue),
+            ("audio-console/mute-survives-source-exit", testMutedGuestStaysMutedAcrossASourceSetExit),
+            ("audio-console/meeting-end-forgets", testMeetingEndForgetsPerGuestAudioState),
+            ("audio-routing/slider-coalesced", testSendGainDragCoalescesTheRoutingPush),
+            ("audio-routing/media-follows-program", testMediaRoutingFollowsTheProgramMediaRoute),
+            ("zoom-audio/roster-change-repushes-spine", testRosterMembershipChangeRepushesTheSpine),
+            ("audio-console/only-terminal-states-forget", testOnlyTerminalMeetingStatesForgetGuestAudio),
+            ("audio-console/returning-mute-ahead-of-spine", testReturningMutedGuestsMuteGoesAheadOfTheSpine),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
             ("iso/take-operator-deselect", testIsoTakeOperatorDeselectIsAuthoritative),
@@ -2657,6 +4012,26 @@ enum ShellTests {
             ("iso/selection-port", testRecordingIsoSelectionPort),
             ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
+            ("vcam-ext/error-mapping", testCameraExtensionErrorMapping),
+            ("vcam-ext/preflight", testCameraExtensionPreflight),
+            ("vcam-ext/replacement", testCameraExtensionReplacement),
+            ("vcam-ext/properties", testCameraExtensionProperties),
+            ("vcam-ext/settings-link", testCameraExtensionSettingsLink),
+            ("vcam-ext/fake", testCameraExtensionFakeRecordsCalls),
+            ("vcam-ext/prefs-field", testCameraExtensionPrefsField),
+            ("vcam-ext/reducer", testCameraExtensionReducerSequences),
+            ("vcam-ext/activator-isolation", testCameraExtensionActivatorKeepsRequestsApart),
+            ("vcam/label-precedence", testVirtualCameraLabelPrecedence),
+            ("vcam/read-model-core-shape", testVirtualCameraReadModelParsesTheCoreShape),
+            ("vcam/wire-vs-core", testSyncVirtualCameraWire),
+            ("vcam/prefs-round-trip-older-file", testVirtualCameraPrefsRoundTripAndOlderFile),
+            ("vcam/resent-each-core-generation", testVirtualCameraResentOnNewCoreGeneration),
+            ("vcam/activation-wiring", testVirtualCameraActivationWiring),
+            ("vcam/remove-deactivates-and-clears-opt-in", testRemoveVirtualCameraCallsDeactivateAndClearsOptIn),
+            ("vcam/remove-failure-keeps-opt-in-and-reports", testRemoveVirtualCameraFailureKeepsOptInAndReports),
+            ("vcam/toggle-track-visible", testStudioToggleTrackIsVisibleInBothStates),
+            ("vcam/unchanged-name-sends-nothing", testVirtualCameraUnchangedNameSendsNothing),
+            ("vcam/proof-needs-snapshot", testVirtualCameraProofNeedsTheSnapshotVariable),
             ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
             ("overlays/brand-default-all-off-leaves-manual", testBrandDefaultAllOffLeavesTheManualLowerThirdAlone),
@@ -2673,6 +4048,9 @@ enum ShellTests {
             ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
             ("meters/observation-thresholds", testAudioObservationThresholdsAreWindows),
             ("meters/warning-recovers", testMeterWarningFollowsSnapshotAgeAndRecovers),
+            ("meters/poll-interval-allowance", testMeterWarningAllowsTheShellPollInterval),
+            ("footer/readouts-windows", testStudioFooterReadoutsAreWindows),
+            ("footer/height-ignores-status", testStudioFooterHeightIgnoresStatus),
             ("quit/decision", testQuitDecisionAsksOnlyWhenOutputsAreLive),
             ("quit/one-prompt", testQuitGateAllowsOnePromptAtATime),
             ("quit/stop-then-wait", testQuitFinishStopsThenWaitsForTerminalEvidence),
@@ -2690,6 +4068,12 @@ enum ShellTests {
             ("take/rollback-refused-newer-edits", testTakeRollbackRefusedWhenNewerEditsLanded),
             ("take/in-flight-refused", testSecondTakeWhileInFlightIsRefused),
             ("take/refusals-offline", testTakeRefusalsAndOffline),
+            ("take/multiview-cue-can-be-taken", testMultiviewCueCanBeTaken),
+            ("take/multiview-cue-never-changes-program", testMultiviewCueNeverChangesProgram),
+            ("take/multiview-recue-resyncs", testMultiviewRecueResyncsTheSameSoloScene),
+            ("take/solo-scenes-out-of-rail-and-prefs", testSoloScenesStayOutOfTheRailAndPrefs),
+            ("take/rollback-refused-on-mid-take-solo-recue", testTakeRollbackRefusedWhenASoloSceneWasRecuedMidTake),
+            ("take/solo-scene-captures-source-at-cue", testSoloSceneCapturesItsSourceWhenCued),
             ("take/not-blocked-by-quit", testTakeIsNotBlockedByTheQuitGuard),
             ("ftb/wire-and-echo", testFtbSendsTheWireCommandAndAppliesTheEcho),
             ("ftb/admission-refusals", testFtbAdmissionRefusals),
@@ -2713,7 +4097,14 @@ enum ShellTests {
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),
             ("quit/core-hang-deadline", testQuitDeadlineIsHonouredWhenTheCoreHangs),
             ("quit/timeout-resend", testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand),
-            ("control/manifest-golden", testControlManifestMatchesWindowsGolden),
+            ("control/closure", testControlClosure),
+            ("control/dispatch-drive", testControlEverySupportedIdIsDispatched),
+            ("control/unavailable-422", testControlUnavailableActionsAnswer422),
+            ("control/manifest-shared-file", testControlManifestIsTheSharedFileFiltered),
+            ("control/fixtures", testControlSharedFixtures),
+            ("control/hardening-timeouts", testControlHardeningTimeouts),
+            ("control/hardening-connection-cap", testControlHardeningConnectionCap),
+            ("control/hardening-no-preflight", testControlHardeningNoPreflight),
             ("control/invoke-rejections", testControlInvokeRejectsLikeWindows),
             ("control/invoke-bind-and-replies", testControlInvokeBindsAndShapesReplies),
             ("control/snapshot-envelope", testControlSnapshotEnvelopeIsWindows),
@@ -2721,6 +4112,7 @@ enum ShellTests {
             ("control/auth-and-bind-policy", testControlAuthAndBindPolicyAreWindows),
             ("control/http-parser-bounds", testControlHttpParserBounds),
             ("control/surface-model-paths", testControlSurfaceRoutesThroughTheModel),
+            ("control/surface-virtualcam", testControlSurfaceVirtualCameraActions),
             ("control/surface-ftb-snapshot", testControlSurfaceFtbAndSnapshot),
             ("control/server-end-to-end", testControlServerEndToEnd),
             ("control/server-auth-wire", testControlServerAuthOverTheWire),
@@ -2730,7 +4122,12 @@ enum ShellTests {
             ("lifecycle/start-is-idempotent", testStartRunsItsSetupExactlyOncePerProcess),
             ("control/ws-origin-rule", testControlWebSocketOriginRule),
             ("control/ws-slow-client-dropped", testControlSlowWebSocketClientIsDropped),
-        ]
+            ("camera-kit/standby-slate", testStandbySlateMatchesTheCoreSlate),
+            ("camera-kit/frame-selector", testFrameSelectorHoldAndStop),
+            ("camera-kit/device-name", testDeviceNamePolicy),
+            ("camera-kit/slate-classifier", testSlateClassifier),
+            ("camera-kit/producer-attestation", testProducerAttestation),
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()

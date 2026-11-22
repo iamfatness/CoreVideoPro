@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import './observation.mjs';
+import { validatePlatforms, generateControlSwift } from './control-manifest.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const schema = JSON.parse(readFileSync(resolve(root, 'contracts/lifecycle.schema.json'), 'utf8'));
@@ -215,11 +216,18 @@ for (const [name, def] of definitions) {
 }
 cpp.push('} // namespace corevideo::contracts');
 swift.splice(2, 0, 'import CoreFoundation');
+// The shared control contract (control-manifest.mjs). Validated before anything is written, so a
+// stale manifest/platforms pair fails contract:generate and writes nothing.
+const controlManifest = JSON.parse(readFileSync(resolve(root, 'contracts/control.manifest.json'), 'utf8'));
+const controlPlatforms = JSON.parse(readFileSync(resolve(root, 'contracts/control.platforms.json'), 'utf8'));
+validatePlatforms(controlManifest, controlPlatforms);
+const controlSwift = generateControlSwift(controlManifest, controlPlatforms);
 let stale = false;
 for (const [path, lines] of [
   ['native/src/contracts/Lifecycle.h', cpp],
   ['native-shell/CoreVideoPro.MediaCore/Contracts/Lifecycle.cs', cs],
-  ['mac-shell/Sources/CoreVideoProShell/Lifecycle.generated.swift', swift]
+  ['mac-shell/Sources/CoreVideoProShell/Lifecycle.generated.swift', swift],
+  ['mac-shell/Sources/CoreVideoProShell/ControlManifest.generated.swift', controlSwift]
 ]) {
   const target = resolve(root, path);
   const content = lines.join('\n') + '\n';

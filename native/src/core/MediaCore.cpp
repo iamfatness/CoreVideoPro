@@ -480,16 +480,31 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   // until start() has run, so no enabled-flag is read across threads here.
   if (modules_.compositor && modules_.compositor->publishesVcamFrames()) {
     compositorPublishesVcam_ = true;
-    auto* publisher = virtualCamera_.get();
-    modules_.compositor->setIdentifiedVcamFrameSink(
-        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height,
-                    int64_t programSequence, int64_t deliveredAt100ns) {
-          try {
-            publisher->publishNv12Identified(std::move(nv12), width, height, programSequence, deliveredAt100ns);
-          } catch (...) {
-          }
-        });
+    installCompositorVcamSink();
   }
+}
+
+void MediaCore::installCompositorVcamSink() {
+  auto* publisher = virtualCamera_.get();
+  modules_.compositor->setIdentifiedVcamFrameSink(
+      [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height,
+                  int64_t programSequence, int64_t deliveredAt100ns) {
+        try {
+          publisher->publishNv12Identified(std::move(nv12), width, height, programSequence, deliveredAt100ns);
+        } catch (...) {
+        }
+      });
+}
+
+void MediaCore::setVirtualCameraPublisherForTest(std::unique_ptr<modules::IVirtualCameraPublisher> publisher) {
+  if (!publisher) return;
+  // Re-point the compositor's tap at the replacement FIRST (setting the sink
+  // waits for any in-flight call), then let the old publisher go. The default
+  // publisher's constructor has no side effects (start() opens the OS camera),
+  // so a test that swaps before enabling never touches a real camera.
+  std::swap(virtualCamera_, publisher);
+  if (compositorPublishesVcam_) installCompositorVcamSink();
+  if (virtualCameraEnabled_) publisher->stop();
 }
 
 MediaCore::~MediaCore() {
@@ -1237,6 +1252,11 @@ rpc::Json MediaCore::applySourceGrade(const rpc::Json& command) {
   if(const auto* advanced=grade->get("advanced")) {std::shared_ptr<const modules::AdvancedGradeDocument> doc;
     if(!modules::readAdvancedGrade(*advanced,doc)) return rpc::Json::Object{{"accepted",false},{"reason","invalid-advanced-grade"}};}
   return sourceGrades_.apply(command,readColorGrade(*grade));
+}
+
+rpc::Json MediaCore::querySourceGrade(const std::string& sourceId) const {
+  const auto q = sourceGrades_.query(sourceId);
+  return rpc::Json::Object{{"present", q.present}, {"sourceEpoch", double(q.sourceEpoch)}, {"revision", double(q.revision)}};
 }
 
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
@@ -3064,6 +3084,12 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   const std::string deviceName = command.get("deviceName") ? command.get("deviceName")->asString() : "";
 
   virtualCamera_->setMirror(mirror);
+#if defined(__APPLE__)
+  // macOS: the Mac backend's mirrorAppliedUpstream() contract — the mirror is
+  // done on the GPU inside the compositor's NV12 tap (roadmap M9.2). Default
+  // no-op on any compositor without that tap.
+  if (modules_.compositor) modules_.compositor->setVcamMirror(mirror);
+#endif
   virtualCamera_->setFramerEnabled(command.get("framerEnabled") && command.get("framerEnabled")->asBool());
   virtualCamera_->setDeviceName(deviceName);
   if (on && !virtualCameraEnabled_) {
@@ -6038,16 +6064,27 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       (modules_.compositor->programBufferFrames() > 0 || !outputActive) : false;
   // The virtual camera is an output too, but it wants NATIVE resolution (it serves
   // a real webcam), not the 320x180 UI thumbnail. Gate the dedicated full-res
-  // program readback on the vcam being enabled; the publisher (on the audio/output
-  // worker) converts that full BGRA to NV12 for the SHM slot. Independent of
+  // program tap on the vcam being enabled (on the macOS vcam backend that is the
+  // GPU NV12 tap, vcamNv12Tap, below — never the BGRA readback). Independent of
   // skipCpuReadback so the light 60fps display tick still skips the small preview.
   // Streaming needs the same GPU tap as the virtual camera. RTMP previously
   // consumed `ProgramFrame::preview` (a 320x180 UI thumbnail), so YouTube saw
   // the connection but could not render the declared 4K program correctly.
   // The tap scales on-GPU to 1080p and converts to NV12 on its own thread.
+#if defined(__APPLE__) && defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // macOS virtual camera (roadmap M9.2): the camera is fed ONLY by the Metal
+  // compositor's GPU NV12 tap (resize + mirror + BT.601 on the GPU, a single
+  // 3 MB memcpy of finished NV12 on the tap thread). Enabling it must NOT arm
+  // the 8 MB BGRA full-program readback — that stays for recording/encoding.
+  renderPlan.vcamNv12Tap = virtualCameraEnabled_;
+  renderPlan.fullProgramReadback = outputActive ||
+      ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
+       modules_.compositor->wantsFullProgramReadbackForRecording());
+#else
   renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive ||
       ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
        modules_.compositor->wantsFullProgramReadbackForRecording());
+#endif
   // NDI graphics key: only while the operator's destination list carries it.
   // The compositor frees the key target and its reader thread the first tick
   // this reads false again, so an idle destination costs nothing.

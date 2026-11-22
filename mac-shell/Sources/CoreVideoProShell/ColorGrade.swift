@@ -17,7 +17,7 @@ struct ColorGradePane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text("COLOR GRADE").font(.grotesk(12, .semibold))
+                Text("PROGRAM LOOK").font(.grotesk(12, .semibold))
                 // Honest state: dim when the chain is arithmetically a no-op,
                 // the same rule the mastering rack uses for its stages.
                 Text(model.gradeIsNeutral ? "neutral" : "active")
@@ -34,8 +34,7 @@ struct ColorGradePane: View {
             axis("Saturation", value: $model.gradeSaturation)
             axis("Temperature", value: $model.gradeTemperature)
 
-            Text("Applies to the composited program — recording, stream and the "
-                 + "multiview all inherit it.")
+            Text("Sources without their own grade. Recording, stream and the multiview inherit it.")
                 .font(.grotesk(11)).foregroundStyle(Studio.textDim)
             Spacer(minLength: 0)
         }
@@ -43,9 +42,9 @@ struct ColorGradePane: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // The core clamps each axis to [-10, 10] (clampColorGradeAxis) and the
-    // shader scales by 0.1, so the UI range must match or the operator drags
-    // into a region that silently does nothing.
+    // The shader scales each axis by 0.1. The core clamps each axis to ±100
+    // (clampColorGradeAxis), but the Program Look keeps a ±10 slider range by
+    // choice: past about ±10 the picture clips to black or white.
     func axis(_ label: String, value: Binding<Double>) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {

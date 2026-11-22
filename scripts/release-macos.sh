@@ -1,12 +1,12 @@
 #!/bin/bash
-# Build, sign, notarize and staple a CoreVideo Pro macOS release DMG.
+# Build, sign, notarize and staple a CoreVideo Pro macOS release .pkg.
 #
 #   scripts/release-macos.sh [--skip-notarize]
 #
 # Output: dist/macos/<version>/
-#   CoreVideoPro-<version>-arm64.dmg         signed, notarized, stapled
-#   CoreVideoPro-<version>-arm64.dmg.sha256  `shasum -a 256` line
-#   CoreVideoPro-<version>-arm64.pkg         guided installer (/Applications),
+#   CoreVideoPro-<version>-arm64.pkg         guided installer (/Applications,
+#                                            plus the core copy the virtual
+#                                            camera verifies, in /Library),
 #                                            signed Developer ID Installer,
 #                                            notarized, stapled
 #   CoreVideoPro-<version>-arm64.pkg.sha256
@@ -22,14 +22,22 @@
 # release build dir so dev trees are never touched; assemble + Developer ID
 # sign the .app (make-macos-shell-bundle.sh) inside the temp work dir, so the
 # dev bundle at mac-shell/.build/CoreVideo Pro.app is never touched; notarize the app (zip) and
-# staple; build a DMG (app + /Applications alias, volume "CoreVideo Pro"),
-# sign, notarize and staple it; verify; write dist/.
+# staple; build the .pkg (scripts/make-macos-pkg.sh), notarize and staple it;
+# verify; write dist/. The .pkg is the ONLY macOS installer (owner, 2026-11-15):
+# the virtual camera needs the core copy only the pkg installs, so a DMG
+# drag-install would ship a camera that refuses every frame.
 #
 # Environment:
 #   COREVIDEO_SIGN_IDENTITY   default "Developer ID Application: John Wallace (42394L3353)"
 #   COREVIDEO_PKG_SIGN_IDENTITY  default "Developer ID Installer: John Wallace (42394L3353)"
 #                             (the .pkg needs this, NOT the Application certificate)
 #   COREVIDEO_NOTARY_PROFILE  notarytool keychain profile, default "CoreVideo Pro"
+#   COREVIDEO_APP_PROFILE     Developer ID provisioning profile for the app
+#   COREVIDEO_CAMERA_PROFILE  ... for the camera extension (defaults under
+#                             ~/Library/Developer/CoreVideoPro/profiles/). Both
+#                             are verified BEFORE the build; the release FAILS if
+#                             the signing certificate expires within 14 days and
+#                             warns within 60.
 #                             (one-time: xcrun notarytool store-credentials "CoreVideo Pro"
 #                             --team-id 42394L3353; "CoreVideo Plugin" is the OBS plugin's)
 #   ZOOM_SDK_DIR              Zoom macOS SDK dir holding ZoomSDK.framework
@@ -39,13 +47,13 @@
 #
 # --skip-notarize builds and signs everything but submits nothing to Apple
 # (rehearsal). Its output can never be mistaken for, or overwrite, a release:
-#   dist/macos/<version>-UNNOTARIZED/CoreVideoPro-<version>-arm64-UNNOTARIZED.dmg
+#   dist/macos/<version>-UNNOTARIZED/CoreVideoPro-<version>-arm64-UNNOTARIZED.pkg
 #
 # Everything is built in a temp dir and moved into dist/ only after every
-# verification passed, so a failed run never leaves a plausible DMG behind
+# verification passed, so a failed run never leaves a plausible .pkg behind
 # (and never removes the previous good output).
 #
-# Runtime note: RTMP output launches an external `ffmpeg`, which this DMG does
+# Runtime note: RTMP output launches an external `ffmpeg`, which this release does
 # not bundle (GPL/licensing ruling pending). The release core is built with
 # COREVIDEO_WITH_RTMP_OUTPUT=ON only; SRT output and SRT/RTMP ingest are not in
 # the macOS 1.0 build (their options default OFF and the Mac shell has no SRT UI).
@@ -62,6 +70,8 @@ NOTARIZE=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-notarize) NOTARIZE=0; shift ;;
+        # --skip-dmg: accepted and ignored; there is no DMG any more.
+        --skip-dmg) shift ;;
         -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
         *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
     esac
@@ -96,12 +106,35 @@ grep -qF "\"$PKG_SIGN_ID\"" <<<"$PKG_IDENTITIES" \
 for tool in pkgbuild productbuild pkgutil spctl; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
+# Provisioning profiles + certificate lifetime, before a 20-minute build (a
+# mismatched profile does not fail codesign; it fails activation silently).
+# verify_profile checks the profile's app id, team, expiry, the signing
+# certificate's expiry and that certificate's membership in the profile.
+. scripts/macos-sign-lib.sh
+APP_PROFILE="${COREVIDEO_APP_PROFILE:-$HOME/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_macOS_Developer_ID.provisionprofile}"
+CAMERA_PROFILE="${COREVIDEO_CAMERA_PROFILE:-$HOME/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_Camera_Extension_Developer_ID.provisionprofile}"
+for pair in "COREVIDEO_APP_PROFILE|$APP_PROFILE|42394L3353.us.iamfatness.corevideopro.shell" \
+            "COREVIDEO_CAMERA_PROFILE|$CAMERA_PROFILE|42394L3353.us.iamfatness.corevideopro.shell.camera"; do
+    IFS='|' read -r pvar ppath pid <<<"$pair"
+    [ -f "$ppath" ] || die "$pvar: provisioning profile not found at $ppath"
+    verify_profile "$ppath" "$pid" 14 \
+        || die "$pvar: $ppath failed verification (see above; the release fails with under 14 days of profile or signing-certificate life)"
+    verify_profile "$ppath" "$pid" 60 >/dev/null 2>&1 \
+        || echo "WARNING: $pvar: profile or signing certificate expires within 60 days; renew before the next release" >&2
+done
 [ -d "$ZOOM_SDK/ZoomSDK.framework" ] || die "no ZoomSDK.framework under ZOOM_SDK_DIR=$ZOOM_SDK"
 if [ "$NOTARIZE" = "1" ]; then
     # Cheap auth probe: fails fast on a missing profile or bad credentials.
     xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 \
         || die "notarytool profile '$PROFILE' missing or auth failed (xcrun notarytool history); create it once with: xcrun notarytool store-credentials \"$PROFILE\" --team-id 42394L3353"
 fi
+# The camera extension's own version must move with its sources: an
+# unbumped change would ship a different extension under the installed
+# version (never replaced), a needless bump forces every user through a swap.
+# --profile: a renewed camera provisioning profile is a new extension bundle
+# too, so it needs a bump like any source change.
+scripts/camera-extension-version.sh check --profile "$CAMERA_PROFILE" \
+    || die "camera extension version gate failed (see above)"
 DIRTY=false
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     DIRTY=true
@@ -119,11 +152,9 @@ ENGINE_BUILD="native/build-release-engine"
 SHELL_SCRATCH="mac-shell/.build-release"
 if [ "$NOTARIZE" = "1" ]; then
     OUT="dist/macos/$VERSION"
-    DMG_NAME="CoreVideoPro-$VERSION-arm64.dmg"
     PKG_NAME="CoreVideoPro-$VERSION-arm64.pkg"
 else
     OUT="dist/macos/$VERSION-UNNOTARIZED"
-    DMG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.dmg"
     PKG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.pkg"
 fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cvp-release.XXXXXX")"
@@ -148,9 +179,11 @@ cmake -S native -B "$CORE_BUILD" -G Ninja \
     -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
     -DCOREVIDEO_WITH_METAL=ON \
     -DCOREVIDEO_WITH_AVF_ENCODER=ON \
+    -DCOREVIDEO_WITH_AVF_MEDIA_DECODER=ON \
     -DCOREVIDEO_WITH_COREAUDIO=ON \
     -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON \
-    -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
+    -DCOREVIDEO_WITH_RTMP_OUTPUT=ON \
+    -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
 cmake --build "$CORE_BUILD" --target corevideo-native corevideo-plugin-host
 
 # The release gate for the core: the FULL native suite on this exact build,
@@ -196,6 +229,7 @@ SHELL_BIN="$SHELL_SCRATCH/release/CoreVideoProShell"
 log "assemble + sign $APP"
 COREVIDEO_SIGN_IDENTITY="$SIGN_ID" \
 COREVIDEO_SHELL_BIN="$SHELL_BIN" \
+COREVIDEO_CAMERA_EXT_BIN="$SHELL_SCRATCH/release/CoreVideoProCamera" \
 COREVIDEO_CORE_BUILD_DIR="$CORE_BUILD" \
 COREVIDEO_ENGINE_APP="$ENGINE_BUILD/corevideo-zoom-engine.app" \
 COREVIDEO_REQUIRE_HELPERS=1 \
@@ -234,6 +268,29 @@ done < <(find "$APP" -type f)
 [ "$MACHO_COUNT" -gt 0 ] || die "audited 0 Mach-O files under $APP; nothing was checked"
 echo "audited $MACHO_COUNT Mach-O files: Developer ID + runtime + timestamp; arm64 except $X86_VENDOR Intel-only vendor SDK file(s)"
 
+# The camera extension's structure, signature, profiles and entitlements.
+log "check the camera extension"
+scripts/check-macos-camera-extension.sh --release "$APP" || die "camera extension check failed"
+EXT_DIR="$APP/Contents/Library/SystemExtensions/us.iamfatness.corevideopro.shell.camera.systemextension"
+EXT_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_DIR/Contents/Info.plist")"
+[ "$EXT_BUNDLE_VERSION" = "$(scripts/camera-extension-version.sh version)" ] \
+    || die "camera extension CFBundleVersion $EXT_BUNDLE_VERSION is not CameraConstants.extensionVersion"
+# The profile actually sealed into the extension, not just the one we meant to use.
+scripts/camera-extension-version.sh check --profile "$EXT_DIR/Contents/embedded.provisionprofile" \
+    || die "the camera extension's embedded profile does not match scripts/camera-extension-version.record"
+EXT_SOURCE_HASH="$(sed -n 's/^sourceHash=//p' scripts/camera-extension-version.record)"
+EXT_PROFILE_UUID="$(sed -n 's/^cameraProfileUUID=//p' scripts/camera-extension-version.record)"
+CAM_PROFILE_PLIST="$WORK/camera-profile.plist"
+security cms -D -i "$CAMERA_PROFILE" >"$CAM_PROFILE_PLIST" 2>/dev/null || die "cannot decode $CAMERA_PROFILE"
+CAM_PROFILE_EXPIRES="$(plutil -extract ExpirationDate raw -o - "$CAM_PROFILE_PLIST")"
+( cd "$WORK" && codesign -d --extract-certificates=leaf "$EXT_DIR" >/dev/null 2>&1 ) \
+    && openssl x509 -inform DER -in "$WORK/leaf0" -noout -enddate >"$WORK/cert-end.txt" 2>/dev/null \
+    || die "cannot read the camera extension's signing certificate"
+CERT_END="$(sed 's/^notAfter=//' "$WORK/cert-end.txt")"
+CERT_EXPIRES="$(date -j -u -f '%b %e %T %Y %Z' "$CERT_END" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" \
+    || die "cannot parse the signing certificate expiry '$CERT_END'"
+echo "camera extension: version $EXT_BUNDLE_VERSION, profile expires $CAM_PROFILE_EXPIRES, certificate expires $CERT_EXPIRES"
+
 # notarytool submit --wait, JSON out; echoes the submission id. Rejected or
 # invalid → fetch the log into $WORK (copied to dist/ on success) and fail.
 NOTARY_LOG_DIR="$WORK"
@@ -255,7 +312,6 @@ notarize() {  # notarize <file> <label>
 }
 
 APP_SUBMISSION="skipped"
-DMG_SUBMISSION="skipped"
 if [ "$NOTARIZE" = "1" ]; then
     log "notarize app"
     # ditto --keepParent, never plain zip: keeps framework symlinks intact.
@@ -265,31 +321,9 @@ if [ "$NOTARIZE" = "1" ]; then
     xcrun stapler validate "$APP"
 fi
 
-# ── DMG ─────────────────────────────────────────────────────────────────────
-log "build DMG"
-STAGE="$WORK/dmg"
-mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/CoreVideo Pro.app"
-ln -s /Applications "$STAGE/Applications"
 # Assembled in $WORK; published to $OUT only after verification.
 PUB="$WORK/out"
 mkdir -p "$PUB"
-DMG="$PUB/$DMG_NAME"
-hdiutil create -volname "CoreVideo Pro" -srcfolder "$STAGE" -fs HFS+ \
-    -format UDZO -imagekey zlib-level=9 -ov "$DMG" >/dev/null
-# A DMG takes a plain signature: no hardened runtime (not code), but a
-# secure timestamp so it outlives the certificate.
-codesign --force --sign "$SIGN_ID" --timestamp \
-    --identifier us.iamfatness.corevideopro.dmg "$DMG"
-codesign --verify --strict "$DMG"
-
-if [ "$NOTARIZE" = "1" ]; then
-    log "notarize DMG"
-    DMG_SUBMISSION="$(notarize "$DMG" dmg)"
-    xcrun stapler staple "$DMG"
-    xcrun stapler validate "$DMG"
-    cp "$WORK"/notary-*.json "$PUB/" 2>/dev/null || true
-fi
 
 # ── PKG (guided installer; built from the stapled app) ──────────────────────
 log "build + sign .pkg"
@@ -301,7 +335,7 @@ if [ "$NOTARIZE" = "1" ]; then
     PKG_SUBMISSION="$(notarize "$PKG" pkg)"
     xcrun stapler staple "$PKG"
     xcrun stapler validate "$PKG"
-    cp "$WORK"/notary-pkg.json "$PUB/" 2>/dev/null || true
+    cp "$WORK"/notary-*.json "$PUB/" 2>/dev/null || true
 fi
 
 # ── Verify (the questions a user's Mac asks) ────────────────────────────────
@@ -312,19 +346,6 @@ if [ "$NOTARIZE" = "1" ]; then
     echo "$assess"
     grep -q "source=Notarized Developer ID" <<<"$assess" \
         || die "app is not assessed as Notarized Developer ID"
-    assess="$(spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 || true)"
-    echo "$assess"
-    grep -q "source=Notarized Developer ID" <<<"$assess" \
-        || die "DMG is not assessed as Notarized Developer ID"
-    # The copy a user actually drags out: mount and assess the app inside.
-    MOUNT="$WORK/mnt"; mkdir -p "$MOUNT"
-    hdiutil attach "$DMG" -readonly -nobrowse -noautoopen -mountpoint "$MOUNT" -quiet
-    [ -L "$MOUNT/Applications" ] || die "DMG lacks the Applications alias"
-    xcrun stapler validate "$MOUNT/CoreVideo Pro.app"
-    assess="$(spctl --assess --type execute -vv "$MOUNT/CoreVideo Pro.app" 2>&1 || true)"
-    grep -q "source=Notarized Developer ID" <<<"$assess" || die "app inside DMG not notarized"
-    hdiutil detach "$MOUNT" -quiet; MOUNT=""
-    echo "app inside the mounted DMG: stapled + Notarized Developer ID"
 fi
 
 # Capture first: `cmd | grep -q` under pipefail can fail on SIGPIPE.
@@ -340,8 +361,6 @@ fi
 
 # ── Artifacts ───────────────────────────────────────────────────────────────
 log "write $OUT"
-( cd "$PUB" && shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256" )
-SHA256="$(cut -d' ' -f1 "$PUB/$DMG_NAME.sha256")"
 ( cd "$PUB" && shasum -a 256 "$PKG_NAME" > "$PKG_NAME.sha256" )
 PKG_SHA256="$(cut -d' ' -f1 "$PUB/$PKG_NAME.sha256")"
 HELPERS="$(cd "$APP/Contents/Resources" && ls -d corevideo-* | paste -sd, -)"
@@ -361,17 +380,20 @@ manifest = {
     "notarization": {
         "keychainProfile": "$PROFILE",
         "appSubmissionId": "$APP_SUBMISSION",
-        "dmgSubmissionId": "$DMG_SUBMISSION",
         "pkgSubmissionId": "$PKG_SUBMISSION",
         "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
     },
-    "dmg": {"file": "$DMG_NAME", "sha256": "$SHA256", "volumeName": "CoreVideo Pro"},
     "pkg": {"file": "$PKG_NAME", "sha256": "$PKG_SHA256",
             "identifier": "us.iamfatness.corevideopro.pkg",
             "signingIdentity": "$PKG_SIGN_ID",
             "submissionId": "$PKG_SUBMISSION",
             "notarized": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
             "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False )},
+    "cameraExtension": {"bundleVersion": "$EXT_BUNDLE_VERSION",
+                        "sourceHash": "$EXT_SOURCE_HASH",
+                        "profileUUID": "$EXT_PROFILE_UUID",
+                        "profileExpires": "$CAM_PROFILE_EXPIRES",
+                        "certificateExpires": "$CERT_EXPIRES"},
     "bundledHelpers": "$HELPERS".split(","),
     "zoomSdk": "$(basename "$(dirname "$ZOOM_SDK")")",
     "runtimeRequirements": [
@@ -398,8 +420,6 @@ if ! mv "$PUB" "$OUT"; then
     exit 1
 fi
 rm -rf "$OLD"
-DMG="$OUT/$DMG_NAME"
 cat "$OUT/manifest.json"
 [ "$NOTARIZE" = "1" ] || echo "NOTE: --skip-notarize build; NOT distributable"
-echo "release: $DMG"
 echo "release: $OUT/$PKG_NAME"

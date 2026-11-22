@@ -157,6 +157,7 @@ extension AppModel {
         autoConfidenceThreshold = 70
         autoHoldSeconds = 4
         autoExtras = AutomationExtrasState()
+        setAutoAssignInputs(true)   // Windows reset (MagicSceneCoordinator.cs:458)
         evaluateAutomationLowerThird()
         autoStatus = "Automation defaults restored"
     }
@@ -192,9 +193,8 @@ extension AppModel {
             return (wireId, name)
         }
 
-        if programSceneId == Self.soloSceneA || programSceneId == Self.soloSceneB {
-            if let slotId = soloSlotId,
-               let slot = slots.first(where: { $0.id == slotId }), slot.kind != "unassigned" {
+        if Self.isSoloScene(programSceneId) {
+            if let slot = soloCueByScene[programSceneId], slot.kind != "unassigned" {
                 candidates.append(label(slot))
             }
         } else if let scene = scenes.first(where: { $0.id == programSceneId }) {
@@ -385,5 +385,19 @@ private struct AutomationReadoutTile: View {
         .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 8).fill(Studio.surface))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+/// "Fill free inputs when participants join" (Windows Views/AutomationPage.xaml:9).
+/// Drawn on Automation and in the Sources header; both bind the same model flag.
+struct AutoAssignInputsToggle: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Toggle("Fill free inputs when participants join", isOn: Binding(
+            get: { model.autoAssignInputsEnabled },
+            set: { model.setAutoAssignInputs($0) }))
+            .font(.grotesk(12))
+            .accessibilityLabel("Fill free inputs when participants join")
     }
 }

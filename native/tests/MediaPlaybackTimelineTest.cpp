@@ -939,3 +939,114 @@ TEST(MediaTransports, ASourceInsideItsReleaseGraceIsPublishedOnNeitherBus) {
   }
   EXPECT_EQ(created.load(), 1) << "reclaim must reuse the warm decoder";
 }
+
+// ---------------------------------------------------------------------------
+// #1214. A NON-LOOPING CLIP PLAYS TO ITS LAST FRAME AND ITS LAST AUDIO WINDOW.
+// The portable MediaClipDecoder (the macOS decoder's state machine) behind the
+// REAL MediaTransports owner, fed by fake readers that are always ready - so
+// the owner's prefetch runs as far ahead as its presentation queue allows,
+// exactly as a real decoder that decodes faster than real time does.
+//
+// Fixture invariants: 30 video samples at 30 fps (1 s), sample i carries the
+// colour byte i + 1, so the clip's last frame is 0x1E and "which frame is on
+// air" is a fixture constant. 1 s of 48 kHz stereo audio in which every sample
+// VALUE encodes its own media millisecond, value = (ms + 1) / 4096 (the
+// MediaClipDecoderTest timecode), so the last media millisecond heard is read
+// off the PCM, never off the code under test.
+// ---------------------------------------------------------------------------
+#include "modules/MediaClipDecoder.h"
+#include <cmath>
+
+namespace {
+constexpr int64_t kEndFrame100ns = 333'333;
+constexpr int kEndClipFrames = 30;
+constexpr int kEndClipAudioMs = 1000;
+class EndFakeVideoReader final : public IClipVideoReader {
+ public:
+  ClipReadStatus take(ClipVideoSample& out, std::string&) override {
+    if (next_ >= kEndClipFrames) return ClipReadStatus::EndOfStream;
+    out.width = 4; out.height = 2;
+    out.bgra = std::make_shared<std::vector<uint8_t>>(4u * 2u * 4u, static_cast<uint8_t>(next_ + 1));
+    out.pts100ns = next_ * kEndFrame100ns; out.duration100ns = kEndFrame100ns;
+    ++next_;
+    return ClipReadStatus::Ready;
+  }
+  int64_t duration100ns() const override { return kEndClipFrames * kEndFrame100ns; }
+ private:
+  int next_ = 0;
+};
+class EndFakeAudioReader final : public IClipAudioReader {
+ public:
+  explicit EndFakeAudioReader(int64_t start100ns) : frame_(start100ns * 48000 / 10'000'000) {}
+  ClipReadStatus take(ClipAudioSample& out, std::string&) override {
+    const int64_t total = int64_t{kEndClipAudioMs} * 48;
+    if (frame_ >= total) return ClipReadStatus::EndOfStream;
+    const int64_t count = (std::min)(int64_t{480}, total - frame_);
+    out.pcm.resize(static_cast<size_t>(count) * 2u);
+    for (int64_t i = 0; i < count; ++i) {
+      const float value = static_cast<float>((frame_ + i) / 48 + 1) / 4096.f;
+      out.pcm[static_cast<size_t>(i) * 2u] = value;
+      out.pcm[static_cast<size_t>(i) * 2u + 1u] = value;
+    }
+    out.pts100ns = frame_ * 10'000'000 / 48000;
+    frame_ += count;
+    return ClipReadStatus::Ready;
+  }
+ private:
+  int64_t frame_ = 0;
+};
+class EndFakeReaders final : public IClipReaderFactory {
+ public:
+  std::unique_ptr<IClipVideoReader> openVideo(const std::string&, std::function<void()>, std::string&) override {
+    return std::make_unique<EndFakeVideoReader>();
+  }
+  std::unique_ptr<IClipAudioReader> openAudio(const std::string&, int64_t start100ns, std::function<void()>,
+                                              std::string& error) override {
+    error.clear();
+    return std::make_unique<EndFakeAudioReader>(start100ns);
+  }
+  bool decodeStill(const std::string&, VideoFrame&, std::string&) override { return false; }
+};
+}  // namespace
+
+TEST(MediaTransports, ANonLoopingClipEndsOnItsLastFrameWithItsWholeAudio) {
+  MediaTransports t([] {
+    return std::make_unique<MediaClipDecoder>(std::make_shared<EndFakeReaders>());
+  });
+  auto desired = testDesired(true, false);
+  desired.path = "/fixture/end.mp4";
+  auto opened = t.apply({desired}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+
+  // Render + audio consumers at their production cadence, on the real clock,
+  // until the clip has been Ended for a while (an ended clip holds).
+  int lastColour = -1, colourWhenEnded = -1, lastHeardMs = -1;
+  int64_t endedAtMs = -1;
+  const auto deadline = steadyNowMs() + 4000;
+  while (steadyNowMs() < deadline) {
+    const auto now = steadyNowMs();
+    if (const auto frame = MediaTransports::selectVideo(*e, now * 10000)) lastColour = (*frame->pixels)[0];
+    for (const auto& window : t.popAudio(now)) {
+      for (size_t i = 0; i < window.pcm.size(); i += 2) {
+        if (window.pcm[i] != 0.f) lastHeardMs = (std::max)(lastHeardMs, static_cast<int>(std::lround(window.pcm[i] * 4096.f)) - 1);
+      }
+    }
+    const auto status = statusOf(t, "media:test");
+    if (endedAtMs < 0 && status && status->state == MediaTransportState::Ended) {
+      endedAtMs = now;
+      colourWhenEnded = lastColour;
+    }
+    if (endedAtMs >= 0 && now - endedAtMs > 300) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  std::fprintf(stderr, "[clip-end] on air when Ended: 0x%02X, held after: 0x%02X (last = 0x%02X); "
+               "last audio ms heard %d of %d\n", colourWhenEnded, lastColour, kEndClipFrames, lastHeardMs,
+               kEndClipAudioMs);
+  ASSERT_GE(endedAtMs, 0) << "the clip never reached Ended";
+  EXPECT_EQ(lastColour, kEndClipFrames) << "the clip froze short of its last frame";
+  EXPECT_EQ(colourWhenEnded, kEndClipFrames) << "Ended was entered before the last frame went on air";
+  // Within one 20 ms window of the end of the media.
+  EXPECT_GE(lastHeardMs, kEndClipAudioMs - 1 - 20) << "the clip's audio tail was cut";
+}

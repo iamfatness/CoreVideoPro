@@ -84,9 +84,13 @@ class AvfMp4Writer {
     std::error_code removeEc;
     std::filesystem::remove(path_, removeEc);
     NSError* error = nil;
+    // The container follows the artifact's extension: the operator's
+    // recording format ("mov" -> QuickTime, anything else -> MPEG-4). The
+    // H.264/AAC payload is identical; only the box layout differs.
+    const bool quickTime = std::filesystem::path(path).extension() == ".mov";
     writer_ = [[AVAssetWriter alloc]
         initWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]]
-           fileType:AVFileTypeMPEG4
+           fileType:(quickTime ? AVFileTypeQuickTimeMovie : AVFileTypeMPEG4)
               error:&error];
     if (!writer_) {
       errorOut = std::string("AVAssetWriter init failed: ") +
@@ -800,6 +804,9 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       return;
     }
     const std::string prefix = request_.filenamePrefix.empty() ? "show" : request_.filenamePrefix;
+    // The operator's recording format (set-recording-targets "format"). It was
+    // ignored here, so a MOV choice still wrote .mp4 files.
+    const std::string ext = request_.format == "mov" ? ".mov" : ".mp4";
     // ISO sessions get the per-session subfolder + manifest (spec §5, shared
     // scheme with the MF sink); program-only sessions keep the flat artifact.
     fs::path artifact;
@@ -810,7 +817,7 @@ class AVFoundationEncoderSink final : public IEncoderSink {
         failRecording("recording session folder could not be created: " + dir.string());
         return;
       }
-      artifact = dir / "Program.mp4";
+      artifact = dir / ("Program" + ext);
       int index = 0;
       for (const auto& selection : request_.isoSources) {
         IsoWriterEntry entry;
@@ -823,14 +830,14 @@ class AVFoundationEncoderSink final : public IEncoderSink {
         char number[8];
         std::snprintf(number, sizeof(number), "%02d", ++index);
         std::string name = sanitizeForFilename(selection.displayName, selection.sourceId);
-        fs::path isoPath = dir / ("ISO-" + std::string(number) + "-" + name + ".mp4");
+        fs::path isoPath = dir / ("ISO-" + std::string(number) + "-" + name + ext);
         entry.status.path = isoPath.string();
         isoWriters_.emplace(selection.sourceId, std::move(entry));
       }
       writeManifest(dir);
       session_.recordingSessionDir = dir.string();
     } else {
-      artifact = dir / (prefix + "-program-0.mp4");
+      artifact = dir / (prefix + "-program-0" + ext);
     }
     std::string error;
     const int width = request_.width > 0 ? request_.width : 1920;

@@ -1,7 +1,9 @@
 // ZoomOAuth — the mac port of ZoomOAuthService (broker mode only). The
 // broker (corevideo.iamfatness.us, site-worker.js) owns PKCE and the token
-// exchange; the shell opens the browser, receives corevideo://oauth/callback,
-// redeems the broker_token, and keeps Zoom tokens in the KEYCHAIN under this
+// exchange; the shell opens the browser, receives the callback on a one-shot
+// loopback listener (ZoomOAuthLoopback.swift — corevideo:// is shared with the
+// OBS plugin and LaunchServices may hand it to that app instead; the scheme is
+// kept only as a fallback), redeems the broker_token, and keeps Zoom tokens in the KEYCHAIN under this
 // app's OWN service string. HARD RULES: never touch the OBS plugin's
 // "CoreVideo OBS Plugin" Keychain item (Zoom rotates refresh tokens — a
 // second reader signs the plugin out); never clobber a live refresh token
@@ -31,43 +33,104 @@ actor ZoomOAuth {
     }
 
     private var pendingState: String?
+    private var loopback: OAuthLoopbackListener?
     private var tokens: Tokens?
     private var refreshInFlight: Task<Tokens?, Never>?
 
     // ── sign-in flow ─────────────────────────────────────────────────────────
 
-    func beginSignIn() {
+    /// Status for a sign-in that never came back (the loopback timed out).
+    static let signInTimedOut = "Zoom sign-in timed out. Choose Sign in with Zoom to try again."
+
+    /// The broker start URL. `returnUri` is the loopback callback when the
+    /// listener bound, else the corevideo:// fallback.
+    static func brokerStartURL(state: String, returnUri: String) -> URL {
+        var components = URLComponents(string: brokerStart)!
+        components.queryItems = [
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "redirect_uri", value: brokerBase + "/oauth/callback"),
+            URLQueryItem(name: "return_uri", value: returnUri),
+        ]
+        return components.url!
+    }
+
+    /// `onLoopbackResult` gets the final status of a loopback sign-in ("" =
+    /// signed in), or `signInTimedOut`. A scheme callback still arrives through
+    /// `.onOpenURL` -> handleCallback, exactly as before.
+    func beginSignIn(onLoopbackResult: @escaping @Sendable (String) -> Void) async {
+        loopback?.stop()
+        loopback = nil
+        let state = Self.newState()
+        pendingState = state
+        let listener = OAuthLoopbackListener()
+        let bound: UInt16? = await withCheckedContinuation { continuation in
+            listener.start(
+                expectedState: state,
+                onCallback: { url in
+                    let status = await ZoomOAuth.shared.handleCallback(url)
+                    onLoopbackResult(status)
+                    return status
+                },
+                onTimeout: { onLoopbackResult(ZoomOAuth.signInTimedOut) },
+                completion: { result in
+                    switch result {
+                    case .success(let port): continuation.resume(returning: port)
+                    case .failure: continuation.resume(returning: nil)
+                    }
+                })
+        }
+        // A newer beginSignIn may have run while we waited for the bind.
+        guard pendingState == state else { listener.stop(); return }
+        let returnUri: String
+        if let bound, bound != 0 {
+            loopback = listener
+            returnUri = OAuthLoopbackHttp.returnUri(port: bound)
+            ShellLog.write("zoom sign-in: loopback callback on 127.0.0.1:\(bound)")
+        } else {
+            listener.stop()
+            returnUri = Self.appReturnUri
+            ShellLog.write("zoom sign-in: loopback listener failed; using corevideo:// callback")
+        }
+        NSWorkspace.shared.open(Self.brokerStartURL(state: state, returnUri: returnUri))
+    }
+
+    private static func newState() -> String {
         var stateBytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, stateBytes.count, &stateBytes)
-        let state = Data(stateBytes).base64EncodedString()
+        return Data(stateBytes).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-        pendingState = state
-        var components = URLComponents(string: Self.brokerStart)!
-        components.queryItems = [
-            URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "redirect_uri", value: Self.brokerBase + "/oauth/callback"),
-            URLQueryItem(name: "return_uri", value: Self.appReturnUri),
-        ]
-        NSWorkspace.shared.open(components.url!)
+    }
+
+    private func stopLoopback() {
+        loopback?.stop()
+        loopback = nil
     }
 
     // Returns a status string for the UI ("" = success).
     func handleCallback(_ url: URL) async -> String {
+        // A scheme (fallback) callback finishes this sign-in: release the
+        // loopback port. A loopback callback must NOT stop its own listener
+        // here — that would drop the browser connection before its page.
+        if url.scheme == "corevideo" { stopLoopback() }
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { return "malformed callback URL" }
         let query = { (name: String) in
             components.queryItems?.first { $0.name == name }?.value
         }
-        if let error = query("error"), !error.isEmpty {
-            pendingState = nil
-            return "Zoom sign-in failed: \(error)"
-        }
-        guard let state = query("state"), state == pendingState else {
+        // State FIRST (fix round 1, review M1): an `error` from a request that
+        // does not carry this sign-in's state is not Zoom's answer — acting on
+        // it let any local sender end a pending sign-in. The broker always
+        // sets `state` next to `error` (site-worker.js handleOauthCallback), so
+        // the corevideo:// fallback is unaffected.
+        guard let pendingState, let state = query("state"), state == pendingState else {
             return "sign-in state mismatch — start again"
         }
-        pendingState = nil
+        self.pendingState = nil
+        if let error = query("error"), !error.isEmpty {
+            return "Zoom sign-in failed: \(error)"
+        }
         guard let brokerToken = query("broker_token"), !brokerToken.isEmpty else {
             return "callback carried no broker token"
         }
@@ -82,6 +145,8 @@ actor ZoomOAuth {
     }
 
     func signOut() {
+        stopLoopback()
+        pendingState = nil
         tokens = nil
         keychainDelete()
     }

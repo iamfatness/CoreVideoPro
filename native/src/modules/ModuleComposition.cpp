@@ -437,9 +437,17 @@ ModuleSet createDefaultModules() {
           ? "failed-to-construct" : "omitted", COREVIDEO_STUB ? "stub-build" : "");
   if (prepareCpuSources && modules.compositor->rendererName() == "d3d11")
     modules.cpuSourcePreparation = std::make_shared<CpuSourcePreparation>(true);
+  bool mediaDecoderConstructed = false;
   if (auto mediaDecoderFactory = createMediaFoundationMediaDecoderFactory()) {
     modules.mediaDecoderFactory = std::move(mediaDecoderFactory);
+    mediaDecoderConstructed = true;
+  } else if (auto avfMediaDecoderFactory = createAvFoundationMediaDecoderFactory()) {
+    modules.mediaDecoderFactory = std::move(avfMediaDecoderFactory);
+    mediaDecoderConstructed = true;
   }
+  recordCapability(modules, "media-clip-playback", mediaDecoderConstructed ? "available"
+      : (COREVIDEO_WITH_MF_ENCODER || COREVIDEO_WITH_AVF_MEDIA_DECODER)
+          ? "failed-to-construct" : "omitted", COREVIDEO_STUB ? "stub-build" : "");
   bool monitorConstructed = false;
   if (auto monitorOutput = createWasapiMonitorOutput()) {
     modules.monitorOutput = std::move(monitorOutput);

@@ -6,13 +6,16 @@
 
 import Foundation
 
-/// The in-binary harnesses (COREVIDEO_SHELL_TESTS / COREVIDEO_SHELL_SELFCHECK).
+/// The in-binary harnesses (COREVIDEO_SHELL_TESTS / COREVIDEO_SHELL_SELFCHECK /
+/// COREVIDEO_SHELL_TAB_SNAPSHOT, the offscreen tab renderer — its seed writes slots,
+/// and those slot-write lines must not land in the operator's real shell log).
 /// ONE predicate, read once: prefs, the shell log and anything else that must
 /// never touch the operator's real files ask this, never the environment.
 enum ShellHarness {
     static func detect(in environment: [String: String]) -> Bool {
         environment["COREVIDEO_SHELL_TESTS"] != nil
             || environment["COREVIDEO_SHELL_SELFCHECK"] != nil
+            || environment["COREVIDEO_SHELL_TAB_SNAPSHOT"] != nil
     }
 
     static let isActive: Bool = detect(in: ProcessInfo.processInfo.environment)
@@ -53,15 +56,32 @@ struct PersistedLayer: Codable, Equatable {
     var height = 1.0
     var fitMode = "fill"
     var opacity = 1.0
+    // Add overlay (Tier 0.14): a layer bound to a media-bin still. Optional so
+    // the synthesized decoder keeps older files (absent = a slot layer).
+    var mediaAssetId: String?
 }
 
-/// A persisted capture->microphone pairing. Keyed by SLOT rather than device id
-/// so re-assigning a slot to a different camera does not silently inherit the
-/// previous camera's microphone.
+/// One show-input slot assignment (Windows ShowInputSlotRecord,
+/// ShowInputRosterStore.cs): operator INTENT — kind + source + name + in-show —
+/// restored even when the source is not present yet (it reads offline until the
+/// roster or device list produces it).
+struct PersistedSlot: Codable, Equatable {
+    var slotId = 0
+    var kind = "unassigned"
+    var sourceId = ""
+    var name = ""
+    var inShow = false
+}
+
+/// A persisted capture->microphone pairing. Reattached by `sourceKey`
+/// ("capture:<id>") — the SOURCE it belongs to — so it can never land on
+/// whatever else ends up in that slot. `slotId` is the legacy key, used only
+/// for a record written before `sourceKey` existed.
 struct CapturePairing: Codable, Equatable {
     var slotId = 0
     var audioDeviceId = ""
     var audioDeviceName = ""
+    var sourceKey: String?
 }
 
 /// Chroma key settings for a slot. Only ENABLED keys are persisted — a saved
@@ -73,6 +93,7 @@ struct PersistedChromaKey: Codable, Equatable {
     var similarity = 0.4
     var smoothness = 0.1
     var spill = 0.2
+    var sourceKey: String?   // see CapturePairing
 }
 
 /// Per-source dropout policy (core contract #535 slice 4a, `set-source-policy`).
@@ -81,6 +102,7 @@ struct PersistedChromaKey: Codable, Equatable {
 struct PersistedSlotPolicy: Codable, Equatable {
     var slotId = 0
     var dropoutPolicy = ""
+    var sourceKey: String?   // see CapturePairing
 }
 
 struct ShellPrefs: Codable, Equatable {
@@ -120,6 +142,37 @@ struct ShellPrefs: Codable, Equatable {
     // preferences file fail to decode, and load() silently falls back to
     // defaults, wiping the operator's saved show. Optional gets decodeIfPresent.
     var vstChannelSelections: [String: String]?
+    // Operator opted in to the virtual camera extension (roadmap M9.2). OPTIONAL: nil = never asked.
+    var cameraExtensionOptedIn: Bool?
+    // Virtual camera intent (roadmap M9.2, VirtualCamera.swift). OPTIONAL: nil = never set.
+    var virtualCamera: PersistedVirtualCamera?
+    // Production settings (the Windows ProductionSettingsWindow values that
+    // production-output-preferences.json keeps: canvas size/fps, stream bitrate,
+    // recording format/prefix, multiview layout + tile count). OPTIONAL: nil
+    // means "never saved", and the model keeps its built-in default. A 4K or
+    // 30 fps show used to come back as 1080p60 on every launch.
+    var canvasWidth: Int?
+    var canvasHeight: Int?
+    var canvasFps: Int?
+    var streamBitrateMbps: Double?
+    var recordFormat: String?
+    var recordPrefix: String?
+    var multiviewLayoutMode: String?
+    var multiviewTileCount: Int?
+    // Show-input slot assignments (Tier 0.8). nil = a file written before this
+    // existed: slots start empty, exactly as before.
+    var showInputSlots: [PersistedSlot]?
+    // Recording folder (Tier 0.11). nil/"" = the default ~/Movies/CoreVideoPro.
+    var recordingFolder: String?
+    // Monitor output device (Tier 0.12): CoreAudio UID + its name (kept so a
+    // disconnected device can still be named). nil = system default output.
+    var monitorDeviceId: String?
+    var monitorDeviceName: String?
+    // "Fill free inputs when participants join" (Sources plan Task 3). nil = never
+    // set → on, the Windows default (MagicSceneCoordinator.cs:458).
+    var autoAssignInputs: Bool?
+    // Sources table column visibility + inspector open (sources plan Task 6).
+    var sourcesWorkspace: SourcesColumnPrefs?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -168,6 +221,26 @@ struct ShellPrefs: Codable, Equatable {
                                               forKey: .chromaKeys)) ?? nil)
         slotDropoutPolicies = ((try? c.decodeIfPresent([PersistedSlotPolicy].self,
                                                        forKey: .slotDropoutPolicies)) ?? nil)
+        cameraExtensionOptedIn = ((try? c.decodeIfPresent(Bool.self,
+                                                          forKey: .cameraExtensionOptedIn)) ?? nil)
+        virtualCamera = ((try? c.decodeIfPresent(PersistedVirtualCamera.self,
+                                                 forKey: .virtualCamera)) ?? nil)
+        canvasWidth = ((try? c.decodeIfPresent(Int.self, forKey: .canvasWidth)) ?? nil)
+        canvasHeight = ((try? c.decodeIfPresent(Int.self, forKey: .canvasHeight)) ?? nil)
+        canvasFps = ((try? c.decodeIfPresent(Int.self, forKey: .canvasFps)) ?? nil)
+        streamBitrateMbps = ((try? c.decodeIfPresent(Double.self, forKey: .streamBitrateMbps)) ?? nil)
+        recordFormat = ((try? c.decodeIfPresent(String.self, forKey: .recordFormat)) ?? nil)
+        recordPrefix = ((try? c.decodeIfPresent(String.self, forKey: .recordPrefix)) ?? nil)
+        multiviewLayoutMode = ((try? c.decodeIfPresent(String.self,
+                                                       forKey: .multiviewLayoutMode)) ?? nil)
+        multiviewTileCount = ((try? c.decodeIfPresent(Int.self, forKey: .multiviewTileCount)) ?? nil)
+        showInputSlots = ((try? c.decodeIfPresent([PersistedSlot].self,
+                                                  forKey: .showInputSlots)) ?? nil)
+        recordingFolder = ((try? c.decodeIfPresent(String.self, forKey: .recordingFolder)) ?? nil)
+        monitorDeviceId = ((try? c.decodeIfPresent(String.self, forKey: .monitorDeviceId)) ?? nil)
+        monitorDeviceName = ((try? c.decodeIfPresent(String.self, forKey: .monitorDeviceName)) ?? nil)
+        autoAssignInputs = ((try? c.decodeIfPresent(Bool.self, forKey: .autoAssignInputs)) ?? nil)
+        sourcesWorkspace = ((try? c.decodeIfPresent(SourcesColumnPrefs.self, forKey: .sourcesWorkspace)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -200,10 +273,31 @@ struct ShellPrefs: Codable, Equatable {
         p.colorGrade = [1, 2, 3, 4]
         p.automation = AutomationExtrasState()
         p.overlays = OverlaysState()
-        p.capturePairings = [CapturePairing(slotId: 1, audioDeviceId: "d", audioDeviceName: "Mic")]
-        p.chromaKeys = [PersistedChromaKey(slotId: 1)]
-        p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black")]
+        p.capturePairings = [CapturePairing(slotId: 1, audioDeviceId: "d", audioDeviceName: "Mic",
+                                            sourceKey: "capture:cam")]
+        p.chromaKeys = [PersistedChromaKey(slotId: 1, sourceKey: "capture:cam")]
+        p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black",
+                                                     sourceKey: "zoom:42")]
+        p.showInputSlots = [PersistedSlot(slotId: 1, kind: "capture", sourceId: "cam",
+                                          name: "Cam", inShow: true)]
+        p.recordingFolder = "/Volumes/Show/Recordings"
+        p.monitorDeviceId = "AppleUSBAudioEngine:Interface:1"
+        p.monitorDeviceName = "Headphones Interface"
         p.vstChannelSelections = ["ch1": "vst:Test"]
+        p.cameraExtensionOptedIn = true
+        p.virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true,
+                                                 framerEnabled: true, deviceName: "Round Trip Cam")
+        p.canvasWidth = 3840
+        p.canvasHeight = 2160
+        p.canvasFps = 30
+        p.streamBitrateMbps = 12.5
+        p.recordFormat = "mov"
+        p.recordPrefix = "gala"
+        p.multiviewLayoutMode = "grid"
+        p.multiviewTileCount = 6
+        p.autoAssignInputs = false
+        var columns = SourcesColumnPrefs(); columns.showAudio = false
+        p.sourcesWorkspace = columns
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"

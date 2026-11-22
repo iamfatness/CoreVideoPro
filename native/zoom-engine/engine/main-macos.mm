@@ -71,6 +71,7 @@
 
 #include "engine-ipc.h"
 #include "engine-command.h"
+#include "end-other-meeting.h"
 #include <set>
 #include "engine-writer.h"
 
@@ -574,6 +575,12 @@ static void send_roster()
 // use are stubbed rather than omitted — same shape as the Windows engine's block
 // of empty overrides. An omitted @required method is an unrecognized-selector
 // crash the moment the SDK calls it.
+// #475 / Tier 0.13: the operator's takeover choice for the join in flight.
+// Set from EVERY join line (never sticky — it ends their own Zoom client's
+// session), read by -onEndOtherMeetingToJoinMeetingNotification:. Main queue
+// only (handle_join and the delegate both run there).
+static bool g_end_other_meeting = false;
+
 @interface CVMeetingDelegate : NSObject <ZoomSDKMeetingServiceDelegate,
                                          ZoomSDKMeetingActionControllerDelegate>
 @end
@@ -633,6 +640,30 @@ static void send_roster()
     default:
         break;
     }
+}
+
+// ── Join-time prompt: this account is already in the meeting (#475) ─────────
+// The Windows engine's EngineConfigurationEvent answer, ported. Unanswered, the
+// join hangs until the core's timeout. Answer NOW: the SDK owns both blocks and
+// the choice was made before the join was sent. Never end the operator's other
+// session unless this join asked to; otherwise Cancel and fail the join with
+// "account-busy-elsewhere", which the core turns into the sentence offering
+// "Join and end my other Zoom session".
+- (void)onEndOtherMeetingToJoinMeetingNotification:(ZoomSDKError (^)(void))actionEndOtherMeeting
+                                       actionCancel:(void (^)(void))actionCancel
+{
+    if (!actionEndOtherMeeting || !actionCancel) {
+        EngineIpc::write(engine_join::endOtherMeetingUnanswerableLine());
+        return;
+    }
+    const auto answer = engine_join::answerEndOtherMeeting(g_end_other_meeting);
+    if (answer == engine_join::EndOtherMeetingAnswer::EndOther) {
+        EngineIpc::write(engine_join::endOtherMeetingEventLine(answer));
+        actionEndOtherMeeting();
+        return;
+    }
+    actionCancel();
+    EngineIpc::write(engine_join::endOtherMeetingEventLine(answer));
 }
 
 // ── Roster-affecting callbacks (the ones main.cpp acts on) ───────────────────
@@ -754,6 +785,10 @@ static void handle_join(const std::string &line)
     const std::string user_zak            = json_str(line, "user_zak");
     const std::string app_privilege_token = json_str(line, "app_privilege_token");
     if (display_name.empty()) display_name = "CoreVideo Pro";
+    // #475: an EXPLICIT per-join choice, re-read on every join so a takeover
+    // can never leak into the next one and silently evict the operator's own
+    // Zoom client.
+    g_end_other_meeting = engine_join::joinRequestsEndOtherMeeting(line);
 
     EngineIpc::write(R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
         json_escape(meeting_id) + R"(","has_on_behalf_token":)" +
@@ -774,6 +809,14 @@ static void handle_join(const std::string &line)
 
     if (!g_meeting_delegate) g_meeting_delegate = [[CVMeetingDelegate alloc] init];
     svc.delegate = g_meeting_delegate;
+    // The SDK's default UI would put its own "end other meeting?" alert in
+    // front of the delegate, from a headless engine nobody is looking at.
+    // Hide it so the prompt reaches -onEndOtherMeetingToJoinMeetingNotification:,
+    // and never let the SDK end the operator's other session on its own.
+    if (ZoomSDKMeetingConfiguration *config = [svc getMeetingConfiguration]) {
+        config.hideEndOtherMeetingAlert = YES;
+        config.enableAutoEndOtherMeeting = NO;
+    }
 
     long long meeting_number = 0;
     try {

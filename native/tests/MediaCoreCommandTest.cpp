@@ -9,6 +9,9 @@
 
 #include "EncoderCapacityProbeTestSupport.h"
 #include "MediaTestSupport.h"
+#if !COREVIDEO_STUB && COREVIDEO_WITH_AVF_MEDIA_DECODER
+#include "AvfMediaFixtures.h"
+#endif
 #include "MonitorTestMode.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
@@ -3904,6 +3907,93 @@ TEST(MediaCoreCommand, SceneMediaAudioReachesMasterThroughTheShellMediaStrip) {
   EXPECT_EQ(mutedStrip->get("outputLevel")->asNumber(), 0);
 }
 
+#if !COREVIDEO_STUB && COREVIDEO_WITH_AVF_MEDIA_DECODER
+// Frequency of the LEFT channel of an interleaved stereo buffer, from the spacing of its zero
+// crossings (first to last), so a 20 ms tap resolves a tone to a few Hz. 0 when it has fewer than
+// three crossings.
+double leftChannelToneHz(const std::vector<float>& interleavedStereo) {
+  long first = -1, last = -1;
+  int crossings = 0;
+  for (size_t frame = 1; frame < interleavedStereo.size() / 2; ++frame) {
+    const float before = interleavedStereo[(frame - 1) * 2], after = interleavedStereo[frame * 2];
+    if ((before < 0.f) == (after < 0.f)) continue;
+    if (first < 0) first = static_cast<long>(frame);
+    last = static_cast<long>(frame);
+    ++crossings;
+  }
+  if (crossings < 3 || last <= first) return 0.0;
+  return (crossings - 1) / 2.0 * 48000.0 / static_cast<double>(last - first);
+}
+
+// The Windows oracle SceneMediaAudioReachesMasterThroughTheShellMediaStrip (above) uses a fake
+// decoder. This is the same assertion set on the REAL AVFoundation decoder through the real mixer,
+// plus the tone check that proves the PCM on master is the clip's and not anything else.
+TEST(MediaCoreCommand, ARealClipsToneReachesMasterThroughTheMediaStripAndMuteSilencesIt) {
+  // Fixture: 5 s of H.264 + AAC, a 440 Hz sine at amplitude 0.5 on both channels.
+  constexpr double kFixtureToneHz = 440.0;
+  const auto clipPath = std::filesystem::temp_directory_path() /
+      ("corevideo-avf-tone-master-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".mp4");
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{clipPath};
+  const auto written = corevideo::testing::writeToneClip(clipPath.string(), 5, kFixtureToneHz);
+  ASSERT_EQ(written, "") << written;
+
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaDecoderFactory = corevideo::modules::createAvFoundationMediaDecoderFactory();
+  ASSERT_TRUE(static_cast<bool>(modules.mediaDecoderFactory));
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "real-tone"},
+          {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"routeId", "tone-main"}, {"mode", "fixed"}, {"mediaAssetId", "tone"}, {"mediaAssetName", "Tone"},
+              {"mediaAssetKind", "stinger"}, {"mediaAssetPath", clipPath.string()}, {"mediaAssetLoop", false},
+              {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}},
+      },
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media"), shellAudioStrip("zoom-mix")}),
+      shellMediaRouting(),
+  });
+
+  // Wait for a tick whose master tap is past the AAC start-up ramp (a full-level window).
+  corevideo::rpc::Json state;
+  std::vector<float> master, stream;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    if (peakOfSamples(core.programAudioTapPcm()) > 0.3f && peakOfSamples(core.audioBusTapPcm("stream")) > 0.05f) {
+      master = core.programAudioTapPcm();
+      stream = core.audioBusTapPcm("stream");
+      return true;
+    }
+    return false;
+  }, 4000, &state)) << "the real clip's PCM never reached the master and stream buses";
+  EXPECT_TRUE(peakOfSamples(master) > 0.05f);
+  EXPECT_TRUE(peakOfSamples(stream) > 0.05f);
+
+  // The operator's "Media playback" strip meters the clip it governs.
+  const auto* mediaStrip = audioMixParticipant(state, "media");
+  ASSERT_NE(mediaStrip, nullptr);
+  EXPECT_TRUE(mediaStrip->get("outputLevel")->asNumber() > 0);
+  EXPECT_NE(mediaStrip->getString("status"), "waiting-for-pcm");
+
+  // It is the CLIP's tone. The tap is one 20 ms mixer tick of interleaved stereo (a fixture fact,
+  // asserted first): 960 frames hold 8.8 cycles of 440 Hz.
+  ASSERT_GE(master.size(), 1920u) << "the master tap is shorter than one 960-frame stereo tick";
+  EXPECT_NEAR(leftChannelToneHz(master), 440.0, 15.0) << "master does not carry the clip's 440 Hz tone";
+
+  // The alias respects the fader: muting the "media" strip silences the clip.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media", true), shellAudioStrip("zoom-mix")}),
+  });
+  const auto mutedState = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) < 0.001f)
+      << "a muted Media strip must keep the clip off master";
+  EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm("stream")) < 0.001f);
+  const auto* mutedStrip = audioMixParticipant(mutedState, "media");
+  ASSERT_NE(mutedStrip, nullptr);
+  EXPECT_EQ(mutedStrip->get("outputLevel")->asNumber(), 0);
+}
+#endif  // !COREVIDEO_STUB && COREVIDEO_WITH_AVF_MEDIA_DECODER
+
 // Two clips on Program under the ONE "media" strip + send: both sum into master
 // (each keeps its own source slot — neither overwrites the other).
 TEST(MediaCoreCommand, TwoMediaClipsBothSumThroughTheOneMediaStrip) {
@@ -4074,7 +4164,7 @@ TEST(MediaCoreCommand, TheMediaStripCompressesTheSumOfItsClipsInOneChain) {
   EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media:clip-b") == dspIds.end());
 }
 
-#if !COREVIDEO_STUB && COREVIDEO_WITH_MF_ENCODER
+#if !COREVIDEO_STUB && (COREVIDEO_WITH_MF_ENCODER || COREVIDEO_WITH_AVF_MEDIA_DECODER)
 // A 1 s, 30-frame, 64x64 H.264 MP4 (Media Foundation decodes it natively).
 void writeMfVideoFixture(const std::filesystem::path& path) {
   const auto videoBytes = corevideo::modules::base64Decode(R"(
@@ -4084,12 +4174,21 @@ AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAASibW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAA
   output.write(reinterpret_cast<const char*>(videoBytes.data()), static_cast<std::streamsize>(videoBytes.size()));
 }
 
+// The decoder under test: Media Foundation on Windows, AVFoundation on a Mac
+// built with COREVIDEO_WITH_AVF_MEDIA_DECODER. The suite keeps its name on both
+// (plan default D7: no Windows test-id churn).
+std::unique_ptr<corevideo::modules::IMediaDecoder> testMediaDecoder() {
+  if (auto mediaFoundation = corevideo::modules::createMediaFoundationMediaDecoderFactory()) return mediaFoundation();
+  if (auto avFoundation = corevideo::modules::createAvFoundationMediaDecoderFactory()) return avFoundation();
+  return nullptr;
+}
+
 TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
   const auto videoPath = std::filesystem::temp_directory_path() / "corevideo-mf-preview-cue.mp4";
   std::filesystem::remove(videoPath);
   writeMfVideoFixture(videoPath);
 
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
   corevideo::modules::MediaDecodeRequest request;
   request.kind = "media-video";
@@ -4123,7 +4222,7 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   std::filesystem::remove(wavPath);
   writeSineWaveFile(wavPath, 44100, 1);
 
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
 
   corevideo::modules::MediaDecodeRequest request;
@@ -4204,7 +4303,7 @@ TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndRes
       ("corevideo-mf-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".mp4");
   writeMfVideoFixture(videoPath);
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{videoPath};
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
   corevideo::modules::MediaDecodeRequest request;
   request.kind = "media-video";
@@ -4255,7 +4354,7 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
       ("corevideo-mf-pause-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".wav");
   writeTimecodedFloatWav(wavPath, 3);
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{wavPath};
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
   corevideo::modules::MediaDecodeRequest request;
   request.kind = "media-video";
@@ -4307,6 +4406,7 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
   source.reset(); // Release owned decoder workers before deleting their fixture.
 }
 
+#if COREVIDEO_WITH_MF_ENCODER  // the FFmpeg fallback exists only behind Media Foundation
 // ProRes MOVs (Media Foundation has no decoder) run on the FFmpeg fallback,
 // which paces itself with -re and cannot be paused in place: the adapter stops
 // it on Pause and restarts it at the frozen clock position on Play. The clip's
@@ -4491,6 +4591,7 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   EXPECT_TRUE(resumedSeconds <= heldSeconds + 4.0) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
   source.reset();
 }
+#endif  // COREVIDEO_WITH_MF_ENCODER (FFmpeg fallback cases)
 #endif
 
 // #739: the fake DeckLink/AJA pair belongs to the stub tier. A real core used to
@@ -8634,6 +8735,186 @@ std::string onAirHealthFor(corevideo::core::MediaCore& mediaCore, OnAirRecording
   return layer == plan.layers.end() ? std::string() : layer->sourceHealth;
 }
 }  // namespace
+
+namespace {
+class VcamPlanRecordingCompositor final : public corevideo::modules::ICompositor {
+ public:
+  explicit VcamPlanRecordingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    lastPlan = plan;
+    return inner_->render(plan, frames);
+  }
+  void setVcamMirror(bool mirror) override { mirrorCalls.push_back(mirror); }
+  corevideo::modules::CompositorRenderPlan lastPlan;
+  std::vector<bool> mirrorCalls;
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+// Records start/stop only; never opens an OS camera (review Important #3).
+class FakeVirtualCameraPublisher final : public corevideo::modules::IVirtualCameraPublisher {
+ public:
+  explicit FakeVirtualCameraPublisher(int* starts, int* stops) : starts_(starts), stops_(stops) {}
+  bool start(int, int, int) override { ++*starts_; return true; }
+  void publish(const corevideo::modules::ProgramFrame&) override {}
+  void stop() override { ++*stops_; }
+  corevideo::modules::VirtualCameraStatus status() const override { return {}; }
+ private:
+  int* starts_;
+  int* stops_;
+};
+}  // namespace
+
+// Roadmap M9.2 (controller ruling C6): on the Mac backend the virtual camera is
+// fed ONLY by the compositor's GPU NV12 tap — enabling it alone must not arm
+// the 8 MB BGRA full-program readback. Every other build keeps the legacy
+// rule (vcam enabled => fullProgramReadback), byte for byte.
+TEST(MediaCoreCommand, EnablingTheVirtualCameraArmsTheRightProgramTap) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<VcamPlanRecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  int publisherStarts = 0;
+  int publisherStops = 0;
+  mediaCore.setVirtualCameraPublisherForTest(
+      std::make_unique<FakeVirtualCameraPublisher>(&publisherStarts, &publisherStops));
+
+  mediaCore.renderDisplayTick();
+  EXPECT_FALSE(compositor->lastPlan.fullProgramReadback);
+  EXPECT_FALSE(compositor->lastPlan.vcamNv12Tap);
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "sync-virtual-camera"}, {"on", true}, {"mirror", true}}});
+  mediaCore.renderDisplayTick();
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  EXPECT_TRUE(compositor->lastPlan.vcamNv12Tap);
+  EXPECT_FALSE(compositor->lastPlan.fullProgramReadback)
+      << "the Mac vcam must not arm the BGRA full-program readback";
+#else
+  EXPECT_TRUE(compositor->lastPlan.fullProgramReadback);
+  EXPECT_FALSE(compositor->lastPlan.vcamNv12Tap);
+#endif
+#if defined(__APPLE__)
+  ASSERT_FALSE(compositor->mirrorCalls.empty());
+  EXPECT_TRUE(compositor->mirrorCalls.back()) << "the mirror reaches the GPU tap";
+#else
+  EXPECT_TRUE(compositor->mirrorCalls.empty());
+#endif
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "sync-virtual-camera"}, {"on", false}}});
+  mediaCore.renderDisplayTick();
+  EXPECT_FALSE(compositor->lastPlan.vcamNv12Tap);
+  EXPECT_FALSE(compositor->lastPlan.fullProgramReadback);
+  // The enable/disable reached the test double, so no real camera was opened.
+  EXPECT_EQ(publisherStarts, 1);
+  EXPECT_EQ(publisherStops, 1);
+}
+
+namespace {
+// Reports a fixed tap warning, as a Metal compositor whose GPU NV12 tap failed
+// to prepare does (Task 7 carried fix).
+class TapWarningCompositor final : public corevideo::modules::ICompositor {
+ public:
+  explicit TapWarningCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->render(plan, frames);
+  }
+  std::string vcamTapWarning() const override { return warning; }
+  std::string warning;
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+class StatusVirtualCameraPublisher final : public corevideo::modules::IVirtualCameraPublisher {
+ public:
+  bool start(int width, int height, int fps) override {
+    status_.enabled = true; status_.state = "live"; status_.width = width; status_.height = height; status_.fps = fps;
+    return true;
+  }
+  void publish(const corevideo::modules::ProgramFrame&) override {}
+  void stop() override { status_.enabled = false; status_.state = "off"; }
+  corevideo::modules::VirtualCameraStatus status() const override { return status_; }
+  corevideo::modules::VirtualCameraStatus status_;
+};
+}  // namespace
+
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+// Review finding 3 (2026-11-16): a camera that connects and is lost each time
+// is readable in one snapshot read (virtualCamera.sink).
+TEST(MediaCoreCommand, TheSinkNodeShowsAConnectThenLoseLoopAndItsBackoff) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  auto owned = std::make_unique<StatusVirtualCameraPublisher>();
+  auto* camera = owned.get();
+  mediaCore.setVirtualCameraPublisherForTest(std::move(owned));
+
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  const auto* sink = state.get("virtualCamera")->get("sink");
+  ASSERT_NE(sink, nullptr);
+  ASSERT_NE(sink->get("consecutiveShortRuns"), nullptr);
+  EXPECT_EQ(sink->getNumber("consecutiveShortRuns"), 0);
+  EXPECT_EQ(sink->getNumber("consecutiveUnreachable"), 0);
+  ASSERT_NE(sink->get("lastRunMs"), nullptr);
+  EXPECT_TRUE(sink->get("lastRunMs")->isNull()) << "no run has ended: not observed, never 0";
+
+  camera->status_.sinkConsecutiveShortRuns = 31;
+  camera->status_.sinkConsecutiveUnreachable = 31;
+  camera->status_.sinkLastRunMs = 3'000;
+  camera->status_.sinkNextAttemptInMs = 5'000;
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  sink = state.get("virtualCamera")->get("sink");
+  ASSERT_NE(sink, nullptr);
+  EXPECT_EQ(sink->getNumber("consecutiveShortRuns"), 31);
+  EXPECT_EQ(sink->getNumber("consecutiveUnreachable"), 31);
+  EXPECT_EQ(sink->getNumber("lastRunMs"), 3'000);
+  EXPECT_EQ(sink->getNumber("nextAttemptInMs"), 5'000);
+}
+#endif
+
+// Task 7 carried fix: a failed GPU tap preparation is visible in the
+// virtualCamera snapshot (status failed + the CAMERA_TAP_PREP_FAILED: warning,
+// which the shell label shows whole). Mac backend only; every other build
+// ignores the compositor's tap warning, byte for byte.
+TEST(MediaCoreCommand, AFailedVcamTapPreparationShowsInTheVirtualCameraSnapshot) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<TapWarningCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.setVirtualCameraPublisherForTest(std::make_unique<StatusVirtualCameraPublisher>());
+  compositor->warning = "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared (test).";
+
+  // Camera off: a stale tap failure says nothing.
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  ASSERT_NE(state.get("virtualCamera"), nullptr);
+  EXPECT_EQ(state.get("virtualCamera")->getString("status"), "off");
+  EXPECT_EQ(state.get("virtualCamera")->getString("warning"), "");
+
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "sync-virtual-camera"}, {"on", true}}});
+  const auto* camera = state.get("virtualCamera");
+  ASSERT_NE(camera, nullptr);
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  EXPECT_EQ(camera->getString("status"), "failed");
+  EXPECT_EQ(camera->getString("warning"), compositor->warning);
+#else
+  EXPECT_EQ(camera->getString("status"), "live") << "the tap warning is inert outside the Mac backend";
+  EXPECT_EQ(camera->getString("warning"), "");
+#endif
+
+  // A healthy tap leaves the publisher's own status alone.
+  compositor->warning.clear();
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  EXPECT_EQ(state.get("virtualCamera")->getString("status"), "live");
+  EXPECT_EQ(state.get("virtualCamera")->getString("warning"), "");
+}
 
 // #535 slice 4a final review, R1: a "zoom"-kind bus source with no new frame
 // for >= 1.5s reads "stalled" on the render-plan layer (the on-air rule),

@@ -9,8 +9,10 @@ if [ "${1:-}" != "--skip-native" ]; then
     -DCMAKE_BUILD_TYPE=Release \
     -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
     -DCOREVIDEO_WITH_METAL=ON -DCOREVIDEO_WITH_AVF_ENCODER=ON \
+    -DCOREVIDEO_WITH_AVF_MEDIA_DECODER=ON \
     -DCOREVIDEO_WITH_COREAUDIO=ON -DCOREVIDEO_WITH_AVF_CAPTURE=ON \
-    -DCOREVIDEO_WITH_SCK=ON -DCOREVIDEO_WITH_RTMP_OUTPUT=ON >/dev/null
+    -DCOREVIDEO_WITH_SCK=ON -DCOREVIDEO_WITH_RTMP_OUTPUT=ON \
+    -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON >/dev/null
   cmake --build native/build-metal --target corevideo-native corevideo-zoom-engine 2>/dev/null \
     || cmake --build native/build-metal --target corevideo-native
   if [ ! -d native/build-engine/corevideo-zoom-engine.app ] && [ -x native/build-engine/corevideo-zoom-engine ]; then

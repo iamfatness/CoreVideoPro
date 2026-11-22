@@ -23,7 +23,7 @@ build). Acceptance by the owner is pending: see `docs/qa/macos-1.0-owner-accepta
   Record, Stream, scene select/list). LAN access needs `COREVIDEO_HTTP_LAN=1` and
   `COREVIDEO_CONTROL_TOKEN`. The Companion module accepts both PascalCase and camelCase
   manifests.
-- **Signed, notarized DMG** from `scripts/release-macos.sh` (rehearsal builds are marked
+- **Signed, notarized .pkg** (the only Mac installer since 2026-11-15; no DMG) from `scripts/release-macos.sh` (rehearsal builds are marked
   `-UNNOTARIZED` and cannot overwrite a release). The script runs the full native test
   suite on the release core, including the `realtime` AVF timing tests CI excludes, and
   stops the release on any failure. FFmpeg is not bundled; Homebrew and

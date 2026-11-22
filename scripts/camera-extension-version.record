@@ -1,0 +1,10 @@
+# Written by scripts/camera-extension-version.sh update. Do not edit by hand.
+# The camera extension's version, a sha256 of everything it is built from
+# (see the script header) and the UUID of its provisioning profile.
+# extensionVersion started at 3000 (2026-11-15), above every app build number
+# earlier builds used as the extension's CFBundleVersion (the owner's Mac had
+# 2881 and 2883), so the move to an independent version is an upgrade, never a
+# downgrade. Only ever increase it. Renewing the camera profile needs a bump.
+extensionVersion=3003
+sourceHash=7cfee2c2cda3a688cd777cb79d0cbdc157c53902d123687b706afc2b640b9e27
+cameraProfileUUID=91026fd2-5024-4cbe-affb-0fb475641f6b

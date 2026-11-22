@@ -76,6 +76,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
     private static func dispatch(_ model: AppModel, _ actionId: String, _ args: [ControlArg]) async -> ControlInvokeResult {
         func bool(_ index: Int) -> Bool { index < args.count ? args[index].bool : false }
         func string(_ index: Int) -> String { index < args.count ? args[index].string : "" }
+        func int(_ index: Int) -> Int { index < args.count ? args[index].int : 0 }
+        func optionalString(_ index: Int) -> String? { index < args.count ? args[index].optionalString : nil }
         switch actionId {
         case "transport.ftb.toggle":
             return blackout(await model.setProgramBlackout(nil))
@@ -106,6 +108,21 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
                              // toggleStreaming flips intent only: with intent off it would START.
                              canInvert: { target in target || !model.streamingObservedLive || model.streamingDesired },
                              model.toggleStreaming)
+        case "transport.virtualcam.toggle":
+            // Windows: always Success. The model setters persist and send the one sync.
+            model.setVirtualCamera(enabled: !model.virtualCamera.enabled)
+            return .success
+        case "transport.virtualcam.set":
+            // Idempotent: a repeat neither toggles nor re-sends.
+            if model.virtualCamera.enabled != bool(0) { model.setVirtualCamera(enabled: bool(0)) }
+            return .success
+        case "transport.virtualcam.mirror.set":
+            if model.virtualCamera.mirror != bool(0) { model.setVirtualCameraMirror(bool(0)) }
+            return .success
+        case "transport.virtualcam.name.set":
+            // Blank (or omitted) restores the default name.
+            model.setVirtualCameraDeviceName(string(0))
+            return .success
         case "scene.select":
             // Windows SceneSelectArgs.Refuse: blank or unknown -> refuse, change nothing.
             let sceneId = string(0)
@@ -118,11 +135,86 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
                 ? .appliedPreview(sceneId) : .fail("Scene '\(sceneId)' was not queued on Preview.")
         case "scene.list":
             return .withData(sceneListJSON(model))
+        // ── Session (ControlSurface+Session.swift) ──
+        case "zoom.join":
+            return await model.joinZoomForControl(target: string(0), displayName: optionalString(1), webinar: bool(2))
+        case "zoom.leave":
+            return await model.leaveZoomForControl()
+        case "source.capture.online.set":
+            return await setCaptureOnline(model, sourceId: string(0), online: bool(1))
+        case "transport.stream.rtmp.configure":
+            return model.configureRtmpForControl(args.map(\.value))
+        case "transport.transition.set":
+            return setTransition(model, mode: string(0))
+        case "transport.engine.toggle":
+            return toggleEngine(model)
+        case "transport.engine.set":
+            return setEngine(model, on: bool(0))
+        // ── Production (ControlSurface+Production.swift) ──
+        case "graphics.lowerThird.toggle":
+            return setLowerThird(model, on: nil)
+        case "graphics.lowerThird.set":
+            return setLowerThird(model, on: bool(0))
+        case "automation.captions.set":
+            return setAutoCaptions(bool(0))
+        case "multiview.layout.set":
+            return setMultiviewLayout(model, mode: string(0))
+        case "multiview.tileCount.set":
+            return setMultiviewTileCount(model, count: int(0))
+        case "audio.mastering.set":
+            return setMastering(model, on: bool(0))
+        case "audio.mastering.target":
+            return setMasteringTarget(model, index: int(0))
+        case "audio.vst.scan":
+            return scanVst(model)
+        case "audio.route.set":
+            return await setAudioRoute(model, args)
+        case "audio.monitor.set":
+            return await setMonitor(model, enabled: bool(0), volume: nil, args)
+        case "audio.monitor.volume":
+            return await setMonitor(model, enabled: nil, volume: args.first?.double ?? 0, args)
+        // ── Show Inputs (ControlSurface+Inputs.swift) ──
+        case "input.assign":
+            return assignInput(model, slot: int(0), sourceId: string(1))
+        case "input.unassign":
+            return unassignInput(model, slot: int(0))
+        case "input.name":
+            return nameInput(model, slot: int(0), name: optionalString(1))
+        case "input.inShow.set":
+            return setInputInShow(model, slot: int(0), on: bool(1))
+        case "source.dropout.set":
+            return setSourceDropout(model, sourceId: string(0), policy: string(1))
         default:
-            // Unreachable through the router (the catalog binds only the subset).
-            return .fail("Unknown action '\(actionId)'.")
+            // Unreachable through the router (the catalog binds only supported ids);
+            // control/dispatch-drive looks for exactly this text.
+            return .fail(undispatched(actionId))
         }
     }
+
+    /// The ids this dispatcher handles: the twin of Windows `SupportedActionIds`.
+    /// Hand-written ON PURPOSE, not derived from the catalog — it is the
+    /// dispatcher's own claim, and control/closure compares it with the
+    /// platform file's supported rows.
+    static let supportedActionIds: Set<String> = [
+        "transport.ftb.toggle", "transport.ftb.set", "transport.take",
+        "transport.record.toggle", "transport.record.set",
+        "transport.stream.toggle", "transport.stream.set",
+        "transport.virtualcam.toggle", "transport.virtualcam.set",
+        "transport.virtualcam.mirror.set", "transport.virtualcam.name.set",
+        "scene.select", "scene.list",
+        // RC2
+        "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
+        "transport.transition.set", "transport.engine.toggle", "transport.engine.set",
+        "zoom.join", "zoom.leave", "source.capture.online.set", "transport.stream.rtmp.configure",
+        // RC3
+        "graphics.lowerThird.toggle", "graphics.lowerThird.set", "automation.captions.set",
+        "multiview.layout.set", "multiview.tileCount.set",
+        "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
+        "audio.monitor.set", "audio.monitor.volume", "audio.route.set",
+    ]
+
+    /// The `default:` branch's text (Windows' unknown-action wording).
+    static func undispatched(_ id: String) -> String { "Unknown action '\(id)'." }
 
     @MainActor
     private static func blackout(_ result: AppModel.BlackoutResult) -> ControlInvokeResult {
@@ -205,6 +297,33 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             // the true value is false, not "unknown".
             "automationOn": false,
             "autoTake": false,
+            // RC2 (ControlStateProjection is the only mapping point).
+            "zoomStatus": ControlStateProjection.zoomStatus(meetingState: model.meetingState),
+            "engineStatus": ControlStateProjection.engineStatus(
+                captureEnabled: model.captureEnabled, rawMediaActive: model.rawMediaActive,
+                meetingState: model.meetingState),
+            "inputs": ControlStateProjection.inputs(model.slots, devices: model.captureDevices),
+            "zoomParticipantIds": model.roster.map(\.id),
+            "virtualCameraOn": model.virtualCamera.enabled,
+            // RC3
+            "lowerThirdOnAir": model.lowerThirdVisible,   // the core's observed `visible`
+            "multiviewTileCount": model.multiviewTileCount,
+            "masteringOn": model.mastering.enabled,
+            "masteringTarget": masteringTargetIndex(model.mastering.targetLufs),
+            // No caption source exists on the Mac: the true value is false.
+            "autoCaptions": false,
+            // The core-APPLIED monitor session (Windows StudioControlSurface.cs:1010-1014).
+            "audioMonitorOn": model.monitorControl.applied.enabled,
+            "audioMonitorVolume": model.monitorControl.applied.volume,
+            "audioMonitorAuthorityEpoch": model.monitorControl.authorityEpoch,
+            "audioMonitorRevision": model.monitorControl.revision,
+            "audioMonitorLastResult": model.monitorControl.lastResultStatus,
+            "audioRouteAuthorityEpoch": model.audioRouteControl.authorityEpoch,
+            "audioRouteRevision": model.audioRouteControl.revision,
+            "audioRouteLastResult": model.audioRouteControl.lastResultStatus,
+            "audioRoutes": audioRoutes(model),
+            "audioSources": audioSources(model),
+            "audioSourceCount": model.strips.count,
         ])
     }
 }
@@ -215,6 +334,10 @@ struct ControlArg: @unchecked Sendable {
     init(_ value: Any?) { self.value = value }
     var bool: Bool { value as? Bool ?? false }
     var string: String { value as? String ?? "" }
+    var int: Int { value as? Int ?? 0 }
+    var optionalString: String? { value as? String }
+    /// The binder delivers a Double; a direct caller's integer is accepted too.
+    var double: Double { (value as? Double) ?? (value as? Int).map(Double.init) ?? 0 }
 }
 
 struct SendableDictionary: @unchecked Sendable {
@@ -259,48 +382,140 @@ final class ControlApiHost {
     }
 
     private var server: ControlHttpServer?
+    private(set) var oscServer: ControlOscServer?
+    private var router: ControlRouter?
+    private var statusTimer: Timer?
+    private var httpEndpoint: String?, httpError: String?, oscEndpoint: String?, oscError: String?
     private var changes: AnyCancellable?
     private var terminate: NSObjectProtocol?
-    private var lastBroadcast = ""
+    private var lastPushKey = ""
 
     func start(model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
         guard server == nil, Self.shouldAutoStart(environment: environment) else { return }
-        let options = ControlServerOptions.fromEnvironment(environment)
-        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
-        let server = ControlHttpServer(router: ControlRouter(surface: surface), options: options)
-        self.server = server
-        server.start { [weak model] result in
-            Task { @MainActor in
-                switch result {
-                case .success(let port):
-                    ShellLog.write("control: HTTP/WS API listening on http://\(options.host):\(port)/ "
-                        + "(GET /manifest, /state, /snapshot, /ws; POST /invoke)"
-                        + (options.hasToken ? " — bearer token required" : ""))
-                case .failure(let error):
-                    ShellLog.write("control: HTTP/WS API failed to start (\(error))")
-                    model?.pushWarning("Remote control (Companion) unavailable: \(error)")
-                }
-            }
-        }
-        // Windows coalesces StateChanged through a feedback timer; push only real changes.
-        changes = Self.stateChangeStream(model.objectWillChange)
-            .sink { [weak self, weak model] _ in
-                guard let self, let model,
-                      let json = ControlJSON.encode(AppModelControlSurface.state(model).dictionary),
-                      json != self.lastBroadcast else { return }
-                self.lastBroadcast = json
-                self.server?.broadcastState(json)
-            }
+        let osc = ControlOscOptions.fromEnvironment(environment)
+        if let notice = osc.notice { ShellLog.write(notice) }
+        startServers(model: model, http: ControlServerOptions.fromEnvironment(environment), osc: osc.options)
         terminate = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.stop() }
         }
     }
 
+    /// The real start path without the environment or shouldAutoStart (tests).
+    func startForTesting(model: AppModel, http: ControlServerOptions, osc: ControlOscOptions) {
+        startServers(model: model, http: http, osc: osc)
+    }
+    private(set) var httpPortForTesting: UInt16?
+    private(set) var oscFailedForTesting = false
+
+    /// HTTP/WS and OSC start side by side; an OSC failure (port in use) is logged
+    /// and warned about and never stops HTTP or the app.
+    private func startServers(model: AppModel, http options: ControlServerOptions, osc oscOptions: ControlOscOptions) {
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        let router = ControlRouter(surface: surface)
+        self.router = router
+        let server = ControlHttpServer(router: router, options: options)
+        self.server = server
+        server.start { [weak self, weak model] result in
+            Task { @MainActor in
+                switch result {
+                case .success(let port):
+                    self?.httpPortForTesting = port
+                    self?.httpEndpoint = "\(options.host == "+" ? "0.0.0.0" : options.host):\(port)"
+                    ShellLog.write("control: HTTP/WS API listening on http://\(options.host):\(port)/ "
+                        + "(GET /manifest, /state, /snapshot, /ws; POST /invoke)"
+                        + (options.hasToken ? " — bearer token required" : ""))
+                case .failure(let error):
+                    self?.httpError = "\(error)"
+                    ShellLog.write("control: HTTP/WS API failed to start (\(error))")
+                    model?.pushWarning("Remote control (Companion) unavailable: \(error)")
+                }
+            }
+        }
+        let osc = ControlOscServer(router: ControlOscRouter(surface: surface), options: oscOptions)
+        oscServer = osc
+        osc.start { [weak self, weak model] result in
+            Task { @MainActor in
+                switch result {
+                case .success(let port):
+                    self?.oscEndpoint = "\(oscOptions.bindAddress):\(port)"
+                    ShellLog.write("control: OSC server listening on \(oscOptions.bindAddress):\(port)")
+                case .failure(let error):
+                    self?.oscFailedForTesting = true
+                    self?.oscError = "\(error)"
+                    self?.oscServer = nil
+                    ShellLog.write("control: OSC server failed to start (\(error)) — HTTP still active")
+                    model?.pushWarning("OSC control unavailable: \(error)")
+                }
+            }
+        }
+        observe(model)
+        // The Settings row: a 1 s timer on the main queue, never objectWillChange.
+        let lan = !options.isLoopback || oscOptions.lan
+        let tokenRequired = options.hasToken
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self, weak model] _ in
+            MainActor.assumeIsolated {
+                guard let self, let model else { return }
+                let next = self.status(lan: lan, tokenRequired: tokenRequired)
+                if model.remoteControlStatus != next { model.remoteControlStatus = next }
+            }
+        }
+    }
+
+    /// The row's value now: endpoints, clients and the more recent of the HTTP and OSC refusals.
+    func status(lan: Bool, tokenRequired: Bool) -> RemoteControlStatus {
+        let http = router?.refusals.read()
+        let osc = oscServer?.lastRefusal.flatMap { refusal in oscServer?.lastRefusalAt.map { (refusal.actionId, refusal.error, $0) } }
+        let latest = [http.map { ($0.actionId, $0.error, $0.at) }, osc].compactMap { $0 }.max { $0.2 < $1.2 }
+        return RemoteControlStatus(httpEndpoint: httpEndpoint, httpError: httpError, oscEndpoint: oscEndpoint,
+                                   oscError: oscError, lan: lan, tokenRequired: tokenRequired,
+                                   webSocketClients: server?.webSocketClientCount ?? 0,
+                                   oscTargets: oscServer?.feedbackTargets.count ?? 0,
+                                   lastRefusal: latest.map { "\($0.0): \($0.1)" })
+    }
+
+    /// Test seams: wire the same throttle and push-key sink without a server.
+    var broadcastSinkForTesting: ((String) -> Void)?
+    func attachForTesting(model: AppModel) { observe(model) }
+
+    /// Main-actor cost of the last /state build (µs), for the 1 ms budget.
+    private(set) var lastStateBuildMicros: Double = 0
+
+    /// Windows coalesces StateChanged through a feedback timer and pushes only its
+    /// curated FeedbackProps. Here: a push happens when the state's PUSH KEY (the
+    /// state minus meter fields) changes, and it carries the full state, meters
+    /// included. The current state is pushed once on attach so the key starts
+    /// from what clients were last told, not from nothing.
+    private func observe(_ model: AppModel) {
+        push(model)
+        changes = Self.stateChangeStream(model.objectWillChange)
+            .sink { [weak self, weak model] _ in
+                guard let self, let model else { return }
+                self.push(model)
+            }
+    }
+
+    private func push(_ model: AppModel) {
+        let started = DispatchTime.now().uptimeNanoseconds
+        let state = AppModelControlSurface.state(model).dictionary
+        let key = ControlStatePushKey.key(state)
+        let json = key == lastPushKey ? nil : ControlJSON.encode(state)
+        lastStateBuildMicros = Double(DispatchTime.now().uptimeNanoseconds - started) / 1000
+        guard let json else { return }
+        lastPushKey = key
+        if let sink = broadcastSinkForTesting { sink(json) } else { server?.broadcastState(json) }
+        // OSC feedback rides the same push-key change (Windows OscControlServer.SendFeedbackAsync).
+        oscServer?.sendFeedback(ControlOscFeedback.encode(state))
+    }
+
     func stop() {
+        statusTimer?.invalidate()
+        statusTimer = nil
         changes = nil
         server?.stop()
         server = nil
+        oscServer?.stop()
+        oscServer = nil
         if let terminate { NotificationCenter.default.removeObserver(terminate) }
         terminate = nil
     }

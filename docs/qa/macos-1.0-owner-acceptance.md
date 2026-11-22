@@ -1,12 +1,12 @@
 # CoreVideo Pro for macOS 1.0: owner acceptance
 
 Everything automation on this branch could not prove. Run it on the owner's Mac with
-the **notarized, signed DMG build** unless a step says otherwise. Record pass or fail
+the **notarized, signed .pkg build** (the only Mac installer since 2026-11-15) unless a step says otherwise. Record pass or fail
 and the date next to each item. A single fail blocks the release.
 
 Prerequisites: a camera, a microphone, a second Mac or phone to play the Zoom
 attendee, an RTMP test destination, FFmpeg installed (`brew install ffmpeg`), and the
-app installed to `/Applications` from the DMG (the bundle is `"/Applications/CoreVideo Pro.app"`,
+app installed to `/Applications` from the .pkg (the bundle is `"/Applications/CoreVideo Pro.app"`,
 with a space; quote the path in every command).
 The release itself is notarized with CoreVideo Pro's own notarytool profile, `CoreVideo Pro`
 (one-time: `xcrun notarytool store-credentials "CoreVideo Pro" --team-id 42394L3353`; the
@@ -28,16 +28,15 @@ included, before anything is packaged, and stops the release on any failure (or 
 ## 1. Install and Gatekeeper
 
 1. On a Mac that has never run this build (or after deleting the app and its quarantine
-   state), download the DMG, open it, drag the app to Applications, and launch it.
+   state), download the `.pkg`, double-click it, finish the installer, and launch the app.
 2. Pass: no Gatekeeper warning or "unidentified developer" dialog; `spctl -a -vv
    "/Applications/CoreVideo Pro.app"` reports `source=Notarized Developer ID`;
-   `xcrun stapler validate` on the DMG succeeds.
-3. Repeat from a clean state with the `.pkg` instead: double-click
-   `CoreVideoPro-<version>-arm64.pkg`. Pass: no Gatekeeper warning; the installer
-   completes; `CoreVideo Pro.app` is in `/Applications` and launches;
-   `spctl -a -vv -t install` on the .pkg reports `source=Notarized Developer ID`,
-   `pkgutil --check-signature` shows the Developer ID Installer chain, and
-   `xcrun stapler validate` on the .pkg succeeds.
+   `xcrun stapler validate` on the `.pkg` succeeds; and
+   `cmp "/Library/Application Support/CoreVideo Pro/corevideo-native" "/Applications/CoreVideo Pro.app/Contents/Resources/corevideo-native"`
+   prints nothing (the core copy the virtual camera verifies matches the app).
+3. The installer itself: `spctl -a -vv -t install` on the `.pkg` reports
+   `source=Notarized Developer ID`, and `pkgutil --check-signature` shows the Developer ID
+   Installer chain.
 
 ## 2. Permission prompts appear once and persist
 
@@ -120,7 +119,7 @@ Start a recording first, then repeat with a stream running instead.
 
 Per CLAUDE.md "Frame-delivery acceptance": 60 fps is per-frame delivery, never an average.
 
-1. On the owner's Mac, with the release core build (the one inside the DMG app, not a
+1. On the owner's Mac, with the release core build (the one inside the installed app, not a
    debug or dev-tree core), Program buffer at its default: `python scripts/mac-show-drill.py
    --seconds 40 --load 8`.
 2. Pass: zero Program-buffer underruns, zero missed scheduled output deadlines and zero
@@ -139,7 +138,57 @@ Per CLAUDE.md "Frame-delivery acceptance": 60 fps is per-frame delivery, never a
 2. Pass: no crash, no stuck state, no unexplained warning; the recording is playable and
    in sync; the app quits cleanly.
 
+## 12. Virtual camera
+
+Roadmap M9.2. Run with the notarized `.pkg` build. Items marked "after Task 8/10" need the
+camera rename (Task 8) and the 720p behaviour (Task 10), which land in the owner session; do
+not run them against a build without those tasks.
+
+1. Fresh install from the notarized `.pkg`, first enable of Virtual camera, approval prompt.
+   Expected: after approval, "CoreVideo Pro Camera" shows Program in **Photo Booth**,
+   **FaceTime**, **Zoom**, **Teams in Chrome**, **Google Meet in Chrome and in Safari**, and
+   **OBS** (Video Capture Device).
+2. Approval denied, then granted later. Expected: the flyout moves from the approval text to
+   live with no relaunch.
+3. Copy the app out of `/Applications` (for example to the Desktop) and launch the copy.
+   Expected: "Move CoreVideo Pro to the Applications folder to use the virtual camera." and
+   nothing is installed.
+4. Sleep 2 minutes in the middle of a Zoom call, then wake. Expected: Zoom shows the slate
+   during the gap and Program again within 5 s of the core resuming; never a frozen frame.
+5. Quit the app mid-call. Expected: slate within 1 s. Relaunch: Program again with no toggle
+   (the intent persisted).
+6. Update: install build N+1 over N while Zoom is closed. Expected: if the extension changed
+   (higher `extensionVersion`), the first launch replaces it silently
+   (`systemextensionsctl list` shows the new version) and the camera works; if it did not
+   change, nothing is submitted and `systemextensionsctl list` is unchanged.
+6a. Update while Zoom uses the camera: install a build with a higher `extensionVersion` while
+   Zoom has CoreVideo Pro Camera selected in a call. Expected: nothing is replaced, the flyout,
+   Settings > System and Health keep the camera status and add "An update to CoreVideo Pro
+   Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth…), then click
+   Update camera.", and Zoom keeps working. Quit Zoom, click Update camera. Expected:
+   "Updating camera…", the extension swaps with no restart, `systemextensionsctl list` shows
+   only the new version `[activated enabled]`, and Photo Booth shows Program.
+6c. Update with the virtual camera on and no other app using it. Expected: the first launch
+   swaps the extension before the output starts; no Update camera step.
+6b. Forced deferred case: reproduce a stuck swap (an old copy `[terminated waiting to
+   uninstall on reboot]` and no device, e.g. replace while Photo Booth streams from a build
+   without this fix). Expected: within 10 s of launch the status is "Restart your Mac to finish
+   updating the virtual camera." in all three places; after a restart the camera works.
+7. (after Task 8/10) Set Camera name to "Studio A", toggle the camera off and on. Expected:
+   Photo Booth lists "Studio A". Also check the 720p behaviour Task 10 defines.
+8. Turn on OH Framer and Mirror. Expected: both visible in Zoom's self-view; the Program
+   recording stays clean (check the recorded file's pixels at a guide location).
+9. Settings > System > Remove virtual camera (enter the password if asked). Expected: the
+   device disappears from Photo Booth after relaunching it, and the next enable asks for
+   approval again.
+10. After the first signed launch of the camera build, the stream key and Zoom sign-in are
+    still present (Review Focus 5).
+11. Per-frame delivery: a live 1080p60 Program with framer and mirror on for 60 s. Expected:
+    core `framesPublished` delta >= 3599, `mac publication gaps 0`, `skipped 0`, and the e2e
+    probe reports consumer-side fps >= 59 at 60 fps. If the probe cannot measure the worst
+    interval, report it as unverified (CLAUDE.md frame-delivery rule); a mean never waives this.
+
 ## Known not on the Mac in 1.0
 
-Graphics designer/operate, Comms, social review, Tiles, the multiview inspector and the
-virtual camera. See CHANGELOG.md. These are not acceptance items.
+Graphics designer/operate, Comms, social review, Tiles and the multiview inspector.
+See CHANGELOG.md. These are not acceptance items.

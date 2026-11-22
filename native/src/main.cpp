@@ -2,12 +2,20 @@
 #include "core/ComApartmentLifetime.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/DeliveryTrace.h"
+#include "core/MainRunLoopHost.h"
 #include "modules/Interfaces.h"
+#include "modules/VirtualCameraPublisher.h"
 #include "rpc/JsonRpcServer.h"
 
 #include <iostream>
 
-int main() {
+int main(int argc, char** argv) {
+  // macOS virtual camera: this executable is also its own sink helper and
+  // device probe (modules/VcamSinkHelper.h). Decided before anything else is
+  // created; false on every other platform and for every ordinary launch.
+  int processModeExit = 0;
+  if (corevideo::modules::runVirtualCameraProcessMode(argc, argv, &processModeExit)) return processModeExit;
+  corevideo::modules::enableVirtualCameraSinkHelper();
   // Declare before MediaCore: COM must outlive both its workers and resources.
   corevideo::core::ComApartmentLifetime com;
   if (!com.initialized()) {
@@ -20,11 +28,18 @@ int main() {
   // The live server runs the audio/output worker, so it needs the encoder wrapped
   // in AsyncEncoderSink (non-blocking submit + drop-to-latest). Tests construct
   // MediaCore with createDefaultModules and keep the synchronous encoder.
-  {
+  //
+  // macOS: the stdin loop runs on a worker while the main thread services the
+  // main run loop. CoreMediaIO applies camera arrivals there, so a camera
+  // extension that (re)starts after launch is otherwise never seen
+  // (CAMERA_EXTENSION_NOT_FOUND forever; core/MainRunLoopHost.h). Elsewhere the
+  // body runs inline on this thread, unchanged.
+  corevideo::core::runWithMainRunLoop([] {
     corevideo::core::MediaCore mediaCore(corevideo::modules::createLiveServerModules());
     corevideo::rpc::JsonRpcServer server(mediaCore);
     server.run(std::cin, std::cout);
-  }
+    return 0;
+  });
   // Capture finalization follows media teardown. A failed explicit export must
   // remain visible to the owned QA caller even if an older file looks complete.
   return deliveryTrace && !deliveryTrace->close() ? 1 : 0;

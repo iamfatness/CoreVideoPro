@@ -1,0 +1,31 @@
+#pragma once
+// Media clip fixtures for the AVFoundation decoder tests. Every fixture is
+// written at test time with AVAssetWriter; nothing binary is committed.
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace corevideo::testing {
+
+struct FlatSegment { int frames; uint8_t b, g, r, a = 0xff; };
+
+// H.264 (or ProRes 4444 when `prores4444`) MP4/MOV from BGRA source buffers.
+// Frame i is stamped i/fps and the session ends at frames/fps, so the asset's
+// duration is exactly frames/fps. Returns "" on success, else why.
+std::string writeFlatColourClip(const std::string& path, int width, int height, int fps,
+                                const std::vector<FlatSegment>& segments, bool prores4444 = false);
+
+// H.264 MP4 (64x64) from a '420v' (BT.709 limited) source with four 32x32
+// quadrants of KNOWN Y/Cb/Cr: TL (16,128,128) black, TR (235,128,128) white,
+// BL (173,42,26) BT.709 green, BR (63,102,240) BT.709 red.
+std::string writeBt709BarsClip(const std::string& path, int frames, int fps);
+
+// H.264 + AAC MP4: `seconds` of video (flat grey 64x64 @30) and a sine at `toneHz`, 48 kHz stereo,
+// amplitude 0.5.
+std::string writeToneClip(const std::string& path, int seconds, double toneHz);
+
+// A flat-colour PNG (straight-alpha BGRA source) written with ImageIO.
+std::string writeFlatColourPng(const std::string& path, int width, int height,
+                               uint8_t b, uint8_t g, uint8_t r, uint8_t a = 0xff);
+
+}  // namespace corevideo::testing

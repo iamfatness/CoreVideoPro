@@ -75,6 +75,7 @@ option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires
 option(COREVIDEO_WITH_D3D11 "Build the Windows D3D11 GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_METAL "Build the macOS Metal GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_AVF_ENCODER "Build the macOS AVFoundation/VideoToolbox recording encoder. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_AVF_MEDIA_DECODER "Build the macOS AVFoundation media clip decoder. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_COREAUDIO "Build the macOS CoreAudio monitor-output and capture-audio adapters. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_AVF_CAPTURE "Build the macOS AVFoundation camera capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_SCK "Build the macOS ScreenCaptureKit screen/window capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
@@ -92,6 +93,7 @@ option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires C
 option(COREVIDEO_WITH_UVC "Build the native UVC (Media Foundation) capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WGC "Build the Windows.Graphics.Capture screen-capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_VIRTUALCAM "Build the Windows 11 Media Foundation virtual-camera publisher. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_MAC_VIRTUALCAM "Build the macOS CoreMediaIO virtual-camera backend (feeds the CoreVideo Pro Camera extension's sink stream). Apple only; requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_BROWSER_HOST "Build corevideo-browser-host.exe (WebView2 browser-source host, docs/capture-sources-spec.md Phase BR). Windows x64 only; uses the vendored third_party/webview2 SDK." OFF)
 option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored standalone Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
@@ -152,6 +154,7 @@ add_library(corevideo_native
   src/modules/SharedGpuVideoEncoder.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
+  src/modules/MediaClipDecoder.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
   src/modules/NdiOutputSenderAdapter.cpp
   src/modules/NdiReceiveCaptureAdapter.cpp
@@ -170,6 +173,8 @@ add_library(corevideo_native
   src/modules/WgcScreenCaptureAdapter.cpp
   src/modules/VirtualCameraPublisher.cpp
   src/modules/AsyncVirtualCameraPublisher.cpp
+  src/modules/SinkVirtualCameraPublisher.cpp
+  src/modules/HelperVirtualCameraPublisher.cpp
   src/modules/GpuWebcamFramer.cpp
   src/modules/UvcCaptureSupport.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
@@ -199,11 +204,13 @@ if(APPLE)
   target_sources(corevideo_native PRIVATE
     src/compositor/MetalCompositorAdapter.mm
     src/modules/AVFoundationEncoderAdapter.mm
+    src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm)
   set_source_files_properties(
     src/compositor/MetalCompositorAdapter.mm
     src/modules/AVFoundationEncoderAdapter.mm
+    src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -225,6 +232,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
     COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
     COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_AVF_MEDIA_DECODER=$<BOOL:${COREVIDEO_WITH_AVF_MEDIA_DECODER}>
     COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
     COREVIDEO_WITH_AVF_CAPTURE=$<BOOL:${COREVIDEO_WITH_AVF_CAPTURE}>
     COREVIDEO_WITH_SCK=$<BOOL:${COREVIDEO_WITH_SCK}>
@@ -242,6 +250,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>
     COREVIDEO_WITH_WGC=$<BOOL:${COREVIDEO_WITH_WGC}>
     COREVIDEO_WITH_VIRTUALCAM=$<BOOL:${COREVIDEO_WITH_VIRTUALCAM}>
+    COREVIDEO_WITH_MAC_VIRTUALCAM=$<BOOL:${COREVIDEO_WITH_MAC_VIRTUALCAM}>
 )
 
 if(COREVIDEO_ENABLE_DEV_ADAPTERS)
@@ -315,6 +324,17 @@ if(COREVIDEO_WITH_AVF_ENCODER)
     "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
 endif()
 
+if(COREVIDEO_WITH_AVF_MEDIA_DECODER)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_MEDIA_DECODER requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_MEDIA_DECODER supports the macOS adapter only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox")
+endif()
+
 if(COREVIDEO_WITH_COREAUDIO)
   if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
     message(FATAL_ERROR "COREVIDEO_WITH_COREAUDIO requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
@@ -382,6 +402,34 @@ if(COREVIDEO_WITH_UVC)
   # mf provides MFEnumDeviceSources/MFCreateDeviceSource; mfreadwrite the source
   # reader; mfplat/mfuuid the core MF runtime + GUIDs; ole32 COM init.
   target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid wmcodecdspuuid ole32)
+endif()
+
+# macOS virtual camera (roadmap M9.2, docs/virtual-camera-macos-spec.md). The
+# portable publisher (SinkVirtualCameraPublisher.cpp) builds everywhere; only the
+# CoreMediaIO transport is Apple-gated here. Non-Apple configures refuse it.
+if(COREVIDEO_WITH_MAC_VIRTUALCAM)
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_MAC_VIRTUALCAM supports macOS only.")
+  endif()
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_MAC_VIRTUALCAM requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  target_sources(corevideo_native PRIVATE src/modules/CmioVirtualCameraSink.mm src/modules/VcamSinkHelper.cpp)
+  set_source_files_properties(src/modules/CmioVirtualCameraSink.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework CoreMediaIO" "-framework CoreMedia" "-framework CoreVideo" "-framework IOSurface")
+  # OH Framer on macOS (Task 9): a Metal port of shaders/WebcamFramer.hlsl,
+  # compiled at runtime from shaders/WebcamFramer.metal embedded as a string.
+  # GpuWebcamFramer.cpp stays in the list and compiles to nothing here.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.metal")
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.metal" WEBCAM_FRAMER_MSL)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/WebcamFramerMetalSource.h"
+    "#pragma once\ninline constexpr char kWebcamFramerMetalSource[] = R\"MSL(${WEBCAM_FRAMER_MSL})MSL\";\n")
+  target_sources(corevideo_native PRIVATE
+    src/modules/GpuWebcamFramerMetal.mm src/modules/WebcamFramerAppleDecode.mm)
+  set_source_files_properties(src/modules/GpuWebcamFramerMetal.mm src/modules/WebcamFramerAppleDecode.mm
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(corevideo_native PUBLIC "-framework Metal" "-framework Foundation")
 endif()
 
 if(COREVIDEO_WITH_VIRTUALCAM)
@@ -634,6 +682,20 @@ endif()
 add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
+# macOS virtual camera e2e feeder (roadmap M9.2, Task 7): feeds red NV12
+# through SinkVirtualCameraPublisher + the real CMIO sink. Built on demand by
+# scripts/macos-vcam-e2e.sh, never by default, never shipped.
+if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)
+  add_executable(corevideo-vcam-feed EXCLUDE_FROM_ALL tools/mac-vcam-feed.mm)
+  target_link_libraries(corevideo-vcam-feed PRIVATE corevideo_native "-framework Foundation")
+  set_source_files_properties(tools/mac-vcam-feed.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  # Transport measurement for the sink helper process (never shipped): the
+  # production core side and helper loop across a real process boundary.
+  add_executable(corevideo-vcam-helper-bench EXCLUDE_FROM_ALL tools/mac-vcam-helper-bench.mm)
+  target_link_libraries(corevideo-vcam-helper-bench PRIVATE corevideo_native "-framework Foundation")
+  set_source_files_properties(tools/mac-vcam-helper-bench.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
+
 if(WIN32)
   add_executable(corevideo-webcam-framer-qa EXCLUDE_FROM_ALL ../tools/webcam-framer-worker-qa.cpp)
   target_link_libraries(corevideo-webcam-framer-qa PRIVATE corevideo_native)
@@ -874,6 +936,12 @@ if(BUILD_TESTING)
     tests/D3DCaptureCpuBranchTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
+    tests/SinkVirtualCameraPublisherTest.cpp
+    tests/VcamHelperRespawnPolicyTest.cpp
+    tests/VcamHelperTransportTest.cpp
+    tests/HelperVirtualCameraPublisherTest.cpp
+    tests/MainRunLoopHostTest.cpp
+    tests/OwnVirtualCameraTest.cpp
     tests/GpuWebcamFramerTest.cpp
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp
@@ -917,12 +985,14 @@ if(BUILD_TESTING)
     tests/GradePreviewTest.cpp
     tests/ProgramBlackoutTest.cpp
     tests/AdvancedGradeTest.cpp
+    tests/SourceGradeIdentityTest.cpp
     tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
+    tests/MetalSourceGradePixelTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp
     tests/MacCaptureSupportTest.cpp
@@ -936,6 +1006,7 @@ if(BUILD_TESTING)
     tests/LumaRangeProbeTest.cpp
     tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MediaPlaybackTimelineTest.cpp
+    tests/MediaClipDecoderTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/AnchoredFrameDeadlineTrackerTest.cpp
     tests/ProgramAudioDelayTest.cpp
@@ -999,6 +1070,13 @@ if(BUILD_TESTING)
     target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
     set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   endif()
+  if(COREVIDEO_WITH_AVF_MEDIA_DECODER AND NOT COREVIDEO_STUB)
+    # Real AVFoundation decode against fixtures written at test time.
+    target_sources(corevideo-native-tests PRIVATE tests/AvfMediaFixtures.mm tests/AvfMediaDecoderTest.cpp
+      tests/AvfMediaPixelTest.cpp)
+    set_source_files_properties(tests/AvfMediaFixtures.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(corevideo-native-tests PRIVATE "-framework ImageIO" "-framework UniformTypeIdentifiers")
+  endif()
   # Comms: core relay, engine comms core/protocol, and ZComms' own tests for
   # the ported pieces (tests/comms/test_util.h maps ZC_CHECK onto the shim).
   target_sources(corevideo-native-tests PRIVATE
@@ -1029,6 +1107,7 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
     COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
     COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_AVF_MEDIA_DECODER=$<BOOL:${COREVIDEO_WITH_AVF_MEDIA_DECODER}>
     COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
     COREVIDEO_WITH_AVF_CAPTURE=$<BOOL:${COREVIDEO_WITH_AVF_CAPTURE}>
     COREVIDEO_WITH_SCK=$<BOOL:${COREVIDEO_WITH_SCK}>
@@ -1043,12 +1122,21 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_RTMP_INGEST=$<BOOL:${COREVIDEO_WITH_RTMP_INGEST}>
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
-    COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>)
+    COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>
+    COREVIDEO_WITH_MAC_VIRTUALCAM=$<BOOL:${COREVIDEO_WITH_MAC_VIRTUALCAM}>)
   target_include_directories(corevideo-native-tests PRIVATE tests/share-sdk zoom-engine/engine zoom-engine/shared plugin-host virtualcam-dll)
   # POSIX-only ffmpeg discovery (modules/PosixExecutableLocator.h); Windows
   # resolves ffmpeg on its own unchanged path, so the test is not built there.
   if(NOT WIN32)
     target_sources(corevideo-native-tests PRIVATE tests/PosixExecutableLocatorTest.cpp)
+  endif()
+  # The sink helper's process half exists only in the macOS virtual-camera build.
+  if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)
+    target_sources(corevideo-native-tests PRIVATE tests/VcamSinkHelperTest.cpp)
+    # The wiring tests run the built core in its two process modes.
+    target_compile_definitions(corevideo-native-tests PRIVATE
+      COREVIDEO_NATIVE_CORE_PATH="$<TARGET_FILE:corevideo-native>")
+    add_dependencies(corevideo-native-tests corevideo-native)
   endif()
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
@@ -1093,6 +1181,12 @@ if(BUILD_TESTING)
     # label; the sub-second deterministic cases (NoIsoDemandMeansNoRetainedFrames,
     # HeldPictureKeepsItsArrivalIdentity..., StopUnderVideoBackpressure...) stay in
     # the main ctest so CI runs them.
+    # VcamTapDeliversEveryRenderedFrame renders 120 frames paced at real 60 Hz and
+    # asserts zero dropped camera frames: a GPU throughput claim, not logic. The
+    # 4-buffer ring drops (counted, by design) once the GPU falls ~67 ms behind,
+    # and the macOS CI runner's paravirtual GPU has render ticks to 123.7 ms (see
+    # the mac-show-drill note in ci.yml); it failed there on #1220. The drop
+    # accounting itself stays in the main ctest (VcamTapCountsASkipWhenEveryBufferIsBusy).
     set(COREVIDEO_REALTIME_TEST_FILTER
       "AvfCaptureArrival.EveryCameraDeliveryReachesTheIsoRecorderOver10Seconds"
       ":AvfCaptureArrival.FastCameraIsNotDecimatedToTheTickRate"
@@ -1102,7 +1196,8 @@ if(BUILD_TESTING)
       ":AvfProgramTail.SubThresholdVideoSkewIsStillReconciled"
       ":AvfProgramTail.SubThresholdAudioSkewIsStillPadded"
       ":AvfProgramTail.AudioStalledBeforeStopIsPaddedWithSilenceNotCut"
-      ":AvfProgramTail.IsoVideoStalledBeforeStopIsHeldToItsAudioEnd")
+      ":AvfProgramTail.IsoVideoStalledBeforeStopIsHeldToItsAudioEnd"
+      ":MetalCompositor.VcamTapDeliversEveryRenderedFrame")
     string(CONCAT COREVIDEO_REALTIME_TEST_FILTER ${COREVIDEO_REALTIME_TEST_FILTER})
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
       "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}")
