@@ -205,11 +205,10 @@ extension ShellTests {
         expect(manifestResponse.hasPrefix("HTTP/1.1 200"), "GET /manifest with the module's headers is 200")
         let manifest = body(manifestResponse)
         let ids = Set((manifest["Actions"] as? [[String: Any]] ?? []).compactMap { $0["Id"] as? String })
-        expectEqual(ids.count, 41, "the Mac manifest lists its 41 supported actions (PascalCase; quick wins +audio.zoomMode.set)")
-        for action in companionPresetActions where action != "automation.autoAssignInputs.set" {
-            expect(ids.contains(action), "preset action \(action) is in the Mac manifest")
+        expectEqual(ids.count, 42, "the Mac manifest lists its 42 supported actions (PascalCase; quick wins +audio.zoomMode.set, +autoassign)")
+        for action in companionPresetActions {
+            expect(ids.contains(action), "preset action \(action) is in the Mac manifest (all seven, since the quick wins)")
         }
-        expect(!ids.contains("automation.autoAssignInputs.set"), "the autoassign preset's action is absent on Mac (STU)")
 
         // invokeAction: POST /invoke, positional args, Content-Type.
         let take = companionHttp("POST", "/invoke", port: port, body: #"{"action":"transport.take","args":[]}"#)
@@ -217,10 +216,13 @@ extension ShellTests {
         expectEqual(core.bodies.count, 1, "and reached the model's Take")
         let autoassign = companionHttp("POST", "/invoke", port: port,
                                        body: #"{"action":"automation.autoAssignInputs.set","args":[true]}"#)
-        expect(autoassign.hasPrefix("HTTP/1.1 422"), "the autoassign preset answers 422, not 400")
-        expectEqual(body(autoassign)["error"] as? String,
-                    "'automation.autoAssignInputs.set' is not available on macOS yet (Studio and Settings follow-ons).",
-                    "with the generated reason")
+        expect(autoassign.hasPrefix("HTTP/1.1 200"), "the autoassign preset invokes over the module's HTTP shape")
+        expect(model.autoAssignInputsEnabled, "and the model's toggle is on")
+        let autoassignOff = companionHttp("POST", "/invoke", port: port,
+                                          body: #"{"action":"automation.autoAssignInputs.set","args":[false]}"#)
+        expect(autoassignOff.hasPrefix("HTTP/1.1 200"), "turning it off invokes too")
+        expect(!model.autoAssignInputsEnabled, "the toggle follows the Companion button")
+        expectEqual(model.currentPrefs().autoAssignInputs, false, "and is saved as the operator's choice")
         // The module's Content-Type is load-bearing: the Mac refuses an invoke without it.
         expect(companionHttp("POST", "/invoke", port: port, body: #"{"action":"transport.take","args":[]}"#,
                              contentType: false).hasPrefix("HTTP/1.1 415"), "no Content-Type is 415 (Mac hardening)")
@@ -232,10 +234,10 @@ extension ShellTests {
         let ws = companionWebSocketFirstFrame(port: port)
         expectEqual(ws.status, "HTTP/1.1 101 Switching Protocols", "the ws package's upgrade is accepted")
         let state = ws.frame ?? [:]
-        for field in companionPresetFeedbacks where field != "autoAssignInputs" {
+        for field in companionPresetFeedbacks {
             expect(state[field] is Bool, "preset feedback \(field) is a Bool in the first frame")
         }
-        expect(state["autoAssignInputs"] == nil, "autoAssignInputs is not published on Mac (its preset is absent)")
+        expectEqual(state["autoAssignInputs"] as? Bool, false, "autoAssignInputs reports the toggle the preset just set")
 
         // With a token: Bearer on HTTP, ?token= on /ws (main.ts).
         let (tokenServer, tokenStarted) = startServer(ControlRouter(surface: surface),

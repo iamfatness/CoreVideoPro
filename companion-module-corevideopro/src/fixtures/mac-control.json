@@ -636,6 +636,19 @@
         "Title" : "Multiview tiles"
       },
       {
+        "Description" : "Toggle auto-assigning roster participants to Show Inputs.",
+        "Id" : "automation.autoAssignInputs.set",
+        "OscAddress" : "\/cvp\/automation\/autoAssignInputs\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Auto-assign inputs"
+      },
+      {
         "Description" : "Legacy compatibility: automatic captions are unavailable. Enabling is rejected; false is a no-op.",
         "Id" : "automation.captions.set",
         "OscAddress" : "\/cvp\/automation\/captions\/set",
@@ -664,6 +677,7 @@
       "multiviewTileCount",
       "automationOn",
       "autoTake",
+      "autoAssignInputs",
       "autoCaptions",
       "audioMonitorOn",
       "audioMonitorVolume",
@@ -690,6 +704,7 @@
     "audioRoutes",
     "audioSourceCount",
     "audioSources",
+    "autoAssignInputs",
     "autoCaptions",
     "autoTake",
     "automationOn",

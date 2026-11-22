@@ -16,11 +16,8 @@ const fixture = JSON.parse(readFileSync(new URL('./fixtures/mac-control.json', i
 }
 
 /** What a Mac does not have yet, with the reason. Adding a row here is a decision, not a fix. */
-const MAC_ABSENT_ACTIONS: Record<string, string> = {
-	'automation.autoAssignInputs.set': 'blocked on STU (Studio and Settings follow-ons); the Mac answers 422',
-}
+const MAC_ABSENT_ACTIONS: Record<string, string> = {}
 const MAC_ABSENT_FIELDS: Record<string, string> = {
-	autoAssignInputs: 'its action is blocked on STU',
 	autoLowerThirds: 'graphics rules are blocked on GFX',
 	viewMode: 'view.setMode is blocked on STU (owner decision 3)',
 }
@@ -29,7 +26,7 @@ describe('macOS control server (recorded fixture)', () => {
 	const manifest = normalizeManifest(fixture.manifest)
 
 	it('parses the Mac manifest with the module normalizer', () => {
-		expect(manifest.actions.length).toBe(40)
+		expect(manifest.actions.length).toBe(42)
 		expect(manifest.actions.every((a) => a.id && a.title)).toBe(true)
 		expect(manifest.root).toBe('/cvp')
 	})

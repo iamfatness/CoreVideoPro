@@ -170,6 +170,11 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMastering(model, on: bool(0))
         case "audio.masterLimiter.set":
             return setMasterLimiter(model, on: bool(0))
+        case "automation.autoAssignInputs.set":
+            // Windows StudioControlSurface.cs:697-699: always Success. The Mac's
+            // Sources toggle (setAutoAssignInputs) persists and reruns the law.
+            model.setAutoAssignInputs(bool(0))
+            return .success
         case "audio.zoomMode.set":
             // Windows StudioControlSurface.cs:638-651: case-insensitive, trimmed;
             // anything else refuses and changes nothing.
@@ -231,8 +236,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "audio.monitor.set", "audio.monitor.volume", "audio.route.set",
         // Phase 2 (A3)
         "audio.masterLimiter.set",
-        // Settings quick wins (A1)
-        "audio.zoomMode.set",
+        // Settings quick wins (A1, Companion autoassign)
+        "audio.zoomMode.set", "automation.autoAssignInputs.set",
         // Phase 2 (RC6)
         "media.rundown.load", "media.rundown.preview", "media.rundown.take",
     ]
@@ -331,6 +336,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             // the true value is false, not "unknown".
             "automationOn": false,
             "autoTake": false,
+            // The Sources "fill free inputs" toggle (Companion autoassign preset).
+            "autoAssignInputs": model.autoAssignInputsEnabled,
             // RC2 (ControlStateProjection is the only mapping point).
             "zoomStatus": ControlStateProjection.zoomStatus(meetingState: model.meetingState),
             "engineStatus": ControlStateProjection.engineStatus(

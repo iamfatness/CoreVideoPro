@@ -557,7 +557,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "automation.autoAssignInputs.set", title: "Auto-assign inputs", description: "Toggle auto-assigning roster participants to Show Inputs.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "automation.lowerThirds.set", title: "Auto lower-thirds", description: "Toggle automation lower-thirds.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
@@ -607,7 +607,7 @@ enum ControlManifestGenerated {
         ("multiviewTileCount", .supported),
         ("automationOn", .supported),
         ("autoTake", .supported),
-        ("autoAssignInputs", .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+        ("autoAssignInputs", .supported),
         ("autoLowerThirds", .blocked(workstream: "GFX", label: "Graphics engine")),
         ("autoCaptions", .supported),
         ("audioMonitorOn", .supported),
