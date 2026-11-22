@@ -567,6 +567,19 @@ final class AppModel: ObservableObject {
     /// The last refusal from opening a grade editor, shown under the inspector's Grade section.
     @Published var gradeNotice = ""
     private let gradeFilePath = AppModel.gradeFilePathForTesting ?? SourceGradeFile.path
+    /// The ONE graphics sub-model (graphics G1, spec 5.1): decode, gateway,
+    /// playout and the On Air strip. No graphics behaviour lives on AppModel.
+    private(set) lazy var graphics: GraphicsModel = {
+        let model = GraphicsModel(coreRunning: { [weak self] in
+            if case .connected = self?.status { return true }
+            return false
+        }, send: { [weak self] body in
+            guard let self else { throw BridgeError.notRunning }
+            return try await self.gradeRequest(body)
+        })
+        model.gateway.elapsedMs = { [weak self] in self?.elapsedMs() ?? 0 }
+        return model
+    }()
     private(set) lazy var sourceGrades: SourceGradeStore = {
         let store = SourceGradeStore(send: { [weak self] body in
             guard let self else { throw BridgeError.notRunning }
@@ -751,7 +764,7 @@ final class AppModel: ObservableObject {
                 + "a re-restore would overwrite live operator changes with disk state")
             return
         }
-        overlays = prefs.overlays ?? OverlaysState()
+        overlays = (prefs.overlays ?? OverlaysState()).migratingLegacyTiming()
         restoreSlotAssignments(prefs.showInputSlots ?? [])
         // No reapply: no roster exists at launch.
         assignmentLaw.autoAssignEnabled = prefs.autoAssignInputs ?? true
@@ -804,7 +817,7 @@ final class AppModel: ObservableObject {
         autoExtras = prefs.automation ?? AutomationExtrasState()
         lowerThirdName = prefs.lowerThirdName
         lowerThirdTitle = prefs.lowerThirdTitle
-        lowerThirdPosition = prefs.lowerThirdPosition
+        lowerThirdPosition = LowerThirdPositions.migrate(prefs.lowerThirdPosition)
         if !prefs.logoBugAssetId.isEmpty {
             logoBug = mediaAssets.first { $0.id == prefs.logoBugAssetId }
         }
@@ -1647,6 +1660,11 @@ final class AppModel: ObservableObject {
         if !gradeIsNeutral { applyColorGrade() }
         // Per-source grades: forget every epoch/revision and re-assert on this generation.
         sourceGrades.coreGenerationChanged()
+        // Graphics: a new core has none of the old one's instances (spec 5.3).
+        graphics.coreGenerationChanged()
+        // One-shot: the brand kit is lost on respawn (L18a, gotchas). Sent at
+        // launch and on every generation, not only when the operator edits it.
+        pushBrandKitNow()
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
         audioInputs = AudioInputs.available()
@@ -1752,6 +1770,7 @@ final class AppModel: ObservableObject {
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
         if !snapshot.isEmpty { applyMediaReadModels(snapshot) }
+        if !snapshot.isEmpty { graphics.observe(snapshot: snapshot) }
         if !snapshot.isEmpty {
             virtualCameraCore = VirtualCameraReadModel.parse(snapshot)
         }

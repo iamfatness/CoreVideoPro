@@ -42,35 +42,42 @@ extension Color {
     }
 }
 
-// Motion timing presets, matching the WinUI dropdown. "Custom" keeps whatever
-// the operator dialled in.
+// Motion timing presets, matching the WinUI dropdown exactly
+// (StudioViewModel.cs:758-768, 3476-3490): Quick 220/160 (the default), Smooth
+// 420/320, Gentle 700/550, Custom keeps whatever the operator dialled in. The raw
+// values are the Windows names, so a saved Mac preference from before this fix
+// ("snap", "standard", "gentle" in lower case) can never be mistaken for one of
+// these: it loads as Custom with its saved numbers (OverlaysState.migratingLegacyTiming).
 enum MotionTiming: String, CaseIterable {
-    case snap, standard, gentle, custom
+    case quick = "Quick", smooth = "Smooth", gentle = "Gentle", custom = "Custom"
 
-    var label: String {
-        switch self {
-        case .snap: return "Snap"
-        case .standard: return "Standard"
-        case .gentle: return "Gentle"
-        case .custom: return "Custom"
-        }
-    }
+    var label: String { rawValue }
 
     var timing: (inMs: Int, outMs: Int)? {
         switch self {
-        case .snap: return (150, 120)
-        case .standard: return (1000, 500)
-        case .gentle: return (1600, 900)
+        case .quick: return (220, 160)
+        case .smooth: return (420, 320)
+        case .gentle: return (700, 550)
         case .custom: return nil
         }
     }
 }
 
+/// Lower-third key positions: Windows LowerThirdLayoutHelper.LowerThirdPositionOptions.
+enum LowerThirdPositions {
+    static let all: [(value: String, label: String)] = [
+        ("lower-left", "Lower left"), ("lower-right", "Lower right"), ("upper-left", "Upper left"), ("upper-right", "Upper right"),
+    ]
+    /// A saved position the Windows list does not have ("center", from the old
+    /// Mac picker) loads as lower-left, the Windows default.
+    static func migrate(_ saved: String) -> String { all.contains { $0.value == saved } ? saved : "lower-left" }
+}
+
 struct OverlaysState: Codable, Equatable {
     // The core clamps both to 50-2000ms; the UI must not offer dead travel.
-    var buildInMs = 1000
-    var buildOutMs = 500
-    var motionTiming = MotionTiming.standard.rawValue
+    var buildInMs = 220
+    var buildOutMs = 160
+    var motionTiming = MotionTiming.quick.rawValue
     var brandName = "CoreVideo"
     var brandColor = "#44c1a1"
     var accentColor = "#f0a85c"
@@ -79,6 +86,17 @@ struct OverlaysState: Codable, Equatable {
     // never sent to the core (#764).
     var defaultOverlayBehavior = "all-off"
     var captionsEnabled = false
+
+    /// A preference saved under a preset name this build does not know (the old
+    /// Mac presets) loads as Custom WITH its saved numbers: the operator's timing
+    /// never changes silently (plan D9). Numbers clamp to the core's 50-2000.
+    func migratingLegacyTiming() -> OverlaysState {
+        var next = self
+        next.buildInMs = min(2000, max(50, buildInMs))
+        next.buildOutMs = min(2000, max(50, buildOutMs))
+        if MotionTiming(rawValue: motionTiming) == nil { next.motionTiming = MotionTiming.custom.rawValue }
+        return next
+    }
 }
 
 extension AppModel {
@@ -154,6 +172,34 @@ extension AppModel {
             overlays.buildInMs = preset.inMs
             overlays.buildOutMs = preset.outMs
         }
+        lowerThirdTimingChanged()
+    }
+
+    /// A typed or stepped build time: Custom, clamped, applied live (Windows
+    /// OnLowerThirdBuildInMsChanged).
+    func setBuildInMs(_ value: Int) {
+        overlays.buildInMs = min(2000, max(50, value))
+        overlays.motionTiming = MotionTiming.custom.rawValue
+        lowerThirdTimingChanged()
+    }
+
+    func setBuildOutMs(_ value: Int) {
+        overlays.buildOutMs = min(2000, max(50, value))
+        overlays.motionTiming = MotionTiming.custom.rawValue
+        lowerThirdTimingChanged()
+    }
+
+    /// Windows ApplyProgramLowerThirdTimingChange (:3527-3541): an on-air key
+    /// takes the new timing at once. The update carries NO keyPhase, so the core
+    /// keeps the key where it is (MediaCore::setOverlayAsset restarts an animation
+    /// only on a phase change) and only its build-in/out times move. Off air,
+    /// nothing is sent: the next Key in carries the timing.
+    func lowerThirdTimingChanged() {
+        guard lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in", !lowerThirdRetireInFlight else { return }
+        sendOverlay([
+            "type": "set-overlay-asset", "overlayId": "key:lower-third", "enabled": true,
+            "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs, "keyer": "downstream",
+        ])
     }
 }
 
@@ -214,16 +260,18 @@ struct OverlaysPane: View {
             }
             labeled("Position") {
                 Picker("", selection: $model.lowerThirdPosition) {
-                    Text("Lower left").tag("lower-left")
-                    Text("Lower right").tag("lower-right")
-                    Text("Center").tag("center")
+                    ForEach(LowerThirdPositions.all, id: \.value) { Text($0.label).tag($0.value) }
                 }.labelsHidden().frame(width: 170)
             }
 
             // Build timing — previously hardcoded at 250/200ms with no way to
             // change it. The core clamps to 50-2000, so the stepper matches.
-            labeled("Build in") { msField($model.overlays.buildInMs) }
-            labeled("Build out") { msField($model.overlays.buildOutMs) }
+            labeled("Build in") {
+                msField(Binding(get: { model.overlays.buildInMs }, set: { model.setBuildInMs($0) }))
+            }
+            labeled("Build out") {
+                msField(Binding(get: { model.overlays.buildOutMs }, set: { model.setBuildOutMs($0) }))
+            }
             labeled("Motion timing") {
                 HStack(spacing: 6) {
                     Picker("", selection: Binding(
@@ -259,14 +307,13 @@ struct OverlaysPane: View {
 
     func msField(_ value: Binding<Int>) -> some View {
         HStack(spacing: 6) {
+            // The binding's setter makes the preset Custom and applies it live
+            // (setBuildInMs/setBuildOutMs). An onChange here also fired when a
+            // PRESET moved the numbers, flipping every preset pick to Custom.
             Stepper(value: value, in: 50...2000, step: 50) {
                 Text("\(value.wrappedValue) ms").font(.plexMono(11))
             }
             .frame(width: 150)
-            // Any manual edit means the preset no longer describes the numbers.
-            .onChange(of: value.wrappedValue) { _ in
-                model.overlays.motionTiming = MotionTiming.custom.rawValue
-            }
         }
     }
 

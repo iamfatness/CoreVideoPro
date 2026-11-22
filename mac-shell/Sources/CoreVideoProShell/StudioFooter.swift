@@ -352,14 +352,12 @@ struct FooterGraphicsGroup: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Position").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Picker("", selection: $model.lowerThirdPosition) {
-                    Text("Lower left").tag("lower-left")
-                    Text("Lower right").tag("lower-right")
-                    Text("Center").tag("center")
+                    ForEach(LowerThirdPositions.all, id: \.value) { Text($0.label).tag($0.value) }
                 }.labelsHidden()
             }
             HStack(spacing: 10) {
-                msStepper("Build in", $model.overlays.buildInMs)
-                msStepper("Build out", $model.overlays.buildOutMs)
+                msStepper("Build in", Binding(get: { model.overlays.buildInMs }, set: { model.setBuildInMs($0) }))
+                msStepper("Build out", Binding(get: { model.overlays.buildOutMs }, set: { model.setBuildOutMs($0) }))
             }
             Text("in \(model.overlays.buildInMs) ms \u{00B7} out \(model.overlays.buildOutMs) ms")
                 .font(.plexMono(10)).foregroundStyle(Studio.textDim)
@@ -379,7 +377,6 @@ struct FooterGraphicsGroup: View {
             Stepper(value: value, in: 50...2000, step: 50) {
                 Text("\(value.wrappedValue) ms").font(.plexMono(11))
             }
-            .onChange(of: value.wrappedValue) { _ in model.overlays.motionTiming = MotionTiming.custom.rawValue }
         }
     }
 }

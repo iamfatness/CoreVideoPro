@@ -46,7 +46,7 @@ struct TabPageContent: View {
                 case .sources: SourcesTable()
                 case .scenes: ScenesPane()
                 case .routing: RoutingPane()
-                case .overlays: OverlaysPane()
+                case .overlays: GraphicsTabPane(graphics: model.graphics)
                 case .audio: AudioPane()
                 case .media: MediaPane()
                 case .automation: AutomationPane()
