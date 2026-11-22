@@ -2360,6 +2360,10 @@ final class AppModel: ObservableObject {
     }
 
     @Published var streamCodec = "h264"
+    /// O1 (OutputProfiles.swift): the recording render profile and the stream
+    /// encoder settings, persisted and sent on every start.
+    @Published var recordingProfile = RecordingProfile()
+    @Published var streamEncoder = StreamEncoderSettings()
 
     /// Codecs this build can actually ENCODE, per the core's EncoderPolicy:
     /// HEVC encode is not shipped on any platform, and AV1 is non-Apple only, so
@@ -4069,7 +4073,9 @@ final class AppModel: ObservableObject {
     // ── streaming (RTMP via the core's ffmpeg sender) ────────────────────────
 
     private func streamDestinationSettings() -> [JSONObject] {
-        [[
+        // O1: the operator's encoder settings overwrite the row's fields (plan D6:
+        // the streaming lane's per-destination builder applies the same call).
+        [streamEncoder.apply(to: [
             "id": "rtmp", "label": "Stream", "protocol": "rtmp",
             "url": streamUrl, "streamKey": streamKey,
             // An explicit destination bitrate WINS over streamOutputProfile in
@@ -4078,7 +4084,7 @@ final class AppModel: ObservableObject {
             "videoCodec": "h264", "encoderMode": "auto",
             "keyframeIntervalSeconds": 2.0, "rateControl": "cbr",
             "h264Profile": "high", "bFrames": 2, "allowEnhancedRtmp": false,
-        ]]
+        ])]
     }
 
     // start-program-output is FULL-STATE for the destination set, so record
@@ -4098,6 +4104,10 @@ final class AppModel: ObservableObject {
             command["streamOutputProfile"] = streamOutputProfile()
             command["destinationSettings"] = streamDestinationSettings()
         }
+        // O1: Windows sends recordingOutputProfile on every start
+        // (MediaCoreCommandBuilder.cs:743); without it the core records at its
+        // built-in 1080p60 whatever the operator chose.
+        if recording { command["recordingOutputProfile"] = recordingProfile.payload() }
         return command
     }
 
@@ -5600,6 +5610,10 @@ final class AppModel: ObservableObject {
                                 "type": "set-recording-targets", "targetFolder": folder,
                                 "filenamePrefix": recordPrefix.isEmpty ? "show" : recordPrefix,
                                 "format": recordFormat, "quality": "high",
+                                // O1 (Windows MediaCoreCommandBuilder.cs:799-805).
+                                "targetBitrateMbps": recordingProfile.targetBitrateMbps,
+                                "audioBitrateKbps": recordingProfile.audioBitrateKbps,
+                                "renderProfile": recordingProfile.payload(),
                                 "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy,
                             ],
                             ["type": "start-recording-session", "sessionId": UUID().uuidString,

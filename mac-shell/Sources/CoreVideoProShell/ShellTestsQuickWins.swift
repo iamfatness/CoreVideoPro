@@ -27,6 +27,10 @@ extension ShellTests {
             ("quickwins/z1-prefs-round-trip", testZ1PrefsRoundTrip),
             ("quickwins/z2-clamp-and-label", testZ2ClampAndLabel),
             ("quickwins/z2-both-copies-reach-the-core", testZ2BothCopiesReachTheCore),
+            ("quickwins/o1-payload-is-the-windows-shape", testO1PayloadIsTheWindowsShape),
+            ("quickwins/o1-recording-start-carries-the-profile", testO1RecordingStartCarriesTheProfile),
+            ("quickwins/o1-destination-row-every-field", testO1DestinationRowCarriesEveryEncoderField),
+            ("quickwins/o1-sanitize-prefs-and-recipe", testO1SanitizePrefsAndRecipe),
         ]
     }
 
@@ -395,5 +399,101 @@ extension ShellTests {
         let saved = (try? JSONEncoder().encode(model.currentPrefs())).flatMap { String(data: $0, encoding: .utf8) } ?? ""
         expect(!saved.isEmpty && !saved.lowercased().contains("sync"),
                "the offset is session state: nothing about it is persisted (plan D2, Windows)")
+    }
+
+    // ── O1: output profiles and advanced stream settings ────────────────────
+    // Fixture invariant: every operator value below differs from its default,
+    // so a field the code drops reads back as the default and fails.
+
+    private static let o1Profile = RecordingProfile(width: 1280, height: 720, fps: 50, codec: "h265",
+                                                    targetBitrateMbps: 12.5, audioBitrateKbps: 256)
+    private static let o1Encoder = StreamEncoderSettings(audioBitrateKbps: 128, keyframeIntervalSeconds: 4,
+                                                         rateControl: "vbr", h264Profile: "main", bFrames: 0)
+
+    /// Keys exactly = Windows MediaCoreCommandBuilder.OutputProfilePayload
+    /// (:850-860), values from the fixture. Defaults = Windows
+    /// DefaultRecordingOutputProfile. Mutation: drop a key -> red (set compare).
+    private static func testO1PayloadIsTheWindowsShape() {
+        let payload = o1Profile.payload()
+        expectEqual(Set(payload.keys), ["profileId", "resolution", "width", "height", "fps",
+                                        "targetBitrateMbps", "audioBitrateKbps", "codec"],
+                    "exactly the Windows payload keys")
+        expectEqual(payload["resolution"] as? String, "1280x720", "resolution")
+        expectEqual(payload["fps"] as? Int, 50, "fps")
+        expectEqual(payload["codec"] as? String, "h265", "codec")
+        expectEqual(payload["targetBitrateMbps"] as? Double, 12.5, "bitrate")
+        expectEqual(payload["audioBitrateKbps"] as? Int, 256, "audio kbps")
+        expectEqual(RecordingProfile(), RecordingProfile(width: 1920, height: 1080, fps: 60, codec: "h264",
+                                                         targetBitrateMbps: 8.2, audioBitrateKbps: 192),
+                    "defaults = Windows DefaultRecordingOutputProfile = the core's own recording defaults")
+    }
+
+    /// A Record start carries the profile on start-program-output AND on
+    /// set-recording-targets (renderProfile + the two bitrates).
+    /// Mutation: omit renderProfile -> red.
+    @MainActor
+    private static func testO1RecordingStartCarriesTheProfile() {
+        let model = AppModel()
+        model.recordingProfile = o1Profile
+        let core = FakeTakeCore()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.toggleRecording()
+        spin(until: { !core.bodies.isEmpty }, limit: 3)
+        let commands = (core.bodies.first?["commands"] as? [JSONObject]) ?? []
+        let start = commands.first { $0["type"] as? String == "start-program-output" }
+        let targets = commands.first { $0["type"] as? String == "set-recording-targets" }
+        expectEqual((start?["recordingOutputProfile"] as? JSONObject)?["width"] as? Int, 1280,
+                    "start-program-output carries recordingOutputProfile")
+        expectEqual((targets?["renderProfile"] as? JSONObject)?["height"] as? Int, 720, "renderProfile on the targets")
+        expectEqual((targets?["renderProfile"] as? JSONObject)?["codec"] as? String, "h265", "with the codec")
+        expectEqual(targets?["targetBitrateMbps"] as? Double, 12.5, "targets bitrate")
+        expectEqual(targets?["audioBitrateKbps"] as? Int, 256, "targets audio kbps")
+        let streamOnly = model.startProgramOutput(recording: false, streaming: true)
+        expect(streamOnly["recordingOutputProfile"] == nil, "a stream-only start does not carry the recording profile")
+    }
+
+    /// Every field StreamEncoderSettings owns reaches the RTMP destination row,
+    /// driven through the real start command, one field at a time.
+    /// Mutation: apply(to:) skipping bFrames -> red on that field.
+    @MainActor
+    private static func testO1DestinationRowCarriesEveryEncoderField() {
+        let model = AppModel()
+        model.streamEncoder = o1Encoder
+        let row = (model.startProgramOutput(recording: false, streaming: true)["destinationSettings"]
+            as? [JSONObject])?.first ?? [:]
+        let expected: [String: String] = ["audioBitrateKbps": "128", "keyframeIntervalSeconds": "4.0",
+                                          "rateControl": "vbr", "h264Profile": "main", "bFrames": "0"]
+        expectEqual(Set(expected.keys), Set(StreamEncoderSettings.ownedKeys), "the fixture covers every owned key")
+        for key in StreamEncoderSettings.ownedKeys {
+            expectEqual(row[key].map { "\($0)" }, expected[key], "the destination row carries \(key)")
+        }
+        expectEqual(row["targetBitrateMbps"] as? Double, model.streamBitrateMbps, "the bitrate is still the operator's")
+        expectEqual(row["fps"] as? Int, 30, "the stream keeps the destination's 30 fps (plan D3)")
+    }
+
+    /// Garbage is sanitized field by field; prefs round-trip; the footer recipe
+    /// is built from the live values. Mutations: recipe literal -> red; drop
+    /// the profile restore -> red.
+    @MainActor
+    private static func testO1SanitizePrefsAndRecipe() {
+        let junk = RecordingProfile(width: 999, height: 3, fps: 7, codec: "av1",
+                                    targetBitrateMbps: .infinity, audioBitrateKbps: 9000)
+            .sanitized(fallback: RecordingProfile())
+        expectEqual(junk, RecordingProfile(width: 1920, height: 1080, fps: 60, codec: "h264",
+                                           targetBitrateMbps: 8.2, audioBitrateKbps: 512),
+                    "an unpickable size/fps/codec falls back, kbps clamps, a non-finite bitrate falls back")
+        expectEqual(StreamEncoderSettings(audioBitrateKbps: 1, keyframeIntervalSeconds: 99, rateControl: "abr",
+                                          h264Profile: "ultra", bFrames: 9).sanitized(),
+                    StreamEncoderSettings(audioBitrateKbps: 32, keyframeIntervalSeconds: 10, rateControl: "cbr",
+                                          h264Profile: "high", bFrames: 4), "encoder clamps and falls back")
+        let before = AppModel()
+        before.recordingProfile = o1Profile
+        before.streamEncoder = o1Encoder
+        let after = AppModel()
+        after.applyRestoredPrefs(before.currentPrefs())
+        expectEqual(after.recordingProfile, o1Profile, "the recording profile survives a relaunch")
+        expectEqual(after.streamEncoder, o1Encoder, "the encoder settings survive a relaunch")
+        let recipe = ProductionSettingsPolicy.streamRecipeLabel(bitrateMbps: 6, height: 1080, encoder: o1Encoder)
+        expect(recipe.contains("VBR") && recipe.contains("AAC 128 kbps"), "the recipe reads the live settings: \(recipe)")
     }
 }

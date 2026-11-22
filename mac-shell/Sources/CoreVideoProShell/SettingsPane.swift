@@ -125,6 +125,94 @@ struct SettingsPane: View {
                     .labelsHidden().frame(width: 200)
                     .disabled(AppModel.supportedStreamCodecs.count < 2)
                 }
+                // O1 (Windows Streaming > advanced, ProductionSettingsWindow.xaml:339-412).
+                labeled("Stream size") {
+                    Text("Follows the canvas at 30 fps").font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                }
+                labeled("Hardware encoder") {
+                    Text("VideoToolbox").font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                }
+                labeled("Stream audio kbps") {
+                    Stepper(value: Binding(get: { model.streamEncoder.audioBitrateKbps },
+                                           set: { model.streamEncoder.audioBitrateKbps = $0; model.streamEncoder = model.streamEncoder.sanitized() }),
+                            in: StreamEncoderSettings.audioKbpsRange, step: 16) {
+                        Text("\(model.streamEncoder.audioBitrateKbps) kbps").font(.plexMono(11))
+                    }
+                }
+                labeled("Keyframe interval") {
+                    Stepper(value: Binding(get: { model.streamEncoder.keyframeIntervalSeconds },
+                                           set: { model.streamEncoder.keyframeIntervalSeconds = $0; model.streamEncoder = model.streamEncoder.sanitized() }),
+                            in: StreamEncoderSettings.keyframeRange, step: 0.5) {
+                        Text(String(format: "%.1f s", model.streamEncoder.keyframeIntervalSeconds)).font(.plexMono(11))
+                    }
+                }
+                labeled("Rate control") {
+                    Picker("", selection: $model.streamEncoder.rateControl) {
+                        ForEach(StreamEncoderSettings.rateControls, id: \.value) { Text($0.label).tag($0.value) }
+                    }
+                    .labelsHidden().frame(width: 200)
+                }
+                labeled("H.264 profile") {
+                    Picker("", selection: $model.streamEncoder.h264Profile) {
+                        ForEach(StreamEncoderSettings.h264Profiles, id: \.value) { Text($0.label).tag($0.value) }
+                    }
+                    .labelsHidden().frame(width: 200)
+                }
+                labeled("B-frames") {
+                    Stepper(value: $model.streamEncoder.bFrames, in: StreamEncoderSettings.bFramesRange) {
+                        Text("\(model.streamEncoder.bFrames)").font(.plexMono(11))
+                    }
+                }
+                // O1 (Windows Render profiles: Recording row, :214-251).
+                labeled("Recording size") {
+                    Picker("", selection: Binding(
+                        get: { "\(model.recordingProfile.width)x\(model.recordingProfile.height)" },
+                        set: { value in
+                            if let size = RecordingProfile.sizes.first(where: { "\($0.width)x\($0.height)" == value }) {
+                                model.recordingProfile.width = size.width
+                                model.recordingProfile.height = size.height
+                            }
+                        })) {
+                        ForEach(RecordingProfile.sizes, id: \.label) { Text($0.label).tag("\($0.width)x\($0.height)") }
+                    }
+                    .labelsHidden().frame(width: 200)
+                }
+                labeled("Recording FPS") {
+                    Picker("", selection: $model.recordingProfile.fps) {
+                        ForEach(RecordingProfile.fpsChoices, id: \.self) { Text("\($0) fps").tag($0) }
+                    }
+                    .labelsHidden().frame(width: 120)
+                }
+                labeled("Recording codec") {
+                    Picker("", selection: Binding(
+                        get: { model.recordingProfile.codec },
+                        set: { value in
+                            if RecordingProfile.codecs.contains(where: { $0.value == value && $0.available }) {
+                                model.recordingProfile.codec = value
+                            }
+                        })) {
+                        ForEach(RecordingProfile.codecs, id: \.value) { codec in
+                            Text(codec.available ? codec.label : "\(codec.label) (unavailable)").tag(codec.value)
+                        }
+                    }
+                    .labelsHidden().frame(width: 200)
+                    .help(RecordingProfile.av1Unavailable)
+                }
+                labeled("Recording bitrate") {
+                    HStack(spacing: 6) {
+                        Slider(value: $model.recordingProfile.targetBitrateMbps,
+                               in: RecordingProfile.bitrateRange, step: 0.5)
+                            .frame(width: 180)
+                        Text(String(format: "%.1f Mbps", model.recordingProfile.targetBitrateMbps))
+                            .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                    }
+                }
+                labeled("Recording audio kbps") {
+                    Stepper(value: $model.recordingProfile.audioBitrateKbps,
+                            in: RecordingProfile.audioKbpsRange, step: 16) {
+                        Text("\(model.recordingProfile.audioBitrateKbps) kbps").font(.plexMono(11))
+                    }
+                }
                 labeled("Recording format") {
                     Picker("", selection: $model.recordFormat) {
                         Text("MP4").tag("mp4")

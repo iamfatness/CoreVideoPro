@@ -19,13 +19,18 @@
 
 import Foundation
 
+/// Defaults = Windows DefaultRecordingOutputProfile (the 1080p60 canvas
+/// profile with 192 kbps audio, MediaCoreProductionSyncContext.cs:412-424), which
+/// is also exactly what the core records at when no profile is sent
+/// (MediaCore.h recordingOutput* defaults) — so a Mac that never opens the
+/// picker records as it did before this slice.
 struct RecordingProfile: Codable, Equatable {
     var width = 1920
     var height = 1080
     var fps = 60
     var codec = "h264"
-    var targetBitrateMbps = 16.0
-    var audioBitrateKbps = 160
+    var targetBitrateMbps = 8.2
+    var audioBitrateKbps = 192
 
     /// Windows OutputResolutionOptions / OutputFpsOptions / VideoCodecOptions.
     static let sizes: [(width: Int, height: Int, label: String)] = [
@@ -40,17 +45,6 @@ struct RecordingProfile: Codable, Equatable {
     static let av1Unavailable = "AV1 recording is not available on this Mac"
     static let bitrateRange: ClosedRange<Double> = 0.5...80
     static let audioKbpsRange: ClosedRange<Int> = 32...512
-
-    /// A fresh profile follows the canvas (Windows DefaultRecordingOutputProfile).
-    static func defaultFor(canvasWidth: Int, canvasHeight: Int, canvasFps: Int) -> RecordingProfile {
-        var profile = RecordingProfile()
-        if sizes.contains(where: { $0.width == canvasWidth && $0.height == canvasHeight }) {
-            profile.width = canvasWidth
-            profile.height = canvasHeight
-        }
-        if fpsChoices.contains(canvasFps) { profile.fps = canvasFps }
-        return profile
-    }
 
     /// Anything a hand-edited file or a control call could put here that the
     /// pickers cannot produce falls back to `fallback`'s value, field by field.
@@ -72,7 +66,7 @@ struct RecordingProfile: Codable, Equatable {
 
     /// Windows OutputProfilePayload, field for field.
     func payload() -> JSONObject {
-        ["profileId": "recording", "resolution": "\(width)x\(height)",
+        ["profileId": "\(height)p\(fps)", "resolution": "\(width)x\(height)",
          "width": width, "height": height, "fps": fps,
          "targetBitrateMbps": targetBitrateMbps, "audioBitrateKbps": audioBitrateKbps,
          "codec": codec]

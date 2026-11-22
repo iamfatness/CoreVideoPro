@@ -29,10 +29,13 @@ enum ProductionSettingsPolicy {
     /// only the bitrate is the operator's, and the line says what is sent.
     /// The stream encodes the Program canvas at the RTMP destination's fixed
     /// 30 fps (streamDestinationSettings), so the size is the canvas height.
-    static func streamRecipeLabel(bitrateMbps: Double, height: Int = 1080) -> String {
+    /// O1: built from the live encoder settings (rate control, audio kbps), not literals.
+    static func streamRecipeLabel(bitrateMbps: Double, height: Int = 1080,
+                                  encoder: StreamEncoderSettings = StreamEncoderSettings()) -> String {
         let mbps = bitrateMbps.rounded() == bitrateMbps
             ? String(format: "%.0f", bitrateMbps) : String(format: "%.1f", bitrateMbps)
-        return "\(height)p30 H.264 (VideoToolbox via ffmpeg) \u{00B7} \(mbps) Mbps CBR \u{00B7} AAC 160 kbps"
+        return "\(height)p30 H.264 (VideoToolbox via ffmpeg) \u{00B7} \(mbps) Mbps \(encoder.rateControl.uppercased())"
+            + " \u{00B7} AAC \(encoder.audioBitrateKbps) kbps"
     }
 }
 
@@ -64,6 +67,11 @@ extension AppModel {
            ProductionSettingsPolicy.multiviewLayoutModes.contains(mode) {
             multiviewLayoutMode = mode
         }
+        // O1: a saved profile is sanitized field by field against the defaults.
+        if let profile = prefs.recordingProfile {
+            recordingProfile = profile.sanitized(fallback: RecordingProfile())
+        }
+        if let encoder = prefs.streamEncoder { streamEncoder = encoder.sanitized() }
         if let tiles = prefs.multiviewTileCount {
             let range = ProductionSettingsPolicy.multiviewTileRange
             multiviewTileCount = min(max(tiles, range.lowerBound), range.upperBound)
@@ -80,6 +88,8 @@ extension AppModel {
         prefs.recordPrefix = recordPrefix
         prefs.multiviewLayoutMode = multiviewLayoutMode
         prefs.multiviewTileCount = multiviewTileCount
+        prefs.recordingProfile = recordingProfile
+        prefs.streamEncoder = streamEncoder
     }
 
     var canvasLabel: String {

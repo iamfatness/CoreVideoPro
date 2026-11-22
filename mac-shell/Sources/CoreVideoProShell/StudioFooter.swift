@@ -552,7 +552,8 @@ struct FooterOutputsGroup: View {
             HStack {
                 Text(ProductionSettingsPolicy.streamRecipeLabel(
                     bitrateMbps: model.streamBitrateMbps,
-                    height: model.coreOutputProfile?.height ?? model.canvasHeight))
+                    height: model.coreOutputProfile?.height ?? model.canvasHeight,
+                    encoder: model.streamEncoder))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()

@@ -161,8 +161,10 @@ literals.
 - `RecordingProfile { width, height, fps, codec, targetBitrateMbps, audioBitrateKbps }`, choices
   copied from Windows `OutputResolutionOptions` (720p, 1080p, 1440p, 4K), `OutputFpsOptions` (24, 30,
   50, 60) and codecs (h264, h265; av1 disabled); bitrate clamp 0.5...80, audio 32...512. It defaults
-  to the canvas size and fps at 16 Mbps / 160 kbps H.264. `payload()` gives the Windows
-  `OutputProfilePayload` shape `{profileId: "recording", resolution: "WxH", width, height, fps,
+  to Windows `DefaultRecordingOutputProfile` (1920x1080, 60 fps, 8.2 Mbps, 192 kbps, H.264), which
+  is also the core's own recording default, so an untouched Mac records exactly as before.
+  (Corrected during implementation: the first draft said "follows the canvas"; Windows does not.) `payload()` gives the Windows
+  `OutputProfilePayload` shape `{profileId: "<height>p<fps>", resolution: "WxH", width, height, fps,
   targetBitrateMbps, audioBitrateKbps, codec}`.
 - `StreamEncoderSettings { audioBitrateKbps 160, keyframeIntervalSeconds 2.0 (0.5...10), rateControl
   cbr|vbr, h264Profile auto|baseline|main|high (high), bFrames 0...4 (2) }`, plus
