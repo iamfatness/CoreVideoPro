@@ -750,9 +750,9 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
       {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"renderPlanId", lastProgramFrame_.renderPlanId},
       {"compositorRenderer", lastProgramFrame_.renderer},
+      {"sourceSheet", sourceSheetJson()},
       // Always present (the multiviewer-node rule): what the core put on the Preview plan
       // it last built for a render, empty when no Preview scene is up.
-      {"sourceSheet", sourceSheetJson()},
       {"previewFrame",
        rpc::Json::Object{
            {"sceneId", renderedPreviewSources_.sceneId()},

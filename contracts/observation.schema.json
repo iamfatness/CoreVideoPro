@@ -350,6 +350,16 @@
       "typed": "include",
       "qualification": "include",
       "control": "include"
+    },
+    "sourceSheet": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "previewFrame": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
     }
   }
 }
