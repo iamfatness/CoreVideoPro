@@ -64,6 +64,7 @@ struct AudioPane: View {
                     .padding(.top, 2)
             case "SETUP":
                 VStack(alignment: .leading, spacing: 12) {
+                    MasteringGuideMeters()
                     MasteringRack()
                     Text("Monitor output").font(.grotesk(13, .semibold))
                     MonitorDevicePicker()
@@ -216,6 +217,13 @@ struct ProcessingWorkspace: View {
                     labeledSlider("Threshold (dB)", bind(\.compThresholdDb), in: -40...(-6))
                     labeledSlider("Ratio", bind(\.compRatio), in: 1...20)
                 }
+                let gr = MasterMeterReadout.gainReduction(
+                    model.strips.first { $0.id == stripId }?.gainReductionDb ?? 0)
+                HStack(spacing: 6) {
+                    Text(gr.label).font(.plexMono(9)).foregroundStyle(Studio.secondary)
+                        .frame(width: 70, alignment: .leading)
+                    GainReductionBar(level: gr.level).frame(height: 6)
+                }
                 HStack(spacing: 6) {
                     labeledSlider("Attack", bind(\.compAttackMs), in: 0.1...100)
                     labeledSlider("Release", bind(\.compReleaseMs), in: 10...1000)
@@ -359,6 +367,12 @@ struct ConsoleStrip: View {
                 let reading = AudioConsolePolicy.meterReading(strip)
                 SegmentedMeter(level: reading.level, dimmed: reading.dimmed)
                     .frame(width: 12, height: 150)
+                MeterTickScale().frame(width: 18, height: 150)
+            }
+            if strip.sourceMuted {
+                // Display only (#481): the guest muted themselves in Zoom.
+                Text("ZOOM MUTED").font(.plexMono(9, .semibold)).foregroundStyle(Studio.amber)
+                    .accessibilityLabel("\(label) is muted in Zoom")
             }
             Text(label).font(.grotesk(10, .medium))
                 .lineLimit(1).truncationMode(.tail)
@@ -375,17 +389,16 @@ struct ConsoleStrip: View {
 struct MasterLufsRail: View {
     @EnvironmentObject var model: AppModel
 
+    /// Windows MasterLufsLabel: the core's loudnessLufs (short-term, else momentary).
     var lufsLabel: String {
-        model.shortTermLufs <= -119 ? "—" : String(format: "%.1f", model.shortTermLufs)
+        MasterMeterReadout.railLufsLabel(loudnessLufs: model.loudnessLufs, mixedFrames: model.mixedFrameCount)
     }
 
     var body: some View {
         VStack(spacing: 8) {
             MonoLabel("Master")
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("LUFS").font(.grotesk(13, .semibold))
-                Text(lufsLabel).font(.grotesk(24, .semibold))
-            }
+            Text(lufsLabel).font(.grotesk(22, .semibold))
+                .accessibilityLabel("Master loudness \(lufsLabel)")
             // #870: the clock re-evaluates the observation age between snapshots,
             // so a stalled audio worker cannot leave held meters looking live.
             TimelineView(.periodic(from: .now, by: 0.25)) { context in
@@ -397,9 +410,14 @@ struct MasterLufsRail: View {
                         .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 }
             }
-            HStack(spacing: 6) {
-                SegmentedMeter(level: model.masterLevel).frame(width: 12, height: 170)
-                SegmentedMeter(level: model.masterLevel).frame(width: 12, height: 170)
+            // L and R from the pgm-l / pgm-r bus taps (StudioFooterReadout.masterLevels,
+            // Windows ResolveMasterMeterReadout) — no longer the mono level twice.
+            HStack(spacing: 4) {
+                MeterTickScale().frame(width: 20, height: 170)
+                SegmentedMeter(level: model.masterLevelLeft).frame(width: 12, height: 170)
+                    .accessibilityLabel("Master left")
+                SegmentedMeter(level: model.masterLevelRight).frame(width: 12, height: 170)
+                    .accessibilityLabel("Master right")
             }
             Toggle("Monitor", isOn: Binding(
                 get: { model.monitorEnabled },
@@ -423,6 +441,80 @@ struct MasterLufsRail: View {
         .frame(width: 160)
         .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+/// The Windows AudioMeterScale major ticks beside a 0..100 meter.
+struct MeterTickScale: View {
+    var body: some View {
+        GeometryReader { geo in
+            ForEach(AudioMeterScale.majorTicksDbfs, id: \.self) { tick in
+                Text(tick == 0 ? "0" : String(Int(tick)))
+                    .font(.plexMono(7)).foregroundStyle(Studio.textDim)
+                    .position(x: geo.size.width / 2,
+                              y: geo.size.height * (1 - CGFloat(AudioMeterScale.toLevel(tick + 0.0001)) / 100))
+            }
+        }
+    }
+}
+
+/// Compressor gain reduction, 0..24 dB, filled from the left.
+struct GainReductionBar: View {
+    let level: Int
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Studio.surfaceRaised)
+                Rectangle().fill(Studio.amber).frame(width: geo.size.width * CGFloat(level) / 100)
+            }
+        }
+    }
+}
+
+/// SETUP guide meters (Windows AudioPage.xaml:349-380, MasteringGuideMeter):
+/// integrated loudness against the target, true peak against the ceiling.
+/// Measured post-master values only; no evidence reads a dash.
+struct MasteringGuideMeters: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 16) {
+            meter(title: "INTEGRATED · POST-MASTER",
+                  value: model.integratedLufs, min: -36, max: 0,
+                  guide: model.mastering.targetLufs, warnAbove: false,
+                  label: MasterMeterReadout.integratedLabel(model.integratedLufs),
+                  guideLabel: MasterMeterReadout.targetLabel(model.mastering.targetLufs))
+            meter(title: "TRUE PEAK · POST-MASTER",
+                  value: model.truePeakDbfs, min: -24, max: 0,
+                  guide: model.mastering.ceilingDbfs, warnAbove: true,
+                  label: MasterMeterReadout.truePeakLabel(model.truePeakDbfs),
+                  guideLabel: MasterMeterReadout.ceilingLabel(model.mastering.ceilingDbfs))
+        }
+    }
+
+    func meter(title: String, value: Double, min: Double, max: Double, guide: Double,
+               warnAbove: Bool, label: String, guideLabel: String) -> some View {
+        let engaged = model.mastering.enabled
+        let fraction = MasterMeterReadout.guideFraction(value: value, min: min, max: max)
+        let guideFraction = MasterMeterReadout.guideFraction(value: guide, min: min, max: max)
+        let fill: Color = !engaged ? Studio.textDim
+            : (warnAbove && value > guide + 0.05) ? Studio.red : Studio.accent
+        return VStack(alignment: .leading, spacing: 4) {
+            MonoLabel(title, dim: !engaged)
+            Text(label).font(.grotesk(20, .semibold))
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Studio.surfaceRaised)
+                    Rectangle().fill(fill).frame(width: geo.size.width * fraction)
+                    Rectangle().fill(Studio.textPrimary.opacity(engaged ? 1 : 0.55))
+                        .frame(width: 2).offset(x: geo.size.width * guideFraction - 1)
+                }
+            }
+            .frame(height: 10)
+            Text(guideLabel).font(.plexMono(9)).foregroundStyle(Studio.secondary)
+        }
+        .frame(maxWidth: 300)
+        .accessibilityElement(children: .combine)
     }
 }
 
