@@ -45,6 +45,16 @@ enum AudioInputs {
             mediaType: .audio, position: .unspecified)
         return session.devices.map { AudioInputDevice(id: $0.uniqueID, name: $0.localizedName) }
     }
+
+    /// Calls `changed` on the main queue whenever an AVCaptureDevice is connected
+    /// or disconnected (the same notifications for audio and video devices).
+    static func watch(_ changed: @escaping @MainActor () -> Void) {
+        for name in [AVCaptureDevice.wasConnectedNotification, AVCaptureDevice.wasDisconnectedNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { changed() }
+            }
+        }
+    }
 }
 
 extension AppModel {
@@ -112,13 +122,16 @@ extension AppModel {
         pushRoutingBase()  // ...and its default sends
     }
 
-    /// Re-assert pairings after a reconnect: the core rebuilds its map from
-    /// scratch each launch, so a persisted pairing that is never pushed does
-    /// nothing — the same trap the colour grade had.
-    func reassertCaptureAudio() {
-        if slots.contains(where: { $0.kind == "capture" && !$0.audioDeviceId.isEmpty })
-            || LocalAudioPolicy.isConfigured(localAudio, devices: audioInputs) {
-            syncCaptureAudio()
-        }
+    /// Re-lists the audio inputs. `push`: a device arrived or left while the
+    /// core runs — if that changes whether the local audio source can be sent,
+    /// re-send the capture sources, the strip set and the routing base (a mic
+    /// plugged in after launch used to stay "not connected" forever).
+    func refreshAudioInputs(push: Bool) {
+        let wasConfigured = LocalAudioPolicy.isConfigured(localAudio, devices: audioInputs)
+        audioInputs = audioInputsProvider()
+        guard push, LocalAudioPolicy.isConfigured(localAudio, devices: audioInputs) != wasConfigured else { return }
+        syncCaptureAudio()
+        refreshStrips()
+        pushRoutingBase()
     }
 }

@@ -22,6 +22,8 @@ extension ShellTests {
             ("quickwins/a5-console-source-and-routing", testA5ConsoleSourceAndRouting),
             ("quickwins/a5-status-from-the-core", testA5StatusComesFromTheCore),
             ("quickwins/a5-prefs-and-unplugged-device", testA5PrefsAndUnpluggedDevice),
+            ("quickwins/a5-first-connect-sends-the-saved-source", testA5FirstConnectSendsTheSavedSource),
+            ("quickwins/a5-hot-plugged-mic-goes-live", testA5HotPluggedMicGoesLive),
             ("quickwins/z1-windows-preference-table", testZ1WindowsPreferenceTable),
             ("quickwins/z1-join-carries-and-latches-the-ceiling", testZ1JoinCarriesAndLatchesTheCeiling),
             ("quickwins/z1-prefs-round-trip", testZ1PrefsRoundTrip),
@@ -497,5 +499,54 @@ extension ShellTests {
         expectEqual(after.streamEncoder, o1Encoder, "the encoder settings survive a relaunch")
         let recipe = ProductionSettingsPolicy.streamRecipeLabel(bitrateMbps: 6, height: 1080, encoder: o1Encoder)
         expect(recipe.contains("VBR") && recipe.contains("AAC 128 kbps"), "the recipe reads the live settings: \(recipe)")
+    }
+
+    // ── review round (2026-11-22) ───────────────────────────────────────────
+
+    /// Review #2: the FIRST core connect of a launch must send a saved local
+    /// source. onConnected used to reassert the console before listing the audio
+    /// inputs, so the device was unknown, nothing was sent, and the mic stayed
+    /// silent while the toggle read on (a respawn worked, which hid it).
+    /// Drives the real onConnected ordering on a model that has never listed
+    /// devices. Mutation: reassert before listing -> red.
+    @MainActor
+    private static func testA5FirstConnectSendsTheSavedSource() {
+        let model = AppModel()
+        model.applyRestoredPrefs({ var p = ShellPrefs(); p.localAudioEnabled = true
+            p.localAudioDeviceId = "mic-uid"; p.localAudioDeviceName = "USB Mic"; return p }())
+        expect(model.audioInputs.isEmpty, "precondition: a fresh launch has listed no devices")
+        model.audioInputsProvider = { [a5Mic] }
+        var batches: [[JSONObject]] = []
+        model.audioReassertObserver = { batches.append($0) }
+        model.onConnected()
+        let first = batches.first ?? []
+        let sources = first.first { $0["type"] as? String == "sync-capture-audio-sources" }
+        expect(sources.flatMap(a5Local) != nil, "the first connect's batch carries the saved local source")
+        let routing = first.first { $0["type"] as? String == "sync-audio-routing-matrix" }
+        expectEqual(a1Buses(routing?["sends"] as? [JSONObject] ?? [], "local-machine-audio"), a1Buses,
+                    "with its five default sends")
+        let channels = first.first { $0["type"] as? String == "sync-participant-audio-mix" }?["channels"] as? [JSONObject] ?? []
+        expect(channels.contains { $0["participantId"] as? String == "local-machine-audio" },
+               "and its strip rides the same first batch (FADER LAW)")
+    }
+
+    /// Review #2b: a saved mic plugged in AFTER launch becomes live — the device
+    /// list is refreshed on connect/disconnect and the console re-pushed when the
+    /// local source's sendability changes. Mutation: refresh without the push -> red.
+    @MainActor
+    private static func testA5HotPluggedMicGoesLive() {
+        let model = AppModel()
+        model.localAudio = LocalAudioSetting(enabled: true, deviceId: "mic-uid", deviceName: "USB Mic")
+        model.audioInputsProvider = { [] }
+        model.refreshAudioInputs(push: false)
+        var sent: [JSONObject] = []
+        model.routingBaseSendObserver = { sent.append($0) }
+        model.audioInputsProvider = { [a5Mic] }     // the mic is plugged in
+        model.refreshAudioInputs(push: true)
+        spin(until: { !sent.isEmpty }, limit: 2)
+        let sends = (sent.last?["commands"] as? [JSONObject])?.first?["sends"] as? [JSONObject] ?? []
+        expectEqual(a1Buses(sends, "local-machine-audio"), a1Buses, "the plugged-in mic is routed")
+        expect(model.strips.contains { $0.id == "local-machine-audio" }, "and has its strip")
+        expectEqual(model.localAudioStatus, "Waiting for audio", "the status leaves 'not connected'")
     }
 }

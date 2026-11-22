@@ -1726,6 +1726,14 @@ final class AppModel: ObservableObject {
         rosterProjection.resetForProcess()
         sourceFacts.mutate { $0.engineStopped() }
         rosterRecoveryNotice = rosterProjection.notice
+        // The audio inputs BEFORE the console reassert (review #2): a saved local
+        // audio source resolves its device from this list, and an empty list on
+        // the first connect of a launch left it unsent — silent, toggle on.
+        refreshAudioInputs(push: false)
+        if !audioInputsWatched {
+            audioInputsWatched = true
+            AudioInputs.watch { [weak self] in self?.refreshAudioInputs(push: true) }
+        }
         // FIRST, before anything that can make a source audible (monitor, capture
         // mics, scenes with media): see reassertAudioConsole.
         reassertAudioConsole()
@@ -1755,7 +1763,6 @@ final class AppModel: ObservableObject {
         pushBrandKitNow()
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
-        audioInputs = AudioInputs.available()
         reassertCaptureAudioSyncOffsets()   // Z2: the device copies die with the core
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
@@ -2341,6 +2348,9 @@ final class AppModel: ObservableObject {
     @Published var audioInputs: [AudioInputDevice] = []
     /// A5: the local audio source (LocalAudioSource.swift). Set via setLocalAudio.
     @Published var localAudio = LocalAudioSetting()
+    /// Harness seam: the audio input list (the real one enumerates AVCaptureDevice).
+    var audioInputsProvider: () -> [AudioInputDevice] = { AudioInputs.available() }
+    private var audioInputsWatched = false
     /// Z2: per capture device id, session only (CaptureAudioSync.swift). Absent = 0.
     @Published var captureAudioSyncOffsets: [String: Int] = [:]
     var captureAudioSyncTask: Task<Void, Never>?
