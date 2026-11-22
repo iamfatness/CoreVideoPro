@@ -86,9 +86,12 @@ enum AudioConsolePolicy {
     /// push — moved off the wall and back, a slot swap, a slot briefly offline —
     /// must come back with its mute and fader, never live at unity because of a
     /// video-side action.
+    /// `zoomMuted`: roster ids muted IN ZOOM, resolved fresh by the caller every
+    /// merge (Windows SVM:8818-8825). It lands only in `sourceMuted` (display and
+    /// meter), never in the A1's `muted` and never carried from `prior` (#481).
     static func mergeStrips(echo: [JSONObject], prior: [AudioStrip],
                             remembered: [String: AudioStrip] = [:],
-                            expected: [String]) -> [AudioStrip] {
+                            expected: [String], zoomMuted: Set<String> = []) -> [AudioStrip] {
         var echoById: [String: JSONObject] = [:]
         for entry in echo {
             guard let id = entry["participantId"] as? String, !id.isEmpty,
@@ -115,6 +118,8 @@ enum AudioConsolePolicy {
             strip.outputLevel = entry?["outputLevel"] as? Int ?? 0
             strip.status = entry?["status"] as? String ?? "waiting-for-pcm"
             strip.inputLevel = inputLevel(entry)
+            strip.gainReductionDb = (entry?["gainReductionDb"] as? NSNumber)?.doubleValue ?? 0
+            strip.sourceMuted = zoomMuted.contains(id)
             return strip
         }
     }
@@ -163,10 +168,7 @@ enum AudioConsolePolicy {
     }
 
     /// Windows AudioMeterScale.ToLevel: a calibrated -60..0 dBFS -> 0..100 scale.
-    static func meterLevel(dbfs: Double) -> Int {
-        guard dbfs.isFinite else { return 0 }
-        return Int((max(-60, min(0, dbfs)) + 60) / 60 * 100)
-    }
+    static func meterLevel(dbfs: Double) -> Int { AudioMeterScale.toLevel(dbfs) }
 
     /// The pre-mute input level from an echo entry: the core's measured
     /// `inputPeakDbfs` (published per channel once the console is synced, #481),
@@ -183,7 +185,9 @@ enum AudioConsolePolicy {
     /// ShowLevelWhileMuted): live, the output level; muted, the PRE-MUTE input
     /// level, dimmed. A muted strip used to read silence even while the guest
     /// talked — the A1 could not see who was speaking into a muted channel.
+    /// Windows ResolveChannelMeterLevel(…, Muted || SourceMuted): a guest muted
+    /// in Zoom also shows the pre-mute input, dimmed (A4, D6).
     static func meterReading(_ strip: AudioStrip) -> (level: Int, dimmed: Bool) {
-        strip.muted ? (strip.inputLevel, true) : (strip.outputLevel, false)
+        (strip.muted || strip.sourceMuted) ? (strip.inputLevel, true) : (strip.outputLevel, false)
     }
 }

@@ -138,6 +138,10 @@ struct AudioStrip: Identifiable, Equatable {
     /// PRE-MUTE input level, 0..100 (#481): measured before mute/fader, so a muted
     /// guest who is talking still shows on a dimmed meter instead of silence.
     var inputLevel = 0
+    /// Muted IN ZOOM (the roster's flag), display only: never the A1's mute (#481).
+    var sourceMuted = false
+    /// The channel compressor's measured gain reduction (core gainReductionDb).
+    var gainReductionDb = 0.0
 }
 
 // Show-input slot (inputs 1–10): the operator's stable mapping from "what's
@@ -436,6 +440,11 @@ final class AppModel: ObservableObject {
     @Published var audioObservation: AudioObservation?
     var audioObservationReceivedAt = Date()
     @Published var shortTermLufs = -120.0
+    // A4: the rest of the core's masterMeter, and the rail's loudnessLufs.
+    @Published var integratedLufs = -120.0
+    @Published var momentaryLufs = -120.0
+    @Published var loudnessLufs = -120.0
+    @Published var mixedFrameCount = 0
     @Published var truePeakDbfs = -120.0
     @Published var limiterActive = false
     @Published var masteringRideDb = 0.0
@@ -1869,6 +1878,8 @@ final class AppModel: ObservableObject {
             let monitorAccepted = monitorControl.observe(mix)
             monitorControlNotice = monitorControl.notice
             masterLevel = mix["masterLevel"] as? Int ?? masterLevel
+            loudnessLufs = (mix["loudnessLufs"] as? NSNumber)?.doubleValue ?? loudnessLufs
+            mixedFrameCount = (mix["mixedFrameCount"] as? NSNumber)?.intValue ?? mixedFrameCount
             limiterActive = mix["limiterActive"] as? Bool ?? limiterActive
             let sides = StudioFooterReadout.masterLevels(snapshot: snapshot, fallback: masterLevel)
             masterLevelLeft = sides.left
@@ -1879,6 +1890,8 @@ final class AppModel: ObservableObject {
             }
             if let meter = mix["masterMeter"] as? JSONObject {
                 shortTermLufs = (meter["shortTermLufs"] as? NSNumber)?.doubleValue ?? shortTermLufs
+                integratedLufs = (meter["integratedLufs"] as? NSNumber)?.doubleValue ?? integratedLufs
+                momentaryLufs = (meter["momentaryLufs"] as? NSNumber)?.doubleValue ?? momentaryLufs
                 truePeakDbfs = (meter["truePeakDbfs"] as? NSNumber)?.doubleValue ?? truePeakDbfs
             }
             if let participants = mix["participants"] as? [JSONObject] {
@@ -5012,7 +5025,7 @@ final class AppModel: ObservableObject {
         lastRoutingBaseSent = nil
         strips = AudioConsolePolicy.mergeStrips(
             echo: [], prior: strips, remembered: rememberedStripSettings,
-            expected: expectedAudioSourceIds)
+            expected: expectedAudioSourceIds, zoomMuted: zoomMutedIds)
         var commands: [JSONObject] = [audioMixCommand()]
         let routing = routingBaseCommand()
         if let routing { commands.append(routing) }
@@ -5086,10 +5099,14 @@ final class AppModel: ObservableObject {
     /// the core never holds a routed source without a strip (a late guest, a newly
     /// paired mic) and never keeps a strip for a source that is gone.
     /// Internal: the harness drives it.
+    /// Who is muted IN ZOOM right now, from the roster only (a roster miss is
+    /// not a mute). Feeds AudioStrip.sourceMuted, never the A1's mute.
+    var zoomMutedIds: Set<String> { Set(roster.filter(\.muted).map(\.id)) }
+
     func refreshStrips() {
         strips = AudioConsolePolicy.mergeStrips(
             echo: lastMixEcho, prior: strips, remembered: rememberedStripSettings,
-            expected: expectedAudioSourceIds)
+            expected: expectedAudioSourceIds, zoomMuted: zoomMutedIds)
         for strip in strips { rememberedStripSettings[strip.id] = strip }
         // Schedule once per new SET (order is presentation, never a reason to
         // sync): snapshots arrive faster than the 150 ms debounce, and

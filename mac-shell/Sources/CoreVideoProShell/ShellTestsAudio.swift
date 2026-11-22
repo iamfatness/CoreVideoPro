@@ -23,6 +23,11 @@ extension ShellTests {
             ("audio-mastering/preset-into-active-slot", testMasteringPresetLandsInTheActiveSlot),
             ("audio-mastering/prefs-active-slot-is-live", testMasteringPrefsSerialiseTheActiveSlotFromTheLiveRack),
             ("control/master-limiter", testControlMasterLimiterAction),
+            // Task 5: meter scale, readouts and decode.
+            ("audio-meters/scale-vectors", testAudioMeterScaleIsWindows),
+            ("audio-meters/readout-labels", testMasterMeterReadoutLabels),
+            ("audio-meters/decode", testMasterMeterDecodeFromTheSnapshot),
+            ("audio-meters/zoom-muted-is-display-only", testZoomMutedIsDisplayOnly),
         ]
     }
 
@@ -279,5 +284,85 @@ extension ShellTests {
         expectEqual(AppModelControlSurface.state(model).dictionary["masterLimiterOn"] as? Bool, false, "state: off")
         expectEqual(invoke(surface, "audio.masterLimiter.set", [true]), .success, "limiter on")
         expectEqual(AppModelControlSurface.state(model).dictionary["masterLimiterOn"] as? Bool, true, "state: on")
+    }
+
+    // ── Task 5 ───────────────────────────────────────────────────────────────
+
+    /// WT/AudioMeterScaleTests vectors, plus the rounding row that separates
+    /// Math.Round from truncation.
+    static func testAudioMeterScaleIsWindows() {
+        let vectors: [(Double, Int)] = [(-120, 0), (-60, 0), (-48, 20), (-36, 40), (-24, 60), (-12, 80),
+                                        (-6, 90), (0, 100), (-0.3, 100), (-59.9, 0), (-30.3, 50), (6, 100)]
+        for (dbfs, level) in vectors {
+            expectEqual(AudioMeterScale.toLevel(dbfs), level, "\(dbfs) dBFS -> \(level)")
+        }
+        expectEqual(AudioMeterScale.toLevel(-3, muted: true), 0, "muted reads 0")
+        expectEqual(AudioMeterScale.toLevel(.nan), 0, "NaN reads 0")
+        expectEqual(AudioConsolePolicy.meterLevel(dbfs: -0.3), 100, "the strip scale is the Windows scale")
+        expectEqual(AudioMeterScale.majorTicksDbfs, [0, -6, -12, -24, -36, -48, -60], "ticks")
+    }
+
+    static func testMasterMeterReadoutLabels() {
+        expectEqual(MasterMeterReadout.integratedLabel(-16.44), "-16.4 LUFS", "integrated")
+        expectEqual(MasterMeterReadout.integratedLabel(-119.0), "—", "-119 is no evidence")
+        expectEqual(MasterMeterReadout.integratedLabel(-118.9), "-118.9 LUFS", "just above the floor")
+        expectEqual(MasterMeterReadout.truePeakLabel(-1.04), "-1.0 dBTP", "true peak")
+        expectEqual(MasterMeterReadout.truePeakLabel(-120), "—", "true peak floor")
+        expectEqual(MasterMeterReadout.targetLabel(-14), "target -14 LUFS", "target")
+        expectEqual(MasterMeterReadout.ceilingLabel(-1.3), "ceiling -1.3 dBTP", "ceiling")
+        expectEqual(MasterMeterReadout.guideFraction(value: -18, min: -36, max: 0), 0.5, "guide fraction")
+        expectEqual(MasterMeterReadout.guideFraction(value: -36, min: -36, max: 0), 0, "at min: not primed")
+        expectEqual(MasterMeterReadout.guideFraction(value: 3, min: -24, max: 0), 1, "clamped at max")
+        expectEqual(MasterMeterReadout.railLufsLabel(loudnessLufs: -15.04, mixedFrames: 10), "-15.0 LUFS", "rail")
+        expectEqual(MasterMeterReadout.railLufsLabel(loudnessLufs: -15, mixedFrames: 0), "LUFS —", "no mixed frame")
+        expectEqual(MasterMeterReadout.railLufsLabel(loudnessLufs: -59, mixedFrames: 10), "LUFS —", "-59 floor")
+        let none = MasterMeterReadout.gainReduction(0.05)
+        expectEqual(none.label, "GR —", "0.05 dB is no reduction"); expectEqual(none.level, 0, "level 0")
+        let six = MasterMeterReadout.gainReduction(6)
+        expectEqual(six.label, "GR −6.0 dB", "6 dB label"); expectEqual(six.level, 25, "6 of 24 dB")
+        expectEqual(MasterMeterReadout.gainReduction(30).level, 100, "clamped at 24 dB")
+    }
+
+    @MainActor
+    static func testMasterMeterDecodeFromTheSnapshot() {
+        let model = AppModel()
+        model.applySnapshotForTesting(["audioMixSession": [
+            "masterLevel": 40, "loudnessLufs": -15.0, "mixedFrameCount": 480,
+            "masterMeter": ["momentaryLufs": -15.0, "shortTermLufs": -120.0,
+                            "integratedLufs": -16.4, "truePeakDbfs": -2.5, "windowMs": 400],
+        ] as JSONObject])
+        expectEqual(model.integratedLufs, -16.4, "integrated decoded")
+        expectEqual(model.momentaryLufs, -15.0, "momentary decoded")
+        expectEqual(model.shortTermLufs, -120.0, "short-term stays its own field")
+        expectEqual(model.truePeakDbfs, -2.5, "true peak")
+        expectEqual(MasterMeterReadout.railLufsLabel(loudnessLufs: model.loudnessLufs,
+                                                     mixedFrames: model.mixedFrameCount),
+                    "-15.0 LUFS", "rail reads the core's loudnessLufs (short-term absent -> momentary)")
+    }
+
+    /// #481 / D6: the Zoom mute is display and meter only.
+    @MainActor
+    static func testZoomMutedIsDisplayOnly() {
+        let echo: [JSONObject] = [["participantId": "101", "outputLevel": 0, "inputPeakDbfs": -12.0,
+                                   "gainReductionDb": 4.5, "status": "live"]]
+        let strips = AudioConsolePolicy.mergeStrips(echo: echo, prior: [], expected: ["101", "102"],
+                                                    zoomMuted: ["101"])
+        expect(strips[0].sourceMuted, "roster-muted guest reads sourceMuted")
+        expect(!strips[0].muted, "the A1's mute is untouched")
+        expectEqual(strips[0].gainReductionDb, 4.5, "GR decoded per channel")
+        let reading = AudioConsolePolicy.meterReading(strips[0])
+        expectEqual(reading.level, 80, "Zoom-muted meter shows the pre-mute input (-12 dBFS)")
+        expect(reading.dimmed, "dimmed")
+        expect(!strips[1].sourceMuted, "a guest not in the muted set is not")
+        // Unmuted in Zoom on the next merge: never carried from prior.
+        let next = AudioConsolePolicy.mergeStrips(echo: echo, prior: strips, expected: ["101", "102"], zoomMuted: [])
+        expect(!next[0].sourceMuted, "unmuted in Zoom clears at once (never latched from prior)")
+        let model = AppModel()
+        model.roster = [RosterParticipant(id: "101", name: "A", hasVideo: true, muted: true, talking: false, assigned: true),
+                        RosterParticipant(id: "102", name: "B", hasVideo: true, muted: false, talking: false, assigned: true)]
+        expectEqual(model.zoomMutedIds, ["101"], "the roster is the only source")
+        model.strips = strips
+        let channels = model.audioMixCommand()["channels"] as? [JSONObject] ?? []
+        expectEqual(channels.first?["muted"] as? Bool, false, "the wire mute is the A1's, not Zoom's")
     }
 }
