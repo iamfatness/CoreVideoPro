@@ -109,15 +109,16 @@ clip end (`MediaTransports.ANonLoopingClipEndsOnItsLastFrameWithItsWholeAudio`,
   construction, but the Windows suite was not run.
 - **The VideoToolbox decode-session limit with zero-copy.** The existing 16-decoder test still
   runs only on the BGRA factory.
-- **Rotation of an alpha clip** (default P3): the composition output is opaque. That is a known
-  limit, and it is not tested.
+- ~~**Rotation of an alpha clip** (default P3): the composition output is opaque.~~ Fixed in the
+  review round below: alpha now survives rotation, and a test covers it.
 
 ## Defaults taken (from the plan)
 
 - **P1:** an audio bed's picture is fully transparent.
 - **P2:** Mac honours `preferredTransform`.
-- **P3:** rotation goes through `AVAssetReaderVideoCompositionOutput`, only for non-identity
-  transforms.
+- **P3:** only non-identity transforms are rotated. The review round below superseded the
+  mechanism: it was `AVAssetReaderVideoCompositionOutput`, and is now a per-sample Core Image
+  rotation.
 - **P4:** zero-copy uses BGRA IOSurfaces only, with no NV12 path.
 - **P5:** zero-copy is used only with a Metal compositor. `createAvFoundationMediaDecoderFactory()`
   keeps its CPU-BGRA meaning.
@@ -168,3 +169,75 @@ for this work.
 - Run the `--load 8 --media` drill on a quiet machine, before and after.
 - Run the 16-decoder test against the zero-copy factory.
 - Rename the drill's `copy avg` label in zero-copy mode.
+
+## Review round (2026-11-22)
+
+An independent review found no show-stopper: lifetime is sound, `leaks` found 0, the pool never
+stalls with 90 buffers held, and Windows is inert. Four of its items were fixed on this branch. Item 5
+(small per-pass allocations on the render thread) was skipped by orchestrator decision. A reboot
+interrupted the round after item 3, and the rest was done in a resumed session.
+
+| item | finding | commit | test (red before → green after) |
+|---|---|---|---|
+| 3 | the bed backstop test needed a 100 ms real-time window | `a53714b8` | mutation red, green 4/4 |
+| 1 | a rotated alpha clip silently went opaque | `e96298c5` | `AvfMediaDecoder.ARotatedAlphaClipStaysUprightAndKeepsItsStraightAlpha`: before BGRA(225,32,32,**255**), after (225,32,32,**128**) at all 4 quadrants, BGRA and zero-copy factories |
+| 4 | the rotation frame rate came from `minFrameDuration` (VFR) | `e96298c5` | `AvfMediaDecoder.AVariableFrameRateRotatedClipDecodesOneFramePerSourceSample`, **not red before** (see below) |
+| 2 | an audio bed that stalled ≥ 6 s ended for good | `56068a13` | `MediaTransports.AnAudioBedStalledPastTheBackstopRecoversWhenItsAudioComesBack`: before, stayed Ended; after, Live again, 5/5 |
+
+**Items 1 and 4: rotation is per decoded sample on the GPU now.**
+- The orchestrator's preferred option was a draw-time affine in Metal. That would make every
+  consumer of a media frame (compositor, CPU BGRA factory, thumbnails) honour an orientation field.
+- Instead, the decoder always uses the plain track output. A rotated track's samples are turned
+  upright by Core Image on the system Metal device, into an IOSurface/Metal-compatible
+  `CVPixelBufferPool` buffer.
+- Downstream nothing changes: zero-copy wraps the pool buffer like a decoder buffer, and the pool
+  cannot recycle a buffer a frame or Metal pass still retains.
+- Alpha: colour management is off (`NSNull` working/output/input colour spaces). Measured: Core Image
+  reads BGRA as straight alpha, so the destination writes `Unpremultiplied`. Premultiplied output
+  read the colour halved, (113,16,16,128).
+- Quarter turns and flips sample nearest, so they are bit-exact. Any other transform (e.g. a
+  QuickTime matrix with scale) samples linearly at the rounded display size.
+- A Core Image failure fails the reader loudly ("cannot play this rotated clip"), never silently.
+- Cost: one GPU render per frame for rotated clips only, waited on the reader queue (never the
+  render thread). Unrotated clips are byte-for-byte unchanged. The drill was not re-run for this.
+- Pkg-install rule: Core Image is a system framework, and nothing loads from next to the core
+  executable. `native/CMakeLists.txt` links `-framework CoreImage` in the AVF media decoder block
+  (Apple-only).
+
+**Item 4 did not reproduce.**
+- The VFR fixture has `minFrameDuration` 1.7 ms against a nominal 32 fps. Through the OLD composition
+  path it still produced 16 frames for 16 samples on macOS 27.2, so AVFoundation does not over-render
+  there.
+- The composition path is gone anyway. The test pins one frame per source sample at its own
+  timestamp, as a guard.
+- Fixture finding: the H.264 writer merges a 1 ms pair (16 written, 15 decoded, on any path), so the
+  VFR fixture is ProRes (`QuadrantClip::prores`).
+
+**Item 2: a stalled bed recovers.**
+- A bed in Ended whose decoder is not at EOS (`!mediaEnded()`) is still polled for audio. Delivered
+  audio returns it to Live in place, keeping its position, as a new picture does for a video clip.
+- A bed at real EOS is not polled. `AnAudioOnlyBedOutlivesTheNoNewFrameBackstop` still ends on drain.
+- Shared code: the path needs `mediaHasVideo() == false`, which the MF decoder never reports
+  (default true), so Windows behaviour is unchanged. Still not compiled on Windows.
+- New test seam `MediaTransports::setWorkerClockForTesting` (production: `steady_clock`). The test
+  crosses the 6 s window with one virtual jump; its real-time bounds are waits, not measurements.
+
+**Runs** (load avg 4-9; another session was active):
+- `native/build-metal/corevideo-native-tests`: **2132 passed, 0 failed**.
+- `native/build-stub/corevideo-native-tests`: **2022 passed, 0 failed**.
+- Shell: `cd mac-shell && swift build -c release`, then `COREVIDEO_SHELL_TESTS=1 …`.
+  - First run: 5676 run, 1 failed: `ControlApiTests.swift:1162` "the slow client is connected".
+    This is a control-API socket timing check, and this round changes no Swift.
+  - Re-run: **5676 passed, 0 failed**.
+- Selfcheck: PASS.
+
+**Toolchain note (affects every lane on this Mac).**
+- The Command Line Tools updated on 2026-11-21 at 23:32 and brought `MacOSX27.2.sdk`, whose `.tbd`
+  files list `arm64e.x1` targets.
+- The selected Xcode's `ld` (ld-1267) rejects them: "tapi error: unknown architecture". Every native
+  link fails.
+- Workaround: build native with `DEVELOPER_DIR=/Library/Developer/CommandLineTools` (ld-27106).
+- Swift (`mac-shell`) still builds with the default Xcode toolchain, and fails under the CLT one.
+
+**Still open:** the `--load 8 --media` frame-delivery drill on a quiet machine (orchestrator-owned),
+and a Windows compile of the shared headers.
