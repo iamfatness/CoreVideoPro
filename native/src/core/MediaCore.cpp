@@ -6499,6 +6499,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     shedObservation.monitorCycleCostNs = lastMultiviewPassNs_ + lastPreviewPassNs_;
     const auto transition = monitorShed_.observe(shedObservation);
     if (transition != MonitorShedTransition::None) {
+      // Grading Phase 2 (P4): optional analysis (Metal grade previews) slows by the same divisor.
+      modules_.compositor->setMonitorShedDivisor(monitorShed_.divisor());
       ::corevideo::core::nativeLogf(
           "[monitor-shed] %s divisor=%d level=%d reason=%s programMs=%.2f monitorCycleMs=%.2f "
           "budgetMs=%.2f entered=%lld shedTicks=%lld\n",

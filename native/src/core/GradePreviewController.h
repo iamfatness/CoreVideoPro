@@ -252,12 +252,18 @@ class GradePreviewController {
         {"captureTimestamp100ns", double(scope.captureTimestamp100ns)}, {"original", scope.original},
         {"sampleWidth", st.width>0?256:0}, {"sampleHeight", st.width>0?144:0}, {"sampleCount", st.width>0?scope.roi.sampleCount():0}, {"colorSpace", "rec709-sdr-assumed"},
         {"units", "encoded 0-1; waveform 0-100%; Cb/Cr"},
-        {"texture", rpc::Json::Object{{"sharedHandleHex", st.sharedHandleHex}, {"width", st.width}, {"height", st.height},
-          {"format", st.format}, {"frameNumber", double(st.frameNumber)}}}}},
-      {"texture", rpc::Json::Object{{"sharedHandleHex", t.sharedHandleHex}, {"width", t.width},
-          {"height", t.height}, {"format", t.format}, {"frameNumber", double(t.frameNumber)}}}});
+        {"texture", textureJson(st)}}},
+      {"texture", textureJson(t)}});
     eventBytes_ += bound;
     return true;
+  }
+  // macOS adds the IOSurface id only when one is set, so a Windows texture object keeps exactly
+  // its five keys (the program-shared-texture rule, ProgramFramePreview.cpp; grading Phase 2, P6).
+  static rpc::Json textureJson(const modules::ParticipantSharedTexture& texture) {
+    rpc::Json::Object object{{"sharedHandleHex", texture.sharedHandleHex}, {"width", texture.width},
+        {"height", texture.height}, {"format", texture.format}, {"frameNumber", double(texture.frameNumber)}};
+    if (texture.iosurfaceId != 0) object.emplace("iosurfaceId", double(texture.iosurfaceId));
+    return rpc::Json(std::move(object));
   }
   std::map<std::string, Entry> active_;
   std::vector<rpc::Json> events_;

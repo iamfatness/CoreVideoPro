@@ -257,6 +257,9 @@ struct ProgramFrameSharedTexture {
 struct ParticipantSharedTexture {
   std::string participantId;
   std::string sharedHandleHex;
+  // macOS only (grading Phase 2, G5): the global IOSurface id of a Metal grade-preview or scope
+  // surface. 0 on Windows, where sharedHandleHex is the identity; never both set.
+  uint32_t iosurfaceId = 0;
   int width = 0;
   int height = 0;
   std::string format = "B8G8R8A8_UNORM";
@@ -1419,6 +1422,10 @@ class ICompositor {
   virtual void submitGradePreviews(MonitorRenderRequest /*request*/) {}
   [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestGradePreviews() const { return {}; }
   [[nodiscard]] virtual MonitorRenderDiagnostics gradePreviewDiagnostics() const { return {}; }
+  // The monitor load-shedding divisor (core/MonitorShedPolicy.h), handed over on each transition
+  // (1 = healthy). Optional analysis work (Metal grade previews) gives way by it; the default
+  // ignores it, so a compositor that does not override is unchanged (grading Phase 2, P4).
+  virtual void setMonitorShedDivisor(int /*divisor*/) {}
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}
