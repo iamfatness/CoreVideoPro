@@ -65,16 +65,46 @@ final class GradeEditorModel: ObservableObject, Identifiable {
     @Published var curveChannel = 0 { didSet { if curveChannel != oldValue { curveSelection = -1 } } }
     @Published private(set) var curveSelection = -1
 
+    // ── G5/G6 (Phase 2 Task 8): the private preview, Compare and scopes ─────
+    /// This editor's preview instance (Windows: one per editor window).
+    let previewInstanceId = GradeOperation.newId()
+    /// Bumped by every change the preview must show (Windows RequestPreview).
+    @Published private(set) var previewRevision: Int64 = 1
+    @Published var compareOriginal = false { didSet { if compareOriginal != oldValue { requestPreview() } } }
+    @Published var scopesEnabled = false { didSet { if scopesEnabled != oldValue { requestPreview() } } }
+    @Published var scopesOriginal = false { didSet { if scopesOriginal != oldValue { requestPreview() } } }
+    @Published var histogramMode = 1 { didSet { if histogramMode != oldValue { requestPreview() } } }   // 0 Luma, 1 RGB overlay
+    @Published var waveformMode = 1 { didSet { if waveformMode != oldValue { requestPreview() } } }     // 0 Luma, 1 RGB overlay, 2 RGB parade
+    @Published var scopeView = 0 { didSet { if scopeView != oldValue { requestPreview() } } }           // 0 all, 1 hist, 2 wave, 3 vector
+    @Published private(set) var scopeRoi = GradeScopeRoi()
+    @Published private(set) var previewStatus: String
+    @Published private(set) var previewSurfaceId: UInt32 = 0
+    @Published private(set) var scopeStatus = GradeEditorModel.scopesHiddenText
+    @Published private(set) var scopeSurfaceId: UInt32 = 0
+    @Published private(set) var previewSupported: Bool
+    private(set) var previewSession: GradePreviewSession?
+
+    static let scopesHiddenText = "Scopes hidden."
+    static let reconnectingText = "Native preview reconnecting."              // GradePreviewCoordinator.cs:100
+    static let preparingText = "Preparing native grading preview"             // VM.cs:107
+    static let scopeCaptions = ["HISTOGRAM · 0–255", "WAVEFORM · 0–100%", "VECTORSCOPE · 75%"]   // CGE:31-33
+    static let histogramModes = ["Luma", "RGB overlay"]
+    static let waveformModes = ["Luma", "RGB overlay", "RGB parade"]
+    static let scopeViews = ["All scopes", "Histogram", "Waveform", "Vectorscope"]
+
     /// Set by AppModel: "Apply and Done" closes the editor through it.
     var onClose: (() -> Void)?
     private let store: SourceGradeStore
 
     init(sourceId: String, sourceName: String, binding: String,
-         seed: SourceColorGrade, draftNotice: String?, store: SourceGradeStore) {
+         seed: SourceColorGrade, draftNotice: String?, store: SourceGradeStore,
+         previewSupported: Bool = false, previewSend: ((JSONObject) async throws -> JSONObject)? = nil) {
         self.sourceId = sourceId
         self.sourceName = sourceName
         self.binding = binding
         self.store = store
+        self.previewSupported = previewSupported
+        previewStatus = previewSupported ? Self.preparingText : Self.previewNotice
         lut = seed.lut
         exposure = seed.exposure
         contrast = seed.contrast
@@ -86,6 +116,105 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         // A saved Zoom grade is a DRAFT until Apply Live confirms the binding (Grading.cs:87-90).
         liveEditing = draftNotice == nil
         status = draftNotice ?? Self.initialStatus
+        if let previewSend {
+            let session = GradePreviewSession(instanceId: previewInstanceId, sourceId: sourceId, draft: captureDraft(),
+                                              send: previewSend, register: { [store] in try await store.registerDocument($0) })
+            session.onFailure = { [weak self] text in self?.previewUnavailable(text) }
+            previewSession = session
+        }
+    }
+
+    /// GradePreviewCoordinator.CaptureDraft: scopes are demanded only while the panel is expanded.
+    private func captureDraft() -> GradePreviewDraft {
+        GradePreviewDraft(revision: previewRevision, grade: currentGrade, scopesEnabled: advancedExpanded && scopesEnabled,
+                          scopesOriginal: scopesOriginal, histogramMode: histogramMode, waveformMode: waveformMode,
+                          compareOriginal: compareOriginal, scopeView: scopeView, roi: scopeRoi)
+    }
+
+    /// Windows RequestPreview: a new revision carrying the current draft.
+    func requestPreview() {
+        previewRevision += 1
+        previewSession?.draft = captureDraft()
+    }
+
+    func setPreviewSupported(_ supported: Bool) {
+        guard supported != previewSupported else { return }
+        previewSupported = supported
+        if previewSurfaceId == 0 { previewStatus = supported ? Self.preparingText : Self.previewNotice }
+    }
+
+    /// A new core generation (GradePreviewCoordinator.OnHealth): the old surfaces died with it.
+    func previewCoreReset() {
+        previewSession?.coreReset()
+        previewSurfaceId = 0; scopeSurfaceId = 0
+        previewStatus = Self.reconnectingText
+        if advancedExpanded && scopesEnabled { scopeStatus = "Preparing native scopes; no measurement available." }
+    }
+
+    func closePreview() { previewSession?.close(); previewSession = nil }
+
+    private func previewUnavailable(_ reason: String) {
+        previewStatus = "Native preview unavailable: \(reason)"
+        previewSurfaceId = 0
+    }
+
+    /// ObserveNativePreview (ColorGradeEditorViewModel.cs:89-125) for an IOSurface.
+    func observePreview(_ event: JSONObject) {
+        guard event["instanceId"] as? String == previewInstanceId, event["sourceId"] as? String == sourceId,
+              (event["revision"] as? NSNumber)?.int64Value == previewRevision else { return }
+        let status = event["status"] as? String ?? "unavailable"
+        let reason = event["reason"] as? String ?? ""
+        let epoch = (event["sourceEpoch"] as? NSNumber)?.uint64Value ?? 0
+        observeScopes(event, epoch: epoch)
+        var label: String
+        switch status {
+        case "ready": label = compareOriginal ? "Original source — monitor comparison only" : "Native graded source"
+        case "stale": label = "Source is not advancing — last native image held"
+        case "held": label = "Source unavailable — last native image held"
+        case "preparing": label = Self.preparingText
+        default: label = "Native preview unavailable: \(reason)"
+        }
+        if status == "held" || status == "stale" {
+            let age = ((event["sourceAgeMs"] as? NSNumber)?.doubleValue ?? 0) / 1000
+            label += " · source unchanged " + String(format: "%.1f", age) + "s"
+        }
+        previewStatus = label
+        let surface = ((event["texture"] as? JSONObject)?["iosurfaceId"] as? NSNumber)?.uint32Value ?? 0
+        guard ["ready", "held", "stale"].contains(status), surface != 0 else { previewSurfaceId = 0; return }
+        previewSurfaceId = surface
+        if status == "ready" || status == "held" { store.observePreviewEpoch(sourceId: sourceId, epoch: epoch) }
+    }
+
+    /// ObserveScopes (ColorGradeEditorViewModel.Advanced.cs:47-62): show a measurement only when it
+    /// answers exactly this draft: region, revision, epoch, original/graded and view.
+    private func observeScopes(_ event: JSONObject, epoch: UInt64) {
+        guard advancedExpanded, scopesEnabled else { scopeStatus = Self.scopesHiddenText; scopeSurfaceId = 0; return }
+        let s = event["scopes"] as? JSONObject
+        let texture = s?["texture"] as? JSONObject
+        let surface = (texture?["iosurfaceId"] as? NSNumber)?.uint32Value ?? 0
+        func int(_ key: String) -> Int { (s?[key] as? NSNumber)?.intValue ?? 0 }
+        guard let s, scopeRoi.matchesMeasurement(GradeScopeRoi(json: s["roi"] as? JSONObject)),
+              (s["revision"] as? NSNumber)?.int64Value == previewRevision,
+              (s["sourceEpoch"] as? NSNumber)?.uint64Value == epoch,
+              s["original"] as? Bool == scopesOriginal, int("view") == scopeView,
+              (texture?["width"] as? NSNumber)?.intValue == 1536, (texture?["height"] as? NSNumber)?.intValue == 512,
+              surface != 0
+        else {
+            scopeSurfaceId = 0
+            scopeStatus = s?["status"] as? String == "unavailable" ? "Native scopes unavailable; no measurement available."
+                : "Preparing native scopes; no measurement available."
+            return
+        }
+        let region = scopeRoi.enabled
+            ? "\(scopeRoi.shape == "circle" ? "Circle" : "Rectangle") ROI \(int("roiPixelWidth"))×\(int("roiPixelHeight")) at \(int("roiPixelX")),\(int("roiPixelY"))"
+            : "Full frame"
+        let age = ((s["sourceAgeMs"] as? NSNumber)?.doubleValue ?? 0) / 1000
+        let grouping = NumberFormatter(); grouping.numberStyle = .decimal; grouping.locale = Locale(identifier: "en_US")
+        let count = grouping.string(from: NSNumber(value: int("sampleCount"))) ?? "\(int("sampleCount"))"
+        scopeStatus = "\(scopesOriginal ? "Original" : "Graded") · \(region) · \(s["status"] as? String ?? "") · unchanged "
+            + String(format: "%.1f", age) + "s · sample \(int("sampleWidth"))×\(int("sampleHeight")) (\(count) pixels) · "
+            + "Rec.709 SDR assumed · waveform 0–100% · vectorscope 75% targets"
+        scopeSurfaceId = surface
     }
 
     /// After any control change: one undo step (per gesture), then, when live, the store sends
@@ -95,6 +224,7 @@ final class GradeEditorModel: ObservableObject, Identifiable {
     private func edited(clearing: Bool) {
         clearRequested = clearing
         rememberEdit()
+        requestPreview()
         guard liveEditing else { return }
         Task { _ = await send() }
     }
@@ -138,6 +268,8 @@ final class GradeEditorModel: ObservableObject, Identifiable {
     func setAdvancedExpanded(_ on: Bool) {
         advancedExpanded = on
         if on { liveEditing = false; status = Self.draftStatus }
+        if !on { scopeStatus = Self.scopesHiddenText; scopeSurfaceId = 0 }
+        requestPreview()                       // the scope demand follows the panel
     }
 
     func addPrimaries() { addAdjustment(kind: "primaries") }
@@ -276,6 +408,7 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         }
         recorded = currentGrade
         clearRequested = false
+        requestPreview()
         if liveEditing { Task { _ = await send() } }
     }
 
@@ -356,7 +489,12 @@ extension AppModel {
         let editor = GradeEditorModel(
             sourceId: sourceId, sourceName: gradeSourceName(for: sourceId),
             binding: gradeIdentity(for: sourceId)?.binding ?? "unavailable",
-            seed: seed.grade, draftNotice: seed.draftNotice, store: sourceGrades)
+            seed: seed.grade, draftNotice: seed.draftNotice, store: sourceGrades,
+            previewSupported: gradePreviewSupported,
+            previewSend: { [weak self] body in
+                guard let self else { throw BridgeError.notRunning }
+                return try await self.gradeRequest(body)
+            })
         editor.onClose = { [weak self] in self?.closeGradeEditor(sourceId: sourceId) }
         gradeEditors[sourceId] = editor
         return .opened(editor)
@@ -364,6 +502,7 @@ extension AppModel {
 
     /// "Close / discard draft": sends nothing.
     func closeGradeEditor(sourceId: String) {
+        gradeEditors[sourceId]?.closePreview()       // ends the native demand (enabled:false)
         gradeEditors[sourceId] = nil
     }
 }

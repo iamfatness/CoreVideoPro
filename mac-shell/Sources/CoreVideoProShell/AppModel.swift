@@ -666,6 +666,8 @@ final class AppModel: ObservableObject {
     @Published var gradeEditors: [String: GradeEditorModel] = [:]
     /// The last refusal from opening a grade editor, shown under the inspector's Grade section.
     @Published var gradeNotice = ""
+    /// The core's `gradePreview.supported` (Metal grade-preview worker present; Phase 2 G5).
+    @Published var gradePreviewSupported = false
     private let gradeFilePath = AppModel.gradeFilePathForTesting ?? SourceGradeFile.path
     /// The ONE graphics sub-model (graphics G1, spec 5.1): decode, gateway,
     /// playout and the On Air strip. No graphics behaviour lives on AppModel.
@@ -1803,6 +1805,7 @@ final class AppModel: ObservableObject {
         // One-shot: the brand kit is lost on respawn (L18a, gotchas). Sent at
         // launch and on every generation, not only when the operator edits it.
         pushBrandKitNow()
+        for editor in gradeEditors.values { editor.previewCoreReset() }   // the preview lease died with the core
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
         // A scene always sits on PROGRAM (the Windows shell starts on its
@@ -1931,6 +1934,11 @@ final class AppModel: ObservableObject {
             reconcileCaptureAudioSyncOffsets(devices)   // Z2: the device copy, from what the core reports
         }
         applySourceFacts(snapshot)
+        if let preview = snapshot["gradePreview"] as? JSONObject, let supported = preview["supported"] as? Bool,
+           supported != gradePreviewSupported {
+            gradePreviewSupported = supported
+            for editor in gradeEditors.values { editor.setPreviewSupported(supported) }
+        }
         if !snapshot.isEmpty {
             sourceGrades.observe(sourceGrades: snapshot["sourceGrades"] as? [JSONObject],
                                  sources: gradeSources, now: sourceGrades.now())
@@ -2343,6 +2351,10 @@ final class AppModel: ObservableObject {
             if let id = event["iosurfaceId"] as? NSNumber {
                 previewSurfaceId = id.uint32Value
             }
+        case "grade-preview":
+            // Phase 2 Task 8: route to the editor that owns the instance (spec §5.5).
+            let instance = event["instanceId"] as? String
+            gradeEditors.values.first { $0.previewInstanceId == instance }?.observePreview(event)
         case "zoom-source-format":
             // One row's facts; no sync and no AppModel @Published write (spec §4.4).
             if let fact = ZoomFormatFact.parse(event: event) {
@@ -5631,7 +5643,7 @@ final class AppModel: ObservableObject {
     }
 
     /// The grade store's request path: the test seam, else the bridge.
-    private func gradeRequest(_ body: JSONObject) async throws -> JSONObject {
+    func gradeRequest(_ body: JSONObject) async throws -> JSONObject {
         if let seam = quitRequestForTesting { return try await seam(body, 6) }
         guard let bridge else { throw BridgeError.notRunning }
         return try await bridge.request(body)

@@ -25,6 +25,14 @@ extension ShellTests {
             ("grade2/g4-three-routes-one-editor", testRowToolbarAndInspectorOpenTheSameEditor),
             ("grade2/g4-refusals", testGradeEntryRefusalsUseTheWindowsWords),
             ("grade2/g4-graded-chip", testTheGradedChipFollowsTheStore),
+            // Task 8 (G5+G6): preview session, Compare, status lines, scopes.
+            ("grade2/preview-session-send-renew-resend-close", testPreviewSessionSendsRenewsResendsAndCloses),
+            ("grade2/preview-draft-and-compare-never-apply", testDraftAndCompareSendPreviewsNeverSetSourceGrade),
+            ("grade2/preview-observation-rules", testPreviewObservationsAreFilteredAndWordedLikeWindows),
+            ("grade2/preview-scopes-only-expanded", testScopesAreDemandedOnlyExpandedAndJudgedLikeWindows),
+            ("grade2/preview-epoch-hint", testAPreviewEpochSavesTheFirstQuery),
+            ("grade2/preview-supported-notice", testTheNoPreviewNoticeFollowsTheCore),
+            ("grade2/preview-core-reset", testACoreRespawnReconnectsThePreview),
         ]
     }
 
@@ -261,5 +269,225 @@ extension ShellTests {
         _ = awaitApply(model.sourceGrades, SourceColorGrade(exposure: 5), "capture:cam", binding: "capture:cam")
         expect(model.slotIsGraded(1), "GRADED once the core acknowledged a grade")
         expect(!model.slotIsGraded(2), "an unassigned input never shows it")
+    }
+
+    // ── Task 8 ───────────────────────────────────────────────────────────────
+    // Fixture invariants: a FakePreviewCore answers set-grade-preview {ok, accepted} and records
+    // bodies; `failFull` makes the next FULL send throw (a renew still succeeds). Sessions are ticked
+    // by hand with an explicit clock (the harness disables the 100 ms timer).
+
+    final class FakePreviewCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _bodies: [JSONObject] = []
+        private var _failFull = false
+        var failFull: Bool { get { lock.lock(); defer { lock.unlock() }; return _failFull }
+                             set { lock.lock(); _failFull = newValue; lock.unlock() } }
+        var bodies: [JSONObject] { lock.lock(); defer { lock.unlock() }; return _bodies }
+        var previews: [JSONObject] { bodies.filter { $0["type"] as? String == "set-grade-preview" } }
+        private func record(_ body: JSONObject) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            _bodies.append(body)
+            let fail = _failFull && body["type"] as? String == "set-grade-preview" && body["renewOnly"] == nil
+            if fail { _failFull = false }
+            return fail
+        }
+        func handle(_ body: JSONObject) async throws -> JSONObject {
+            let fail = record(body)
+            if fail { throw BridgeError.remote("Grading preview preparation or event capacity is busy") }
+            if body["type"] as? String == "register-grade-document" { return ["ok": true, "present": true] }
+            return ["ok": true, "accepted": true]
+        }
+    }
+
+    static func gradePreviewEvent(instance: String, revision: Int64, status: String = "ready", epoch: UInt64 = 7,
+                                  surface: UInt32 = 501, scopes: JSONObject? = nil, source: String = "capture:cam",
+                                  ageMs: Double = 0, reason: String = "") -> JSONObject {
+        var event: JSONObject = ["type": "grade-preview", "instanceId": instance, "sourceId": source,
+                                 "revision": NSNumber(value: revision), "sourceEpoch": NSNumber(value: epoch),
+                                 "status": status, "reason": reason, "sourceAgeMs": ageMs,
+                                 "texture": ["iosurfaceId": NSNumber(value: surface), "width": 1280, "height": 720,
+                                             "sharedHandleHex": "", "format": "B8G8R8A8_UNORM", "frameNumber": 3]]
+        if let scopes { event["scopes"] = scopes }
+        return event
+    }
+
+    @MainActor static func previewEditor(_ core: FakePreviewCore) -> (AppModel, GradeEditorModel)? {
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]],
+                                       "gradePreview": ["supported": true]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { return nil }
+        return (model, editor)
+    }
+
+    @MainActor static func tickPreview(_ editor: GradeEditorModel, at now: Date, settle: Int = 0) {
+        editor.previewSession?.tick(now: now)
+        spin(until: { !(editor.previewSession?.isSending ?? false) }, limit: 2)
+        _ = settle
+    }
+
+    @MainActor static func testPreviewSessionSendsRenewsResendsAndCloses() {
+        let core = FakePreviewCore()
+        guard let (model, editor) = previewEditor(core) else { expect(false, "opens"); return }
+        let t0 = Date()
+        tickPreview(editor, at: t0)
+        expectEqual(core.previews.count, 1, "the first tick sends the draft")
+        let first = core.previews[0]
+        expectEqual(first["instanceId"] as? String, editor.previewInstanceId, "this editor's instance")
+        expectEqual(first["sourceId"] as? String, "capture:cam", "the frame key")
+        expectEqual(first["enabled"] as? Bool, true, "enabled")
+        expect(first["renewOnly"] == nil && first["grade"] is JSONObject, "a full send carries the grade")
+        let revision = FakeGradeCore.int(first["revision"])
+        tickPreview(editor, at: t0.addingTimeInterval(0.2))
+        expectEqual(core.previews.count, 1, "the same revision is not resent within 500 ms")
+        tickPreview(editor, at: t0.addingTimeInterval(0.6))
+        expectEqual(core.previews.count, 2, "renewed after 500 ms (the 3 s lease)")
+        expectEqual(core.previews[1]["renewOnly"] as? Bool, true, "a renewal is renewOnly")
+        expectEqual(FakeGradeCore.int(core.previews[1]["revision"]), revision, "for the same revision")
+        expect(core.previews[1]["grade"] == nil, "a renewal carries no grade (MediaCoreSupervisor.cs:478-485)")
+        editor.exposure = 9; editor.edited()
+        core.failFull = true
+        tickPreview(editor, at: t0.addingTimeInterval(0.7))
+        expectEqual(core.previews.count, 3, "a new revision sends at once")
+        expect((FakeGradeCore.int(core.previews.last?["revision"]) ?? 0) > (revision ?? 0), "with a higher revision")
+        tickPreview(editor, at: t0.addingTimeInterval(0.8))
+        expectEqual(core.previews.count, 4, "a failed send is resent IN FULL on the next tick, not renewed")
+        expect(core.previews.count == 4 && core.previews[3]["renewOnly"] == nil, "in full")
+        model.closeGradeEditor(sourceId: "capture:cam")
+        spin(until: { core.previews.last?["enabled"] as? Bool == false }, limit: 2)
+        expectEqual(core.previews.last?["enabled"] as? Bool, false, "closing the editor ends the demand (enabled:false)")
+    }
+
+    @MainActor static func testDraftAndCompareSendPreviewsNeverSetSourceGrade() {
+        let core = FakePreviewCore()
+        // Fixture: keep the AppModel alive; the editor's preview sends go through it ([weak self]).
+        guard let (model, editor) = previewEditor(core) else { expect(false, "opens"); return }
+        defer { withExtendedLifetime(model) {} }
+        editor.liveEditing = false
+        spin(until: { true }, limit: 0.2)
+        let applies = core.bodies.filter { $0["type"] as? String == "set-source-grade" }.count
+        let t0 = Date()
+        editor.exposure = 12; editor.edited()
+        tickPreview(editor, at: t0)
+        editor.compareOriginal = true
+        tickPreview(editor, at: t0.addingTimeInterval(0.05))
+        let last = core.previews.last ?? [:]
+        expectEqual(last["compareOriginal"] as? Bool, true, "Compare original rides the preview demand")
+        expectEqual(FakeGradeCore.int((last["grade"] as? JSONObject)?["exposure"]), 12, "with the draft grade")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        expectEqual(core.bodies.filter { $0["type"] as? String == "set-source-grade" }.count, applies,
+                    "a draft edit and Compare never reach set-source-grade (ColorGradeEditorViewModelTests.cs:68)")
+    }
+
+    @MainActor static func testPreviewObservationsAreFilteredAndWordedLikeWindows() {
+        let core = FakePreviewCore()
+        guard let (model, editor) = previewEditor(core) else { expect(false, "opens"); return }
+        let revision = editor.previewRevision
+        model.handleEventForTesting(gradePreviewEvent(instance: "someone-else", revision: revision))
+        expectEqual(editor.previewSurfaceId, 0, "another editor's observation is ignored")
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: revision - 1))
+        expectEqual(editor.previewSurfaceId, 0, "an older revision is ignored")
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: revision, surface: 777))
+        expectEqual(editor.previewSurfaceId, 777, "the ready observation's IOSurface is shown")
+        expectEqual(editor.previewStatus, "Native graded source", "VM.cs:103")
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: revision, status: "stale",
+                                                      surface: 777, ageMs: 2300, reason: "source-not-advancing"))
+        expectEqual(editor.previewStatus, "Source is not advancing — last native image held · source unchanged 2.3s",
+                    "VM.cs:105,110")
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: revision, status: "preparing",
+                                                      surface: 0))
+        expectEqual(editor.previewStatus, "Preparing native grading preview", "VM.cs:107")
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: revision, status: "unavailable",
+                                                      surface: 0, reason: "source-unavailable"))
+        expectEqual(editor.previewStatus, "Native preview unavailable: source-unavailable", "VM.cs:108")
+        expectEqual(editor.previewSurfaceId, 0, "no picture without a ready/held/stale surface")
+        editor.compareOriginal = true
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: editor.previewRevision, surface: 778))
+        expectEqual(editor.previewStatus, "Original source — monitor comparison only", "VM.cs:103 (compare)")
+    }
+
+    static func scopesNode(revision: Int64, epoch: UInt64 = 7, original: Bool = false, view: Int = 0,
+                           surface: UInt32 = 900, width: Int = 1536, roiEnabled: Bool = false) -> JSONObject {
+        ["status": "ready", "revision": NSNumber(value: revision), "sourceEpoch": NSNumber(value: epoch), "original": original,
+         "view": view, "sampleWidth": 256, "sampleHeight": 144, "sampleCount": 36864, "sourceAgeMs": 0,
+         "roiPixelX": 0, "roiPixelY": 0, "roiPixelWidth": 1280, "roiPixelHeight": 720,
+         "roi": ["enabled": roiEnabled, "x": 0, "y": 0, "width": 1, "height": 1, "revision": 0, "shape": "rectangle"],
+         "texture": ["iosurfaceId": NSNumber(value: surface), "width": width, "height": 512, "sharedHandleHex": ""]]
+    }
+
+    @MainActor static func testScopesAreDemandedOnlyExpandedAndJudgedLikeWindows() {
+        let core = FakePreviewCore()
+        guard let (model, editor) = previewEditor(core) else { expect(false, "opens"); return }
+        editor.scopesEnabled = true
+        let t0 = Date()
+        tickPreview(editor, at: t0)
+        expectEqual(core.previews.last?["scopesEnabled"] as? Bool, false, "scopes are not demanded while collapsed (CaptureDraft)")
+        editor.setAdvancedExpanded(true)
+        tickPreview(editor, at: t0.addingTimeInterval(0.05))
+        expectEqual(core.previews.last?["scopesEnabled"] as? Bool, true, "expanded + Scopes on demands them")
+        editor.histogramMode = 0; editor.waveformMode = 2; editor.scopeView = 3; editor.scopesOriginal = true
+        tickPreview(editor, at: t0.addingTimeInterval(0.1))
+        let last = core.previews.last ?? [:]
+        expectEqual(FakeGradeCore.int(last["histogramMode"]), 0, "histogram Luma")
+        expectEqual(FakeGradeCore.int(last["waveformMode"]), 2, "waveform RGB parade")
+        expectEqual(FakeGradeCore.int(last["scopeView"]), 3, "Expand scope: Vectorscope")
+        expectEqual(last["scopesOriginal"] as? Bool, true, "Analyze original")
+        let r = editor.previewRevision
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: r,
+                                                      scopes: scopesNode(revision: r, original: true, view: 3)))
+        expectEqual(editor.scopeSurfaceId, 900, "a matching measurement is shown")
+        expectEqual(editor.scopeStatus, "Original · Full frame · ready · unchanged 0.0s · sample 256×144 (36,864 pixels) · "
+                    + "Rec.709 SDR assumed · waveform 0–100% · vectorscope 75% targets", "VM.Advanced.cs:56")
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: r,
+                                                      scopes: scopesNode(revision: r, original: false, view: 3)))
+        expectEqual(editor.scopeSurfaceId, 0, "a measurement of the graded picture is refused while Analyze original is on")
+        expectEqual(editor.scopeStatus, "Preparing native scopes; no measurement available.", "VM.Advanced.cs:53")
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: r, epoch: 8,
+                                                      scopes: scopesNode(revision: r, epoch: 7, original: true, view: 3)))
+        expectEqual(editor.scopeSurfaceId, 0, "a measurement from another epoch is refused")
+        editor.setAdvancedExpanded(false)
+        expectEqual(editor.scopeStatus, "Scopes hidden.", "collapsing hides the scopes")
+        expectEqual(GradeEditorModel.scopeCaptions, ["HISTOGRAM · 0–255", "WAVEFORM · 0–100%", "VECTORSCOPE · 75%"], "CGE:31-33")
+    }
+
+    @MainActor static func testAPreviewEpochSavesTheFirstQuery() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]],
+                                       "gradePreview": ["supported": true]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: editor.previewRevision, epoch: 0))
+        editor.exposure = 3; editor.edited()
+        spin(until: { core.requests("set-source-grade").count == 1 }, limit: 2)
+        expectEqual(core.requests("query-source-grade").count, 0, "the preview's epoch was used; no query (P7)")
+        expectEqual(core.requests("set-source-grade").count, 1, "and the apply was accepted with it")
+    }
+
+    @MainActor static func testTheNoPreviewNoticeFollowsTheCore() {
+        let model = gradeModel()
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]],
+                                       "gradePreview": ["supported": false]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        expect(!model.gradePreviewSupported, "a core without the worker")
+        expectEqual(editor.previewStatus, GradeEditorModel.previewNotice, "the D3 notice stays for a core without previews")
+        model.applySnapshotForTesting(["gradePreview": ["supported": true]])
+        expect(model.gradePreviewSupported, "a Metal core with the worker")
+        expectEqual(editor.previewStatus, "Preparing native grading preview", "the notice gives way to the preview status")
+    }
+
+    @MainActor static func testACoreRespawnReconnectsThePreview() {
+        let core = FakePreviewCore()
+        guard let (model, editor) = previewEditor(core) else { expect(false, "opens"); return }
+        let t0 = Date()
+        tickPreview(editor, at: t0)
+        model.handleEventForTesting(gradePreviewEvent(instance: editor.previewInstanceId, revision: editor.previewRevision, surface: 41))
+        model.onConnected()
+        expectEqual(editor.previewStatus, "Native preview reconnecting.", "GradePreviewCoordinator.cs:100")
+        expectEqual(editor.previewSurfaceId, 0, "the dead core's surface is dropped")
+        let before = core.previews.count
+        tickPreview(editor, at: t0.addingTimeInterval(0.1))
+        expectEqual(core.previews.count, before + 1, "the new core gets a full demand at once")
+        expect(core.previews.last?["renewOnly"] == nil, "in full (the lease died with the old core)")
     }
 }

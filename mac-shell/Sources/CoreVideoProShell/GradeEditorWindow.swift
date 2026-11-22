@@ -54,8 +54,15 @@ struct SourceGradeEditorPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(editor.headerTitle).font(.grotesk(15, .semibold))
-            Text(GradeEditorModel.previewNotice).font(.grotesk(11)).foregroundStyle(Studio.amber)
+            Text(editor.previewStatus).font(.grotesk(11))
+                .foregroundStyle(editor.previewSupported ? Studio.secondary : Studio.amber)
                 .fixedSize(horizontal: false, vertical: true)
+            if editor.previewSupported {
+                GradePreviewMonitor(editor: editor)
+                Toggle("Compare original (monitor only)", isOn: $editor.compareOriginal)     // CGE:47
+                    .font(.grotesk(12))
+                    .accessibilityLabel("Compare original for \(editor.sourceName), monitor only")
+            }
             MonoLabel("BUILT-IN LOOK")
             Picker("", selection: Binding(get: { editor.lut }, set: { editor.lut = $0; editor.edited() })) {
                 ForEach(SourceColorGrade.looks, id: \.self) { Text($0).tag($0) }
@@ -225,6 +232,9 @@ struct AdvancedGradePanel: View {
                     Text("3D LUT · \(selected.displayName)").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 }
             }
+            if editor.previewSupported {
+                GradeScopeControls(editor: editor)
+            }
             HStack(spacing: 6) {
                 Button("Undo") { editor.undo() }.keyboardShortcut("z", modifiers: .command)
                     .disabled(!editor.history.canUndo).accessibilityLabel("Undo grade edit")
@@ -302,5 +312,62 @@ struct AdvancedGradePanel: View {
             presetNotice = "Preset could not be read."; return
         }
         presetNotice = editor.paste(text) ? "" : editor.status
+    }
+}
+
+/// The private native preview (G5): the editor's IOSurface, shown with the existing presenter.
+struct GradePreviewMonitor: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color(red: 2 / 255, green: 3 / 255, blue: 4 / 255))
+            if editor.previewSurfaceId != 0 {
+                SurfaceView(surfaceId: editor.previewSurfaceId)
+            }
+        }
+        .frame(height: 270)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
+        .accessibilityLabel("Private grade preview of \(editor.sourceName)")
+    }
+}
+
+/// Scopes (G6): the toggles and modes (CGE:88-89,102-103) and, when on, the scope image with the
+/// three captions the shell draws itself (spec §5.6) and the Windows scope line.
+struct GradeScopeControls: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Scopes", isOn: $editor.scopesEnabled).font(.grotesk(12)).accessibilityLabel("Scopes")
+            Toggle("Analyze original", isOn: $editor.scopesOriginal).font(.grotesk(12))
+                .accessibilityLabel("Analyze the original source")
+            picker("Histogram", GradeEditorModel.histogramModes, $editor.histogramMode)
+            picker("Waveform", GradeEditorModel.waveformModes, $editor.waveformMode)
+            picker("Expand scope", GradeEditorModel.scopeViews, $editor.scopeView)
+            if editor.scopesEnabled {
+                HStack(spacing: 0) {
+                    ForEach(GradeEditorModel.scopeCaptions, id: \.self) {
+                        Text($0).font(.plexMono(9)).foregroundStyle(Studio.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                ZStack {
+                    Rectangle().fill(Color(red: 3 / 255, green: 3 / 255, blue: 3 / 255))
+                    if editor.scopeSurfaceId != 0 { SurfaceView(surfaceId: editor.scopeSurfaceId) }
+                }
+                .aspectRatio(3, contentMode: .fit)
+                .accessibilityLabel("Histogram, waveform and vectorscope")
+                Text(editor.scopeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func picker(_ label: String, _ options: [String], _ value: Binding<Int>) -> some View {
+        Picker(label, selection: value) {
+            ForEach(options.indices, id: \.self) { Text(options[$0]).tag($0) }
+        }
+        .font(.grotesk(12))
+        .accessibilityLabel(label)
     }
 }

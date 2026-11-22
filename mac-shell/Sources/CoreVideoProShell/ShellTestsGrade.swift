@@ -260,6 +260,7 @@ extension ShellTests {
     @MainActor static func gradeModel(file: String? = nil) -> AppModel {
         AppModel.gradeFilePathForTesting = file ?? tempGradeFile()
         defer { AppModel.gradeFilePathForTesting = nil }
+        GradePreviewSession.autoTick = false      // Phase 2: tests tick preview sessions by hand
         return AppModel()
     }
     @MainActor static func awaitApply(_ store: SourceGradeStore, _ grade: SourceColorGrade,
