@@ -2995,7 +2995,7 @@ enum ShellTests {
     }
 
     @MainActor
-    private static func runTake(_ model: AppModel, wait: Bool = true) -> TakeBox {
+    static func runTake(_ model: AppModel, wait: Bool = true) -> TakeBox {
         let box = TakeBox()
         Task { @MainActor in box.result = await model.take() }
         if wait { spin(until: { box.result != nil }, limit: 3) }
@@ -4133,7 +4133,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()

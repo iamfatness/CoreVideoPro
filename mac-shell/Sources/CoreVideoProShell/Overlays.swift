@@ -286,7 +286,7 @@ struct OverlaysPane: View {
 
             HStack(spacing: 8) {
                 Button(onAir ? "Key out" : "Key in") {
-                    onAir ? model.hideLowerThird() : model.showLowerThird()
+                    model.toggleLowerThirdIntent()   // the one lower-third entry (spec 5.5)
                 }
                 .buttonStyle(AccentButtonStyle())
                 Button("Rebuild") {

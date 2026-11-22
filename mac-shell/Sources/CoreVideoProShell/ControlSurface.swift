@@ -152,9 +152,9 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setEngine(model, on: bool(0))
         // ── Production (ControlSurface+Production.swift) ──
         case "graphics.lowerThird.toggle":
-            return setLowerThird(model, on: nil)
+            return await setLowerThird(model, on: nil)
         case "graphics.lowerThird.set":
-            return setLowerThird(model, on: bool(0))
+            return await setLowerThird(model, on: bool(0))
         case "automation.captions.set":
             return setAutoCaptions(bool(0))
         case "multiview.layout.set":

@@ -298,7 +298,7 @@ struct FooterGraphicsGroup: View {
             FooterStatLabel("Graphics")
             HStack(spacing: 0) {
                 Button {
-                    onAir ? model.hideLowerThird() : model.showLowerThird()
+                    model.toggleLowerThirdIntent()   // the one lower-third entry (spec 5.5)
                 } label: {
                     HStack(spacing: 6) {
                         Text("L3")

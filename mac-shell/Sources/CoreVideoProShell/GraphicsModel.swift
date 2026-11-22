@@ -29,6 +29,9 @@ final class GraphicsModel: ObservableObject {
     @Published var documentReadOnly = false
     @Published var documentStatus = ""
     @Published var documentLoaded = false
+    /// Set by every accepted lower-third Hide, cleared by every accepted Show
+    /// (spec 5.5). Nothing reads it while Auto is retired on Mac.
+    @Published var lowerThirdAutomationSuppressed = false
     /// Show Input slots as playout sees them (AppModel supplies them).
     var rosterSlots: () -> [GraphicsRosterSlot] = { [] }
     let documentStore: GraphicsDocumentStore

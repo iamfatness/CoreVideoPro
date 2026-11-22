@@ -69,7 +69,7 @@ final class GraphicsPlayout {
     var busy: Bool { pending > 0 }
     private(set) var status = ""
     /// The epoch the running operation started on ("" between operations).
-    private(set) var epoch = ""
+    var epoch = ""
     private var gateHeld = false
     private var gateWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -392,11 +392,17 @@ final class GraphicsPlayout {
     }
 
     func send(_ action: String, _ body: JSONObject) async throws -> GraphicsOperationResult {
+        try await sendAs(Self.clientId, action, body)
+    }
+
+    /// `send` under another Windows client id (the managed lower third speaks as
+    /// "legacy-lower-third", StudioViewModel.GraphicsCompatibility.cs:56).
+    func sendAs(_ clientId: String, _ action: String, _ body: JSONObject) async throws -> GraphicsOperationResult {
         let epoch = self.epoch.isEmpty ? try available().coreEpoch : self.epoch
         _ = try current(epoch)
         var body = body
         body["schemaVersion"] = 1
-        body["clientId"] = Self.clientId
+        body["clientId"] = clientId
         if body["requestId"] == nil { body["requestId"] = newRequestId() }
         body["coreEpoch"] = epoch
         return await invoke(action, body)

@@ -8,16 +8,14 @@ import Foundation
 extension AppModelControlSurface {
     /// Windows' legacy lower third (StudioControlSurface.cs:482-490): accepted
     /// intent, never "the pixels landed" — on-air is the core's `visible`.
+    /// Routed through the one lower-third entry (LowerThirdAuthority.swift), so a
+    /// control client, the footer and the drawer can never disagree about who owns
+    /// the lower third (#1166). Toggle follows whoever renders Program now.
     @MainActor
-    static func setLowerThird(_ model: AppModel, on: Bool?) -> ControlInvokeResult {
-        let target = on ?? !model.lowerThirdVisible
-        guard target else {
-            model.hideLowerThird()   // idempotent while a retire is in flight
-            return .success
-        }
-        model.showLowerThird()
-        return model.lowerThirdCommandStatus == LowerThirdKeyReadout.needsSource
-            ? .fail(LowerThirdKeyReadout.needsSource) : .success
+    static func setLowerThird(_ model: AppModel, on: Bool?) async -> ControlInvokeResult {
+        let target = on ?? !model.lowerThirdIntentVisible
+        let result = await model.applyLowerThirdIntent(visible: target)
+        return result.accepted ? .success : .fail(result.reason)
     }
 
     static let automaticCaptionsUnavailable =
