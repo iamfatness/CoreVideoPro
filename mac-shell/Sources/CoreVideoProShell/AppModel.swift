@@ -4403,16 +4403,6 @@ final class AppModel: ObservableObject {
            control.applied[key] == target || (!enabled && control.applied[key] == nil) {
             return expectedRevision == control.revision ? .applied : .conflict(revision: control.revision)
         }
-        // The grid's own edits (selectOrRouteSend / setSendGain / removeSend).
-        if enabled, bus.hasPrefix("iso-") {
-            for (other, buses) in audioSends where other != source && buses[bus] != nil {
-                audioSends[other]?[bus] = nil
-                editRoute(source: other, bus: bus, enabled: false, gainDb: 0)
-            }
-        }
-        if enabled { audioSends[source, default: [:]][bus] = gainDb } else { audioSends[source]?[bus] = nil }
-        operatorRouteEdits[key] = target
-        pushRoutingBase()
         audioRouteControl.remoteEdit(source: source, bus: bus, enabled: enabled, gainDb: gainDb,
                                      expectedEpoch: expectedEpoch, expectedRevision: expectedRevision,
                                      operationId: operationId)
@@ -4429,7 +4419,35 @@ final class AppModel: ObservableObject {
             if audioRouteControl.outcome(of: operationId) != nil { break }
         }
         _ = await settle { audioRouteControl.outcome(of: operationId) != nil }
-        return audioRouteControl.outcome(of: operationId) ?? .unconfirmed
+        let outcome = audioRouteControl.outcome(of: operationId) ?? .unconfirmed
+        switch outcome {
+        case .conflict, .rejected:
+            // The core refused: change nothing (Windows). The grid, the operator
+            // intent and the unrevisioned base matrix are never written, and the
+            // remote draft is dropped so the next snapshot cannot resurface it.
+            // A snapshot during the exchange overlaid the draft onto the grid
+            // (applyRoutingSnapshot): put the cell back to what the core applied.
+            audioRouteControl.discardRemoteDraft(source: source, bus: bus, operationId: operationId)
+            if audioRouteControl.drafts[key] == nil {
+                if let applied = audioRouteControl.applied[key] { audioSends[source, default: [:]][bus] = applied.gainDb }
+                else { audioSends[source]?[bus] = nil }
+            }
+            audioRouteControlNotice = audioRouteControl.notice
+        case .applied, .unconfirmed:
+            // Applied, or possibly applied (no answer in the settle window): the
+            // grid's own edits (selectOrRouteSend / setSendGain / removeSend), so
+            // the base matrix carries it and a respawned core gets it back.
+            if enabled, bus.hasPrefix("iso-") {
+                for (other, buses) in audioSends where other != source && buses[bus] != nil {
+                    audioSends[other]?[bus] = nil
+                    editRoute(source: other, bus: bus, enabled: false, gainDb: 0)
+                }
+            }
+            if enabled { audioSends[source, default: [:]][bus] = gainDb } else { audioSends[source]?[bus] = nil }
+            operatorRouteEdits[key] = target
+            pushRoutingBase()
+        }
+        return outcome
     }
 
     func editMastering(_ apply: (inout MasteringParams) -> Void) {

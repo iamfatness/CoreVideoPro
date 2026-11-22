@@ -13,6 +13,8 @@ extension ShellTests {
             ("control/volt-preview", testVoltRundownPreview),
             ("control/volt-take", testVoltRundownTake),
             ("control/companion-request-shapes", testCompanionRequestShapesAgainstTheMacServer),
+            // Review fixes.
+            ("control/route-set-refusal-changes-nothing", testRemoteRouteRefusalChangesNothingLocally),
         ]
     }
 
@@ -277,5 +279,52 @@ extension ShellTests {
             FileHandle.standardError.write(Data(output.utf8))
             expectEqual(process.terminationStatus, 0, "live leg: the module's own code passes against the Mac server")
         }
+    }
+
+    // ── Review fix 1: a refused remote route edit changes nothing ────────────
+
+    /// Windows refuses a stale audio.route.set and changes nothing. The Mac used
+    /// to write the grid, the operator intent and the UNREVISIONED base matrix
+    /// before the core judged the revision, so a refused edit landed ~100 ms later
+    /// anyway and was re-sent on every core respawn.
+    @MainActor
+    static func testRemoteRouteRefusalChangesNothingLocally() {
+        let fake = FakeRouteCore()
+        let model = AppModel()
+        model.controlSettleSeconds = 0.4
+        model.quitRequestForTesting = { body, _ in await MainActor.run { fake.handle(body) } }
+        model.status = .connected(renderer: "test")
+        var basePushes: [JSONObject] = []
+        model.routingBaseSendObserver = { basePushes.append($0) }
+        model.applySnapshotForTesting(fake.handle([:])["snapshot"] as? JSONObject ?? [:])   // core-1 / revision 2
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        expectEqual(invoke(s, "audio.route.set", ["zoom:43", "iso-1", true, 0, "core-1", 2, "op-a"]), .success, "iso-1 applied")
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "mon", true, -6, "core-1", 3, "op-b"]), .success, "mon applied")
+        spin(until: { false }, limit: 0.3)
+        let pushesBefore = basePushes.count
+        func baseGain(_ source: String, _ bus: String) -> Double? {
+            (model.routingBaseCommand()?["sends"] as? [JSONObject] ?? [])
+                .first { $0["sourceId"] as? String == source && $0["busId"] as? String == bus }?["gainDb"] as? Double
+        }
+        // Stale revision 2 (the core is at 4): conflict.
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "mon", true, -3, "core-1", 2, "op-c"]),
+                    .fail("Audio route conflict at revision 4; read state and retry."), "stale gain edit conflicts")
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "iso-1", true, 0, "core-1", 2, "op-d"]),
+                    .fail("Audio route conflict at revision 4; read state and retry."), "stale ISO edit conflicts")
+        spin(until: { false }, limit: 0.3)
+        expectEqual(baseGain("zoom:42", "mon"), -6, "the base matrix keeps the applied gain, not the refused one")
+        expect(baseGain("zoom:42", "iso-1") == nil, "the refused ISO route is not in the base matrix")
+        expectEqual(baseGain("zoom:43", "iso-1"), 0, "the ISO-exclusive rule did not unroute the other source")
+        expectEqual(model.audioSends["zoom:42"]?["mon"], -6, "the grid shows the applied gain")
+        expect(model.audioSends["zoom:42"]?["iso-1"] == nil, "the grid does not show the refused route")
+        expectEqual(model.audioSends["zoom:43"]?["iso-1"], 0, "the other ISO source stays routed")
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "mon", false, 0, "core-1", 2, "op-e"]),
+                    .fail("Audio route conflict at revision 4; read state and retry."), "stale un-route conflicts")
+        spin(until: { false }, limit: 0.3)
+        expectEqual(model.audioSends["zoom:42"]?["mon"], -6, "a refused un-route leaves the route in the grid")
+        expectEqual(baseGain("zoom:42", "mon"), -6, "and in the base matrix")
+        expectEqual(basePushes.count, pushesBefore, "a refusal pushes no base matrix")
+        model.applySnapshotForTesting(fake.handle([:])["snapshot"] as? JSONObject ?? [:])
+        expect(model.audioSends["zoom:42"]?["iso-1"] == nil, "no retained draft resurfaces on the next snapshot")
     }
 }
