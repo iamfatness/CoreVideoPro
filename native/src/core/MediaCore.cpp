@@ -6371,6 +6371,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
     lastPreviewPlanLayerCount_ = static_cast<int>(previewPlan.layers.size());
+    renderedPreviewSources_.publish(previewPlan);
     // Read-only: use find(), never forWall() — a preview scene with no wall
     // has an empty layerId, and forWall("") would insert a phantom map node
     // (allocate + free) under coreMutex on every such render tick.
@@ -6411,6 +6412,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastProgramFrame_.previewWidth = lastPreviewWidth_;
     lastProgramFrame_.previewHeight = lastPreviewHeight_;
   } else {
+    renderedPreviewSources_.invalidate();
     lastPreviewPassNs_ = 0;
     lastPreviewTexture_ = {};
     lastPreviewWidth_ = 0;

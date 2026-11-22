@@ -256,6 +256,9 @@ struct SourceRowFactsProjection {
     }
 
     /// sourceKeys on rendered Program and on the Preview scene.
+    mutating func applyProgramTally(_ keys: Set<String>) { program = keys }
+    mutating func applyPreviewTally(_ keys: Set<String>) { preview = keys }
+
     mutating func applyTally(program: Set<String>, preview: Set<String>) {
         self.program = program
         self.preview = preview

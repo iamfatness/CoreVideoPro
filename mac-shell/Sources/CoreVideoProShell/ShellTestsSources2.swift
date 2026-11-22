@@ -31,6 +31,8 @@ extension ShellTests {
             ("sources2-s4/persist-restore-media", testAMediaSlotIsSavedRestoredAndNeverSubstituted),
             ("sources2-s4/media-never-auto-assigned", testAutoAssignNeverPlacesOrMovesMedia),
             ("sources2-s4/media-row-facts", testAMediaRowIsLiveFromTheBusAndNeverStalled),
+            // Task 6: PVW tally from the core.
+            ("sources2-tally/pvw-from-core-not-routes", testThePreviewTallyIsWhatTheCoreRenderedNotTheShellsRoutes),
             // Task 8: R3 Health row.
             ("sources2-r3/health-evidence-rows", testHealthListsTheLastFiveSubscriptionEvidenceRows),
         ]
@@ -385,5 +387,27 @@ extension ShellTests {
         expectEqual(SubscriptionEvidenceReadout.rows(["zoomSubscriptionChurn": ["engine": false] as JSONObject]).first?.value,
                     "no Zoom engine", "no engine is said, not blank")
         expect(SubscriptionEvidenceReadout.rows([:]).isEmpty, "no node: no row")
+    }
+
+    // ── Task 6: PVW from the core ───────────────────────────────────────────
+
+    /// Plan D4 ("tally must reflect what is actually on Program/Preview from core evidence, not
+    /// shell intent"). The shell's Preview routes name guest 42 throughout; only the core's
+    /// previewFrame.videoSources decides PVW. Fails on fc675541 (PVW came from buildRoutes).
+    @MainActor
+    static func testThePreviewTallyIsWhatTheCoreRenderedNotTheShellsRoutes() {
+        let model = liveGuestModel()
+        model.previewMultiviewSlot(1)                                        // shell intent: 42 cued
+        expect(model.buildRoutes(for: model.previewSceneId).contains { $0["participantId"] as? String == "42" },
+               "precondition: the shell's Preview routes name guest 42")
+        model.applySnapshotForTesting(["programFrame": ["frameNumber": 1, "videoSources": [JSONObject]()],
+                                       "previewFrame": ["sceneId": "", "videoSources": [JSONObject]()]])
+        expectEqual(model.sourceFacts.box(1).facts.tally, "none", "the core has not rendered 42 on Preview")
+        model.applySnapshotForTesting(["previewFrame": ["sceneId": "solo-a", "videoSources": [
+            ["sourceId": "zoom:42", "participantId": "42", "kind": "participant-video", "layerId": "l"]]]])
+        expectEqual(model.sourceFacts.box(1).facts.tally, "pvw", "the core rendered 42 on Preview")
+        model.applySnapshotForTesting(["programFrame": ["frameNumber": 2, "videoSources": [
+            ["sourceId": "zoom:42", "participantId": "42", "kind": "participant-video", "layerId": "l"]]]])
+        expectEqual(model.sourceFacts.box(1).facts.tally, "pgm", "Program outranks Preview, and the Preview fact is kept")
     }
 }

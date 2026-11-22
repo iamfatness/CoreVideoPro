@@ -584,6 +584,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   recordingWriteQueueDepth_ = core.recordingWriteQueueDepth_;
   recordingWriterStatus_ = core.recordingWriterStatus_;
   renderedProgramSources_ = core.renderedProgramSources_;
+  renderedPreviewSources_ = core.renderedPreviewSources_;
   renderedSceneAttributionState_ = core.renderedSceneAttributionState_;
   renderedSceneAttributionTicks_ = core.renderedSceneAttributionTicks_;
   routeCount_ = core.routeCount_;
@@ -748,6 +749,13 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
       {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"renderPlanId", lastProgramFrame_.renderPlanId},
       {"compositorRenderer", lastProgramFrame_.renderer},
+      // Always present (the multiviewer-node rule): what the core put on the Preview plan
+      // it last built for a render, empty when no Preview scene is up.
+      {"previewFrame",
+       rpc::Json::Object{
+           {"sceneId", renderedPreviewSources_.sceneId()},
+           {"videoSources", renderedPreviewSources_.videoSources()},
+       }},
       {"programFrame",
        rpc::Json::Object{
            {"sceneId", renderedProgramSources_.sceneId()},

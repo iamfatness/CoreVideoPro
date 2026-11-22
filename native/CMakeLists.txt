@@ -1031,6 +1031,7 @@ if(BUILD_TESTING)
     tests/AvfCaptureArrivalTest.cpp
     tests/MacCaptureLivenessTest.cpp
     tests/SubscriptionEvidenceLinesTest.cpp
+    tests/RenderedPreviewSourcesTest.cpp
     tests/AvfProgramTailTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp

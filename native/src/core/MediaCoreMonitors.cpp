@@ -49,6 +49,9 @@ void MediaCore::submitIsolatedMonitorTick(const modules::CompositorRenderPlan& r
       wall->applyLatest(request.previewPlan, previewTilesLayer_.layerId);
     request.previewPlan.skipCpuReadback = true;
     lastPreviewPlanLayerCount_ = static_cast<int>(request.previewPlan.layers.size());
+    renderedPreviewSources_.publish(request.previewPlan);
+  } else {
+    renderedPreviewSources_.invalidate();
   }
   modules_.compositor->submitMonitors(std::move(request));
 }

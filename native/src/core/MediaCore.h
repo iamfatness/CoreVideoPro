@@ -1018,6 +1018,9 @@ class MediaCore {
   int64_t lastProducedFrameNumber_ = 0;
   std::string lastProgramTextureIdentity_;
   RenderedProgramSources renderedProgramSources_;
+  // The same attribution for the Preview plan the core last BUILT for a render (Sources
+  // Phase 2, Task 6): the shell's PVW tally reads it instead of its own Preview routes.
+  RenderedProgramSources renderedPreviewSources_;
   // Whether `programFrame.sceneId` is currently attributed to a delivery, and how
   // long it has been since one advanced. See RenderedSceneAttributionPolicy — the
   // buffered path used to keep asserting the last attribution forever.

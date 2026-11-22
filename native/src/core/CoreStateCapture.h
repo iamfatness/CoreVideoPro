@@ -175,6 +175,7 @@ class CoreStateCapture {
   decltype(MediaCore::recordingWriteQueueDepth_) recordingWriteQueueDepth_;
   decltype(MediaCore::recordingWriterStatus_) recordingWriterStatus_;
   decltype(MediaCore::renderedProgramSources_) renderedProgramSources_;
+  decltype(MediaCore::renderedPreviewSources_) renderedPreviewSources_;
   decltype(MediaCore::renderedSceneAttributionState_) renderedSceneAttributionState_;
   decltype(MediaCore::renderedSceneAttributionTicks_) renderedSceneAttributionTicks_;
   decltype(MediaCore::routeCount_) routeCount_;
