@@ -626,7 +626,10 @@ TEST(StillMediaFrameCache, AStillOnlyTheMultiviewShowsIsDecodedAndOnTheBus) {
       {"sources", corevideo::rpc::Json::Array{}}}});
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{});
   bool stillThere = false;
-  for (const auto& s : mediaCore.sessionState().get("sources")->asArray()) {
+  // Bind the snapshot first: a range-for over a temporary's member would read it
+  // after it is destroyed (C++20 does not extend the temporary; TSan caught it).
+  const auto after = mediaCore.sessionState();
+  for (const auto& s : after.get("sources")->asArray()) {
     if (s.getString("sourceId") == "media:logo-1") stillThere = true;
   }
   EXPECT_FALSE(stillThere) << "an unassigned still leaves the bus";
