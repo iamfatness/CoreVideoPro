@@ -1234,6 +1234,7 @@ struct DiagnosePane: View {
             DiagItem(label: "zoom last error", value: zoom.string("lastError"),
                      tone: .bad, wrap: true),
         ]
+        items += SubscriptionEvidenceReadout.rows(model.lastSnapshot)   // R3
         for check in snap.objects("zoom.readiness.checks") {
             let entry = Snap(check)
             items.append(DiagItem(

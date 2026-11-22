@@ -71,6 +71,7 @@
 
 #include "engine-ipc.h"
 #include "engine-command.h"
+#include "SubscriptionEvidenceLines.h"
 #include "end-other-meeting.h"
 #include <set>
 #include "engine-writer.h"
@@ -1291,12 +1292,8 @@ static void video_subscribe(uint32_t participant_id, const std::string &source_u
         ZoomSDKRenderer *renderer = nil;
         const ZoomSDKError create_err = [rdc createRender:&renderer];
         if (create_err != ZoomSDKError_Success || !renderer) {
-            EngineIpc::write(
-                R"({"cmd":"debug","stage":"create_renderer_failed","source_uuid":")" +
-                source_uuid + R"(","participant_id":)" +
-                std::to_string(participant_id) + R"(,"code":)" +
-                std::to_string(static_cast<int>(create_err)) + R"(,"resolution":)" +
-                std::to_string(candidate) + "}");
+            EngineIpc::write(corevideo::engine::evidence::createRendererFailed(
+                source_uuid, participant_id, static_cast<int>(create_err), candidate));
             continue;
         }
 
@@ -1305,21 +1302,13 @@ static void video_subscribe(uint32_t participant_id, const std::string &source_u
 
         const ZoomSDKError res_err =
             [renderer setResolution:sdk_resolution(static_cast<uint32_t>(candidate))];
-        EngineIpc::write(
-            R"({"cmd":"debug","stage":"set_resolution","source_uuid":")" +
-            source_uuid + R"(","participant_id":)" +
-            std::to_string(participant_id) + R"(,"code":)" +
-            std::to_string(static_cast<int>(res_err)) + R"(,"resolution":)" +
-            std::to_string(candidate) + "}");
+        EngineIpc::write(corevideo::engine::evidence::setResolution(
+            source_uuid, participant_id, static_cast<int>(res_err), candidate));
 
         const ZoomSDKError sub_err =
             [renderer subscribe:participant_id rawDataType:ZoomSDKRawDataType_Video];
-        EngineIpc::write(
-            R"({"cmd":"debug","stage":"video_subscribe","source_uuid":")" +
-            source_uuid + R"(","participant_id":)" +
-            std::to_string(participant_id) + R"(,"code":)" +
-            std::to_string(static_cast<int>(sub_err)) + R"(,"resolution":)" +
-            std::to_string(candidate) + "}");
+        EngineIpc::write(corevideo::engine::evidence::videoSubscribe(
+            source_uuid, participant_id, static_cast<int>(sub_err), candidate));
 
         if (sub_err == ZoomSDKError_Success) {
             VideoSubscription sub;
@@ -1330,12 +1319,8 @@ static void video_subscribe(uint32_t participant_id, const std::string &source_u
             sub.targets.emplace(source_uuid, VideoTarget{});
             g_video.emplace(participant_id, std::move(sub));
             if (static_cast<uint32_t>(candidate) != resolution) {
-                EngineIpc::write(
-                    R"({"cmd":"debug","stage":"video_resolution_downgraded","source_uuid":")" +
-                    source_uuid + R"(","participant_id":)" +
-                    std::to_string(participant_id) + R"(,"requested":)" +
-                    std::to_string(resolution) + R"(,"actual":)" +
-                    std::to_string(candidate) + "}");
+                EngineIpc::write(corevideo::engine::evidence::resolutionDowngraded(
+                    source_uuid, participant_id, static_cast<int>(resolution), candidate));
             }
             return;
         }
@@ -1345,10 +1330,8 @@ static void video_subscribe(uint32_t participant_id, const std::string &source_u
         [rdc destroyRender:renderer];
     }
 
-    EngineIpc::write(
-        R"({"cmd":"debug","stage":"video_subscribe_failed_all","source_uuid":")" +
-        source_uuid + R"(","participant_id":)" + std::to_string(participant_id) +
-        R"(,"requested":)" + std::to_string(resolution) + "}");
+    EngineIpc::write(corevideo::engine::evidence::subscribeFailedAll(
+        source_uuid, participant_id, static_cast<int>(resolution)));
     EngineIpc::write(
         R"({"cmd":"error","msg":"video_subscribe_failed","source_uuid":")" +
         source_uuid + R"(","participant_id":)" + std::to_string(participant_id) + "}");

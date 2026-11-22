@@ -40,6 +40,8 @@ class ZoomSubscriptionSdkEvidence {
 
   [[nodiscard]] rpc::Json json() const {
     return rpc::Json::Object{
+        // Which SDK error space sdkCode is in (ZoomSDKError on macOS, SDKError on Windows).
+        {"platform", platformName()},
         {"capacity", static_cast<double>(kCapacity)},
         {"dropped", static_cast<double>(dropped_)},
         {"events", rpc::Json::Array(events_.begin(), events_.end())},
@@ -47,6 +49,15 @@ class ZoomSubscriptionSdkEvidence {
   }
 
  private:
+  static const char* platformName() {
+#if defined(__APPLE__)
+    return "macos";
+#elif defined(_WIN32)
+    return "windows";
+#else
+    return "linux";
+#endif
+  }
   std::deque<rpc::Json> events_;
   std::uint64_t sequence_ = 0;
   std::uint64_t dropped_ = 0;

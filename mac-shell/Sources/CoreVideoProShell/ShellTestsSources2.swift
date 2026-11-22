@@ -31,6 +31,8 @@ extension ShellTests {
             ("sources2-s4/persist-restore-media", testAMediaSlotIsSavedRestoredAndNeverSubstituted),
             ("sources2-s4/media-never-auto-assigned", testAutoAssignNeverPlacesOrMovesMedia),
             ("sources2-s4/media-row-facts", testAMediaRowIsLiveFromTheBusAndNeverStalled),
+            // Task 8: R3 Health row.
+            ("sources2-r3/health-evidence-rows", testHealthListsTheLastFiveSubscriptionEvidenceRows),
         ]
     }
 
@@ -355,5 +357,33 @@ extension ShellTests {
         expectEqual(facts.format, "1920×1080", "its size from the bus")
         model.applySnapshotForTesting(["programFrame": ["frameNumber": 3, "videoSources": [["sourceId": "media:a1"]]]])
         expectEqual(model.sourceFacts.box(1).facts.chip, "PGM", "on Program it reads PGM")
+    }
+
+    // ── Task 8: R3 ──────────────────────────────────────────────────────────
+
+    /// Comms spec C2: Health shows the last few `sdkSubscriptionEvidence` rows. FIXTURE: seven
+    /// events (sequence 1..7) shaped like ZoomSubscriptionSdkEvidence::observe; only 3..7 show,
+    /// newest first. The platform names the SDK error space (ZoomSDKError on macOS).
+    static func testHealthListsTheLastFiveSubscriptionEvidenceRows() {
+        var events: [JSONObject] = []
+        for seq in 1...7 {
+            events.append(["sequence": seq, "stage": "video_subscribe", "participantId": "4\(seq)",
+                           "sdkCode": 0, "resolution": 2])
+        }
+        events[6] = ["sequence": 7, "stage": "video_resolution_downgraded", "participantId": "47",
+                     "requestedResolution": 2, "actualResolution": 1]
+        let snapshot: JSONObject = ["zoomSubscriptionChurn": ["engine": true, "sdkSubscriptionEvidence": [
+            "platform": "macos", "capacity": 64, "dropped": 0, "events": events] as JSONObject] as JSONObject]
+        let rows = SubscriptionEvidenceReadout.rows(snapshot)
+        expectEqual(rows.count, 6, "a header row and the last five events")
+        expectEqual(rows.first?.label, "sdk evidence", "the header")
+        expectEqual(rows.first?.value, "7 events · macOS codes (ZoomSDKError)", "count and error space")
+        expectEqual(rows[1].value, "participant 47 · video_resolution_downgraded · requested 2 → actual 1",
+                    "newest first, with the downgrade")
+        expectEqual(rows[2].value, "participant 46 · video_subscribe · code 0 · resolution 2", "then the next")
+        expectEqual(rows.last?.value, "participant 43 · video_subscribe · code 0 · resolution 2", "five shown")
+        expectEqual(SubscriptionEvidenceReadout.rows(["zoomSubscriptionChurn": ["engine": false] as JSONObject]).first?.value,
+                    "no Zoom engine", "no engine is said, not blank")
+        expect(SubscriptionEvidenceReadout.rows([:]).isEmpty, "no node: no row")
     }
 }
