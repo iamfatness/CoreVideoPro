@@ -6,6 +6,9 @@
 // cell only when the core says that cell holds the row's own source (Windows PatchPreview,
 // MultiviewInputRowsProjection.cs:264-300): a reassigned row blanks at once and waits for a
 // snapshot naming the new identity, so it can never show the previous source's picture.
+// The cell is shown by offsetting a full-sheet sublayer inside a clipping, unflipped
+// container (sheetFrame), never by contentsRect, whose vertical origin for an IOSurface is
+// not something this file should depend on.
 
 import AppKit
 import QuartzCore
@@ -85,11 +88,14 @@ enum SourceThumbnailPolicy {
         }
     }
 
-    /// The full-sheet sublayer frame inside a cell-sized, geometry-FLIPPED container
-    /// (y grows downward), so exactly that cell is visible. Contents keep their orientation
-    /// under geometryFlipped (CALayer docs), as Program does in SurfaceView.
+    /// The full-sheet sublayer frame inside a cell-sized, UNFLIPPED container (y grows
+    /// upward, AppKit's default), so exactly that cell is visible. Row 0 is the TOP row of
+    /// the sheet, so it sits at the highest y: offset -(rows-1-row) cell heights.
+    /// NOT a flipped container: measured with CALayer.render(in:) on a four-band image, a
+    /// geometryFlipped container draws its sublayer's contents UPSIDE DOWN. Unflipped, the
+    /// sublayer renders exactly as SurfaceView's own layer renders Program (upright).
     static func sheetFrame(column: Int, row: Int, columns: Int, rows: Int, cell: CGSize) -> CGRect {
-        CGRect(x: -CGFloat(column) * cell.width, y: -CGFloat(row) * cell.height,
+        CGRect(x: -CGFloat(column) * cell.width, y: -CGFloat(rows - 1 - row) * cell.height,
                width: CGFloat(columns) * cell.width, height: CGFloat(rows) * cell.height)
     }
 }
@@ -153,7 +159,7 @@ final class SourceThumbnailNSView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.masksToBounds = true
-        layer?.isGeometryFlipped = true
+        layer?.isGeometryFlipped = false   // see SourceThumbnailPolicy.sheetFrame
         layer?.backgroundColor = NSColor.black.cgColor
         sheetLayer.contentsGravity = .resize   // the sheet is exactly 5x2 cells of 16:9
         layer?.addSublayer(sheetLayer)
@@ -181,6 +187,14 @@ final class SourceThumbnailNSView: NSView {
                                                            columns: grid.columns, rows: grid.rows,
                                                            cell: bounds.size)
         CATransaction.commit()
+    }
+
+    /// TEST-ONLY: the same layer structure with a CGImage in place of the IOSurface, so a
+    /// test can render it (an IOSurface's pixels are not readable through render(in:)).
+    func showImageForTesting(_ image: CGImage, column: Int, row: Int, columns: Int, rows: Int) {
+        grid = (column, row, columns, rows)
+        sheetLayer.contents = image
+        layout()
     }
 
     /// Same contents object re-assigned is a CA no-op; detach + re-attach re-textures from

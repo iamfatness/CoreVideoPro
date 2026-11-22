@@ -584,13 +584,42 @@ extension ShellTests {
         for index in 0..<10 {
             let frame = SourceThumbnailPolicy.sheetFrame(column: index % 5, row: index / 5, columns: 5, rows: 2, cell: cell)
             expectEqual(frame.size, CGSize(width: 480, height: 108), "the whole sheet at cell scale")
-            // In the container's flipped (top-down) space, the visible window (0,0,96,54) maps to
-            // sheet pixels starting at (col*96, row*54): exactly that cell.
-            expectEqual(CGPoint(x: -frame.minX, y: -frame.minY),
-                        CGPoint(x: CGFloat(index % 5) * 96, y: CGFloat(index / 5) * 54), "slot \(index + 1)")
+            // Unflipped (bottom-up) container: the visible window (0,0,96,54) must hold this
+            // cell. Its left edge is col*96 into the sheet, and its TOP edge is row*54 down from
+            // the sheet's top (frame.maxY is the sheet's top in container space).
+            expectEqual(-frame.minX, CGFloat(index % 5) * 96, "slot \(index + 1) column")
+            expectEqual(frame.maxY - cell.height, CGFloat(index / 5) * 54, "slot \(index + 1) row from the top")
         }
         let view = SourceThumbnailNSView(frame: NSRect(x: 0, y: 0, width: 96, height: 54))
-        expect(view.layer?.isGeometryFlipped == true, "the container is top-down, so row 0 is the top row")
+        expect(view.layer?.isGeometryFlipped == false,
+               "unflipped: a flipped container draws the sheet upside down (measured, render(in:))")
         expect(view.layer?.masksToBounds == true, "and clips the other nine cells")
+        // The real layer structure, rendered: a four-band 1x2 sheet (RED/GREEN over BLUE/WHITE)
+        // through SourceThumbnailNSView's own layers, cell 0 must read RED over GREEN, cell 1
+        // BLUE over WHITE — the cell's picture upright and from the right row.
+        expectEqual(renderedBands(row: 0), ["RED", "GREEN"], "slot 1: the top cell, upright")
+        expectEqual(renderedBands(row: 1), ["BLUE", "WHITE"], "slot 6: the bottom cell, upright")
+    }
+
+    @MainActor
+    static func renderedBands(row: Int) -> [String] {
+        let space = CGColorSpaceCreateDeviceRGB(), info = CGImageAlphaInfo.premultipliedLast.rawValue
+        let source = CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 16,
+                               space: space, bitmapInfo: info)!
+        for (index, rgb) in [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)].enumerated() {
+            source.setFillColor(CGColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1))
+            source.fill(CGRect(x: 0, y: 3 - index, width: 4, height: 1))     // CG is bottom-up
+        }
+        let view = SourceThumbnailNSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
+        view.showImageForTesting(source.makeImage()!, column: 0, row: row, columns: 1, rows: 2)
+        let out = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                            space: space, bitmapInfo: info)!
+        view.layer!.render(in: out)
+        let p = out.data!.assumingMemoryBound(to: UInt8.self)
+        func band(_ memoryRow: Int) -> String {
+            let o = memoryRow * 32 + 16, r = p[o] > 128, g = p[o + 1] > 128, b = p[o + 2] > 128
+            return r && g && b ? "WHITE" : r ? "RED" : g ? "GREEN" : b ? "BLUE" : "?"
+        }
+        return [band(0), band(7)]     // memory row 0 is the top of the rendered cell
     }
 }

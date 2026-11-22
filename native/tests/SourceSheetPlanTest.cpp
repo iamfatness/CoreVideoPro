@@ -138,3 +138,18 @@ TEST(MediaCoreSourceSheet, TheDemandLeaseGatesThePassAndTheNode) {
   EXPECT_EQ(compositor->sheets, before) << "demand released: zero sheet cost";
   EXPECT_FALSE(core.sessionState().get("sourceSheet")->get("active")->asBool());
 }
+
+// A compositor without the pass (ICompositor's default: D3D11, the stub) has no sheet; the
+// node must not claim one even while the Sources tab holds the lease.
+TEST(MediaCoreSourceSheet, ACompositorWithoutThePassNeverClaimsASheet) {
+  corevideo::core::MediaCore core(modules::createStubModules());
+  using corevideo::rpc::Json;
+  (void)core.applyCommands(Json::Array{wall(),
+      Json::Object{{"type", "set-source-preview-demand"}, {"enabled", true}}});
+  for (int i = 0; i < 12; ++i) (void)core.applyCommands(Json::Array{});
+  const auto state = core.sessionState();   // held: get() points into it
+  const auto* sheet = state.get("sourceSheet");
+  ASSERT_NE(sheet, nullptr);
+  EXPECT_FALSE(sheet->get("active")->asBool()) << "no exported surface: no sheet";
+  EXPECT_EQ(sheet->get("texture")->getNumber("iosurfaceId"), 0);
+}

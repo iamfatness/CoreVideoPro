@@ -2471,13 +2471,16 @@ rpc::Json CoreStateCapture::takeRecordsState() const {
 
 // Sources Phase 2 (S6). Published unconditionally (active:false when the Sources tab holds
 // no demand): a node that appears only when active is absent in exactly the case worth seeing.
+// `active` also requires an EXPORTED surface: a compositor without the pass (D3D11 or the
+// stub, ICompositor's default) runs the plan but has no sheet, and must not claim one.
 rpc::Json CoreStateCapture::sourceSheetJson() const {
+  const bool exported = sourceSheet_.texture.iosurfaceId != 0 || !sourceSheet_.texture.sharedHandleHex.empty();
   rpc::Json::Array cells;
   for (const auto& cell : sourceSheet_.cells) {
     cells.emplace_back(rpc::Json::Object{{"slot", cell.slot}, {"sourceId", cell.sourceId}, {"state", cell.state}});
   }
   return rpc::Json::Object{
-      {"active", sourceSheet_.active},
+      {"active", sourceSheet_.active && exported},
       {"texture", rpc::Json::Object{{"iosurfaceId", static_cast<double>(sourceSheet_.texture.iosurfaceId)},
                                     {"sharedHandleHex", sourceSheet_.texture.sharedHandleHex},
                                     {"width", sourceSheet_.texture.width},
