@@ -159,9 +159,12 @@ struct ShellApp: App {
             SourceGradeEditorWindow(sourceId: sourceId ?? "")
                 .environmentObject(model)
                 .modifier(MainWindowOpenerRegistration())
-                .frame(minWidth: 460, minHeight: 520)
+                // Room for the 360 pt controls column plus a usable picture over the 300 pt scopes.
+                .frame(minWidth: SourceGradeEditorPane.minimumSize.width,
+                       minHeight: SourceGradeEditorPane.minimumSize.height)
                 .studioChrome()
         }
+        .defaultSize(width: SourceGradeEditorPane.defaultSize.width, height: SourceGradeEditorPane.defaultSize.height)
 
         Window("Audio Mixer", id: PopoutWindow.audioMixer) {
             AudioPane(isPopout: true)

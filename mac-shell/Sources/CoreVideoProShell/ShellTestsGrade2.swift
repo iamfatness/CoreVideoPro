@@ -37,6 +37,8 @@ extension ShellTests {
             ("grade2/roi-model-and-measurement", testScopeRoiModelMatchesTheWindowsRecord),
             ("grade2/roi-geometry", testScopeRoiGeometryIsTheWindowsGeometry),
             ("grade2/roi-gestures", testRoiGesturesDrawMoveResizeAndCancel),
+            ("grade2/roi-any-monitor-size", testRoiMapsOntoThePictureAtAnyMonitorSize),
+            ("grade2/editor-two-columns", testTheEditorWindowHoldsBothColumns),
             ("grade2/roi-keys", testRoiArrowKeysMoveAndShiftResizes),
             ("grade2/roi-editor-revision-and-wire", testTheEditorBumpsTheRoiRevisionOnlyOnARealChange),
             ("grade2/roi-persistence", testScopeRegionsPersistPerPersonAndNeverUnderSomeoneElse),
@@ -584,6 +586,50 @@ extension ShellTests {
         let r = circle.update(to: h(c.x + c.width * 0.75, c.y + c.height / 2), host: host)!
         expect(near(r.width * 1920, r.height * 1080, 1e-6), "resizing a circle keeps it round (ScopeRoiControl.cs:118-124)")
         expect(r.width < c.width, "and smaller")
+    }
+
+    /// The two-column editor gives the preview whatever height the monitor column leaves, so the
+    /// overlay's host is no longer a fixed 270 pt. The same drag over the PICTURE must produce the
+    /// same region at every monitor size — the old fixed frame, the default window, the minimum one,
+    /// and a tall pillarboxed one — or the guide would drift off the subject as the window resizes.
+    static func testRoiMapsOntoThePictureAtAnyMonitorSize() {
+        let hosts = [CGSize(width: 900, height: 270),        // the old fixed-height monitor
+                     CGSize(width: 864, height: 330),        // the default 1280×820 window
+                     CGSize(width: 592, height: 180),        // the 1000×700 minimum window
+                     CGSize(width: 600, height: 700)]        // a tall, narrow column: letterboxed
+        var regions: [GradeScopeRoi] = []
+        for host in hosts {
+            let image = ScopeRoiGeometry.fitImage(host: host, source: (1920, 1080))
+            expect(image.minX >= 0 && image.minY >= 0 && image.maxX <= host.width + 1e-9 && image.maxY <= host.height + 1e-9
+                   && near(Double(image.width / image.height), 1920.0 / 1080.0, 1e-9),
+                   "the fitted picture keeps 16:9 inside a \(host) monitor")
+            func p(_ nx: Double, _ ny: Double) -> CGPoint {
+                CGPoint(x: image.minX + image.width * nx, y: image.minY + image.height * ny)
+            }
+            var gesture = ScopeRoiGesture(source: (1920, 1080))
+            gesture.drawingShape = "rectangle"
+            expect(gesture.begin(at: p(0.25, 0.3), host: host), "a press on the picture starts drawing in a \(host) monitor")
+            if let drawn = gesture.update(to: p(0.75, 0.8), host: host) { regions.append(drawn) }
+            gesture.complete()
+        }
+        expectEqual(regions.count, hosts.count, "every monitor size produced a region")
+        for (host, r) in zip(hosts, regions) {
+            expect(near(r.x, 0.25) && near(r.y, 0.3) && near(r.width, 0.5) && near(r.height, 0.5),
+                   "the same picture drag is the same region in a \(host) monitor (got \(r.x),\(r.y) \(r.width)×\(r.height))")
+        }
+    }
+
+    /// The window's own sizes hold the two columns: the controls column at Windows' 360 pt, and at
+    /// the minimum size the picture and the scope strip at their own minimums one above the other.
+    static func testTheEditorWindowHoldsBothColumns() {
+        expectEqual(SourceGradeEditorPane.controlsWidth, 360, "controls column width (ColorGradeEditorWindow.xaml:7)")
+        let minimum = SourceGradeEditorPane.minimumSize, standard = SourceGradeEditorPane.defaultSize
+        expect(standard.width >= minimum.width && standard.height >= minimum.height, "the default window is at least the minimum")
+        expect(minimum.width - SourceGradeEditorPane.controlsWidth - 48 >= 560,
+               "the monitor column keeps a usable width at the minimum window")
+        expect(GradePreviewMonitor.minimumHeight + GradeScopeStrip.minimumImageHeight + 340 <= minimum.height,
+               "picture + scopes + the column's fixed rows fit the minimum height without scrolling")
+        expect(GradeScopeStrip.imageHeight == 300, "Windows' scope height when there is room (CGE:35)")
     }
 
     static func testRoiArrowKeysMoveAndShiftResizes() {
