@@ -15,9 +15,9 @@ instruction), on top of G1. Date 2026-11-21. This Mac (Apple Silicon), other age
 | 2c7c38f8 | 5 | adapter rules 5.8/5.9, prepared-resource memo, `supportsGraphicsInstances()` true, `GraphicsRpcPixelTest` on Metal |
 | c0383311 | 6 | outcomes |
 | 389a6405 | review 1 | **ship-blocker fix:** the shell tells the installed core where the graphics fonts are |
-| ef984435 | review 2 | facts carry the raster warning by reference (no per-frame copy) |
+| 182da3ad | review 2 | facts carry the raster warning by reference (no per-frame copy) |
 | 27275d49 | review 3 | stale `CoreTextOverlayRaster.h` comments |
-| (this) | review | outcomes updated |
+| 5671f6be | review | outcomes updated |
 
 ## Font policy as shipped
 
