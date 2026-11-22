@@ -42,3 +42,30 @@ TEST(ZoomRangeExcursionProbe, IgnoresOrdinarySceneChange) {
     EXPECT_FALSE(probe.observe(bright.data(), bright.data(), bright.size(), false, false));
     EXPECT_FALSE(probe.observe(bright.data(), bright.data(), bright.size(), false, false));
 }
+
+// CI DIAGNOSTIC (throwaway branch, never merge): MSVC 19.52 fails the two
+// positive cases above while clang passes at -O0..-O3. Dump the inputs to the
+// excursion decision so the miscompiled step is named.
+#include <cstdio>
+TEST(ZoomRangeExcursionProbeDiag, DumpDecisionInputs) {
+    std::vector<std::uint8_t> full(6400, 32), compressed(6400, 43);
+    const std::vector<std::uint8_t> *frames[] = {&full, &compressed, &full};
+    ZoomRangeExcursionProbe probe;
+    for (int i = 0; i < 3; ++i) {
+        const auto &f = *frames[i];
+        std::uint64_t sum = 0; std::uint32_t n = 0;
+        for (std::size_t k = 0; k < f.size(); k += 64) { sum += f[k]; ++n; }
+        const auto ev = probe.observe(f.data(), f.data(), f.size(), false, false);
+        std::fprintf(stderr, "[diag] obs=%d inlineSum=%llu n=%u inlineMean=%.6f event=%d",
+                     i, static_cast<unsigned long long>(sum), n, double(sum) / n, int(ev.has_value()));
+        if (ev) std::fprintf(stderr, " before=%.6f flash=%.6f after=%.6f sampled=%u/%u/%u",
+                             ev->before.publishedMean, ev->flash.publishedMean, ev->after.publishedMean,
+                             ev->before.sampled, ev->flash.sampled, ev->after.sampled);
+        std::fprintf(stderr, "\n");
+    }
+    std::fprintf(stderr, "[diag] abs(0.0)=%.3f abs(-11.0)=%.3f\n", std::abs(0.0), std::abs(-11.0));
+    // Repeat with every intermediate exposed through a volatile copy of the probe logic.
+    volatile double b = 32.0, fl = 43.0, c = 32.0;
+    std::fprintf(stderr, "[diag] cond1=%d cond2=%d\n", int(std::abs(b - c) < 2.0),
+                 int(std::abs(fl - (b + c) / 2.0) > 4.0));
+}
