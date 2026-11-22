@@ -915,6 +915,93 @@ TEST(MetalCompositor, AHeldNameLineKeepsItsTextWhileTheResizedRasterPrepares) {
   }
 }
 
+// ── Slate name label (#535 slice 4a, the former TODO(4a-metal-text)) ───────
+//
+// Judged on the FULL-resolution Program readback (programFullBgra, which the
+// Metal tap publishes one tick late), at 1280x720, so the label's glyphs are
+// real pixels rather than a downscaled smear. Geometry is the D3D11
+// drawFailedSlateName rule, computed here from its constants: height 8% of
+// the layer, width min(40% of the layer, 0.55 * labelPx * chars + labelPx).
+ProgramFramePreviewPixels fullResAfterReady(ICompositor& compositor, CompositorRenderPlan plan,
+                                            const std::vector<VideoFrame>& frames) {
+  plan.fullProgramReadback = true;
+  renderUntilOverlayReady(compositor, plan, frames);
+  ProgramFramePreviewPixels latest;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  int harvested = 0;
+  while (harvested < 2 && std::chrono::steady_clock::now() < deadline) {
+    auto frame = compositor.render(plan, frames);
+    if (!frame.programFullBgra.bgra.empty()) {
+      latest = std::move(frame.programFullBgra);
+      ++harvested;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return latest;
+}
+
+struct SlateLabelCheck {
+  int brightInLabel = 0;
+  int strayOutsideLabel = 0;
+  int leftmostBright = 1 << 30;
+};
+
+SlateLabelCheck checkSlateLabel(const ProgramFramePreviewPixels& px, int labelW, int labelY0) {
+  SlateLabelCheck out;
+  const int slateB = int(corevideo::compositor::kFailedSlateRgba & 0xff);
+  const int slateG = int((corevideo::compositor::kFailedSlateRgba >> 8) & 0xff);
+  const int slateR = int((corevideo::compositor::kFailedSlateRgba >> 16) & 0xff);
+  for (int y = 0; y < px.height; ++y)
+    for (int x = 0; x < px.width; ++x) {
+      const auto p = canvasPixel(px, x, y);
+      const bool inLabel = x < labelW && y >= labelY0;
+      if (inLabel) {
+        if (bright(p)) { ++out.brightInLabel; out.leftmostBright = std::min(out.leftmostBright, x); }
+      } else if (std::abs(p[0] - slateB) > 2 || std::abs(p[1] - slateG) > 2 || std::abs(p[2] - slateR) > 2) {
+        ++out.strayOutsideLabel;
+      }
+    }
+  return out;
+}
+
+TEST(MetalCompositor, AFailedSlateCarriesItsNameBottomLeftAndNothingElse) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  const int W = 1280, H = 720;
+  const float labelPx = 0.08f * H;                                    // 57.6
+  const int labelW = int(std::min(0.4f * W, 0.55f * labelPx * 5 + labelPx)) + 1;  // "CAM 2": ~216
+  const int labelY0 = int(H - labelPx);
+  for (const char* health : {"failed", "stalled"}) {
+    CompositorRenderPlan plan;
+    plan.renderPlanId = std::string("plan-slate-") + health;
+    plan.width = W;
+    plan.height = H;
+    auto layer = solidLayer("cam2", 0.f, 0.f, 1.f, 1.f, health);
+    layer.sourceDisplayName = "CAM 2";
+    plan.layers.push_back(layer);
+    const auto px = fullResAfterReady(*compositor, plan, {});
+    ASSERT_EQ(px.width, W) << health;
+    ASSERT_EQ(px.height, H) << health;
+    const auto check = checkSlateLabel(px, labelW, labelY0);
+    EXPECT_GE(check.brightInLabel, 20) << health << ": the slate's name label has no glyphs";
+    EXPECT_EQ(check.strayOutsideLabel, 0) << health << ": pixels outside the label differ from the slate";
+    // Text starts at the label tile's 6% text column (computeOverlayTileLayout),
+    // i.e. ~13 px for a ~216 px label; a label sized to the whole layer would
+    // start it at ~77 px.
+    EXPECT_LT(check.leftmostBright, int(0.06f * labelW + 0.5f * labelPx)) << health;
+  }
+  // Control: a live (warming) frameless layer carries no label.
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-slate-live";
+  plan.width = W;
+  plan.height = H;
+  auto layer = solidLayer("cam3", 0.f, 0.f, 1.f, 1.f, "live");
+  layer.sourceDisplayName = "CAM 3";
+  plan.layers.push_back(layer);
+  const auto px = fullResAfterReady(*compositor, plan, {});
+  ASSERT_EQ(px.width, W);
+  EXPECT_EQ(checkSlateLabel(px, labelW, labelY0).brightInLabel, 0) << "only failed/stalled slates are named";
+}
+
 TEST(MetalCompositor, AnAppearanceBandIsDrawnOnceNotTwice) {
   MAKE_COMPOSITOR_OR_SKIP(compositor);
   auto plan = overlayPlan("plan-appearance-band");

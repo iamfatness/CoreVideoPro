@@ -1339,18 +1339,67 @@ class MetalCompositor final : public ICompositor {
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     resetScissor(encoder);
 
-    // TODO(4a-metal-text): bus health on air (#535 slice 4a) — the failed
-    // slate is colour-only here. The D3D11 twin composites the source's
-    // display name as a small bottom-left label (drawFailedSlateName in
-    // D3D11CompositorAdapter.cpp) via its cached DirectWrite/D2D overlay
-    // raster; this file has no MTLTexture-upload/caching counterpart for
-    // `rasterOverlayTileCoreText`'s raw premultiplied-BGRA buffer on a
-    // non-overlay layer, so the name label is pending that CoreText
-    // plumbing rather than done here.
+    // bus health on air (#535 slice 4a, R4): a failed OR stalled-with-no-frame
+    // source's slate carries its display name so an operator can tell WHICH
+    // source died at a glance (D3D11 drawFailedSlateName parity).
+    if (layer.frame == nullptr &&
+        (layer.plan.sourceHealth == "failed" || layer.plan.sourceHealth == "stalled")) {
+      drawFailedSlateName(encoder, layer, renderPlan, rect, layerAlpha);
+    }
 
     const auto border = compositor::computeBorderFraming(layer.plan.borderStyle, layer.plan.borderColor,
                                                          layer.plan.borderThickness);
     drawBorderPass(encoder, layer, renderPlan, rect, border, layerAlpha);
+  }
+
+  // The slate name as a SMALL LABEL anchored bottom-left of the layer, not
+  // the full-canvas lower-third band a bare overlay content would raster.
+  // Mirrors D3D11CompositorAdapter::drawFailedSlateName: height 8% of the
+  // layer; width capped at 40% of it or a rough text-width ESTIMATE (~55% of
+  // the line height per glyph plus breathing room); brandColor = the slate
+  // colour so the lower-third accent bar is invisible against it; the raster
+  // paints no band for plain content, so there is no plate. Prepared by the
+  // same async raster; while it prepares the colour-only slate shows.
+  void drawFailedSlateName(id<MTLRenderCommandEncoder> encoder,
+                           const ResolvedLayer& layer,
+                           const CompositorRenderPlan& renderPlan,
+                           const compositor::LayerRect& rect,
+                           float layerAlpha) {
+    const std::string& name = layer.plan.sourceDisplayName;
+    if (name.empty()) {
+      return;
+    }
+    const float labelHeight = rect.height * 0.08f;
+    if (labelHeight <= 0.f || rect.width <= 0.f) {
+      return;
+    }
+    const float labelHeightPx = labelHeight * static_cast<float>(targetHeight_);
+    const float estTextWidthPx = labelHeightPx * 0.55f * static_cast<float>(name.size()) + labelHeightPx;
+    const float estTextWidthFrac =
+        targetWidth_ > 0 ? estTextWidthPx / static_cast<float>(targetWidth_) : rect.width;
+    const float labelWidth = std::min(rect.width * 0.4f, estTextWidthFrac);
+    if (labelWidth <= 0.f) {
+      return;
+    }
+    const compositor::LayerRect labelRect{rect.x, rect.y + rect.height - labelHeight, labelWidth, labelHeight};
+    char hexBuf[8];
+    std::snprintf(hexBuf, sizeof(hexBuf), "#%06x", compositor::kFailedSlateRgba & 0xffffffu);
+    // Built per draw, as on Windows. Every string is short (small-string
+    // storage) unless the display name is long; the raster lookup is a hit.
+    CompositorOverlayContent content;
+    content.title = name;
+    content.brandColor = hexBuf;
+    id<MTLTexture> texture =
+        overlayRaster_.rasterOverlayTexture(device_, content, labelRect, targetWidth_, targetHeight_);
+    if (!texture) {
+      return;
+    }
+    const compositor::LayerRect clip = layer.plan.hasClipRect
+        ? compositor::LayerRect{layer.plan.clipRect.x, layer.plan.clipRect.y,
+                                layer.plan.clipRect.width, layer.plan.clipRect.height}
+        : rect;
+    drawOverlayTexture(encoder, layer, renderPlan, texture, labelRect, clip, layerAlpha);
+    resetScissor(encoder);
   }
 
   void drawOverlayLayer(id<MTLRenderCommandEncoder> encoder,
