@@ -973,7 +973,7 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
       if(fact.state=="ready" && resourceMatches(fact.preparedResource,instance.clockProgramPending->contentHash)) {
         instance.program=instance.clockProgramPending; instance.programResource=fact.preparedResource;
         instance.clockProgramPending.reset(); changed=true;
-      } else if(fact.state=="failed") { instance.warning=fact.reason; instance.clockProgramPending.reset(); changed=true; }
+      } else if(fact.state=="failed") { instance.warning=fact.reasonText(); instance.clockProgramPending.reset(); changed=true; }
     }
     if (fact.state == "ready" && instance.cue && instance.cue->number == fact.revision &&
         resourceMatches(fact.preparedResource, instance.cue->contentHash)) {
@@ -983,7 +983,7 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
     if (instance.pendingCue && instance.pendingCue->number == fact.revision && matchesFact(instance.pendingCue)) {
       const bool ready = fact.state == "ready" && resourceMatches(fact.preparedResource, instance.pendingCue->contentHash);
       const auto state = fact.state == "ready" && !ready ? "failed" : fact.state;
-      const auto warning = fact.state == "ready" && !ready ? "Graphics preparation reported ready without a matching resource." : fact.reason;
+      const auto warning = fact.state == "ready" && !ready ? "Graphics preparation reported ready without a matching resource." : fact.reasonText();
       if (instance.cuePreparation != state || instance.cueWarning != warning) changed = true;
       instance.cuePreparation = state; instance.cueWarning = warning;
       if (ready) {
@@ -1006,8 +1006,8 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
       instance.preparation = "failed"; instance.warning = "Graphics preparation reported ready without a matching resource.";
       instance.showPending = instance.updatePending = false; changed = true; continue;
     }
-    if (instance.preparation != fact.state || instance.warning != fact.reason) changed = true;
-    instance.preparation = fact.state; instance.warning = fact.reason;
+    if (instance.preparation != fact.state || instance.warning != fact.reasonText()) changed = true;
+    instance.preparation = fact.state; instance.warning = fact.reasonText();
     if (fact.state == "failed") instance.showPending = instance.updatePending = false;
     if (fact.state != "ready") continue;
     instance.readyRevision = fact.revision;

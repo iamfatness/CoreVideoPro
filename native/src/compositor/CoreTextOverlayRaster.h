@@ -86,6 +86,9 @@ class CoreTextOverlayRaster {
   // unprepared | preparing | ready | failed, for the LAST rasterOverlayTexture call.
   const char* preparationState() const { return lastState_; }
   const std::string& lastWarning() const { return lastWarning_; }
+  // The same text by reference, for per-frame facts (null when empty): copying
+  // it into each fact would allocate on the render thread every frame.
+  const std::shared_ptr<const std::string>& sharedWarning() const { return sharedWarning_; }
   // Keeps the last call's texture alive (e.g. across OverlayRasterRetention).
   std::shared_ptr<const void> lease() const { return activeLease_; }
   // Atlas runs for layered templates: always null until G2.
@@ -95,7 +98,7 @@ class CoreTextOverlayRaster {
   // textures bound to it, so there is no GPU read fence to refuse; never called.
   void refuseGpuLease() {
     failedThisFrame_ = true;
-    lastWarning_ = "Graphics GPU retirement capacity unavailable.";
+    setWarning(internedWarning("Graphics GPU retirement capacity unavailable."));
   }
 
   // Returns the prepared premultiplied-BGRA texture for `overlay` at
@@ -117,8 +120,11 @@ class CoreTextOverlayRaster {
 
  private:
   Cache::Result prepareRaster(const Request& request);
+  static std::shared_ptr<const std::string> internedWarning(const char* text);
+  void setWarning(std::shared_ptr<const std::string> warning);
 
   std::string lastWarning_;
+  std::shared_ptr<const std::string> sharedWarning_;
   bool pendingThisFrame_ = false, failedThisFrame_ = false;
   const char* lastState_ = "unprepared";
   std::shared_ptr<const Cache::Result> activeLease_;

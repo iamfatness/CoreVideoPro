@@ -152,9 +152,14 @@ class MetalCompositor final : public ICompositor {
       const auto& r = candidate.rect;
       overlayRaster_.rasterOverlayTexture(device_, candidate.overlay, {r.x, r.y, r.width, r.height}, targetWidth_,
                                           targetHeight_, candidate.layerId, true, candidate.graphicsPreparedResource);
+      // The warning travels by reference (sharedReason): Segoe UI is the
+      // default family, so nearly every graphic carries the Selawik
+      // substitution warning, and copying it would allocate per graphic per
+      // frame on the render thread.
       frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
-          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource(),
-          candidate.overlay.graphicsContentHash, candidate.overlay.hasGraphicsContentHash});
+          overlayRaster_.preparationState(), {}, overlayRaster_.preparedResource(),
+          candidate.overlay.graphicsContentHash, candidate.overlay.hasGraphicsContentHash,
+          overlayRaster_.sharedWarning()});
     }
     overlayRaster_.beginFrame();
     // Graphics automation reads the plan it was composed from.

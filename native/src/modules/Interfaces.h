@@ -324,6 +324,11 @@ struct GraphicsFrameFact {
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource;
   std::array<uint8_t,32> requestedContentHash{};
   bool hasRequestedContentHash=false;
+  // Optional SHARED reason text (Metal graphics backend G2 review): a raster
+  // warning carried by reference so a per-frame fact does not copy it. When
+  // set it takes precedence over `reason`. Readers use reasonText().
+  std::shared_ptr<const std::string> sharedReason;
+  const std::string& reasonText() const { return sharedReason ? *sharedReason : reason; }
 };
 
 // NDI graphics key: one straight-alpha BGRA readback of the graphics-only

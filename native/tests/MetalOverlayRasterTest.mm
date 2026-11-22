@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "compositor/CoreTextOverlayRaster.h"
+#include "graphics/GraphicsInstances.h"
 #include "graphics/GraphicsTemplate.h"
 #include "GraphicsMotionFixture.h"
 #include "modules/OverlayTileRaster.h"
@@ -660,6 +661,76 @@ TEST(MetalOverlayRaster, PreparedResourceIsStableAndAllocationFree) {
   const auto other = lowerThird("ANOTHER NAME", "ANOTHER TITLE");
   ASSERT_EQ(waitPrepared(raster, device, other, 400, 80).state, "ready");
   EXPECT_NE(raster.preparedResource(), held);
+}
+
+// Review finding (G2): the adapter's graphicsPreparations loop copied the
+// raster's warning into every fact, every Program frame. Segoe UI is the
+// default family, so nearly every graphic carries the 57-character Selawik
+// substitution warning: a steady-state heap allocation per graphic per frame
+// on the render thread. The facts must carry the warning without copying it.
+// Fixture: the SAME look and fields twice, differing only in the font. Arial
+// is installed (no warning); Segoe UI is substituted (a warning far longer
+// than the small-string buffer). Steady-state render() must allocate exactly
+// as much in both. Facts still deliver the warning text (confirmatory).
+TEST(MetalOverlayRaster, AdapterFactsCarryTheWarningWithoutAPerTickCopy) {
+  DEVICE_OR_SKIP(device);
+  using corevideo::rpc::Json;
+  std::string lastReason;
+  size_t preparationFacts = 0;
+  auto steadyAllocations = [&](const std::string& font) -> size_t {
+    auto compositor = createMetalCompositor();
+    EXPECT_TRUE(compositor);
+    if (!compositor) return 0;
+    corevideo::graphics::GraphicsInstances graphics{"test-core"};
+    int sequence = 0;
+    const auto command = [&](const std::string& type, Json::Object payload) {
+      payload["schemaVersion"] = 1; payload["requestId"] = "alloc-" + std::to_string(++sequence);
+      payload["clientId"] = "alloc-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "guest";
+      payload["expectedRevision"] = 1;
+      return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(payload)}});
+    };
+    EXPECT_TRUE(command("graphics-instance-create", {{"templateId", "compact-solid"}, {"templateVersion", 1},
+        {"scope", "global"}, {"fields", Json::Object{{"name", "Allocation guest"}}},
+        {"style", Json::Object{{"fontFamily", font}}}}));
+    // Cued and waiting (an operator's everyday state): the accepted cue is
+    // re-admitted on EVERY Program frame through the graphicsPreparations
+    // facts loop, so its warning travels in a fact every frame.
+    EXPECT_TRUE(command("graphics-instance-cue", {}));
+    const auto row = [&]() -> Json { return graphics.snapshot().get("instances")->asArray().front(); };
+    const auto render = [&](bool counted) {
+      CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+      graphics.append(plan, false);
+      tAllocCount = 0; tAllocCountArmed = counted;
+      auto frame = compositor->render(plan, {});
+      tAllocCountArmed = false;
+      const size_t allocations = tAllocCount;
+      for (const auto& fact : frame.graphicsFacts) {
+        if (fact.instanceId == "guest" && fact.state == "ready" && !fact.reasonText().empty()) lastReason = fact.reasonText();
+        if (counted && fact.instanceId == "guest" && fact.state == "ready") ++preparationFacts;
+      }
+      graphics.observe(frame);
+      return allocations;
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (row().getNumber("cueRevision") != 1 && std::chrono::steady_clock::now() < deadline) {
+      render(false); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_EQ(row().getNumber("cueRevision"), 1.) << font;
+    for (int i = 0; i < 5; ++i) render(false);
+    size_t total = 0;
+    for (int i = 0; i < 20; ++i) total += render(true);
+    return total;
+  };
+  lastReason.clear();
+  const size_t withoutWarning = steadyAllocations("Arial");
+  EXPECT_TRUE(lastReason.empty()) << lastReason;
+  EXPECT_GE(preparationFacts, 20u) << "the fixture must exercise the per-frame facts loop";
+  preparationFacts = 0;
+  const size_t withWarning = steadyAllocations("Segoe UI");
+  EXPECT_GE(preparationFacts, 20u);
+  EXPECT_EQ(lastReason, "Font Segoe UI is not installed on this Mac; using Selawik.") << "facts still carry the warning";
+  EXPECT_EQ(withWarning, withoutWarning)
+      << "a substitution warning added " << (long long)(withWarning - withoutWarning) << " allocations over 20 frames";
 }
 
 }  // namespace
