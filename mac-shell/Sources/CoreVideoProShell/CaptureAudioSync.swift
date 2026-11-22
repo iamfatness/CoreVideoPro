@@ -14,7 +14,8 @@
 //
 // SESSION STATE, NOT PERSISTED (plan D2): Windows keeps it on CaptureDeviceItem
 // and in no prefs file. The full-state sources entry carries it to every core
-// generation; the device copy is re-sent on each new generation.
+// generation; the device copy is reconciled against what each snapshot reports
+// (a fresh core lists its cameras asynchronously and drops early commands).
 
 import Foundation
 
@@ -23,6 +24,21 @@ enum CaptureAudioSyncPolicy {
     static let limitMs = 500
 
     static func clamp(_ ms: Int) -> Int { min(max(ms, -limitMs), limitMs) }
+
+    /// Review #5: the devices whose CORE copy of the offset differs from the
+    /// operator's, among the devices the core actually lists. A fresh core fills
+    /// its AVF device list asynchronously and drops a command for an unlisted id,
+    /// so the shell reconciles against `captureDevices[].audioSyncOffsetMs`
+    /// instead of trusting a one-shot send. Pure.
+    static func pendingDeviceCopies(desired: [String: Int], reported: [JSONObject],
+                                    inFlight: Set<String>) -> [(deviceId: String, offsetMs: Int)] {
+        reported.compactMap { device -> (String, Int)? in
+            guard let id = device["id"] as? String, !id.isEmpty, !inFlight.contains(id) else { return nil }
+            let want = desired[id] ?? 0
+            let have = (device["audioSyncOffsetMs"] as? NSNumber)?.intValue ?? 0
+            return want == have ? nil : (id, want)
+        }
+    }
 
     /// Which capture rows carry the nudge: cameras and capture cards (video
     /// devices that may carry or pair audio), never a screen (no audio on Mac).
@@ -65,16 +81,19 @@ extension AppModel {
         }
     }
 
-    /// A fresh core generation forgets the device copies (gotchas: a one-shot
-    /// command must be re-applied on every core generation).
-    func reassertCaptureAudioSyncOffsets() {
+    /// Review #5: sends the device copy to every listed device whose reported
+    /// offset differs from the operator's (a respawned core reports 0 once its
+    /// camera is enumerated). One request per device while in flight.
+    func reconcileCaptureAudioSyncOffsets(_ reported: [JSONObject]) {
         guard bridge != nil || captureRequestForTesting != nil else { return }
-        let offsets = captureAudioSyncOffsets
-        guard !offsets.isEmpty else { return }
-        Task {
-            for (deviceId, ms) in offsets.sorted(by: { $0.key < $1.key }) {
+        let pending = CaptureAudioSyncPolicy.pendingDeviceCopies(
+            desired: captureAudioSyncOffsets, reported: reported, inFlight: captureSyncInFlight)
+        for (deviceId, ms) in pending {
+            captureSyncInFlight.insert(deviceId)
+            Task {
                 _ = try? await captureRequestForSync(CoreCommands.setCaptureAudioSyncOffset(
                     deviceId: deviceId, offsetMs: ms))
+                captureSyncInFlight.remove(deviceId)
             }
         }
     }

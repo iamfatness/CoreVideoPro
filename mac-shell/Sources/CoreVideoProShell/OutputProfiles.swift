@@ -27,9 +27,11 @@ import Foundation
 struct RecordingProfile: Codable, Equatable {
     var width = 1920
     var height = 1080
-    var fps = 60
     var codec = "h264"
-    var targetBitrateMbps = 8.2
+    /// Whole Mbps: the core's RecordingSessionRequest.targetBitrateMbps is an
+    /// int (MediaCore.cpp:2814 truncates on every platform), so a 0.5 step would
+    /// show a value the file never gets. Windows' 8.2 default is written as 8.
+    var targetBitrateMbps = 8.0
     var audioBitrateKbps = 192
 
     /// Windows OutputResolutionOptions / OutputFpsOptions / VideoCodecOptions.
@@ -37,13 +39,16 @@ struct RecordingProfile: Codable, Equatable {
         (1280, 720, "1280x720 (720p)"), (1920, 1080, "1920x1080 (1080p)"),
         (2560, 1440, "2560x1440 (1440p)"), (3840, 2160, "3840x2160 (4K)"),
     ]
-    static let fpsChoices = [24, 30, 50, 60]
+    /// No recording fps choice (review #4): neither writer decimates (Windows MF
+    /// sets MF_MT_FRAME_RATE as metadata, the Mac AVF writer ignores it), so the
+    /// file runs at the render rate. The payload carries the canvas fps so the
+    /// published recordingFps tells the truth.
     /// (value, label, available). AV1 is shown so the operator knows why it is absent.
     static let codecs: [(value: String, label: String, available: Bool)] = [
         ("h264", "H.264 / AVC", true), ("h265", "H.265 / HEVC", true), ("av1", "AV1", false),
     ]
     static let av1Unavailable = "AV1 recording is not available on this Mac"
-    static let bitrateRange: ClosedRange<Double> = 0.5...80
+    static let bitrateRange: ClosedRange<Double> = 1...80
     static let audioKbpsRange: ClosedRange<Int> = 32...512
 
     /// Anything a hand-edited file or a control call could put here that the
@@ -54,18 +59,17 @@ struct RecordingProfile: Codable, Equatable {
             out.width = fallback.width
             out.height = fallback.height
         }
-        if !Self.fpsChoices.contains(fps) { out.fps = fallback.fps }
         if !Self.codecs.contains(where: { $0.value == codec && $0.available }) { out.codec = fallback.codec }
         out.targetBitrateMbps = targetBitrateMbps.isFinite
-            ? min(max(targetBitrateMbps, Self.bitrateRange.lowerBound), Self.bitrateRange.upperBound)
+            ? min(max(targetBitrateMbps.rounded(.down), Self.bitrateRange.lowerBound), Self.bitrateRange.upperBound)
             : fallback.targetBitrateMbps
         out.audioBitrateKbps = min(max(audioBitrateKbps, Self.audioKbpsRange.lowerBound),
                                    Self.audioKbpsRange.upperBound)
         return out
     }
 
-    /// Windows OutputProfilePayload, field for field.
-    func payload() -> JSONObject {
+    /// Windows OutputProfilePayload, field for field. `fps` = the canvas rate.
+    func payload(fps: Int) -> JSONObject {
         ["profileId": "\(height)p\(fps)", "resolution": "\(width)x\(height)",
          "width": width, "height": height, "fps": fps,
          "targetBitrateMbps": targetBitrateMbps, "audioBitrateKbps": audioBitrateKbps,

@@ -1763,7 +1763,6 @@ final class AppModel: ObservableObject {
         pushBrandKitNow()
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
-        reassertCaptureAudioSyncOffsets()   // Z2: the device copies die with the core
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -1887,6 +1886,7 @@ final class AppModel: ObservableObject {
             captureDevices = Self.parseCaptureDevices(devices)
             refreshSlotHealth()
             reconnectRestoredCaptures()
+            reconcileCaptureAudioSyncOffsets(devices)   // Z2: the device copy, from what the core reports
         }
         applySourceFacts(snapshot)
         if !snapshot.isEmpty {
@@ -2353,6 +2353,7 @@ final class AppModel: ObservableObject {
     private var audioInputsWatched = false
     /// Z2: per capture device id, session only (CaptureAudioSync.swift). Absent = 0.
     @Published var captureAudioSyncOffsets: [String: Int] = [:]
+    var captureSyncInFlight: Set<String> = []
     var captureAudioSyncTask: Task<Void, Never>?
     var brandSyncTask: Task<Void, Never>?
     /// Test seam: sees every overlay command before it goes to the bridge.
@@ -4117,7 +4118,7 @@ final class AppModel: ObservableObject {
         // O1: Windows sends recordingOutputProfile on every start
         // (MediaCoreCommandBuilder.cs:743); without it the core records at its
         // built-in 1080p60 whatever the operator chose.
-        if recording { command["recordingOutputProfile"] = recordingProfile.payload() }
+        if recording { command["recordingOutputProfile"] = recordingProfile.payload(fps: canvasFps) }
         return command
     }
 
@@ -5623,7 +5624,7 @@ final class AppModel: ObservableObject {
                                 // O1 (Windows MediaCoreCommandBuilder.cs:799-805).
                                 "targetBitrateMbps": recordingProfile.targetBitrateMbps,
                                 "audioBitrateKbps": recordingProfile.audioBitrateKbps,
-                                "renderProfile": recordingProfile.payload(),
+                                "renderProfile": recordingProfile.payload(fps: canvasFps),
                                 "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy,
                             ],
                             ["type": "start-recording-session", "sessionId": UUID().uuidString,

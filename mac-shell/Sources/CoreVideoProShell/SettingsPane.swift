@@ -178,10 +178,8 @@ struct SettingsPane: View {
                     .labelsHidden().frame(width: 200)
                 }
                 labeled("Recording FPS") {
-                    Picker("", selection: $model.recordingProfile.fps) {
-                        ForEach(RecordingProfile.fpsChoices, id: \.self) { Text("\($0) fps").tag($0) }
-                    }
-                    .labelsHidden().frame(width: 120)
+                    // Review #4: no writer decimates, so the file runs at the canvas rate.
+                    Text("Follows the canvas (\(model.canvasFps) fps)").font(.plexMono(10)).foregroundStyle(Studio.secondary)
                 }
                 labeled("Recording codec") {
                     Picker("", selection: Binding(
@@ -193,6 +191,7 @@ struct SettingsPane: View {
                         })) {
                         ForEach(RecordingProfile.codecs, id: \.value) { codec in
                             Text(codec.available ? codec.label : "\(codec.label) (unavailable)").tag(codec.value)
+                                .disabled(!codec.available)
                         }
                     }
                     .labelsHidden().frame(width: 200)
@@ -201,9 +200,9 @@ struct SettingsPane: View {
                 labeled("Recording bitrate") {
                     HStack(spacing: 6) {
                         Slider(value: $model.recordingProfile.targetBitrateMbps,
-                               in: RecordingProfile.bitrateRange, step: 0.5)
+                               in: RecordingProfile.bitrateRange, step: 1)
                             .frame(width: 180)
-                        Text(String(format: "%.1f Mbps", model.recordingProfile.targetBitrateMbps))
+                        Text(String(format: "%.0f Mbps", model.recordingProfile.targetBitrateMbps))
                             .font(.plexMono(10)).foregroundStyle(Studio.secondary)
                     }
                 }

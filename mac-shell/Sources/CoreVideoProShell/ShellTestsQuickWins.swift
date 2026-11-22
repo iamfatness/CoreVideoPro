@@ -24,6 +24,7 @@ extension ShellTests {
             ("quickwins/a5-prefs-and-unplugged-device", testA5PrefsAndUnpluggedDevice),
             ("quickwins/a5-first-connect-sends-the-saved-source", testA5FirstConnectSendsTheSavedSource),
             ("quickwins/a5-hot-plugged-mic-goes-live", testA5HotPluggedMicGoesLive),
+            ("quickwins/z2-device-copy-reconciles-from-the-snapshot", testZ2DeviceCopyReconcilesFromTheSnapshot),
             ("quickwins/z1-windows-preference-table", testZ1WindowsPreferenceTable),
             ("quickwins/z1-join-carries-and-latches-the-ceiling", testZ1JoinCarriesAndLatchesTheCeiling),
             ("quickwins/z1-prefs-round-trip", testZ1PrefsRoundTrip),
@@ -369,7 +370,7 @@ extension ShellTests {
     /// entry (audioSyncOffsetMs), which a core restart's reassert carries; a new
     /// core generation re-sends the device copy.
     /// Mutations: leave the offset out of the sources entry -> red (entry and
-    /// reassert); skip reassertCaptureAudioSyncOffsets -> red (generation).
+    /// reassert). The device copy on a new core is covered by the reconcile test.
     @MainActor
     private static func testZ2BothCopiesReachTheCore() {
         let model = AppModel()
@@ -395,11 +396,8 @@ extension ShellTests {
         let reasserted = (batches.last?.first { $0["type"] as? String == "sync-capture-audio-sources" }?["sources"]
             as? [JSONObject])?.first { $0["captureDeviceId"] as? String == "cam1" }
         expectEqual(reasserted?["audioSyncOffsetMs"] as? Int, 40, "a respawned core gets the mic copy back")
-        bodies.removeAll()
-        model.reassertCaptureAudioSyncOffsets()
-        spin(until: { !bodies.isEmpty }, limit: 2)
-        expectEqual((bodies.first?["payload"] as? JSONObject)?["offsetMs"] as? Int, 40,
-                    "a new core generation gets the device copy back")
+        // The device copy on a new core generation is reconciled from the snapshot
+        // (z2-device-copy-reconciles-from-the-snapshot).
         let saved = (try? JSONEncoder().encode(model.currentPrefs())).flatMap { String(data: $0, encoding: .utf8) } ?? ""
         expect(!saved.isEmpty && !saved.lowercased().contains("sync"),
                "the offset is session state: nothing about it is persisted (plan D2, Windows)")
@@ -409,8 +407,8 @@ extension ShellTests {
     // Fixture invariant: every operator value below differs from its default,
     // so a field the code drops reads back as the default and fails.
 
-    private static let o1Profile = RecordingProfile(width: 1280, height: 720, fps: 50, codec: "h265",
-                                                    targetBitrateMbps: 12.5, audioBitrateKbps: 256)
+    private static let o1Profile = RecordingProfile(width: 1280, height: 720, codec: "h265",
+                                                    targetBitrateMbps: 12, audioBitrateKbps: 256)
     private static let o1Encoder = StreamEncoderSettings(audioBitrateKbps: 128, keyframeIntervalSeconds: 4,
                                                          rateControl: "vbr", h264Profile: "main", bFrames: 0)
 
@@ -418,18 +416,18 @@ extension ShellTests {
     /// (:850-860), values from the fixture. Defaults = Windows
     /// DefaultRecordingOutputProfile. Mutation: drop a key -> red (set compare).
     private static func testO1PayloadIsTheWindowsShape() {
-        let payload = o1Profile.payload()
+        let payload = o1Profile.payload(fps: 50)
         expectEqual(Set(payload.keys), ["profileId", "resolution", "width", "height", "fps",
                                         "targetBitrateMbps", "audioBitrateKbps", "codec"],
                     "exactly the Windows payload keys")
         expectEqual(payload["resolution"] as? String, "1280x720", "resolution")
         expectEqual(payload["fps"] as? Int, 50, "fps")
         expectEqual(payload["codec"] as? String, "h265", "codec")
-        expectEqual(payload["targetBitrateMbps"] as? Double, 12.5, "bitrate")
+        expectEqual(payload["targetBitrateMbps"] as? Double, 12, "bitrate")
         expectEqual(payload["audioBitrateKbps"] as? Int, 256, "audio kbps")
-        expectEqual(RecordingProfile(), RecordingProfile(width: 1920, height: 1080, fps: 60, codec: "h264",
-                                                         targetBitrateMbps: 8.2, audioBitrateKbps: 192),
-                    "defaults = Windows DefaultRecordingOutputProfile = the core's own recording defaults")
+        expectEqual(RecordingProfile(), RecordingProfile(width: 1920, height: 1080, codec: "h264",
+                                                         targetBitrateMbps: 8, audioBitrateKbps: 192),
+                    "defaults = Windows DefaultRecordingOutputProfile (8.2 Mbps, which the core writes as 8)")
     }
 
     /// A Record start carries the profile on start-program-output AND on
@@ -450,7 +448,12 @@ extension ShellTests {
                     "start-program-output carries recordingOutputProfile")
         expectEqual((targets?["renderProfile"] as? JSONObject)?["height"] as? Int, 720, "renderProfile on the targets")
         expectEqual((targets?["renderProfile"] as? JSONObject)?["codec"] as? String, "h265", "with the codec")
-        expectEqual(targets?["targetBitrateMbps"] as? Double, 12.5, "targets bitrate")
+        expectEqual(targets?["targetBitrateMbps"] as? Double, 12, "targets bitrate")
+        // Review #4: no writer decimates (Windows MF nor Mac AVF: fps is metadata),
+        // so the recording rate IS the render rate. The profile says so, which keeps
+        // the published recordingFps true.
+        expectEqual((targets?["renderProfile"] as? JSONObject)?["fps"] as? Int, model.canvasFps,
+                    "the recording profile's fps is the canvas rate")
         expectEqual(targets?["audioBitrateKbps"] as? Int, 256, "targets audio kbps")
         let streamOnly = model.startProgramOutput(recording: false, streaming: true)
         expect(streamOnly["recordingOutputProfile"] == nil, "a stream-only start does not carry the recording profile")
@@ -480,16 +483,18 @@ extension ShellTests {
     /// the profile restore -> red.
     @MainActor
     private static func testO1SanitizePrefsAndRecipe() {
-        let junk = RecordingProfile(width: 999, height: 3, fps: 7, codec: "av1",
+        let junk = RecordingProfile(width: 999, height: 3, codec: "av1",
                                     targetBitrateMbps: .infinity, audioBitrateKbps: 9000)
             .sanitized(fallback: RecordingProfile())
-        expectEqual(junk, RecordingProfile(width: 1920, height: 1080, fps: 60, codec: "h264",
-                                           targetBitrateMbps: 8.2, audioBitrateKbps: 512),
+        expectEqual(junk, RecordingProfile(width: 1920, height: 1080, codec: "h264",
+                                           targetBitrateMbps: 8, audioBitrateKbps: 512),
                     "an unpickable size/fps/codec falls back, kbps clamps, a non-finite bitrate falls back")
         expectEqual(StreamEncoderSettings(audioBitrateKbps: 1, keyframeIntervalSeconds: 99, rateControl: "abr",
                                           h264Profile: "ultra", bFrames: 9).sanitized(),
                     StreamEncoderSettings(audioBitrateKbps: 32, keyframeIntervalSeconds: 10, rateControl: "cbr",
                                           h264Profile: "high", bFrames: 4), "encoder clamps and falls back")
+        expectEqual(RecordingProfile(targetBitrateMbps: 12.5).sanitized(fallback: RecordingProfile()).targetBitrateMbps,
+                    12, "review #4: whole Mbps, because the core's RecordingSessionRequest truncates to int")
         let before = AppModel()
         before.recordingProfile = o1Profile
         before.streamEncoder = o1Encoder
@@ -548,5 +553,44 @@ extension ShellTests {
         expectEqual(a1Buses(sends, "local-machine-audio"), a1Buses, "the plugged-in mic is routed")
         expect(model.strips.contains { $0.id == "local-machine-audio" }, "and has its strip")
         expectEqual(model.localAudioStatus, "Waiting for audio", "the status leaves 'not connected'")
+    }
+
+    /// Review #5: on a fresh core the AVF device list fills asynchronously and
+    /// set-capture-audio-sync-offset for an unlisted device is dropped silently
+    /// (AvfCaptureDeviceAdapter setAudioSyncOffset). The shell reconciles against
+    /// what the core REPORTS per device: a listed device whose audioSyncOffsetMs
+    /// differs from the operator's gets the command again, once while in flight,
+    /// and nothing once they agree. Mutation: skip the reconcile -> red.
+    @MainActor
+    private static func testZ2DeviceCopyReconcilesFromTheSnapshot() {
+        let model = AppModel()
+        var bodies: [JSONObject] = []
+        var release: CheckedContinuation<Void, Never>?
+        model.captureRequestForTesting = { body in
+            await MainActor.run { bodies.append(body) }
+            await withCheckedContinuation { release = $0 }   // the reply is held: in flight
+            return [:]
+        }
+        model.captureAudioSyncOffsets = ["cam1": 40]
+        func device(offset: Int) -> JSONObject {
+            ["id": "cam1", "name": "Cam", "kind": "video", "vendor": "avfoundation",
+             "connectionState": "connected", "signalPresent": true, "warning": "", "audioSyncOffsetMs": offset]
+        }
+        func offsetCommands() -> [JSONObject] { bodies.filter { $0["type"] as? String == "set-capture-audio-sync-offset" } }
+        model.applySnapshotForTesting(["captureDevices": [] as [JSONObject]])
+        spin(until: { false }, limit: 0.1)
+        expectEqual(offsetCommands().count, 0, "an unlisted device is not commanded (the core would drop it)")
+        model.applySnapshotForTesting(["captureDevices": [device(offset: 0)]])
+        spin(until: { !offsetCommands().isEmpty }, limit: 2)
+        expectEqual((offsetCommands().first?["payload"] as? JSONObject)?["offsetMs"] as? Int, 40,
+                    "the device appears with 0 -> the operator's 40 is sent")
+        model.applySnapshotForTesting(["captureDevices": [device(offset: 0)]])
+        spin(until: { false }, limit: 0.1)
+        expectEqual(offsetCommands().count, 1, "not repeated while that request is in flight")
+        release?.resume(); release = nil
+        spin(until: { false }, limit: 0.1)
+        model.applySnapshotForTesting(["captureDevices": [device(offset: 40)]])
+        spin(until: { false }, limit: 0.1)
+        expectEqual(offsetCommands().count, 1, "nothing once the core reports the operator's value")
     }
 }

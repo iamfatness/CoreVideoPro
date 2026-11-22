@@ -346,8 +346,8 @@ struct ShellPrefs: Codable, Equatable {
         p.localAudioDeviceName = "MacBook Pro Microphone"
         p.zoomCameraMaxResolution = "720p"
         p.zoomCameraMaxFps = 30
-        p.recordingProfile = RecordingProfile(width: 1280, height: 720, fps: 50, codec: "h265",
-                                              targetBitrateMbps: 9.5, audioBitrateKbps: 192)
+        p.recordingProfile = RecordingProfile(width: 1280, height: 720, codec: "h265",
+                                              targetBitrateMbps: 9, audioBitrateKbps: 192)
         p.streamEncoder = StreamEncoderSettings(audioBitrateKbps: 128, keyframeIntervalSeconds: 4,
                                                 rateControl: "vbr", h264Profile: "main", bFrames: 0)
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
