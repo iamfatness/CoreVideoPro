@@ -30,6 +30,15 @@ std::string writeToneClip(const std::string& path, int seconds, double toneHz);
 // (0, 90, 180 or 270), the way a phone records portrait video. 30 fps, `frames` frames.
 std::string writeQuadrantClip(const std::string& path, int width, int height, int rotationDegrees, int frames = 15);
 
+// The same quadrant clip with options. `alpha` below 0xff writes ProRes 4444 in a MOV with every
+// pixel at that STRAIGHT alpha (quadrant colours unchanged); `prores` forces ProRes 4444 at any
+// alpha. A non-empty `ptsMs` stamps frame i at ptsMs[i] milliseconds instead of i/30 (a
+// variable-frame-rate clip; one entry per frame). Use ProRes for VFR: measured on macOS 27.2, the
+// H.264 writer merges two samples 1 ms apart (15 decoded frames for 16 written); ProRes keeps all 16.
+struct QuadrantClip { int frames = 15; uint8_t alpha = 0xff; bool prores = false; std::vector<int> ptsMs; };
+std::string writeQuadrantClip(const std::string& path, int width, int height, int rotationDegrees,
+                              const QuadrantClip& options);
+
 // An AUDIO-ONLY file (no video track): `millis` of a sine at `toneHz`, 48 kHz stereo, amplitude 0.5.
 // `.wav` paths are written as 16-bit LPCM WAVE, anything else as AAC in an M4A container.
 std::string writeToneOnlyAudio(const std::string& path, int millis, double toneHz);

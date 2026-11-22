@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <memory>
 #include <thread>
@@ -491,6 +492,104 @@ TEST(AvfMediaDecoder, APortraitPhoneClipDecodesUprightAtItsDisplaySize) {
     check(3 * k.width / 4, 3 * k.height / 4, k.br, "BR");
     EXPECT_TRUE(d->warnings().empty()) << k.degrees;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Review round (2026-11-22), items 1 and 4. A rotated track used to go through
+// AVAssetReaderVideoCompositionOutput, which (a) forces alpha to 255, so a
+// rotated ProRes 4444 lower-third became an opaque rectangle on air, and (b)
+// renders at a composition frameDuration taken from minFrameDuration, so one
+// close pair of timestamps in a variable-frame-rate phone clip multiplied the
+// frames decoded. Rotation now happens per decoded sample on the GPU.
+// ---------------------------------------------------------------------------
+namespace {
+// BGRA at display (x, y) of a frame from either factory: CPU pixels, or the
+// zero-copy frame's retained CVPixelBuffer.
+std::array<int, 4> pixelAt(const modules::VideoFrame& f, int x, int y) {
+  if (f.hasPixels()) return px(f, x, y);
+  const auto* image = dynamic_cast<const modules::PixelBufferVideoFrame*>(f.gpuPixels.get());
+  if (!image) return {-1, -1, -1, -1};
+  CVPixelBufferRef buffer = image->pixelBuffer();
+  CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
+  const auto* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
+  const uint8_t* p = base + static_cast<size_t>(y) * CVPixelBufferGetBytesPerRow(buffer) + static_cast<size_t>(x) * 4u;
+  std::array<int, 4> out{p[0], p[1], p[2], p[3]};
+  CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
+  return out;
+}
+int frameWidth(const modules::VideoFrame& f) { return f.hasPixels() ? f.pixelWidth : (f.gpuPixels ? f.gpuPixels->width : 0); }
+int frameHeight(const modules::VideoFrame& f) { return f.hasPixels() ? f.pixelHeight : (f.gpuPixels ? f.gpuPixels->height : 0); }
+}  // namespace
+
+TEST(AvfMediaDecoder, ARotatedAlphaClipStaysUprightAndKeepsItsStraightAlpha) {
+  // ProRes 4444, storage 64x36, 90 degrees clockwise, every pixel at straight alpha 0x80.
+  // Opaque output reads alpha 255; premultiplied output reads the colour channels halved.
+  using Bgr = std::array<int, 3>;
+  const Bgr red{0x20, 0x20, 0xE0}, green{0x20, 0xE0, 0x20}, blue{0xE0, 0x20, 0x20}, white{0xD0, 0xD0, 0xD0};
+  const auto p = tmp("rot90-alpha.mov"); Cleanup c{p};
+  corevideo::testing::QuadrantClip options;
+  options.alpha = 0x80;
+  const auto written = corevideo::testing::writeQuadrantClip(p.string(), 64, 36, 90, options);
+  ASSERT_EQ(written, "") << "the alpha fixture could not be written on this OS: " << written;
+  struct Factory { const char* name; std::function<std::unique_ptr<modules::IMediaDecoder>()> make; };
+  const Factory factories[] = {{"bgra", modules::createAvFoundationMediaDecoderFactory()},
+                               {"zero-copy", modules::createAvFoundationZeroCopyMediaDecoderFactory()}};
+  for (const auto& factory : factories) {
+    auto d = factory.make();
+    const auto f = pollUntilFrame(*d, req(p, false));
+    ASSERT_EQ(f.size(), 1u) << factory.name;
+    ASSERT_EQ(frameWidth(f[0]), 36) << factory.name;
+    ASSERT_EQ(frameHeight(f[0]), 64) << factory.name;
+    struct Probe { int x, y; Bgr want; const char* where; };
+    const Probe probes[] = {{9, 16, blue, "TL"}, {27, 16, red, "TR"}, {9, 48, white, "BL"}, {27, 48, green, "BR"}};
+    for (const auto& probe : probes) {
+      const auto v = pixelAt(f[0], probe.x, probe.y);
+      std::fprintf(stderr, "[rotated-alpha] %s %s BGRA(%d,%d,%d,%d)\n", factory.name, probe.where, v[0], v[1], v[2], v[3]);
+      EXPECT_NEAR(v[3], 0x80, 4) << factory.name << " " << probe.where << ": alpha";
+      for (int ch = 0; ch < 3; ++ch) {
+        EXPECT_NEAR(v[ch], probe.want[ch], 24) << factory.name << " " << probe.where << " channel " << ch;
+      }
+    }
+    EXPECT_TRUE(d->warnings().empty()) << factory.name;
+  }
+}
+
+TEST(AvfMediaDecoder, AVariableFrameRateRotatedClipDecodesOneFramePerSourceSample) {
+  // 16 samples at a nominal 30 fps, except that sample 2 lands 1 ms after sample 1,
+  // the way a phone's timestamps jitter. Every sample must come out once, upright,
+  // and nothing in between: a composition timed off minFrameDuration renders a
+  // frame per millisecond here (~500 for a half-second clip).
+  constexpr int kSamples = 16;
+  corevideo::testing::QuadrantClip options;
+  options.frames = kSamples;
+  options.prores = true;  // intra-only, so the 1 ms pair survives the writer (see AvfMediaFixtures.h)
+  for (int i = 0; i < kSamples; ++i) options.ptsMs.push_back(i <= 1 ? i * 33 : (i == 2 ? 34 : (i - 1) * 33 + 1));
+  const auto p = tmp("rot90-vfr.mov"); Cleanup c{p};
+  const auto written = corevideo::testing::writeQuadrantClip(p.string(), 64, 36, 90, options);
+  ASSERT_EQ(written, "") << written;
+  auto d = modules::createAvFoundationMediaDecoderFactory()();
+  auto* pre = dynamic_cast<modules::IMediaVideoPrefetch*>(d.get());
+  ASSERT_NE(pre, nullptr);
+  const auto r = req(p, true);
+  pre->syncMediaClock(r, steadyMs());
+  std::vector<int64_t> ids;
+  int width = 0, height = 0;
+  for (auto deadline = steadyMs() + 8000; steadyMs() < deadline && ids.size() < 2000;) {
+    auto got = pre->prefetchMediaVideo(r, steadyMs());
+    if (got.empty()) {
+      if (pre->mediaEnded()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
+    if (!ids.empty() && got.front().frame.frameId == ids.back()) continue;
+    ids.push_back(got.front().frame.frameId);
+    width = got.front().frame.pixelWidth; height = got.front().frame.pixelHeight;
+  }
+  std::fprintf(stderr, "[vfr] %zu frames for %d samples, %dx%d\n", ids.size(), kSamples, width, height);
+  EXPECT_TRUE(pre->mediaEnded()) << "the clip never reached its end";
+  EXPECT_EQ(static_cast<int>(ids.size()), kSamples) << "decoded frames for " << kSamples << " source samples";
+  EXPECT_EQ(width, 36);
+  EXPECT_EQ(height, 64);
 }
 
 // ---------------------------------------------------------------------------

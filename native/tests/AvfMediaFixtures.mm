@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <vector>
 
 namespace corevideo::testing {
 
@@ -36,9 +37,17 @@ void tagBt709(CVPixelBufferRef buffer) {
 std::string writeClip(const std::string& path, int width, int height, int fps, int frames, OSType format,
                       NSDictionary* outputSettings, AVFileType fileType,
                       const std::function<void(CVPixelBufferRef, int)>& fill,
-                      CGAffineTransform transform = CGAffineTransformIdentity) {
+                      CGAffineTransform transform = CGAffineTransformIdentity,
+                      const std::vector<int>& ptsMs = {}) {
   @autoreleasepool {
     if (width <= 0 || height <= 0 || fps <= 0 || frames <= 0) return "invalid fixture dimensions";
+    if (!ptsMs.empty() && static_cast<int>(ptsMs.size()) != frames) return "ptsMs must have one entry per frame";
+    // Frame i is stamped i/fps, or ptsMs[i] ms when given (a variable-frame-rate clip).
+    const auto ptsOf = [&](int index) {
+      return ptsMs.empty() ? CMTimeMake(index, fps) : CMTimeMake(ptsMs[static_cast<size_t>(index)], 1000);
+    };
+    const CMTime endTime = ptsMs.empty() ? CMTimeMake(frames, fps)
+                                         : CMTimeAdd(ptsOf(frames - 1), CMTimeMake(1000 / fps, 1000));
     NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
     NSError* error = nil;
@@ -76,14 +85,14 @@ std::string writeClip(const std::string& path, int width, int height, int fps, i
       for (int waited = 0; !input.readyForMoreMediaData && waited < 5000; ++waited) {
         [NSThread sleepForTimeInterval:0.001];
       }
-      const BOOL appended = [adaptor appendPixelBuffer:buffer withPresentationTime:CMTimeMake(index, fps)];
+      const BOOL appended = [adaptor appendPixelBuffer:buffer withPresentationTime:ptsOf(index)];
       CVPixelBufferRelease(buffer);
       if (!appended) {
         return std::string("appendPixelBuffer: ") + (writer.error.localizedDescription.UTF8String ?: "unknown");
       }
     }
     [input markAsFinished];
-    [writer endSessionAtSourceTime:CMTimeMake(frames, fps)];
+    [writer endSessionAtSourceTime:endTime];
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
     dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
@@ -151,6 +160,13 @@ std::string writeBt709BarsClip(const std::string& path, int frames, int fps) {
 }
 
 std::string writeQuadrantClip(const std::string& path, int width, int height, int rotationDegrees, int frames) {
+  QuadrantClip options;
+  options.frames = frames;
+  return writeQuadrantClip(path, width, height, rotationDegrees, options);
+}
+
+std::string writeQuadrantClip(const std::string& path, int width, int height, int rotationDegrees,
+                              const QuadrantClip& options) {
   // The transforms a phone writes: rotate clockwise for display, translated back into positive space.
   CGAffineTransform transform = CGAffineTransformIdentity;
   const auto w = static_cast<CGFloat>(width), h = static_cast<CGFloat>(height);
@@ -161,9 +177,14 @@ std::string writeQuadrantClip(const std::string& path, int width, int height, in
     case 270: transform = CGAffineTransformMake(0, -1, 1, 0, 0, w); break;
     default: return "rotation must be 0, 90, 180 or 270";
   }
-  NSDictionary* settings = @{ AVVideoCodecKey : AVVideoCodecTypeH264, AVVideoWidthKey : @(width),
-                              AVVideoHeightKey : @(height), AVVideoColorPropertiesKey : bt709ColourProperties() };
-  return writeClip(path, width, height, 30, frames, kCVPixelFormatType_32BGRA, settings, AVFileTypeMPEG4,
+  const bool alpha = options.prores || options.alpha != 0xff;
+  NSDictionary* settings = alpha
+      ? @{ AVVideoCodecKey : AVVideoCodecTypeAppleProRes4444, AVVideoWidthKey : @(width), AVVideoHeightKey : @(height) }
+      : @{ AVVideoCodecKey : AVVideoCodecTypeH264, AVVideoWidthKey : @(width), AVVideoHeightKey : @(height),
+           AVVideoColorPropertiesKey : bt709ColourProperties() };
+  const uint8_t a = options.alpha;
+  return writeClip(path, width, height, 30, options.frames, kCVPixelFormatType_32BGRA, settings,
+                   alpha ? AVFileTypeQuickTimeMovie : AVFileTypeMPEG4,
                    [&](CVPixelBufferRef buffer, int) {
     static constexpr uint8_t kQuadrant[2][2][3] = {{{0x20, 0x20, 0xE0}, {0x20, 0xE0, 0x20}},
                                                    {{0xE0, 0x20, 0x20}, {0xD0, 0xD0, 0xD0}}};
@@ -173,10 +194,10 @@ std::string writeQuadrantClip(const std::string& path, int width, int height, in
       uint8_t* row = base + static_cast<size_t>(y) * stride;
       for (int x = 0; x < width; ++x) {
         const auto* c = kQuadrant[y < height / 2 ? 0 : 1][x < width / 2 ? 0 : 1];
-        row[x * 4 + 0] = c[0]; row[x * 4 + 1] = c[1]; row[x * 4 + 2] = c[2]; row[x * 4 + 3] = 0xff;
+        row[x * 4 + 0] = c[0]; row[x * 4 + 1] = c[1]; row[x * 4 + 2] = c[2]; row[x * 4 + 3] = a;
       }
     }
-  }, transform);
+  }, transform, options.ptsMs);
 }
 
 std::string writeToneClip(const std::string& path, int seconds, double toneHz) {

@@ -348,7 +348,8 @@ if(COREVIDEO_WITH_AVF_MEDIA_DECODER)
     message(FATAL_ERROR "COREVIDEO_WITH_AVF_MEDIA_DECODER supports the macOS adapter only.")
   endif()
   target_link_libraries(corevideo_native PUBLIC
-    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox")
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox"
+    "-framework CoreImage")
 endif()
 
 if(COREVIDEO_WITH_COREAUDIO)

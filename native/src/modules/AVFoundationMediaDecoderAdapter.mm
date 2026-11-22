@@ -13,6 +13,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
+#import <CoreImage/CoreImage.h>
 #import <CoreVideo/CoreVideo.h>
 
 #include <algorithm>
@@ -93,9 +94,10 @@ struct VideoReaderState {
   // (N4): hand the decoder's IOSurface-backed buffer over retained, instead of
   // copying it into CPU BGRA.
   bool zeroCopy = false;
-  // Reader-queue only. A track output, or a video-composition output for a
-  // rotated track (both are AVAssetReaderOutput and copy the same way).
+  // Reader-queue only. Always a plain track output; a rotated track is turned
+  // upright per sample by `rotator` (review round 2026-11-22).
   AVAssetReaderOutput* output = nil;
+  std::unique_ptr<struct SampleRotator> rotator;
   bool straightenAlpha = false;
   bool loggedZeroCopyRefusal = false;
   int64_t lastPts100ns = -1;
@@ -170,57 +172,127 @@ bool trackContainsAlpha(AVAssetTrack* track) {
 struct TrackTransform {
   bool rotated = false;
   CGAffineTransform transform = CGAffineTransformIdentity;
-  CGSize naturalSize = CGSizeZero;
-  float nominalFrameRate = 0.f;
-  CMTime minFrameDuration = kCMTimeInvalid;
 };
 
-// The track properties a rotation needs, loaded asynchronously on the reader
+// The track property a rotation needs, loaded asynchronously on the reader
 // queue like every other asset property here.
 TrackTransform loadTrackTransform(AVAssetTrack* track, const std::atomic<bool>& cancelled) {
   TrackTransform result;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
-  NSArray<NSString*>* keys = @[ @"preferredTransform", @"naturalSize", @"nominalFrameRate", @"minFrameDuration" ];
+  NSArray<NSString*>* keys = @[ @"preferredTransform" ];
   [track loadValuesAsynchronouslyForKeys:keys completionHandler:^{ dispatch_semaphore_signal(done); }];
   if (!waitUnlessCancelled(done, cancelled)) return result;
-  for (NSString* key in keys) {
-    NSError* error = nil;
-    if ([track statusOfValueForKey:key error:&error] != AVKeyValueStatusLoaded) return result;
-  }
+  NSError* error = nil;
+  if ([track statusOfValueForKey:@"preferredTransform" error:&error] != AVKeyValueStatusLoaded) return result;
   result.transform = track.preferredTransform;
-  result.naturalSize = track.naturalSize;
-  result.nominalFrameRate = track.nominalFrameRate;
-  result.minFrameDuration = track.minFrameDuration;
-  result.rotated = !CGAffineTransformIsIdentity(result.transform) && result.naturalSize.width > 0 &&
-                   result.naturalSize.height > 0;
+  result.rotated = !CGAffineTransformIsIdentity(result.transform);
   return result;
 }
 
-// A one-instruction composition that draws the track through its
-// preferredTransform, moved back into positive space, at the display size.
-AVVideoComposition* uprightComposition(AVAssetTrack* track, const TrackTransform& t, CMTime assetDuration) {
-  const CGRect display = CGRectApplyAffineTransform(
-      CGRectMake(0, 0, t.naturalSize.width, t.naturalSize.height), t.transform);
-  AVMutableVideoComposition* composition = [AVMutableVideoComposition videoComposition];
-  composition.renderSize = CGSizeMake(std::round(std::abs(display.size.width)), std::round(std::abs(display.size.height)));
-  composition.frameDuration = CMTIME_IS_VALID(t.minFrameDuration) && CMTimeGetSeconds(t.minFrameDuration) > 0
-      ? t.minFrameDuration
-      : CMTimeMake(1, t.nominalFrameRate > 0 ? static_cast<int32_t>(std::lround(t.nominalFrameRate)) : 30);
-  composition.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2;
-  composition.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2;
-  composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2;
-  AVMutableVideoCompositionLayerInstruction* layer =
-      [AVMutableVideoCompositionLayerInstruction videoCompositionLayerInstructionWithAssetTrack:track];
-  [layer setTransform:CGAffineTransformConcat(t.transform,
-                                              CGAffineTransformMakeTranslation(-display.origin.x, -display.origin.y))
-               atTime:kCMTimeZero];
-  AVMutableVideoCompositionInstruction* instruction = [AVMutableVideoCompositionInstruction videoCompositionInstruction];
-  instruction.timeRange = CMTimeRangeMake(kCMTimeZero, CMTIME_IS_NUMERIC(assetDuration) ? assetDuration
-                                                                                        : kCMTimePositiveInfinity);
-  instruction.layerInstructions = @[ layer ];
-  composition.instructions = @[ instruction ];
-  return composition;
-}
+// A ROTATED TRACK (a phone held upright, plan 2026-11-21 Task 2), turned upright
+// ONE DECODED SAMPLE AT A TIME on the GPU (Core Image on the system Metal device).
+// Review round 2026-11-22 replaced AVAssetReaderVideoCompositionOutput here
+// because that output (1) forces alpha to 255, so a rotated ProRes 4444
+// lower-third covered the scene with its fill colour, and (2) re-times the clip
+// onto a composition frameDuration, so a variable-frame-rate phone clip lost or
+// gained frames (measured: 15 frames out for 16 samples). Here every source
+// sample becomes exactly one upright sample at its own timestamp, and alpha is
+// carried through untouched: colour management is off end to end and the
+// pixels are never premultiplied or unpremultiplied, so the owner's STRAIGHT
+// alpha contract holds (AvfMediaDecoder.ARotatedAlphaClipStaysUprightAndKeepsItsStraightAlpha).
+// The output is an IOSurface-backed, Metal-compatible pool buffer, so the
+// zero-copy path wraps it exactly like a decoder buffer, and the pool cannot
+// recycle a buffer a frame (or a Metal pass) still retains.
+struct SampleRotator {
+  CIContext* context = nil;
+  CGAffineTransform storageToDisplay = CGAffineTransformIdentity;  // y-down, as preferredTransform
+  size_t storageWidth = 0, storageHeight = 0;
+  size_t displayWidth = 0, displayHeight = 0;
+  CGAffineTransform ciTransform = CGAffineTransformIdentity;  // y-up Core Image space
+  bool exactQuarterTurn = false;  // a multiple of 90 degrees and/or a flip: sample nearest, bit-exact
+  CVPixelBufferPoolRef pool = nullptr;
+  ~SampleRotator() { if (pool) CVPixelBufferPoolRelease(pool); }
+
+  // Lazily sized from the first decoded buffer, so the geometry is the buffer's,
+  // never a container's naturalSize that can disagree with it.
+  bool prepare(size_t width, size_t height, std::string& error) {
+    if (pool && width == storageWidth && height == storageHeight) return true;
+    if (pool) { CVPixelBufferPoolRelease(pool); pool = nullptr; }
+    storageWidth = width; storageHeight = height;
+    const auto w = static_cast<CGFloat>(width), h = static_cast<CGFloat>(height);
+    const CGRect display = CGRectApplyAffineTransform(CGRectMake(0, 0, w, h), storageToDisplay);
+    displayWidth = static_cast<size_t>(std::lround(std::abs(display.size.width)));
+    displayHeight = static_cast<size_t>(std::lround(std::abs(display.size.height)));
+    if (displayWidth == 0 || displayHeight == 0) { error = "the track's transform has no area"; return false; }
+    // preferredTransform maps storage to display in y-DOWN pixels; Core Image is
+    // y-UP. Flip into storage y-down, apply the transform moved back into
+    // positive space, flip out of display y-down.
+    const CGAffineTransform flipIn = CGAffineTransformMake(1, 0, 0, -1, 0, h);
+    const CGAffineTransform toOrigin = CGAffineTransformMakeTranslation(-display.origin.x, -display.origin.y);
+    const CGAffineTransform flipOut = CGAffineTransformMake(1, 0, 0, -1, 0, static_cast<CGFloat>(displayHeight));
+    ciTransform = CGAffineTransformConcat(
+        CGAffineTransformConcat(CGAffineTransformConcat(flipIn, storageToDisplay), toOrigin), flipOut);
+    const auto unit = [](CGFloat v) { return std::abs(v) < 1e-6 || std::abs(std::abs(v) - 1) < 1e-6; };
+    const auto whole = [](CGFloat v) { return std::abs(v - std::round(v)) < 1e-6; };
+    const auto& t = ciTransform;
+    exactQuarterTurn = unit(t.a) && unit(t.b) && unit(t.c) && unit(t.d) && whole(t.tx) && whole(t.ty);
+    NSDictionary* attributes = @{
+      (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+      (id)kCVPixelBufferWidthKey : @(displayWidth),
+      (id)kCVPixelBufferHeightKey : @(displayHeight),
+      (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+      (id)kCVPixelBufferMetalCompatibilityKey : @YES,
+    };
+    if (CVPixelBufferPoolCreate(kCFAllocatorDefault, nullptr, (__bridge CFDictionaryRef)attributes, &pool) !=
+            kCVReturnSuccess || !pool) {
+      pool = nullptr;
+      error = "the rotation buffer pool could not be created";
+      return false;
+    }
+    if (!context) {
+      context = [CIContext contextWithOptions:@{
+        kCIContextWorkingColorSpace : [NSNull null],
+        kCIContextOutputColorSpace : [NSNull null],
+        kCIContextUseSoftwareRenderer : @NO,
+        kCIContextCacheIntermediates : @NO,
+      }];
+      if (!context) { error = "Core Image is unavailable"; return false; }
+    }
+    return true;
+  }
+
+  // +1 retained upright buffer, or nullptr with `error` set.
+  CVPixelBufferRef rotate(CVImageBufferRef source, std::string& error) {
+    if (!prepare(CVPixelBufferGetWidth(source), CVPixelBufferGetHeight(source), error)) return nullptr;
+    CVPixelBufferRef out = nullptr;
+    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &out) != kCVReturnSuccess || !out) {
+      error = "no rotation buffer was available";
+      return nullptr;
+    }
+    CIImage* image = [CIImage imageWithCVPixelBuffer:source options:@{ kCIImageColorSpace : [NSNull null] }];
+    if (exactQuarterTurn) image = [image imageBySamplingNearest];
+    image = [image imageByApplyingTransform:ciTransform];
+    CIRenderDestination* destination = [[CIRenderDestination alloc] initWithPixelBuffer:out];
+    destination.colorSpace = nil;
+    // Core Image reads a BGRA buffer as STRAIGHT alpha and premultiplies it for
+    // its working space; writing Unpremultiplied hands the owner straight alpha back.
+    destination.alphaMode = CIRenderDestinationAlphaUnpremultiplied;
+    NSError* failure = nil;
+    CIRenderTask* task = [context startTaskToRender:image
+                                           fromRect:CGRectMake(0, 0, displayWidth, displayHeight)
+                                      toDestination:destination
+                                            atPoint:CGPointZero
+                                              error:&failure];
+    if (!task || ![task waitUntilCompletedAndReturnError:&failure]) {
+      CVPixelBufferRelease(out);
+      error = std::string("Core Image could not rotate a frame (") +
+              (failure.localizedDescription.UTF8String ?: "unknown") + ")";
+      return nullptr;
+    }
+    CVBufferPropagateAttachments(source, out);
+    return out;
+  }
+};
 
 // Copies one decoded pixel buffer into a tightly packed BGRA vector
 // (stride = width * 4). nullptr = the allocation failed; the sample is dropped
@@ -289,6 +361,17 @@ void decodeNext(const std::shared_ptr<VideoReaderState>& state) {
       CVImageBufferRef image = CMSampleBufferGetImageBuffer(sampleBuffer);
       if (!image) { CFRelease(sampleBuffer); continue; }  // a marker sample with no picture
       const auto copyStart = std::chrono::steady_clock::now();
+      CVPixelBufferRef upright = nullptr;  // +1 when the track is rotated; released below
+      if (state->rotator) {
+        std::string rotateError;
+        upright = state->rotator->rotate(image, rotateError);
+        if (!upright) {
+          CFRelease(sampleBuffer);
+          failReader(state, "AVFoundation cannot play this rotated clip (" + rotateError + ")");
+          return;
+        }
+        image = upright;
+      }
       ClipVideoSample decoded;
       if (state->zeroCopy) {
         // ZERO-COPY (N4): the buffer itself, retained by PixelBufferVideoFrame
@@ -315,6 +398,7 @@ void decodeNext(const std::shared_ptr<VideoReaderState>& state) {
       decoded.duration100ns = duration;
       state->lastPts100ns = decoded.pts100ns;
       state->lastDuration100ns = duration;
+      if (upright) CVPixelBufferRelease(upright);  // a zero-copy frame holds its own retain
       CFRelease(sampleBuffer);
       if (!decoded.bgra && !decoded.gpu) continue;  // allocation failed: drop this sample, keep reading
       // The measurement the load drill reads: what the CPU copy costs per frame.
@@ -383,37 +467,22 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
       (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
       AVVideoColorPropertiesKey : colour,
     } mutableCopy];
-    NSMutableDictionary* composedSettings = [@{
-      (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
-    } mutableCopy];
     if (state->zeroCopy) {
       // Buffers Metal can wrap as a texture in place (N4).
-      for (NSMutableDictionary* each in @[ settings, composedSettings ]) {
-        each[(id)kCVPixelBufferIOSurfacePropertiesKey] = @{};
-        each[(id)kCVPixelBufferMetalCompatibilityKey] = @YES;
-      }
+      settings[(id)kCVPixelBufferIOSurfacePropertiesKey] = @{};
+      settings[(id)kCVPixelBufferMetalCompatibilityKey] = @YES;
+    }
+    if (transform.rotated) {
+      // Plan default P3, kept: only a non-identity transform pays for a
+      // rotation, so every unrotated clip keeps the plain output byte for byte.
+      state->rotator = std::make_unique<SampleRotator>();
+      state->rotator->storageToDisplay = transform.transform;
     }
     AVAssetReaderOutput* output = nil;
     @try {
-      if (transform.rotated) {
-        // A ROTATED TRACK (a phone held upright, plan 2026-11-21 Task 2). A
-        // track output hands frames over in STORAGE orientation, so a portrait
-        // clip was sideways on air. A video composition applies the track's
-        // preferredTransform on the GPU inside AVFoundation and renders at the
-        // DISPLAY size; the owner and the compositor never learn it was rotated.
-        // Plan default P3: only non-identity transforms take this path, so every
-        // unrotated clip keeps the plain track output byte for byte.
-        AVAssetReaderVideoCompositionOutput* composed =
-            [AVAssetReaderVideoCompositionOutput assetReaderVideoCompositionOutputWithVideoTracks:@[ track ]
-                                                                                   videoSettings:composedSettings];
-        composed.videoComposition = uprightComposition(track, transform, asset.duration);
-        composed.alwaysCopiesSampleData = NO;
-        output = composed;
-      } else {
-        AVAssetReaderTrackOutput* plain = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
-        plain.alwaysCopiesSampleData = NO;
-        output = plain;
-      }
+      AVAssetReaderTrackOutput* plain = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
+      plain.alwaysCopiesSampleData = NO;
+      output = plain;
     } @catch (NSException* exception) {
       failReader(state, std::string("AVFoundation cannot open this file (") +
                             (exception.reason.UTF8String ?: "invalid reader settings") + ")");
