@@ -6,6 +6,10 @@
 # Output: dist/macos/<version>/
 #   CoreVideoPro-<version>-arm64.dmg         signed, notarized, stapled
 #   CoreVideoPro-<version>-arm64.dmg.sha256  `shasum -a 256` line
+#   CoreVideoPro-<version>-arm64.pkg         guided installer (/Applications),
+#                                            signed Developer ID Installer,
+#                                            notarized, stapled
+#   CoreVideoPro-<version>-arm64.pkg.sha256
 #   manifest.json                            version, build, git sha, identity,
 #                                            notarization ids, helper inventory
 #
@@ -23,6 +27,8 @@
 #
 # Environment:
 #   COREVIDEO_SIGN_IDENTITY   default "Developer ID Application: John Wallace (42394L3353)"
+#   COREVIDEO_PKG_SIGN_IDENTITY  default "Developer ID Installer: John Wallace (42394L3353)"
+#                             (the .pkg needs this, NOT the Application certificate)
 #   COREVIDEO_NOTARY_PROFILE  notarytool keychain profile, default "CoreVideo Pro"
 #                             (one-time: xcrun notarytool store-credentials "CoreVideo Pro"
 #                             --team-id 42394L3353; "CoreVideo Plugin" is the OBS plugin's)
@@ -56,13 +62,16 @@ NOTARIZE=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-notarize) NOTARIZE=0; shift ;;
-        -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
         *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
 
 SIGN_ID="${COREVIDEO_SIGN_IDENTITY:-Developer ID Application: John Wallace (42394L3353)}"
 PROFILE="${COREVIDEO_NOTARY_PROFILE:-CoreVideo Pro}"
+# The .pkg is signed with the Developer ID INSTALLER certificate, a different
+# certificate from the Application one above.
+PKG_SIGN_ID="${COREVIDEO_PKG_SIGN_IDENTITY:-Developer ID Installer: John Wallace (42394L3353)}"
 ZOOM_SDK="${ZOOM_SDK_DIR:-$HOME/Downloads/zoom-sdk-macos-7.1.5.84750/ZoomSDK}"
 export PATH="$HOME/Library/Python/3.9/bin:$PATH"   # pip-installed cmake/ninja
 
@@ -78,6 +87,15 @@ done
 # the producer's SIGPIPE turns a hit into a failure. Capture, then match.
 IDENTITIES="$(security find-identity -v -p codesigning)"
 grep -qF "\"$SIGN_ID\"" <<<"$IDENTITIES" || die "signing identity not in keychain: $SIGN_ID"
+case "$PKG_SIGN_ID" in *"Developer ID Installer"*) ;; *) die "COREVIDEO_PKG_SIGN_IDENTITY must be a \"Developer ID Installer\" identity, got: $PKG_SIGN_ID" ;; esac
+# -p basic: installer certs are not code-signing identities, so the
+# `-p codesigning` list above never shows them.
+PKG_IDENTITIES="$(security find-identity -v)"
+grep -qF "\"$PKG_SIGN_ID\"" <<<"$PKG_IDENTITIES" \
+    || die "installer signing identity not in keychain: $PKG_SIGN_ID (the .pkg needs the Developer ID Installer certificate, not the Application one)"
+for tool in pkgbuild productbuild pkgutil spctl; do
+    command -v "$tool" >/dev/null || die "missing tool: $tool"
+done
 [ -d "$ZOOM_SDK/ZoomSDK.framework" ] || die "no ZoomSDK.framework under ZOOM_SDK_DIR=$ZOOM_SDK"
 if [ "$NOTARIZE" = "1" ]; then
     # Cheap auth probe: fails fast on a missing profile or bad credentials.
@@ -102,9 +120,11 @@ SHELL_SCRATCH="mac-shell/.build-release"
 if [ "$NOTARIZE" = "1" ]; then
     OUT="dist/macos/$VERSION"
     DMG_NAME="CoreVideoPro-$VERSION-arm64.dmg"
+    PKG_NAME="CoreVideoPro-$VERSION-arm64.pkg"
 else
     OUT="dist/macos/$VERSION-UNNOTARIZED"
     DMG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.dmg"
+    PKG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.pkg"
 fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cvp-release.XXXXXX")"
 # Assembled in the work dir, never at mac-shell/.build/CoreVideo Pro.app (the
@@ -271,6 +291,19 @@ if [ "$NOTARIZE" = "1" ]; then
     cp "$WORK"/notary-*.json "$PUB/" 2>/dev/null || true
 fi
 
+# ── PKG (guided installer; built from the stapled app) ──────────────────────
+log "build + sign .pkg"
+PKG="$PUB/$PKG_NAME"
+scripts/make-macos-pkg.sh --app "$APP" --version "$VERSION" --out "$PKG" --sign "$PKG_SIGN_ID"
+PKG_SUBMISSION="skipped"
+if [ "$NOTARIZE" = "1" ]; then
+    log "notarize .pkg"
+    PKG_SUBMISSION="$(notarize "$PKG" pkg)"
+    xcrun stapler staple "$PKG"
+    xcrun stapler validate "$PKG"
+    cp "$WORK"/notary-pkg.json "$PUB/" 2>/dev/null || true
+fi
+
 # ── Verify (the questions a user's Mac asks) ────────────────────────────────
 log "verify"
 codesign --verify --deep --strict --verbose=2 "$APP"
@@ -294,10 +327,23 @@ if [ "$NOTARIZE" = "1" ]; then
     echo "app inside the mounted DMG: stapled + Notarized Developer ID"
 fi
 
+# Capture first: `cmd | grep -q` under pipefail can fail on SIGPIPE.
+pkgsig="$(pkgutil --check-signature "$PKG" 2>&1 || true)"
+grep -q "Developer ID Installer" <<<"$pkgsig" \
+    || die "pkg is not signed by a Developer ID Installer identity"
+if [ "$NOTARIZE" = "1" ]; then
+    assess="$(spctl -a -vv -t install "$PKG" 2>&1 || true)"
+    echo "$assess"
+    grep -q "source=Notarized Developer ID" <<<"$assess" \
+        || die "pkg is not assessed as Notarized Developer ID"
+fi
+
 # ── Artifacts ───────────────────────────────────────────────────────────────
 log "write $OUT"
 ( cd "$PUB" && shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256" )
 SHA256="$(cut -d' ' -f1 "$PUB/$DMG_NAME.sha256")"
+( cd "$PUB" && shasum -a 256 "$PKG_NAME" > "$PKG_NAME.sha256" )
+PKG_SHA256="$(cut -d' ' -f1 "$PUB/$PKG_NAME.sha256")"
 HELPERS="$(cd "$APP/Contents/Resources" && ls -d corevideo-* | paste -sd, -)"
 python3 -I - "$PUB/manifest.json" <<PY
 import json, sys
@@ -316,9 +362,16 @@ manifest = {
         "keychainProfile": "$PROFILE",
         "appSubmissionId": "$APP_SUBMISSION",
         "dmgSubmissionId": "$DMG_SUBMISSION",
+        "pkgSubmissionId": "$PKG_SUBMISSION",
         "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
     },
     "dmg": {"file": "$DMG_NAME", "sha256": "$SHA256", "volumeName": "CoreVideo Pro"},
+    "pkg": {"file": "$PKG_NAME", "sha256": "$PKG_SHA256",
+            "identifier": "us.iamfatness.corevideopro.pkg",
+            "signingIdentity": "$PKG_SIGN_ID",
+            "submissionId": "$PKG_SUBMISSION",
+            "notarized": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
+            "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False )},
     "bundledHelpers": "$HELPERS".split(","),
     "zoomSdk": "$(basename "$(dirname "$ZOOM_SDK")")",
     "runtimeRequirements": [
@@ -349,3 +402,4 @@ DMG="$OUT/$DMG_NAME"
 cat "$OUT/manifest.json"
 [ "$NOTARIZE" = "1" ] || echo "NOTE: --skip-notarize build; NOT distributable"
 echo "release: $DMG"
+echo "release: $OUT/$PKG_NAME"

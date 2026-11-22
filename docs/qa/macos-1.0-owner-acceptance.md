@@ -32,6 +32,12 @@ included, before anything is packaged, and stops the release on any failure (or 
 2. Pass: no Gatekeeper warning or "unidentified developer" dialog; `spctl -a -vv
    "/Applications/CoreVideo Pro.app"` reports `source=Notarized Developer ID`;
    `xcrun stapler validate` on the DMG succeeds.
+3. Repeat from a clean state with the `.pkg` instead: double-click
+   `CoreVideoPro-<version>-arm64.pkg`. Pass: no Gatekeeper warning; the installer
+   completes; `CoreVideo Pro.app` is in `/Applications` and launches;
+   `spctl -a -vv -t install` on the .pkg reports `source=Notarized Developer ID`,
+   `pkgutil --check-signature` shows the Developer ID Installer chain, and
+   `xcrun stapler validate` on the .pkg succeeds.
 
 ## 2. Permission prompts appear once and persist
 
