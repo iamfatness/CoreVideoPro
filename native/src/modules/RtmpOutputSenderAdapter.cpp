@@ -270,6 +270,12 @@ bool hasRtmpHostAndPath(const std::string& url) {
   return true;
 }
 
+#if !defined(_WIN32)
+// macOS's system root certificates as PEM (Linux distributions differ; a
+// missing file leaves rtmps on ffmpeg's default and is visible in the args log).
+constexpr const char* kSystemTlsCaBundle = "/etc/ssl/cert.pem";
+#endif
+
 std::string validateRtmpSettings(const OutputDestinationSettings& settings) {
   const std::string protocol = lowercaseAscii(settings.protocol);
   if (protocol != "rtmp" && protocol != "rtmps") {
@@ -1574,6 +1580,11 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     config.h264Profile = compatibility.videoCodec == "h264" ? configuredH264Profile_ : "auto";
     config.bFrames = configuredBFrames_;
     config.endpoint = configuredEndpoint_;
+#if !defined(_WIN32)
+    // The bundled ffmpeg's static OpenSSL has no default trust store, so an
+    // rtmps:// stream would accept any certificate. macOS ships its roots here.
+    if (std::filesystem::exists(kSystemTlsCaBundle)) config.tlsCaFile = kSystemTlsCaBundle;
+#endif
     if (protocol_.container == "flv") {
       if (const char* tap = std::getenv("COREVIDEO_QA_RTMP_TAP_PATH")) {
         const std::string path(tap);
