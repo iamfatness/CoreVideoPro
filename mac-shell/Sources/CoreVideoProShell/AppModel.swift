@@ -2761,7 +2761,7 @@ final class AppModel: ObservableObject {
             audio.append(audioMixCommand())
             lastSyncedStripIds = stripIds
         }
-        if let routing = routingBaseCommand(), let sends = routing["sends"] as? [JSONObject],
+        if let routing = routingBaseCommand(), let sends = Self.routingMemo(routing),
            !(lastRoutingBaseSent.map { NSArray(array: $0).isEqual(to: sends) } ?? false) {
             routingBaseTask?.cancel()
             audio.append(routing)
@@ -4090,7 +4090,77 @@ final class AppModel: ObservableObject {
     // The core's valid bus ids (MediaCore::isAudioRoutingBus). Rows are
     // sources, columns are buses; the command is FULL-STATE with a 25-sync
     // hold-last guard, so a partial send is worse than none.
-    static let routingBuses = ["master", "pgm-l", "pgm-r", "stream", "mon", "iso-1"]
+    // A6: the 15 fixed buses plus the operator's custom buses (AudioBuses.swift).
+    @Published private(set) var buses: [AudioBus] = AudioBusPolicy.fixedBuses
+    private var customBusCounter = 1
+    /// The LISTEN bus (exclusive; nil = none). Session state, re-sent with every
+    /// base matrix so a respawned core hears it again (Windows, plan D3).
+    @Published private(set) var listenBusId: String?
+    var routingBusIds: [String] { buses.map(\.id) }
+
+    @discardableResult
+    func addCustomBus() -> AudioBus {
+        let result = AudioBusPolicy.addCustom(buses, counter: customBusCounter)
+        buses = result.buses
+        customBusCounter = result.counter
+        return result.added
+    }
+
+    /// Unroutes the bus's crosspoints through the operator-edit path, drops it
+    /// (its bus sends go with it) and clears LISTEN if it was the listened bus.
+    @discardableResult
+    func removeBus(_ id: String) -> Bool {
+        guard let next = AudioBusPolicy.remove(id, from: buses) else { return false }
+        for (source, sendsByBus) in audioSends where sendsByBus[id] != nil {
+            audioSends[source]?[id] = nil
+            editRoute(source: source, bus: id, enabled: false, gainDb: 0)
+        }
+        for key in operatorRouteEdits.keys where key.bus == id { operatorRouteEdits[key] = nil }
+        if selectedSend?.bus == id { selectedSend = nil }
+        buses = next
+        if listenBusId == id { listenBusId = nil }
+        pushRoutingBase()
+        return true
+    }
+
+    @discardableResult
+    func renameBus(_ id: String, to label: String) -> Bool {
+        guard let next = AudioBusPolicy.rename(id, to: label, in: buses) else { return false }
+        buses = next
+        return true
+    }
+
+    @discardableResult
+    func setBusSend(_ id: String, target: String, enabled: Bool) -> Bool {
+        guard let next = AudioBusPolicy.setSend(id, target: target, enabled: enabled, in: buses) else { return false }
+        buses = next
+        pushRoutingBase()
+        return true
+    }
+
+    @discardableResult
+    func setBusOutputGain(_ id: String, gainDb: Double) -> Bool {
+        guard let next = AudioBusPolicy.setOutputGain(id, gainDb: gainDb, in: buses) else { return false }
+        buses = next
+        pushRoutingBase()
+        return true
+    }
+
+    func setListening(_ id: String, on: Bool) {
+        guard buses.contains(where: { $0.id == id }) else { return }
+        listenBusId = AudioBusPolicy.listen(current: listenBusId, bus: id, on: on)
+        pushRoutingBase()
+    }
+
+    /// Routed sources per bus (Windows RefreshBusRoutedCounts).
+    func routedCount(bus: String) -> Int { audioSends.values.filter { $0[bus] != nil }.count }
+
+    /// The base-matrix memo: the sends AND the bus state. Comparing only `sends`
+    /// would swallow a bus-send or LISTEN change (nothing else moved).
+    static func routingMemo(_ command: JSONObject?) -> [JSONObject]? {
+        guard let command, let sends = command["sends"] as? [JSONObject] else { return nil }
+        return sends + [["busSends": command["busSends"] ?? [], "monitorBusId": command["monitorBusId"] ?? ""]]
+    }
 
     @Published var audioSends: [String: [String: Double]] = [:]  // source → bus → dB
     @Published var selectedSend: (source: String, bus: String)?
@@ -4166,7 +4236,7 @@ final class AppModel: ObservableObject {
             operatorEdits: operatorRouteEdits)
         guard !sends.isEmpty else { return nil }
         return ["type": "sync-audio-routing-matrix", "sends": sends,
-                "busSends": [] as [JSONObject], "monitorBusId": ""]
+                "busSends": AudioBusPolicy.busSends(buses), "monitorBusId": listenBusId ?? ""]
     }
 
     private var routingBaseTask: Task<Void, Never>?
@@ -4200,7 +4270,7 @@ final class AppModel: ObservableObject {
 
     private func sendRoutingBaseNow() async {
         guard let command = routingBaseCommand() else { return }
-        let sends = command["sends"] as? [JSONObject] ?? []
+        let sends = Self.routingMemo(command) ?? []
         if let last = lastRoutingBaseSent, NSArray(array: last).isEqual(to: sends) { return }
         let envelope = routingBaseEnvelope(command)
         if let observer = routingBaseSendObserver {
@@ -4279,7 +4349,7 @@ final class AppModel: ObservableObject {
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
                 "commands": [[
                     "type": "sync-audio-routing-matrix", "sends": sends,
-                    "busSends": [] as [JSONObject], "monitorBusId": "",
+                    "busSends": AudioBusPolicy.busSends(buses), "monitorBusId": listenBusId ?? "",
                 ]],
             ])
         } catch {
@@ -4998,7 +5068,7 @@ final class AppModel: ObservableObject {
     func markAudioConsoleDeliveredForTesting() {
         lastSyncedStripIds = Set(strips.map(\.id))
         scheduledStripIds = nil
-        lastRoutingBaseSent = routingBaseCommand()?["sends"] as? [JSONObject]
+        lastRoutingBaseSent = Self.routingMemo(routingBaseCommand())
     }
 
     /// A ONE-SHOT COMMAND MUST BE RE-APPLIED ON EVERY CORE GENERATION (CLAUDE.md).
@@ -5031,7 +5101,7 @@ final class AppModel: ObservableObject {
         if let routing { commands.append(routing) }
         commands.append(captureAudioSourcesCommand())
         lastSyncedStripIds = Set(strips.map(\.id))
-        lastRoutingBaseSent = routing?["sends"] as? [JSONObject]
+        lastRoutingBaseSent = Self.routingMemo(routing)
         if let observer = audioReassertObserver { observer(commands); return }
         guard let bridge else { return }
         Task { [weak self] in

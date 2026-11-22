@@ -550,7 +550,7 @@ extension ShellTests {
             (["zoom:42", "mon", true, 11, "core-1", 3, "op"], "gainDb must be between -60 and +10."),
             (["zoom:42", "mon", true, -61, "core-1", 3, "op"], "gainDb must be between -60 and +10."),
             (["zoom:42", "mon", true, 0, "core-1", 3.5, "op"], "expectedRevision must be a nonnegative safe integer."),
-            (["zoom:42", "booth", true, 0, "core-1", 3, "op"], "busId must be one of master, pgm-l, pgm-r, stream, mon, iso-1."),
+            (["zoom:42", "booth", true, 0, "core-1", 3, "op"], "busId must be one of master, pgm-l, pgm-r, iso-1, iso-2, iso-3, iso-4, iso-5, iso-6, iso-7, iso-8, mon, stream, aux-1, aux-2."),   // A6: the 15 fixed buses
         ] as [([Any?], String)] {
             expectEqual(invoke(s, "audio.route.set", args), .fail(text), text)
         }

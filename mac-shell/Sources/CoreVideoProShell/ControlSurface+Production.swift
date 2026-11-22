@@ -138,8 +138,8 @@ extension AppModelControlSurface {
         guard gain.isFinite, (-60...10).contains(gain) else { return .fail("gainDb must be between -60 and +10.") }
         guard case .success(let revision?) = safeRevision(arg(5)) else { return .fail(revisionError) }
         // A Mac text: the Mac's full-state matrix would drop an unknown bus silently.
-        guard AppModel.routingBuses.contains(bus) else {
-            return .fail("busId must be one of \(AppModel.routingBuses.joined(separator: ", ")).")
+        guard model.routingBusIds.contains(bus) else {
+            return .fail("busId must be one of \(model.routingBusIds.joined(separator: ", ")).")
         }
         switch await model.requestAudioRouteControl(source: source, bus: bus, enabled: arg(2) as? Bool ?? false,
                                                     gainDb: gain, expectedEpoch: epoch, expectedRevision: revision,

@@ -572,7 +572,7 @@ struct AudioRoutingSurface: View {
             Grid(horizontalSpacing: 2, verticalSpacing: 2) {
                 GridRow {
                     Color.clear.frame(width: 150, height: 14)
-                    ForEach(AppModel.routingBuses, id: \.self) { bus in
+                    ForEach(model.routingBusIds, id: \.self) { bus in
                         MonoLabel(bus).frame(width: 62)
                     }
                 }
@@ -582,7 +582,7 @@ struct AudioRoutingSurface: View {
                             .frame(width: 150, alignment: .leading)
                             .padding(.vertical, 4).padding(.leading, 6)
                             .background(Rectangle().fill(Studio.surface))
-                        ForEach(AppModel.routingBuses, id: \.self) { bus in
+                        ForEach(model.routingBusIds, id: \.self) { bus in
                             let gain = model.sendGain(source: source.id, bus: bus)
                             let selected = model.selectedSend?.source == source.id
                                 && model.selectedSend?.bus == bus

@@ -28,6 +28,13 @@ extension ShellTests {
             ("audio-meters/readout-labels", testMasterMeterReadoutLabels),
             ("audio-meters/decode", testMasterMeterDecodeFromTheSnapshot),
             ("audio-meters/zoom-muted-is-display-only", testZoomMutedIsDisplayOnly),
+            // Task 7: buses (ports of WT/RoutingMatrixViewModelTests bus cases).
+            ("audio-buses/fixed-list-and-custom", testAudioBusListAndCustomBusesAreWindows),
+            ("audio-buses/sends-and-listen", testAudioBusSendsAndListenAreWindows),
+            ("audio-buses/wire-full-state", testAudioBusStateRidesTheBaseMatrix),
+            ("audio-buses/bus-only-change-pushes", testABusOnlyChangeStillPushesTheMatrix),
+            ("audio-buses/remove-routed-bus", testRemovingARoutedCustomBusUnroutesIt),
+            ("control/route-set-custom-bus", testControlRouteSetAcceptsLiveBuses),
         ]
     }
 
@@ -364,5 +371,128 @@ extension ShellTests {
         model.strips = strips
         let channels = model.audioMixCommand()["channels"] as? [JSONObject] ?? []
         expectEqual(channels.first?["muted"] as? Bool, false, "the wire mute is the A1's, not Zoom's")
+    }
+
+    // ── Task 7 ───────────────────────────────────────────────────────────────
+
+    static func testAudioBusListAndCustomBusesAreWindows() {
+        expectEqual(AudioBusPolicy.fixedBuses.map(\.id),
+                    ["master", "pgm-l", "pgm-r", "iso-1", "iso-2", "iso-3", "iso-4", "iso-5", "iso-6", "iso-7",
+                     "iso-8", "mon", "stream", "aux-1", "aux-2"], "the 15 fixed buses in Windows order")
+        expectEqual(AudioBusPolicy.fixedBuses.map(\.label).prefix(4).map { $0 }, ["MASTER", "PGM L", "PGM R", "ISO 1"], "labels")
+        expectEqual(AudioBusPolicy.fixedBuses.filter(\.isRemovable).map(\.id), ["aux-1", "aux-2"], "only aux is removable")
+        var buses = AudioBusPolicy.fixedBuses
+        var counter = 1
+        var added = AudioBusPolicy.addCustom(buses, counter: counter)
+        buses = added.buses; counter = added.counter
+        expectEqual(added.added.id, "bus-01", "first custom bus"); expectEqual(added.added.label, "BUS 1", "label")
+        buses = AudioBusPolicy.remove("bus-01", from: buses)!
+        added = AudioBusPolicy.addCustom(buses, counter: counter)
+        expectEqual(added.added.id, "bus-02", "a removed number is never reused")
+        expect(AudioBusPolicy.remove("master", from: buses) == nil, "fixed buses cannot be removed")
+        expect(AudioBusPolicy.rename("iso-1", to: "X", in: buses) == nil, "fixed buses cannot be renamed")
+        expect(AudioBusPolicy.rename("aux-1", to: "   ", in: buses) == nil, "blank name refused")
+        expectEqual(AudioBusPolicy.rename("aux-1", to: " Talkback ", in: buses)?.first { $0.id == "aux-1" }?.label,
+                    "Talkback", "aux renamed, trimmed")
+    }
+
+    /// WT BusOutputs_BuildBusSendsReflectsTheCardToggles + BusListen_IsExclusive...
+    static func testAudioBusSendsAndListenAreWindows() {
+        var buses = AudioBusPolicy.fixedBuses
+        buses = AudioBusPolicy.setSend("aux-1", target: "master", enabled: true, in: buses)!
+        buses = AudioBusPolicy.setSend("aux-1", target: "mon", enabled: true, in: buses)!
+        buses = AudioBusPolicy.setOutputGain("aux-1", gainDb: -6, in: buses)!
+        let sends = AudioBusPolicy.busSends(buses)
+        expectEqual(sends.count, 2, "two sends")
+        expectEqual(sends.map { [$0["fromBusId"] as? String ?? "", $0["toBusId"] as? String ?? ""] },
+                    [["aux-1", "master"], ["aux-1", "mon"]], "aux-1 -> master, mon")
+        expectEqual(sends.map { $0["gainDb"] as? Double ?? 0 }, [-6, -6], "shared output gain")
+        expect(AudioBusPolicy.setSend("master", target: "mon", enabled: true, in: buses) == nil, "fixed bus send refused")
+        expect(AudioBusPolicy.setSend("aux-1", target: "iso-1", enabled: true, in: buses) == nil, "iso target refused")
+        expectEqual(AudioBusPolicy.setOutputGain("aux-2", gainDb: 40, in: buses)?.first { $0.id == "aux-2" }?.outputGainDb,
+                    10, "gain clamped to +10")
+        buses = AudioBusPolicy.setSend("aux-1", target: "master", enabled: false, in: buses)!
+        expectEqual(AudioBusPolicy.busSends(buses).count, 1, "untoggling master leaves one send")
+        var listen: String? = nil
+        listen = AudioBusPolicy.listen(current: listen, bus: "aux-1", on: true); expectEqual(listen, "aux-1", "aux-1")
+        listen = AudioBusPolicy.listen(current: listen, bus: "aux-2", on: true); expectEqual(listen, "aux-2", "exclusive")
+        listen = AudioBusPolicy.listen(current: listen, bus: "aux-1", on: false); expectEqual(listen, "aux-2", "off on another bus keeps it")
+        listen = AudioBusPolicy.listen(current: listen, bus: "aux-2", on: false); expect(listen == nil, "off clears")
+        expectEqual(AudioBusPolicy.listen(current: nil, bus: "iso-3", on: true), "iso-3", "a fixed bus can be listened")
+    }
+
+    @MainActor
+    static func testAudioBusStateRidesTheBaseMatrix() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        expectEqual(model.routingBaseCommand()?["monitorBusId"] as? String, "", "no LISTEN is \"\"")
+        expectEqual((model.routingBaseCommand()?["busSends"] as? [JSONObject])?.count, 0, "no bus sends")
+        model.setBusSend("aux-2", target: "stream", enabled: true)
+        model.setListening("aux-2", on: true)
+        let command = model.routingBaseCommand() ?? [:]
+        expectEqual(command["monitorBusId"] as? String, "aux-2", "LISTEN rides the base matrix")
+        let sends = command["busSends"] as? [JSONObject] ?? []
+        expectEqual(sends.first?["fromBusId"] as? String, "aux-2", "bus send rides the base matrix")
+        expectEqual(sends.first?["toBusId"] as? String, "stream", "to stream")
+        // A respawned core gets them back: the reassert sends the same base matrix.
+        var reasserted: [JSONObject] = []
+        model.audioReassertObserver = { reasserted = $0 }
+        model.reassertAudioConsole()
+        let matrix = reasserted.first { $0["type"] as? String == "sync-audio-routing-matrix" }
+        expectEqual(matrix?["monitorBusId"] as? String, "aux-2", "LISTEN survives a core respawn (Windows, D3)")
+    }
+
+    /// The memo regression: a change to ONLY the bus state must still push.
+    @MainActor
+    static func testABusOnlyChangeStillPushesTheMatrix() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        var sent: [JSONObject] = []
+        model.routingBaseSendObserver = { sent.append($0) }
+        model.pushRoutingBase()
+        spin(until: { sent.count >= 1 }, limit: 2)
+        expectEqual(sent.count, 1, "first push")
+        model.setListening("mon", on: true)
+        spin(until: { sent.count >= 2 }, limit: 2)
+        expectEqual(sent.count, 2, "a LISTEN-only change pushes")
+        expectEqual((sent.last?["commands"] as? [JSONObject])?.first?["monitorBusId"] as? String, "mon", "with the bus")
+        model.setBusSend("aux-1", target: "master", enabled: true)
+        spin(until: { sent.count >= 3 }, limit: 2)
+        expectEqual(sent.count, 3, "a bus-send-only change pushes")
+        model.pushRoutingBase(); spin(until: { false }, limit: 0.3)
+        expectEqual(sent.count, 3, "an unchanged matrix still sends nothing")
+    }
+
+    @MainActor
+    static func testRemovingARoutedCustomBusUnroutesIt() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        let bus = model.addCustomBus()
+        model.selectOrRouteSend(source: "11", bus: bus.id)
+        model.setBusSend(bus.id, target: "master", enabled: true)
+        model.setListening(bus.id, on: true)
+        func sendsTo(_ id: String) -> Int {
+            (model.routingBaseCommand()?["sends"] as? [JSONObject] ?? []).filter { $0["busId"] as? String == id }.count
+        }
+        expectEqual(sendsTo(bus.id), 1, "routed to the custom bus")
+        expectEqual(model.routedCount(bus: bus.id), 1, "routed count")
+        expect(model.removeBus(bus.id), "removed")
+        expectEqual(sendsTo(bus.id), 0, "its crosspoints are unrouted")
+        expectEqual((model.routingBaseCommand()?["busSends"] as? [JSONObject])?.count, 0, "its bus sends are gone")
+        expectEqual(model.routingBaseCommand()?["monitorBusId"] as? String, "", "LISTEN on it is cleared")
+        expect(!model.routingBusIds.contains(bus.id), "the column is gone")
+        expect(!model.removeBus("master"), "a fixed bus is never removed")
+    }
+
+    @MainActor
+    static func testControlRouteSetAcceptsLiveBuses() {
+        let model = AppModel()
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        let refused = invoke(surface, "audio.route.set", ["11", "bus-01", true, 0.0, "epoch", 0, "op-1"])
+        expect(refused?.ok == false && (refused?.error ?? "").hasPrefix("busId must be one of"), "bus-01 refused before it exists")
+        expect((refused?.error ?? "").contains("iso-8") && (refused?.error ?? "").contains("aux-2"), "the list names all 15")
+        model.addCustomBus()
+        let after = invoke(surface, "audio.route.set", ["11", "bus-01", true, 0.0, "epoch", 0, "op-1"])
+        expect(!(after?.error ?? "").hasPrefix("busId must be one of"), "bus-01 passes the bus check once added")
     }
 }
