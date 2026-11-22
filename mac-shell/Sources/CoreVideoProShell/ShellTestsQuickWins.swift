@@ -25,6 +25,8 @@ extension ShellTests {
             ("quickwins/z1-windows-preference-table", testZ1WindowsPreferenceTable),
             ("quickwins/z1-join-carries-and-latches-the-ceiling", testZ1JoinCarriesAndLatchesTheCeiling),
             ("quickwins/z1-prefs-round-trip", testZ1PrefsRoundTrip),
+            ("quickwins/z2-clamp-and-label", testZ2ClampAndLabel),
+            ("quickwins/z2-both-copies-reach-the-core", testZ2BothCopiesReachTheCore),
         ]
     }
 
@@ -331,5 +333,67 @@ extension ShellTests {
         let fresh = AppModel(); fresh.applyRestoredPrefs(junk)
         expectEqual(fresh.zoomCameraMaxResolution, "1080p", "an unknown saved ceiling normalizes to 1080p")
         expectEqual(fresh.zoomCameraMaxFps, 60, "an unknown saved fps normalizes to 60")
+    }
+
+    // ── Z2: capture audio-sync nudge ────────────────────────────────────────
+
+    /// The Windows label table and the +/-500 clamp: 26 presses of +20 stop at
+    /// 500 (26 x 20 = 520 would pass it). Mutation: drop the clamp -> red.
+    @MainActor
+    private static func testZ2ClampAndLabel() {
+        expectEqual(CaptureAudioSyncPolicy.label(0), "Audio sync 0 ms", "zero")
+        expectEqual(CaptureAudioSyncPolicy.label(40), "Audio delayed +40 ms", "later")
+        expectEqual(CaptureAudioSyncPolicy.label(-60), "Audio advanced -60 ms", "earlier (Windows keeps the sign)")
+        let model = AppModel()
+        model.captureDevices = [CaptureDeviceRow(id: "cam1", name: "Cam", kind: "video", vendor: "",
+                                                 connectionState: "connected", signalPresent: true, warning: "")]
+        for _ in 0..<26 { model.nudgeCaptureAudio(deviceId: "cam1", deltaMs: 20) }
+        expectEqual(model.captureAudioSyncOffset("cam1"), 500, "26 presses clamp at +500")
+        for _ in 0..<60 { model.nudgeCaptureAudio(deviceId: "cam1", deltaMs: -20) }
+        expectEqual(model.captureAudioSyncOffset("cam1"), -500, "and at -500")
+        model.resetCaptureAudioSync(deviceId: "cam1")
+        expectEqual(model.captureAudioSyncOffset("cam1"), 0, "reset")
+        model.nudgeCaptureAudio(deviceId: "nope", deltaMs: 20)
+        expectEqual(model.captureAudioSyncOffset("nope"), 0, "an unknown device is ignored")
+    }
+
+    /// Both copies: the device command (offsetMs) and the paired mic's sources
+    /// entry (audioSyncOffsetMs), which a core restart's reassert carries; a new
+    /// core generation re-sends the device copy.
+    /// Mutations: leave the offset out of the sources entry -> red (entry and
+    /// reassert); skip reassertCaptureAudioSyncOffsets -> red (generation).
+    @MainActor
+    private static func testZ2BothCopiesReachTheCore() {
+        let model = AppModel()
+        var bodies: [JSONObject] = []
+        model.captureRequestForTesting = { body in await MainActor.run { bodies.append(body) }; return [:] }
+        model.captureDevices = [CaptureDeviceRow(id: "cam1", name: "Cam", kind: "video", vendor: "",
+                                                 connectionState: "connected", signalPresent: true, warning: "")]
+        model.slots[0].kind = "capture"; model.slots[0].sourceId = "cam1"
+        model.slots[0].audioDeviceId = "mic-uid"; model.slots[0].audioDeviceName = "USB Mic"
+        model.nudgeCaptureAudio(deviceId: "cam1", deltaMs: 20)
+        model.nudgeCaptureAudio(deviceId: "cam1", deltaMs: 20)
+        spin(until: { bodies.count >= 2 }, limit: 2)
+        let device = bodies.last { $0["type"] as? String == "set-capture-audio-sync-offset" }?["payload"] as? JSONObject
+        expectEqual(device?["deviceId"] as? String, "cam1", "the device command names the device")
+        expectEqual(device?["offsetMs"] as? Int, 40, "and carries the clamped offset")
+        expectEqual(model.takeStatus, "Cam audio sync set to 40 ms", "Windows status line")
+        let entry = (model.captureAudioSourcesCommand()["sources"] as? [JSONObject])?
+            .first { $0["captureDeviceId"] as? String == "cam1" }
+        expectEqual(entry?["audioSyncOffsetMs"] as? Int, 40, "the paired mic's entry carries it")
+        var batches: [[JSONObject]] = []
+        model.audioReassertObserver = { batches.append($0) }
+        model.reassertAudioConsole()
+        let reasserted = (batches.last?.first { $0["type"] as? String == "sync-capture-audio-sources" }?["sources"]
+            as? [JSONObject])?.first { $0["captureDeviceId"] as? String == "cam1" }
+        expectEqual(reasserted?["audioSyncOffsetMs"] as? Int, 40, "a respawned core gets the mic copy back")
+        bodies.removeAll()
+        model.reassertCaptureAudioSyncOffsets()
+        spin(until: { !bodies.isEmpty }, limit: 2)
+        expectEqual((bodies.first?["payload"] as? JSONObject)?["offsetMs"] as? Int, 40,
+                    "a new core generation gets the device copy back")
+        let saved = (try? JSONEncoder().encode(model.currentPrefs())).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        expect(!saved.isEmpty && !saved.lowercased().contains("sync"),
+               "the offset is session state: nothing about it is persisted (plan D2, Windows)")
     }
 }

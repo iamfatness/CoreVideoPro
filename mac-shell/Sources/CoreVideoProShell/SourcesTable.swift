@@ -426,6 +426,17 @@ struct CaptureDevicesSection: View {
                         Button("Take offline") { model.takeCaptureDeviceOffline(device.id) }
                             .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.amber)
                     }
+                    // Z2 (Windows SourcesInputsPage.xaml:110-134): the offset and the nudges.
+                    HStack(spacing: 6) {
+                        Text(CaptureAudioSyncPolicy.label(model.captureAudioSyncOffset(device.id)))
+                            .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                        Button("-20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: -CaptureAudioSyncPolicy.stepMs) }
+                            .buttonStyle(GhostButtonStyle())
+                            .help("Nudge this device's audio 20 ms earlier")
+                        Button("+20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: CaptureAudioSyncPolicy.stepMs) }
+                            .buttonStyle(GhostButtonStyle())
+                            .help("Nudge this device's audio 20 ms later")
+                    }
                     if !device.warning.isEmpty {
                         Text(device.warning).font(.grotesk(10))
                             .foregroundStyle(device.connectionState == "error" ? Studio.red : Studio.amber)

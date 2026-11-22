@@ -30,6 +30,11 @@ enum CoreCommands {
         ["type": "disconnect-capture-device", "payload": ["deviceId": deviceId]]
     }
 
+    /// Z2: payload-wrapped (JsonRpcServer.cpp:255-261); the core clamps to +/-500.
+    static func setCaptureAudioSyncOffset(deviceId: String, offsetMs: Int) -> JSONObject {
+        ["type": "set-capture-audio-sync-offset", "payload": ["deviceId": deviceId, "offsetMs": offsetMs]]
+    }
+
     /// zoom-join is payload-wrapped. The duplicated keys are deliberate and
     /// match what the shell has always sent: the core and the engine have read
     /// different spellings over time, so both are supplied. `userZak` is added

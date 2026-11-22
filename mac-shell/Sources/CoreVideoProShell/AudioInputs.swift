@@ -82,7 +82,10 @@ extension AppModel {
         let sources: [JSONObject] = slots
             .filter { $0.kind == "capture" && !$0.sourceId.isEmpty }
             .map { slot in
-                var entry: JSONObject = ["captureDeviceId": slot.sourceId]
+                // Z2: the paired microphone's copy of the sync offset (always
+                // sent, as Windows does, so a reset to 0 reaches the core).
+                var entry: JSONObject = ["captureDeviceId": slot.sourceId,
+                                         "audioSyncOffsetMs": captureAudioSyncOffset(slot.sourceId)]
                 if !slot.audioDeviceId.isEmpty {
                     entry["audioDeviceId"] = slot.audioDeviceId
                     entry["audioDeviceName"] = slot.audioDeviceName

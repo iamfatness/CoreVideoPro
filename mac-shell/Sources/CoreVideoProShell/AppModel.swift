@@ -1756,6 +1756,7 @@ final class AppModel: ObservableObject {
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
         audioInputs = AudioInputs.available()
+        reassertCaptureAudioSyncOffsets()   // Z2: the device copies die with the core
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -2340,6 +2341,8 @@ final class AppModel: ObservableObject {
     @Published var audioInputs: [AudioInputDevice] = []
     /// A5: the local audio source (LocalAudioSource.swift). Set via setLocalAudio.
     @Published var localAudio = LocalAudioSetting()
+    /// Z2: per capture device id, session only (CaptureAudioSync.swift). Absent = 0.
+    @Published var captureAudioSyncOffsets: [String: Int] = [:]
     var captureAudioSyncTask: Task<Void, Never>?
     var brandSyncTask: Task<Void, Never>?
     /// Test seam: sees every overlay command before it goes to the bridge.
@@ -5790,6 +5793,9 @@ final class AppModel: ObservableObject {
     }
 
     /// The capture connect/disconnect path through its harness seam.
+    /// Z2's door to the same capture request path (CaptureAudioSync.swift).
+    func captureRequestForSync(_ body: JSONObject) async throws -> JSONObject { try await captureRequest(body) }
+
     private func captureRequest(_ body: JSONObject) async throws -> JSONObject {
         if let seam = captureRequestForTesting { return try await seam(body) }
         guard let bridge else { throw BridgeError.notRunning }
