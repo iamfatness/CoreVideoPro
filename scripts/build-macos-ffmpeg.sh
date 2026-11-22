@@ -57,6 +57,18 @@ audit() {  # audit <ffmpeg>
         [ -z "$lib" ] && continue
         case "$lib" in /usr/lib/*|/System/Library/*) ;; *) echo "audit: non-system library $lib" >&2; fail=1 ;; esac
     done <<<"$libs"
+    # otool -L cannot see a STATIC library: also refuse any Homebrew/MacPorts
+    # path baked into the binary, and an OpenSSL that is not the pinned one
+    # (Homebrew's openssl@3 sits on this machine and would link just as well).
+    # Capture first: `strings | grep -q` under pipefail turns a hit into a
+    # SIGPIPE failure (the trap release-macos.sh warns about).
+    local text; text="$(strings -a "$bin")"
+    if grep -qE '/opt/homebrew|/usr/local/(opt|Cellar|lib)|/opt/local/' <<<"$text"; then
+        echo "audit: binary embeds a Homebrew/MacPorts path" >&2; fail=1
+    fi
+    local pinned_openssl; pinned_openssl="$(sed -n 's/^OPENSSL_VERSION=//p' "$LOCK")"
+    grep -qE "^OpenSSL ${pinned_openssl//./\\.} " <<<"$text" \
+        || { echo "audit: embedded OpenSSL is not the pinned $pinned_openssl" >&2; fail=1; }
     out="$("$bin" -hide_banner -encoders 2>&1 || true)"
     for enc in h264_videotoolbox aac; do
         grep -qE "^ [A-Z.]{6} $enc( |$)" <<<"$out" || { echo "audit: missing encoder $enc" >&2; fail=1; }
@@ -84,7 +96,7 @@ fi
 [ $# -eq 0 ] || die "unknown argument '$1'"
 
 [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] || die "build on an Apple Silicon Mac"
-for tool in curl shasum tar cmake make perl clang lipo otool; do
+for tool in curl shasum tar cmake make perl clang lipo otool strings; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
 # shellcheck source=macos-ffmpeg.lock
