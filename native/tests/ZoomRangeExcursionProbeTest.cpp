@@ -2,6 +2,20 @@
 #include <gtest/gtest.h>
 #include <vector>
 
+// MSVC 19.52 (VS 2026, runner image windows-2025-vs2026 20261116) miscompiles
+// these test bodies: with three observe() calls on a local probe inlined into
+// one function and the result read afterwards, the optimized build returns no
+// event where /Od returns one. Proven on PR #1221 round 4 (c71b72a1): an
+// optimized clone gave event=0, a `#pragma optimize("", off)` clone event=1,
+// and a clone without the trailing event-> reads event=1; clang -O0..-O3 and
+// MSVC 19.4x compute it correctly. The probe itself is fine: production
+// (engine-video.cpp) calls observe() once per frame on a member probe, so the
+// folded shape never forms there. Optimization stays off for this whole file
+// so the "returns nothing" tests below can't pass vacuously.
+#if defined(_MSC_VER) && !defined(__clang__) && _MSC_VER >= 1952
+#pragma optimize("", off)
+#endif
+
 TEST(ZoomRangeExcursionProbe, IsolatesAOneFrameRangeLikeBrightnessChange) {
     ZoomRangeExcursionProbe probe;
     std::vector<std::uint8_t> full(6400, 32), compressed(6400, 43);
@@ -42,3 +56,7 @@ TEST(ZoomRangeExcursionProbe, IgnoresOrdinarySceneChange) {
     EXPECT_FALSE(probe.observe(bright.data(), bright.data(), bright.size(), false, false));
     EXPECT_FALSE(probe.observe(bright.data(), bright.data(), bright.size(), false, false));
 }
+
+#if defined(_MSC_VER) && !defined(__clang__) && _MSC_VER >= 1952
+#pragma optimize("", on)
+#endif
