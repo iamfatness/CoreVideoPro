@@ -121,10 +121,13 @@ extension ShellTests {
         model.applySnapshotForTesting(row(onProgram: true, onPreview: true, frames: 5))
         expectEqual(invoke(s, "media.rundown.take", ["clip-1", "s1", "L2"]),
                     .fail("The staged clip is already on Program. Take it off Program before replaying it."), "already on Program")
-        expect(core.bodies.isEmpty, "no refusal reached the core")
+        // syncScenes is debounced, so a scene sync may still land later: the
+        // check is that no refusal started a Take, which is never deferred.
+        expect(!core.bodies.indices.contains { core.types($0).contains("begin-take-transition") },
+               "no refusal started a Take")
         model.applySnapshotForTesting(row(onProgram: false, onPreview: true, frames: 5))
         expectEqual(invoke(s, "media.rundown.take", ["clip-1", "s1", "L2"]), .success, "ready: the ordinary Take runs")
-        expectEqual(core.bodies.isEmpty ? nil : core.types().first, "begin-take-transition", "the button's Take batch")
+        expect(core.bodies.indices.contains { core.types($0).first == "begin-take-transition" }, "the button's Take batch")
         expectEqual(model.programSceneId, "s1", "the clip scene is on Program")
     }
 

@@ -897,10 +897,28 @@ extension ShellTests {
         spin(until: { stalled.box.value != nil }, limit: 3)
         stalled.connection.cancel()
         expect((stalled.box.value ?? "").hasPrefix("HTTP/1.1 408"), "a stalled request is 408: \((stalled.box.value ?? "").prefix(20))")
-        // The timer stops once the request reaches the router: an invoke that runs 3x the timeout is answered 200.
-        surface.handler = { _, _ in Thread.sleep(forTimeInterval: 1.2); return .success }
-        let slow = raw(port, Data("POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}".utf8))
-        expect(slow.hasPrefix("HTTP/1.1 200"), "a long invoke is not cut off by the request timer: \(slow.prefix(20))")
+        // The timer stops once the request reaches the router: an invoke that runs
+        // well past the timeout is answered 200. Its own server has a 1 s timeout
+        // (a loaded runner cannot take that long to deliver one small request), and
+        // the handler is HELD by the test, entered first, released only after 3x
+        // the timeout — waiting longer can only make the check stricter.
+        var slowOptions = ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil)
+        slowOptions.requestTimeout = 1.0
+        let (slowServer, slowStarted) = startServer(ControlRouter(surface: surface), slowOptions)
+        defer { slowServer.stop() }
+        guard case .success(let slowPort)? = slowStarted else { expect(false, "slow server starts"); return }
+        let entered = Box<Bool>(), release = DispatchSemaphore(value: 0)
+        surface.handler = { _, _ in entered.value = true; release.wait(); return .success }
+        let slow = RawClient(port: slowPort)
+        slow.run(Data("POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}".utf8))
+        spin(until: { entered.value == true }, limit: 5)
+        expect(entered.value == true, "the invoke reached the handler")
+        spin(until: { slow.box.value != nil }, limit: 3 * slowOptions.requestTimeout)
+        expect(slow.box.value == nil, "nothing (no 408) was sent while the invoke ran 3x the timeout")
+        release.signal()
+        spin(until: { slow.box.value != nil }, limit: 5)
+        slow.connection.cancel()
+        expect((slow.box.value ?? "").hasPrefix("HTTP/1.1 200"), "a long invoke is not cut off by the request timer: \((slow.box.value ?? "").prefix(20))")
         expectEqual(ControlServerOptions.fromEnvironment([:]).requestTimeout, 10, "the default is 10 s")
     }
 
@@ -981,15 +999,28 @@ extension ShellTests {
                "DNS-rebinding Host refused on a loopback bind")
         // Bytes after a complete body (pipelining / a hostile client) must never
         // dispatch the action again while the first one is still running.
-        surface.handler = { _, _ in Thread.sleep(forTimeInterval: 0.3); return .success }
+        // The handler is HELD until the extra bytes have been handed to the socket,
+        // so they always arrive while the first invoke is still running (a timed
+        // sleep could finish first and pass vacuously).
+        let releasePipelined = DispatchSemaphore(value: 0)
+        surface.handler = { _, _ in releasePipelined.wait(); return .success }
         let before = surface.invocations.count
         let pipelined = RawClient(port: port)
         let request = "POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}"
         pipelined.run(Data(request.utf8))
-        spin(until: { surface.invocations.count > before }, limit: 3)
-        pipelined.connection.send(content: Data(String(repeating: "x", count: 4096).utf8), completion: .contentProcessed { _ in })
-        pipelined.connection.send(content: Data(String(repeating: "y", count: 4096).utf8), completion: .contentProcessed { _ in })
-        spin(until: { pipelined.box.value != nil }, limit: 4)
+        spin(until: { surface.invocations.count > before }, limit: 5)
+        let extraSent = Box<Int>()
+        for filler in ["x", "y"] {
+            pipelined.connection.send(content: Data(String(repeating: filler, count: 4096).utf8),
+                                      completion: .contentProcessed { _ in
+                                          DispatchQueue.main.async { extraSent.value = (extraSent.value ?? 0) + 1 } })
+        }
+        spin(until: { extraSent.value == 2 }, limit: 5)
+        expectEqual(extraSent.value, 2, "the extra bytes were sent while the invoke was held")
+        expect(pipelined.box.value == nil, "and before any answer")
+        spin(until: { false }, limit: 0.2)   // let the server read them; more time only makes this stricter
+        releasePipelined.signal()
+        spin(until: { pipelined.box.value != nil }, limit: 5)
         pipelined.connection.cancel()
         expect((pipelined.box.value ?? "").hasPrefix("HTTP/1.1 200"), "the pipelined request is answered once")
         expectEqual(surface.invocations.count, before + 1, "extra bytes after the body never re-dispatch the action")
