@@ -4133,7 +4133,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + audioPhase2Cases + controlPhase2Cases + quickWinCases
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()
