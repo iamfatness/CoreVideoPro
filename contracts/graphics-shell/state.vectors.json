@@ -1,0 +1,229 @@
+{
+  "area": "state",
+  "description": "NativeGraphicsState decode + GraphicsPlayoutService strip projection (no playlist rows).",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "node-empty",
+      "operation": "decodeAndProjectStrip",
+      "input": {
+        "nodeFile": "nodes/empty.json"
+      },
+      "expected": {
+        "available": true,
+        "instanceCount": 0,
+        "templateCount": 9,
+        "strip": {
+          "coreEpoch": "graphics-12aac891-d83767c8-45778f68-1dbb5be1",
+          "onProgram": [],
+          "onPreview": []
+        }
+      }
+    },
+    {
+      "id": "node-program-and-cue",
+      "operation": "decodeAndProjectStrip",
+      "input": {
+        "nodeFile": "nodes/program-and-cue.json"
+      },
+      "expected": {
+        "available": true,
+        "instanceCount": 2,
+        "templateCount": 9,
+        "strip": {
+          "coreEpoch": "graphics-12aac891-d83767c8-45778f68-1dbb5be1",
+          "onProgram": [
+            {
+              "instanceId": "playlist-title",
+              "label": "centered-title",
+              "owner": "design",
+              "rowId": "",
+              "sourceId": "",
+              "revision": 1,
+              "visibility": "on-air",
+              "cuePending": false
+            }
+          ],
+          "onPreview": [
+            {
+              "instanceId": "playlist-logo",
+              "label": "compact-solid",
+              "owner": "design",
+              "rowId": "",
+              "sourceId": "",
+              "revision": 2,
+              "visibility": "hidden",
+              "cuePending": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "synthetic-building-out-and-show-pending",
+      "operation": "decodeAndProjectStrip",
+      "input": {
+        "node": {
+          "schemaVersion": 1,
+          "coreEpoch": "e1",
+          "instances": [
+            {
+              "instanceId": "a",
+              "revision": 2,
+              "programRevision": 2,
+              "visibility": "building-out",
+              "templateId": "compact-solid",
+              "fields": {
+                "name": "Out"
+              }
+            },
+            {
+              "instanceId": "b",
+              "revision": 4,
+              "programRevision": 3,
+              "visibility": "on-air",
+              "templateId": "compact-solid",
+              "label": "Rack label",
+              "fields": {
+                "name": "On"
+              }
+            },
+            {
+              "instanceId": "c",
+              "revision": 1,
+              "programRevision": 0,
+              "visibility": "hidden",
+              "showPending": true,
+              "templateId": "centered-title",
+              "fields": {}
+            },
+            {
+              "instanceId": "d",
+              "revision": 5,
+              "programRevision": 5,
+              "visibility": "hidden",
+              "templateId": "compact-solid",
+              "fields": {
+                "name": "Gone"
+              }
+            },
+            {
+              "instanceId": "e",
+              "revision": 6,
+              "programRevision": 0,
+              "cueRevision": 6,
+              "cuePending": true,
+              "visibility": "hidden",
+              "templateId": "corner-logo",
+              "fields": {}
+            }
+          ]
+        }
+      },
+      "expected": {
+        "available": true,
+        "instanceCount": 5,
+        "templateCount": 0,
+        "strip": {
+          "coreEpoch": "e1",
+          "onProgram": [
+            {
+              "instanceId": "b",
+              "label": "Rack label",
+              "owner": "design",
+              "rowId": "",
+              "sourceId": "",
+              "revision": 4,
+              "visibility": "on-air",
+              "cuePending": false
+            }
+          ],
+          "onPreview": [
+            {
+              "instanceId": "e",
+              "label": "corner-logo",
+              "owner": "design",
+              "rowId": "",
+              "sourceId": "",
+              "revision": 6,
+              "visibility": "hidden",
+              "cuePending": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "synthetic-social-cue-hidden-from-preview",
+      "operation": "decodeAndProjectStrip",
+      "input": {
+        "node": {
+          "schemaVersion": 1,
+          "coreEpoch": "e2",
+          "instances": [
+            {
+              "instanceId": "social-review-card",
+              "revision": 1,
+              "cueRevision": 1,
+              "visibility": "hidden",
+              "templateId": "youtube-chat-card",
+              "fields": {}
+            },
+            {
+              "instanceId": "playlist-guest-3f1c",
+              "revision": 2,
+              "cueRevision": 2,
+              "visibility": "hidden",
+              "templateId": "compact-solid",
+              "fields": {
+                "name": "Ada"
+              }
+            }
+          ]
+        }
+      },
+      "expected": {
+        "available": true,
+        "instanceCount": 2,
+        "templateCount": 0,
+        "strip": {
+          "coreEpoch": "e2",
+          "onProgram": [],
+          "onPreview": [
+            {
+              "instanceId": "playlist-guest-3f1c",
+              "label": "Ada",
+              "owner": "design",
+              "rowId": "",
+              "sourceId": "",
+              "revision": 2,
+              "visibility": "hidden",
+              "cuePending": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "synthetic-unavailable-schema-0",
+      "operation": "decodeAndProjectStrip",
+      "input": {
+        "node": {
+          "schemaVersion": 0,
+          "coreEpoch": "",
+          "instances": []
+        }
+      },
+      "expected": {
+        "available": false,
+        "instanceCount": 0,
+        "templateCount": 0,
+        "strip": {
+          "coreEpoch": "",
+          "onProgram": [],
+          "onPreview": []
+        }
+      }
+    }
+  ]
+}

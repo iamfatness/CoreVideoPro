@@ -1,0 +1,1844 @@
+{
+  "area": "gateway",
+  "description": "GraphicsCommandRequest.TryBuild results for requests inside the Mac shell's thin pre-check (plan D1).",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "create-curated-global",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.create",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"templateId\":\"compact-solid\",\"templateVersion\":1,\"scope\":\"global\",\"sceneId\":\"\",\"fields\":{\"name\":\"Ada\",\"title\":\"Host\"}}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-create",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "templateId": "compact-solid",
+          "templateVersion": 1,
+          "scope": "global",
+          "sceneId": "",
+          "fields": {
+            "name": "Ada",
+            "title": "Host"
+          }
+        }
+      }
+    },
+    {
+      "id": "create-advertised-declarative",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.create",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"templateId\":\"corporate-lower-third\",\"templateVersion\":1,\"scope\":\"global\",\"fields\":{\"name\":\"Ada\",\"title\":\"\"}}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-create",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "templateId": "corporate-lower-third",
+          "templateVersion": 1,
+          "scope": "global",
+          "fields": {
+            "name": "Ada",
+            "title": ""
+          }
+        }
+      }
+    },
+    {
+      "id": "create-unknown-template",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.create",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"templateId\":\"not-installed\",\"templateVersion\":1,\"scope\":\"global\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "create-scene-scope-without-scene",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.create",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"templateId\":\"compact-solid\",\"templateVersion\":1,\"scope\":\"scene\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "create-global-with-scene",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.create",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"templateId\":\"compact-solid\",\"templateVersion\":1,\"scope\":\"global\",\"sceneId\":\"s1\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "create-scene-scope",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.create",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"templateId\":\"compact-solid\",\"templateVersion\":1,\"scope\":\"scene\",\"sceneId\":\"s1\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-create",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "templateId": "compact-solid",
+          "templateVersion": 1,
+          "scope": "scene",
+          "sceneId": "s1"
+        }
+      }
+    },
+    {
+      "id": "unsupported-action",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.explode",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "unsupported-graphics-action",
+        "requestId": ""
+      }
+    },
+    {
+      "id": "core-epoch-conflict",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-0\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "core-epoch-conflict",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "unknown-field",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\",\"colour\":\"red\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "unsupported-or-duplicate-request-field",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "trigger-hide",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-trigger",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "expectedRevision": 3,
+          "action": "hide"
+        }
+      }
+    },
+    {
+      "id": "trigger-show-from-cue",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"target\":\"cue\",\"action\":\"show\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-trigger",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "expectedRevision": 3,
+          "target": "cue",
+          "action": "show"
+        }
+      }
+    },
+    {
+      "id": "trigger-hide-with-target",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"target\":\"cue\",\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "trigger-unknown-action",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"explode\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "trigger-without-revision",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "trigger-without-instance",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"expectedRevision\":3,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "trigger-uncue-with-owner",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"uncue\",\"cueOwner\":\"layout-1\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-trigger",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "expectedRevision": 3,
+          "action": "uncue",
+          "cueOwner": "layout-1"
+        }
+      }
+    },
+    {
+      "id": "trigger-hide-with-owner",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\",\"cueOwner\":\"layout-1\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "cue-ride-take",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.cue",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"rideTake\":true}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-cue",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "expectedRevision": 3,
+          "rideTake": true
+        }
+      }
+    },
+    {
+      "id": "cue-ride-take-not-bool",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.cue",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"rideTake\":\"yes\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "cue-with-owner",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.cue",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"rideTake\":false,\"cueOwner\":\"layout-1\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-cue",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "expectedRevision": 3,
+          "rideTake": false,
+          "cueOwner": "layout-1"
+        }
+      }
+    },
+    {
+      "id": "update-cue",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.update",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"target\":\"cue\",\"fields\":{\"name\":\"Bo\"}}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-update",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "expectedRevision": 3,
+          "target": "cue",
+          "fields": {
+            "name": "Bo"
+          }
+        }
+      }
+    },
+    {
+      "id": "update-bad-target",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.update",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"target\":\"wherever\",\"fields\":{\"name\":\"Bo\"}}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "remove",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.remove",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-instance-remove",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "instanceId": "featured",
+          "expectedRevision": 3
+        }
+      }
+    },
+    {
+      "id": "program-clear-all",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.program.clear",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"channel\":\"all\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-program-clear",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "channel": "all"
+        }
+      }
+    },
+    {
+      "id": "program-clear-some",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.program.clear",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"channel\":\"some\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "authority-instances",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.authority.set",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"family\":\"lower-third\",\"authority\":\"instances\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-authority-set",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "family": "lower-third",
+          "authority": "instances"
+        }
+      }
+    },
+    {
+      "id": "authority-bad-family",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.authority.set",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"family\":\"titles\",\"authority\":\"instances\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "template-list-thumbnails",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.template.list",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"includeThumbnails\":true}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "type": "graphics-template-list",
+        "graphics": {
+          "schemaVersion": 1,
+          "requestId": "req-1",
+          "clientId": "graphics-playout",
+          "coreEpoch": "epoch-1",
+          "includeThumbnails": true
+        }
+      }
+    },
+    {
+      "id": "bad-request-id",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"Bad_ID\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "Bad_ID"
+      }
+    },
+    {
+      "id": "bad-client-id",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"Graphics Playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "schema-version-2",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":2,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": ""
+      }
+    },
+    {
+      "id": "revision-zero",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":0,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "revision-fraction",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":1.5,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "oversize",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.update",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"target\":\"cue\",\"fields\":{\"name\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": ""
+      }
+    },
+    {
+      "id": "instance-id-too-long",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":3,\"action\":\"hide\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "duplicate-field",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\",\"action\":\"show\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "unsupported-or-duplicate-request-field",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "first-fault-wins-unknown-then-bad-type",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"bogus\":true,\"action\":5}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "unsupported-or-duplicate-request-field",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "first-fault-wins-bad-type-then-unknown",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":5,\"bogus\":true}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "rideTake-on-trigger",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.trigger",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"action\":\"hide\",\"rideTake\":true}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "unsupported-or-duplicate-request-field",
+        "requestId": "req-1"
+      }
+    },
+    {
+      "id": "string-with-nul",
+      "operation": "tryBuild",
+      "input": {
+        "action": "graphics.instance.update",
+        "request": "{\"schemaVersion\":1,\"requestId\":\"req-1\",\"clientId\":\"graphics-playout\",\"coreEpoch\":\"epoch-1\",\"instanceId\":\"featured\",\"expectedRevision\":3,\"target\":\"cue\",\"label\":\"a\\u0000b\"}",
+        "observed": {
+          "schemaVersion": 1,
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "instanceId": "featured",
+              "revision": 3,
+              "templateId": "compact-solid",
+              "templateVersion": 1
+            }
+          ],
+          "templates": [
+            {
+              "templateId": "corporate-lower-third",
+              "templateVersion": 1,
+              "runtime": "declarative",
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "title",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "ok": false,
+        "error": "invalid-graphics-request",
+        "requestId": "req-1"
+      }
+    }
+  ]
+}
