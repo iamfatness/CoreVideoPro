@@ -410,3 +410,45 @@ TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
   EXPECT_GE(lastAudibleAtPositionMs, durationMs - 40) << "the owner cut the clip's audio tail";
   EXPECT_EQ(positionWhenEnded, lastAudibleAtPositionMs) << "audio was still delivered after Ended";
 }
+
+// N3 (plan 2026-11-21 Task 1). An audio bed (.m4a AAC and .wav LPCM, no video
+// track) decodes: its picture is a transparent 2x2 frame, nothing warns, its
+// duration is the audio track's, and its tone comes out.
+TEST(AvfMediaDecoder, AnAudioOnlyFileDecodesItsToneAndHasNoVideoWarning) {
+  for (const char* name : {"bed.m4a", "bed.wav"}) {
+    const auto p = tmp(name); Cleanup c{p};
+    const auto written = corevideo::testing::writeToneOnlyAudio(p.string(), 1000, 440.0);
+    ASSERT_EQ(written, "") << name << ": " << written;
+    auto d = modules::createAvFoundationMediaDecoderFactory()();
+    auto* pre = dynamic_cast<modules::IMediaVideoPrefetch*>(d.get());
+    ASSERT_NE(pre, nullptr);
+    auto r = req(p, true);
+    r.assetKind = "audio-bed";
+    const auto startMs = steadyMs();
+    pre->syncMediaClock(r, startMs);
+    const auto frames = pollUntilFrame(*d, r);
+    ASSERT_EQ(frames.size(), 1u) << name << ": an audio bed still presents a (transparent) picture";
+    ASSERT_TRUE(frames[0].hasPixels());
+    EXPECT_EQ(frames[0].pixelWidth, 2);
+    for (const auto byte : *frames[0].pixels) ASSERT_EQ(byte, 0) << name;
+    float peak = 0.f;
+    for (int slot = 5; slot < 30; ++slot) {
+      const auto slotMs = startMs + slot * 20;
+      for (const auto deadline = slotMs + 2000; steadyMs() < deadline;) {
+        if (steadyMs() >= slotMs) {
+          const auto windows = d->pollMediaAudioFrames(r, slotMs);
+          if (!windows.empty()) {
+            for (const auto v : windows.front().pcm) peak = (std::max)(peak, std::abs(v));
+            break;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
+    EXPECT_GT(peak, 0.3f) << name << ": the tone came out";
+    EXPECT_NEAR(static_cast<double>(pre->mediaDurationMs()), 1000.0, 30.0) << name;
+    EXPECT_FALSE(pre->mediaHasVideo()) << name;
+    const auto warnings = d->warnings();
+    EXPECT_TRUE(warnings.empty()) << name << ": " << (warnings.empty() ? "" : warnings.front());
+  }
+}

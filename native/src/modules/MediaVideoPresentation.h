@@ -38,6 +38,12 @@ class IMediaVideoPrefetch {
   // the owner's much longer backstop instead. NEVER true for a loop — a loop
   // reopens at EOS and has no end.
   virtual bool mediaEnded() const { return false; }
+  // False ONLY once the decoder KNOWS the asset has no picture (an audio bed:
+  // the file opened and has no video track). Such an asset presents one fixed
+  // picture for its whole life, so the owner's "no new frame" backstop must
+  // measure its audio instead. Default true: every decoder that cannot say is
+  // judged exactly as before.
+  virtual bool mediaHasVideo() const { return true; }
 };
 class MediaVideoPresentation {
  public:

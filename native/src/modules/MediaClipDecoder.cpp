@@ -74,6 +74,9 @@ struct MediaClipDecoder::Impl {
     bool videoPending = false;  // direct-poll path: one decoded sample of lookahead
     bool stillLoaded = false;
     bool stillFailed = false;
+    // The file opened and has no video track (an audio bed, N3). Its picture
+    // is ONE transparent frame for the identity's whole life.
+    bool audioOnly = false;
     VideoFrame lastFrame;       // the most recently decoded frame
     VideoFrame presentedFrame;  // the frame the direct-poll path last presented
     int64_t decodedPts = 0, decodedDuration = 0, loopOffset = 0;
@@ -167,6 +170,7 @@ struct MediaClipDecoder::Impl {
     // At most: the loop seam, one replacement of a pre-opened successor that
     // turned out to have failed, then the first sample of the successor.
     for (int hop = 0; hop < 3; ++hop) {
+      if (state.audioOnly) return false;  // its one picture is already decoded
       if (state.openFailed) { warnOpenFailure(request, cue); return false; }
       if (!state.reader) {
         std::string error;
@@ -180,6 +184,27 @@ struct MediaClipDecoder::Impl {
       const auto status = state.reader->take(sample, error);
       if (state.duration100ns <= 0) state.duration100ns = state.reader->duration100ns();
       if (status == ClipReadStatus::Pending) return false;  // a stall is never an end
+      if (status == ClipReadStatus::NoVideoTrack) {
+        // AN AUDIO BED (N3). Not an open failure: nothing warns and nothing is
+        // logged. Its picture is fully transparent, so a layer carrying it
+        // draws nothing over the scene (a frameless layer would paint a slate
+        // over Program). One frame, one id, held for the identity's life.
+        state.reader.reset();
+        state.audioOnly = true;
+        state.duration100ns = -1;  // a reader with no video track has no say; the audio track decides
+        VideoFrame frame;
+        frame.participantId = sourceId;
+        frame.width = frame.pixelWidth = frame.naturalWidth = 2;
+        frame.height = frame.pixelHeight = frame.naturalHeight = 2;
+        frame.pixelStride = 8;
+        frame.timestampMs = timestampMs;
+        frame.frameId = ++frameId;
+        frame.pixels = std::make_shared<const std::vector<uint8_t>>(16u, uint8_t{0});
+        state.lastFrame = std::move(frame);
+        state.decodedPts = 0;
+        state.decodedDuration = 0;
+        return true;
+      }
       if (status == ClipReadStatus::Failed) {
         if (state.samplesFromReader == 0 && state.readerWasPreopened) {
           // The successor was opened ~300 ms before the seam and failed in the
@@ -298,6 +323,8 @@ struct MediaClipDecoder::Impl {
       ClipAudioSample sample;
       std::string error;
       const auto status = state.audioReader->take(sample, error);
+      // An audio bed has no video reader to ask: its duration is the audio track's.
+      if (state.audioOnly && state.duration100ns <= 0) state.duration100ns = state.audioReader->duration100ns();
       if (status == ClipReadStatus::Pending) break;
       if (status == ClipReadStatus::Failed) {
         if (state.audioSamplesFromReader == 0) {
@@ -515,8 +542,19 @@ int64_t MediaClipDecoder::mediaDurationMs() const {
   return duration > 0 ? duration / 10000 : -1;  // MF:617-621
 }
 
-// A loop never ends (MF:626-630).
-bool MediaClipDecoder::mediaEnded() const { return impl_->state.ended && !impl_->state.loop; }
+// A loop never ends (MF:626-630). An audio bed ends when its audio reader has
+// run out: its one picture never ends. (decodeAudio sees the reader's end only
+// while it is short of a full window, and emits that tail in the same poll, so
+// nothing is left buffered once this turns true; the OWNER's #1214 drain rule
+// then waits for the delivered windows to play.)
+bool MediaClipDecoder::mediaEnded() const {
+  const auto& state = impl_->state;
+  if (state.loop) return false;
+  if (state.audioOnly) return state.audioEnded || state.audioAbsent;
+  return state.ended;
+}
+
+bool MediaClipDecoder::mediaHasVideo() const { return !impl_->state.audioOnly; }
 
 int MediaClipDecoder::videoReadersOpenedForTest() const { return impl_->readersOpened; }
 

@@ -21,6 +21,7 @@ struct Script {
   int failAfter = -1;           // take() returns Failed after this many samples
   bool stallAfterLast = false;  // Pending forever instead of EndOfStream
   int failingReader = 0;        // the Nth reader opened (1-based) fails on its first take; 0 = none
+  bool noVideoTrack = false;    // the asset opens and has no video track (an audio bed)
   int64_t duration100ns = 10 * kFrame;
 };
 // Audio script (Task 6). Fixture invariants (rule 1): 48 kHz interleaved stereo;
@@ -68,6 +69,7 @@ class FakeAudioReader final : public IClipAudioReader {
     frame_ += count;
     return ClipReadStatus::Ready;
   }
+  int64_t duration100ns() const override { return static_cast<int64_t>(s_->audio.seconds) * 10'000'000; }
  private:
   std::shared_ptr<Shared> s_;
   int64_t frame_ = 0, readyAtMs_ = 0;
@@ -81,6 +83,7 @@ class FakeReader final : public IClipVideoReader {
   ~FakeReader() override { s_->destroyed += 1; }
   ClipReadStatus take(ClipVideoSample& out, std::string& error) override {
     if (pending_ < s_->script.pendingBeforeFirst) { ++pending_; return ClipReadStatus::Pending; }
+    if (s_->script.noVideoTrack) return ClipReadStatus::NoVideoTrack;
     if (s_->script.failingReader != 0 && ordinal_ == s_->script.failingReader) { error = "transient open failure"; return ClipReadStatus::Failed; }
     if (s_->script.failAfter >= 0 && next_ >= s_->script.failAfter) { error = "decode error"; return ClipReadStatus::Failed; }
     if (next_ >= s_->script.samples)
@@ -528,4 +531,69 @@ TEST(MediaClipDecoder, ALoopWhoseReopenAlsoFailsSaysSoAndStops) {
   const auto held = decoder.pollMediaFrames(clip(false, true), 1'000);
   ASSERT_EQ(held.size(), 1u);
   EXPECT_EQ(held.front().frameId, 3) << "the last frame stays on air";
+}
+
+// N3 (plan 2026-11-21 Task 1). An audio bed: the asset opens and has no video
+// track. That is not an open failure, so nothing warns; its picture is a fully
+// transparent frame, so a layer carrying it draws nothing over the scene.
+TEST(MediaClipDecoder, AnAudioOnlyAssetIsATransparentPictureWithNoWarning) {
+  Script video; video.noVideoTrack = true;
+  Rig rig(video);
+  int64_t firstId = -1;
+  for (int i = 0; i < 10; ++i) {
+    const bool playing = i >= 5;  // a cue poster first, then rolling
+    const auto frames = rig.d->pollMediaFrames(clip(playing), 1'000 + i * 20);
+    ASSERT_EQ(frames.size(), 1u) << "poll " << i;
+    const auto& f = frames.front();
+    ASSERT_TRUE(f.hasPixels());
+    EXPECT_EQ(f.pixelWidth, 2); EXPECT_EQ(f.pixelHeight, 2);
+    for (const auto byte : *f.pixels) ASSERT_EQ(byte, 0) << "every byte transparent black";
+    if (firstId < 0) firstId = f.frameId;
+    EXPECT_EQ(f.frameId, firstId) << "one picture for the asset's whole life";
+    EXPECT_EQ(f.participantId, "media:clip");
+    EXPECT_TRUE(rig.d->warnings().empty()) << "poll " << i << ": " << (rig.d->warnings().empty() ? "" : rig.d->warnings().front());
+  }
+  EXPECT_FALSE(rig.d->mediaHasVideo());
+  EXPECT_EQ(rig.s->opened, 1) << "no track is learned once, never re-opened per poll";
+}
+
+TEST(MediaClipDecoder, AVideoClipStillReportsThatItHasVideo) {
+  Rig rig;
+  (void)rig.next(clip(true));
+  EXPECT_TRUE(rig.d->mediaHasVideo());
+}
+
+TEST(MediaClipDecoder, AnAudioOnlyClipEndsWhenItsAudioEndsAndALoopNeverDoes) {
+  // Fixture: 1 s of audio (AudioScript.seconds = 1), no video track.
+  Script video; video.noVideoTrack = true;
+  AudioScript audio; audio.seconds = 1;
+  for (const bool loop : {false, true}) {
+    Rig rig(video, audio);
+    const auto request = clip(true, loop);
+    rig.d->syncMediaClock(request, 1'000);
+    int lastHeardMs = -1;
+    bool endedBeforeLastWindow = false;
+    for (rig.now = 1'000; rig.now <= 2'400; rig.now += 20) {
+      (void)rig.d->prefetchMediaVideo(request, rig.now);
+      for (const auto& w : rig.d->pollMediaAudioFrames(request, rig.now)) {
+        for (size_t i = 0; i < w.pcm.size(); i += 2) {
+          if (w.pcm[i] != 0.f) lastHeardMs = (std::max)(lastHeardMs, timecodeMs(w.pcm[i]));
+        }
+      }
+      if (rig.d->mediaEnded() && lastHeardMs < 990) endedBeforeLastWindow = true;
+    }
+    EXPECT_EQ(rig.d->mediaDurationMs(), 1000) << "loop=" << loop << ": the audio track is the duration";
+    if (!loop) {
+      EXPECT_GE(lastHeardMs, 990) << "the whole second was heard";
+      // CONFIRMATORY (rule 8): the decoder can only see its reader's end while
+      // short of a window, and emits that tail in the same poll, so this holds
+      // by construction; the owner-level tail is judged by
+      // MediaTransports.AnAudioOnlyBedOutlivesTheNoNewFrameBackstop.
+      EXPECT_FALSE(endedBeforeLastWindow) << "ended only after the last window was handed over";
+      EXPECT_TRUE(rig.d->mediaEnded());
+    } else {
+      EXPECT_FALSE(rig.d->mediaEnded()) << "a loop never ends";
+    }
+    EXPECT_TRUE(rig.d->warnings().empty());
+  }
 }

@@ -1050,3 +1050,90 @@ TEST(MediaTransports, ANonLoopingClipEndsOnItsLastFrameWithItsWholeAudio) {
   // Within one 20 ms window of the end of the media.
   EXPECT_GE(lastHeardMs, kEndClipAudioMs - 1 - 20) << "the clip's audio tail was cut";
 }
+
+// ---------------------------------------------------------------------------
+// N3 (plan 2026-11-21 Task 1). AN AUDIO BED OUTLIVES THE NO-NEW-FRAME BACKSTOP.
+// An audio-only asset has one (transparent) picture for its whole life, so "no
+// new frame for 6 s" says nothing about it; its audio is the evidence that it
+// is still playing. Fixture invariants: the video reader reports NoVideoTrack;
+// 7 s of timecoded audio (value = (ms + 1) / 4096), so the bed is still
+// playing at 6.6 s - past kEndedBackstopNoNewFrameMs - by construction.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr int kBedAudioMs = 7000;
+class BedNoVideoReader final : public IClipVideoReader {
+ public:
+  ClipReadStatus take(ClipVideoSample&, std::string&) override { return ClipReadStatus::NoVideoTrack; }
+  int64_t duration100ns() const override { return -1; }
+};
+class BedAudioReader final : public IClipAudioReader {
+ public:
+  explicit BedAudioReader(int64_t start100ns) : frame_(start100ns * 48000 / 10'000'000) {}
+  ClipReadStatus take(ClipAudioSample& out, std::string&) override {
+    const int64_t total = int64_t{kBedAudioMs} * 48;
+    if (frame_ >= total) return ClipReadStatus::EndOfStream;
+    const int64_t count = (std::min)(int64_t{480}, total - frame_);
+    out.pcm.resize(static_cast<size_t>(count) * 2u);
+    for (int64_t i = 0; i < count; ++i) {
+      const float value = static_cast<float>((frame_ + i) / 48 + 1) / 4096.f;
+      out.pcm[static_cast<size_t>(i) * 2u] = value;
+      out.pcm[static_cast<size_t>(i) * 2u + 1u] = value;
+    }
+    out.pts100ns = frame_ * 10'000'000 / 48000;
+    frame_ += count;
+    return ClipReadStatus::Ready;
+  }
+  int64_t duration100ns() const override { return int64_t{kBedAudioMs} * 10'000; }
+ private:
+  int64_t frame_ = 0;
+};
+class BedReaders final : public IClipReaderFactory {
+ public:
+  std::unique_ptr<IClipVideoReader> openVideo(const std::string&, std::function<void()>, std::string&) override {
+    return std::make_unique<BedNoVideoReader>();
+  }
+  std::unique_ptr<IClipAudioReader> openAudio(const std::string&, int64_t start100ns, std::function<void()>,
+                                              std::string& error) override {
+    error.clear();
+    return std::make_unique<BedAudioReader>(start100ns);
+  }
+  bool decodeStill(const std::string&, VideoFrame&, std::string&) override { return false; }
+};
+}  // namespace
+
+TEST(MediaTransports, AnAudioOnlyBedOutlivesTheNoNewFrameBackstop) {
+  MediaTransports t([] { return std::make_unique<MediaClipDecoder>(std::make_shared<BedReaders>()); });
+  auto desired = testDesired(true, false);
+  desired.path = "/fixture/bed.m4a";
+  auto opened = t.apply({desired}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  const auto start = steadyNowMs();
+  int lastHeardMs = -1;
+  bool liveAt6600 = false, sawTransparent = false;
+  int64_t endedAtMs = -1;
+  while (steadyNowMs() - start < 9000) {
+    const auto now = steadyNowMs();
+    if (const auto frame = MediaTransports::selectVideo(*e, now * 10000)) {
+      sawTransparent = sawTransparent || (frame->hasPixels() && (*frame->pixels)[3] == 0);
+    }
+    for (const auto& window : t.popAudio(now)) {
+      for (size_t i = 0; i < window.pcm.size(); i += 2) {
+        if (window.pcm[i] != 0.f) lastHeardMs = (std::max)(lastHeardMs, static_cast<int>(std::lround(window.pcm[i] * 4096.f)) - 1);
+      }
+    }
+    const auto status = statusOf(t, "media:test");
+    if (status && now - start >= 6600 && now - start < 6700 && status->state == MediaTransportState::Live) liveAt6600 = true;
+    if (endedAtMs < 0 && status && status->state == MediaTransportState::Ended) endedAtMs = now - start;
+    if (endedAtMs >= 0) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  std::fprintf(stderr, "[audio-bed] ended at %lld ms, last audio ms heard %d of %d\n",
+               static_cast<long long>(endedAtMs), lastHeardMs, kBedAudioMs);
+  EXPECT_TRUE(sawTransparent) << "the bed's picture is transparent";
+  EXPECT_TRUE(liveAt6600) << "the bed was ended by the no-new-frame backstop while still playing";
+  ASSERT_GE(endedAtMs, 0) << "the bed never reached Ended after its audio ran out";
+  EXPECT_GE(endedAtMs, kBedAudioMs - 100);
+  EXPECT_GE(lastHeardMs, kBedAudioMs - 1 - 20) << "the bed's audio tail was cut";
+}

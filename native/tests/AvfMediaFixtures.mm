@@ -275,6 +275,101 @@ std::string writeToneClip(const std::string& path, int seconds, double toneHz) {
   }
 }
 
+std::string writeToneOnlyAudio(const std::string& path, int millis, double toneHz) {
+  @autoreleasepool {
+    constexpr int kRate = 48000;
+    if (millis <= 0) return "invalid fixture duration";
+    const bool wave = path.size() >= 4 && path.compare(path.size() - 4, 4, ".wav") == 0;
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    NSError* error = nil;
+    AVAssetWriter* writer = [[AVAssetWriter alloc] initWithURL:url fileType:(wave ? AVFileTypeWAVE : AVFileTypeAppleM4A)
+                                                         error:&error];
+    if (!writer) return std::string("AVAssetWriter: ") + (error.localizedDescription.UTF8String ?: "unknown");
+    AudioChannelLayout layout = {};
+    layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
+    NSData* layoutData = [NSData dataWithBytes:&layout length:sizeof(layout)];
+    NSDictionary* settings = wave
+        ? @{ AVFormatIDKey : @(kAudioFormatLinearPCM), AVSampleRateKey : @(kRate), AVNumberOfChannelsKey : @2,
+             AVLinearPCMBitDepthKey : @16, AVLinearPCMIsFloatKey : @NO, AVLinearPCMIsBigEndianKey : @NO,
+             AVLinearPCMIsNonInterleaved : @NO, AVChannelLayoutKey : layoutData }
+        : @{ AVFormatIDKey : @(kAudioFormatMPEG4AAC), AVSampleRateKey : @(kRate), AVNumberOfChannelsKey : @2,
+             AVEncoderBitRateKey : @192000, AVChannelLayoutKey : layoutData };
+    AVAssetWriterInput* audio = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio outputSettings:settings];
+    audio.expectsMediaDataInRealTime = NO;
+    if (![writer canAddInput:audio]) return "AVAssetWriter refused the audio input";
+    [writer addInput:audio];
+    if (![writer startWriting]) {
+      return std::string("startWriting: ") + (writer.error.localizedDescription.UTF8String ?: "unknown");
+    }
+    [writer startSessionAtSourceTime:kCMTimeZero];
+    AudioStreamBasicDescription format = {};
+    format.mSampleRate = kRate;
+    format.mFormatID = kAudioFormatLinearPCM;
+    format.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+    format.mChannelsPerFrame = 2;
+    format.mBitsPerChannel = 32;
+    format.mBytesPerFrame = 8;
+    format.mFramesPerPacket = 1;
+    format.mBytesPerPacket = 8;
+    CMAudioFormatDescriptionRef description = nullptr;
+    if (CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &format, sizeof(layout), &layout, 0, nullptr, nullptr,
+                                       &description) != noErr) {
+      return "CMAudioFormatDescriptionCreate failed";
+    }
+    std::string failure;
+    constexpr int kChunk = 1024;
+    const int64_t frames = static_cast<int64_t>(millis) * kRate / 1000;
+    int64_t index = 0;
+    const auto giveUpAt = [NSDate dateWithTimeIntervalSinceNow:30.0];
+    while (index < frames && failure.empty()) {
+      if (!audio.readyForMoreMediaData) {
+        if ([giveUpAt timeIntervalSinceNow] < 0) { failure = "AVAssetWriter never became ready"; break; }
+        [NSThread sleepForTimeInterval:0.001];
+        continue;
+      }
+      const int count = static_cast<int>((std::min)(static_cast<int64_t>(kChunk), frames - index));
+      std::vector<float> pcm(static_cast<size_t>(count) * 2u);
+      for (int i = 0; i < count; ++i) {
+        const float value = 0.5f * static_cast<float>(std::sin(2.0 * M_PI * toneHz * static_cast<double>(index + i) / kRate));
+        pcm[static_cast<size_t>(i) * 2u] = value;
+        pcm[static_cast<size_t>(i) * 2u + 1u] = value;
+      }
+      CMBlockBufferRef block = nullptr;
+      const size_t bytes = pcm.size() * sizeof(float);
+      if (CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, nullptr, bytes, kCFAllocatorDefault, nullptr, 0, bytes,
+                                             kCMBlockBufferAssureMemoryNowFlag, &block) != kCMBlockBufferNoErr ||
+          CMBlockBufferReplaceDataBytes(pcm.data(), block, 0, bytes) != kCMBlockBufferNoErr) {
+        if (block) CFRelease(block);
+        failure = "CMBlockBuffer failed";
+        break;
+      }
+      CMSampleBufferRef sample = nullptr;
+      const OSStatus created = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+          kCFAllocatorDefault, block, description, count, CMTimeMake(index, kRate), nullptr, &sample);
+      CFRelease(block);
+      if (created != noErr || !sample) { failure = "the audio sample buffer could not be created"; break; }
+      if (![audio appendSampleBuffer:sample]) failure = "the audio chunk could not be appended";
+      CFRelease(sample);
+      index += count;
+    }
+    CFRelease(description);
+    if (!failure.empty()) {
+      [writer cancelWriting];
+      return failure + (writer.error ? std::string(": ") + (writer.error.localizedDescription.UTF8String ?: "") : "");
+    }
+    [audio markAsFinished];
+    [writer endSessionAtSourceTime:CMTimeMake(frames, kRate)];
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+    if (writer.status != AVAssetWriterStatusCompleted) {
+      return std::string("finishWriting: ") + (writer.error.localizedDescription.UTF8String ?: "not completed");
+    }
+    return "";
+  }
+}
+
 std::string writeFlatColourPng(const std::string& path, int width, int height,
                                uint8_t b, uint8_t g, uint8_t r, uint8_t a) {
   @autoreleasepool {

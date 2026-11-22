@@ -79,6 +79,7 @@ struct VideoReaderState {
   std::deque<ClipVideoSample> ready;  // at most kSamplesDecodedAhead wait for take()
   bool endOfStream = false;
   bool failed = false;
+  bool noVideoTrack = false;  // the file opened and has no video track (an audio bed)
   std::string error;
   AVAssetReader* reader = nil;  // also read by the destructor, to cancel
   AVURLAsset* asset = nil;      // likewise, to cancel a load in flight
@@ -133,7 +134,8 @@ NSArray<AVAssetTrack*>* loadTracks(AVURLAsset* asset, AVMediaType type, const st
   return result;
 }
 
-void loadDuration(AVURLAsset* asset, const std::shared_ptr<VideoReaderState>& state) {
+template <typename ReaderState>
+void loadDuration(AVURLAsset* asset, const std::shared_ptr<ReaderState>& state) {
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   [asset loadValuesAsynchronouslyForKeys:@[ @"duration" ] completionHandler:^{ dispatch_semaphore_signal(done); }];
   if (!waitUnlessCancelled(done, state->cancelled)) return;
@@ -270,7 +272,13 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
       failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
       return;
     }
-    if (tracks.count == 0) { failReader(state, "the file has no video track"); return; }
+    if (tracks.count == 0) {
+      // An audio bed, not a failure (N3): MediaClipDecoder gives it a
+      // transparent picture and plays its audio.
+      { std::lock_guard<std::mutex> lock(state->mutex); state->noVideoTrack = true; }
+      wakeOwner(state);
+      return;
+    }
     loadDuration(asset, state);
     if (state->cancelled.load()) return;
     AVAssetTrack* track = tracks.firstObject;
@@ -364,6 +372,7 @@ class AvfClipVideoReader final : public IClipVideoReader {
       return ClipReadStatus::Ready;
     }
     if (state_->failed) { error = state_->error; return ClipReadStatus::Failed; }
+    if (state_->noVideoTrack) return ClipReadStatus::NoVideoTrack;
     if (state_->endOfStream) return ClipReadStatus::EndOfStream;
     return ClipReadStatus::Pending;
   }
@@ -395,6 +404,7 @@ struct AudioReaderState {
   AVAssetReaderOutput* output = nil;
   // Any thread.
   std::atomic<bool> cancelled{false};
+  std::atomic<int64_t> duration100ns{-1};
 };
 
 void wakeOwner(const std::shared_ptr<AudioReaderState>& state) {
@@ -479,6 +489,8 @@ void openAudio(const std::shared_ptr<AudioReaderState>& state) {
     // No audio track is NOT a failure: the reader ends without one sample and
     // MediaClipDecoder treats the clip as silent, unwarned.
     if (tracks.count == 0) { endReader(state); return; }
+    loadDuration(asset, state);  // an audio bed's only duration (N3)
+    if (state->cancelled.load()) return;
     AVAssetReader* reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
     if (!reader) {
       failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
@@ -562,6 +574,8 @@ class AvfClipAudioReader final : public IClipAudioReader {
     if (state_->endOfStream) return ClipReadStatus::EndOfStream;
     return ClipReadStatus::Pending;
   }
+
+  int64_t duration100ns() const override { return state_->duration100ns.load(); }
 
  private:
   std::shared_ptr<AudioReaderState> state_;

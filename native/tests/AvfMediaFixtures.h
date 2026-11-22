@@ -24,6 +24,10 @@ std::string writeBt709BarsClip(const std::string& path, int frames, int fps);
 // amplitude 0.5.
 std::string writeToneClip(const std::string& path, int seconds, double toneHz);
 
+// An AUDIO-ONLY file (no video track): `millis` of a sine at `toneHz`, 48 kHz stereo, amplitude 0.5.
+// `.wav` paths are written as 16-bit LPCM WAVE, anything else as AAC in an M4A container.
+std::string writeToneOnlyAudio(const std::string& path, int millis, double toneHz);
+
 // A flat-colour PNG (straight-alpha BGRA source) written with ImageIO.
 std::string writeFlatColourPng(const std::string& path, int width, int height,
                                uint8_t b, uint8_t g, uint8_t r, uint8_t a = 0xff);

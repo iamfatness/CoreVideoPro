@@ -745,6 +745,11 @@ class MediaTransports final {
         auto audio = audioPolled ? decoder->pollMediaAudioFrames(request, audioTarget) : std::vector<modules::AudioFrame>{};
         // Asked for audio and got none: the decoder has nothing more to hand over (at EOS, its tail is out).
         const bool decoderAudioDry = audioPolled && audio.empty();
+        // AN AUDIO BED HAS ONE PICTURE FOR ITS WHOLE LIFE (N3). For a decoder
+        // that knows the asset has no video, delivered audio is the progress
+        // the no-new-frame backstop measures; otherwise a bed longer than the
+        // backstop would be ended, and silenced, while it was still playing.
+        if (!audio.empty() && prefetchDecoder && !prefetchDecoder->mediaHasVideo()) lastNewFrameMs = nowMs;
         auto warnings = decoder->warnings();
         // Read AFTER the poll that could have moved it: the decoder reaches
         // EOS inside prefetchMediaVideo/pollMediaFrames.

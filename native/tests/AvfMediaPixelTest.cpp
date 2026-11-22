@@ -411,4 +411,42 @@ TEST(AvfMediaPixel, ANonLoopingClipEndsOnProgramOnItsLastFrame) {
   EXPECT_TRUE(near(pixel, kWhite)) << "Program froze on " << name(pixel) << ", not the clip's last frame";
 }
 
+// N3 (plan 2026-11-21 Task 1). An audio bed routed full canvas over a GREEN
+// still background: Program keeps showing the background (a frameless layer
+// would paint the warming/failed slate over everything), nothing warns that
+// the file "could not be opened", and the transport ends when the audio does.
+// Fixture: a 1.0 s 440 Hz AAC .m4a (no video track) and a GREEN 64x64 PNG.
+TEST(AvfMediaPixel, AnAudioBedOnProgramDrawsNothingOverTheSceneAndEnds) {
+  const auto bed = tmp("bed.m4a"); Cleanup c1{bed};
+  const auto bg = tmp("bg.png"); Cleanup c2{bg};
+  ASSERT_EQ(corevideo::testing::writeToneOnlyAudio(bed.string(), 1000, 440.0), "");
+  ASSERT_EQ(corevideo::testing::writeFlatColourPng(bg.string(), 64, 64, 0x20, 0xE0, 0x20), "");
+  MAKE_CORE_OR_SKIP(core, "AnAudioBedOnProgramDrawsNothingOverTheSceneAndEnds");
+  const Json load = Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "s"}, {"routes", Json::Array{mediaRoute("clip", "audio-bed", bed)}},
+      {"background", Json::Object{{"mediaAssetId", "bg"}, {"mediaAssetName", "BG"}, {"mediaAssetKind", "stinger"},
+                                  {"mediaAssetPath", bg.string()}}}};
+  (void)tick(core, {load});
+  ASSERT_TRUE(tickUntilCentre(core, kGreen, 3000)) << "the background never rendered";
+  int64_t endedAtMs = -1;
+  const auto start = steadyMs();
+  int ticks = 0;
+  for (const auto deadline = start + 4000; steadyMs() < deadline; ++ticks) {
+    const auto state = tick(core);
+    Pixel pixel{};
+    ASSERT_TRUE(centre(core, pixel));
+    ASSERT_TRUE(near(pixel, kGreen)) << "tick " << ticks << ": the audio bed painted " << show(pixel)
+                                     << " over the scene";
+    const auto text = state.stringify();
+    ASSERT_EQ(text.find("could not be opened"), std::string::npos) << "an audio bed is not an open failure";
+    const auto* row = mediaRow(state, "media:clip");
+    ASSERT_NE(row, nullptr);
+    if (endedAtMs < 0 && row->getString("state") == "ended") endedAtMs = steadyMs() - start;
+    if (endedAtMs >= 0 && steadyMs() - start - endedAtMs > 300) break;
+  }
+  std::fprintf(stderr, "[avf-pixel] audio bed ended %lld ms after it came on air\n", static_cast<long long>(endedAtMs));
+  ASSERT_GE(endedAtMs, 0) << "the audio bed never ended";
+  EXPECT_LE(endedAtMs, 2500) << "ended long after its 1 s of audio";
+}
+
 #endif  // !COREVIDEO_STUB && COREVIDEO_WITH_METAL && COREVIDEO_WITH_AVF_MEDIA_DECODER
