@@ -102,3 +102,26 @@ TEST(ZoomRangeExcursionProbeDiag, CallShapes) {
     std::fprintf(stderr, "[diag2] inlineMacro=%d castDiscard=%d voidDiscard=%d stored=%d (expect all 1)\n",
                  inlineMacro, castDiscard, voidDiscard, stored);
 }
+
+// Round 3: the same optional, read two ways. Rounds 1-2 always used has_value();
+// the failing tests use ASSERT_TRUE(event) == static_cast<bool>(const optional&).
+TEST(ZoomRangeExcursionProbeDiag, OptionalBoolConversion) {
+    ZoomRangeExcursionProbe probe;
+    std::vector<std::uint8_t> full(6400, 32), compressed(6400, 43);
+    (void)probe.observe(full.data(), full.data(), full.size(), false, false);
+    (void)probe.observe(compressed.data(), compressed.data(), compressed.size(), false, false);
+    const auto event = probe.observe(full.data(), full.data(), full.size(), false, false);
+    const bool viaHasValue = event.has_value();
+    const bool viaStaticCast = static_cast<bool>(event);
+    const bool viaCtor = bool(event);
+    bool viaIf = false;
+    if (event) viaIf = true;
+    auto mutableCopy = event;
+    const bool viaMutableCast = static_cast<bool>(mutableCopy);
+    const std::optional<int> small = 7;
+    std::fprintf(stderr, "[diag3] hasValue=%d staticCast=%d ctor=%d if=%d mutableCast=%d small=%d sizeofExcursion=%zu\n",
+                 viaHasValue, viaStaticCast, viaCtor, viaIf, viaMutableCast,
+                 static_cast<bool>(small), sizeof(ZoomRangeExcursionProbe::Excursion));
+    // And the exact failing statement, last, so the lines above always print.
+    std::fprintf(stderr, "[diag3] assertTrueWouldPass=%d\n", int(static_cast<bool>(event)));
+}
