@@ -1029,6 +1029,7 @@ if(BUILD_TESTING)
     tests/CoreAudioAdapterTest.cpp
     tests/MacCaptureSupportTest.cpp
     tests/AvfCaptureArrivalTest.cpp
+    tests/MacCaptureLivenessTest.cpp
     tests/AvfProgramTailTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp

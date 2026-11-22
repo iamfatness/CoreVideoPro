@@ -422,6 +422,8 @@ class AvfCaptureDevice final : public ICaptureDevice {
           it->second.info.connectionState = "error";
           it->second.info.signalPresent = false;
           it->second.info.warning = "Camera is no longer present (unplugged?)";
+          // The held picture reports the loss, so the dropout policy applies (plan Task 7).
+          if (it->second.state) it->second.state->markLost(CaptureLossReason::DeviceRemoved);
           ++it;
         } else {
           it = shared->devices.erase(it);

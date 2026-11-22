@@ -4,6 +4,7 @@
 // without a camera.
 #include "modules/I420CaptureArrival.h"
 #include "modules/Interfaces.h"
+#include "modules/MacCaptureLiveness.h"
 #include "modules/UvcIsoArrivalQueue.h"
 #include <cstdint>
 #include <memory>
@@ -28,10 +29,22 @@ struct AvfSessionState {
                bool fullRange, bool bt601) {
     VideoFrame published = arrival.publishMutable(std::move(i420), width, height, fullRange, bt601);
     if (!published.hasContent()) return;
-    isoArrivals.offer(published);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      liveness.sample(MacCaptureLiveness::steadyNowNs());
+      published.captureLiveness = liveness.value();
+    }
+    isoArrivals.offer(published);  // outside the state lock, as before
     std::lock_guard<std::mutex> lock(mutex);
     latest = std::move(published);
     ++frameId;
+  }
+
+  // The device went away or the session failed: the held picture reports the loss, so
+  // the core's dropout policy holds it for 2 s and then fails it (CaptureLivenessPolicy.h).
+  void markLost(CaptureLossReason reason) {
+    std::lock_guard<std::mutex> lock(mutex);
+    liveness.lost(reason, MacCaptureLiveness::steadyNowNs());
   }
 
   // The held picture for latest-wins consumers (Program, monitors). Returns the
@@ -41,12 +54,15 @@ struct AvfSessionState {
     frameIdOut = frameId;
     if (frameId <= 0 || !latest.hasContent()) return false;
     out = latest;
+    // The current liveness, whose sample time is the last DELIVERY: a held picture ages.
+    out.captureLiveness = liveness.value();
     return true;
   }
 
  private:
   I420CaptureArrival arrival;
   VideoFrame latest;
+  MacCaptureLiveness liveness{/*cadenceTrusted=*/true};  // a camera delivers continuously
 };
 
 }  // namespace corevideo::modules
