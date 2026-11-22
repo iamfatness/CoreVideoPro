@@ -35,8 +35,10 @@ CompositorRenderPlan programPlan(const std::string& id) {
   return plan;
 }
 
+// `wantStatus` empty accepts a picture ("ready" or "held"); a test that needs one state names it,
+// because the last result can still carry the previous state for the same revision.
 GradePreviewSurface awaitGrade(ICompositor& compositor, MonitorRenderRequest request, const std::string& id, int64_t revision,
-                               bool wantScopes = false) {
+                               bool wantScopes = false, const std::string& wantStatus = {}) {
   static std::atomic<int64_t> sequence{0};
   const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (std::chrono::steady_clock::now() < end) {
@@ -47,7 +49,8 @@ GradePreviewSurface awaitGrade(ICompositor& compositor, MonitorRenderRequest req
     if (!result) continue;
     for (const auto& surface : result->gradePreviews)
       if (surface.demand.instanceId == id && surface.demand.revision == revision &&
-          (surface.status == "ready" || surface.status == "held") && surface.texture.iosurfaceId != 0 &&
+          (wantStatus.empty() ? (surface.status == "ready" || surface.status == "held") : surface.status == wantStatus) &&
+          surface.texture.iosurfaceId != 0 &&
           (!wantScopes || (surface.scopes.texture.iosurfaceId != 0 && surface.scopes.revision == revision)))
         return surface;
   }
@@ -151,9 +154,10 @@ TEST(MetalGradePreview, AVanishedSourceIsHeldAndAnUnknownOneIsUnavailable) {
   METAL_GRADE_OR_SKIP(compositor);
   auto request = requestWith(patch(false));
   request.gradePreviews.push_back({"held", "cam", 1, warmFilm(false)});
-  ASSERT_NE(awaitGrade(*compositor, request, "held", 1).texture.iosurfaceId, 0u);
+  ASSERT_NE(awaitGrade(*compositor, request, "held", 1, false, "ready").texture.iosurfaceId, 0u);
   request.frames.clear();
-  const auto held = awaitGrade(*compositor, request, "held", 1);
+  // Wait for "held" itself: the previous "ready" result for this revision can still be the latest.
+  const auto held = awaitGrade(*compositor, request, "held", 1, false, "held");
   EXPECT_EQ(held.status, "held"); EXPECT_EQ(held.sourceEpoch, 8u); EXPECT_EQ(held.sourceFrameId, 41);
   request.gradePreviews = {{"nobody", "ghost", 1, {}}};
   GradePreviewSurface unknown;
