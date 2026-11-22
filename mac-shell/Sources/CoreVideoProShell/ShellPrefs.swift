@@ -181,6 +181,19 @@ struct ShellPrefs: Codable, Equatable {
     var masteringCompareB: MasteringParams?
     var masteringCompareSlot: String?
     var masteringUserPresets: [MasteringUserPreset]?
+    // Settings quick wins (2026-11-22 plan). nil = never saved -> the defaults.
+    // A1: "perGuestIso" | "programMix" (ZoomAudioMode.parse; unknown -> perGuestIso).
+    var zoomAudioMode: String?
+    // A5: the local audio source (Windows LocalAudioSourceEnabled + the device).
+    var localAudioEnabled: Bool?
+    var localAudioDeviceId: String?
+    var localAudioDeviceName: String?
+    // Z1: Zoom camera ceilings ("360p" | "720p" | "1080p", 15/24/25/30/60).
+    var zoomCameraMaxResolution: String?
+    var zoomCameraMaxFps: Int?
+    // O1: the recording render profile and the stream encoder settings.
+    var recordingProfile: RecordingProfile?
+    var streamEncoder: StreamEncoderSettings?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -255,6 +268,15 @@ struct ShellPrefs: Codable, Equatable {
         masteringCompareSlot = ((try? c.decodeIfPresent(String.self, forKey: .masteringCompareSlot)) ?? nil)
         masteringUserPresets = ((try? c.decodeIfPresent([MasteringUserPreset].self,
                                                         forKey: .masteringUserPresets)) ?? nil)
+        zoomAudioMode = ((try? c.decodeIfPresent(String.self, forKey: .zoomAudioMode)) ?? nil)
+        localAudioEnabled = ((try? c.decodeIfPresent(Bool.self, forKey: .localAudioEnabled)) ?? nil)
+        localAudioDeviceId = ((try? c.decodeIfPresent(String.self, forKey: .localAudioDeviceId)) ?? nil)
+        localAudioDeviceName = ((try? c.decodeIfPresent(String.self, forKey: .localAudioDeviceName)) ?? nil)
+        zoomCameraMaxResolution = ((try? c.decodeIfPresent(String.self,
+                                                           forKey: .zoomCameraMaxResolution)) ?? nil)
+        zoomCameraMaxFps = ((try? c.decodeIfPresent(Int.self, forKey: .zoomCameraMaxFps)) ?? nil)
+        recordingProfile = ((try? c.decodeIfPresent(RecordingProfile.self, forKey: .recordingProfile)) ?? nil)
+        streamEncoder = ((try? c.decodeIfPresent(StreamEncoderSettings.self, forKey: .streamEncoder)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -318,6 +340,16 @@ struct ShellPrefs: Codable, Equatable {
         p.masteringCompareB = rack
         p.masteringCompareSlot = "B"
         p.masteringUserPresets = [MasteringUserPreset(id: "user-abc", name: "Sunday Show", settings: rack)]
+        p.zoomAudioMode = "programMix"
+        p.localAudioEnabled = true
+        p.localAudioDeviceId = "BuiltInMicrophoneDevice"
+        p.localAudioDeviceName = "MacBook Pro Microphone"
+        p.zoomCameraMaxResolution = "720p"
+        p.zoomCameraMaxFps = 30
+        p.recordingProfile = RecordingProfile(width: 1280, height: 720, fps: 50, codec: "h265",
+                                              targetBitrateMbps: 9.5, audioBitrateKbps: 192)
+        p.streamEncoder = StreamEncoderSettings(audioBitrateKbps: 128, keyframeIntervalSeconds: 4,
+                                                rateControl: "vbr", h264Profile: "main", bFrames: 0)
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"
