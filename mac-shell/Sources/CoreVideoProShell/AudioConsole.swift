@@ -19,7 +19,16 @@ struct AudioPane: View {
     // The pop-out window hosts this same view; it just hides the pop-out button.
     var isPopout: Bool = false
     @EnvironmentObject var model: AppModel
-    @State private var surface = "SHOW"
+    @State private var surface = AudioPane.initialSurface
+    /// The offscreen tab renderer (COREVIDEO_SHELL_TAB_SNAPSHOT) may open another
+    /// surface with COREVIDEO_SHELL_AUDIO_SURFACE=ROUTING|SETUP|PLUG-INS; the
+    /// running app always opens on SHOW.
+    static var initialSurface: String {
+        guard ShellHarness.isActive,
+              let wanted = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUDIO_SURFACE"],
+              ["SHOW", "ROUTING", "PLUG-INS", "SETUP"].contains(wanted) else { return "SHOW" }
+        return wanted
+    }
     @State private var selectedStripId: String?
 
     var selected: AudioStrip? {
@@ -538,10 +547,19 @@ struct AudioRoutingSurface: View {
 
 // Master-bus mastering rack. Stages render in DSP order; the engage opacity
 // mirrors the exact neutral-bypass condition (honesty rule: dim == a no-op).
+// A3: COMPARE A/B, Starting point, Reset stage and MY PRESETS rows follow the
+// Windows rack (W/Views/AudioPage.xaml:199-330); ranges follow its sliders.
 struct MasteringRack: View {
     @EnvironmentObject var model: AppModel
+    @State private var presetName = ""
+    @State private var selectedPresetId: String?
 
     var params: MasteringParams { model.mastering }
+
+    func bind(_ keyPath: WritableKeyPath<MasteringParams, Double>) -> Binding<Double> {
+        Binding(get: { model.mastering[keyPath: keyPath] },
+                set: { v in model.editMastering { $0[keyPath: keyPath] = v } })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -553,6 +571,7 @@ struct MasteringRack: View {
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .labelsHidden()
+                    .accessibilityLabel("Master in")
                 Text(params.enabled ? "MASTER IN" : "BYPASS")
                     .font(.plexMono(9, .semibold))
                     .foregroundStyle(params.enabled ? Studio.accent : Studio.textDim)
@@ -562,65 +581,128 @@ struct MasteringRack: View {
                         .font(.plexMono(10)).foregroundStyle(Studio.secondary)
                 }
             }
+            compareRow
+            presetsRow
+            if !model.masteringStatus.isEmpty {
+                Text(model.masteringStatus).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+            }
             HStack(alignment: .top, spacing: 8) {
-                stage("INPUT", engaged: abs(params.inputGainDb) > 0.05) {
-                    knob("Gain", value: Binding(
-                        get: { params.inputGainDb },
-                        set: { v in model.editMastering { $0.inputGainDb = v } }),
-                        in: -12...12, unit: "dB")
+                stage("01 INPUT", engaged: abs(params.inputGainDb) > 0.05) {
+                    knob("Gain", value: bind(\.inputGainDb), in: -12...12, unit: "dB")
                 }
-                stage("FILTERS", engaged: params.highPassHz > 20) {
-                    knob("Low cut", value: Binding(
-                        get: { params.highPassHz },
-                        set: { v in model.editMastering { $0.highPassHz = v } }),
-                        in: 0...200, unit: "Hz")
+                // The core runs high-pass when > 0 and low-pass when > 0
+                // (AudioMastering.h:421-424): the light follows the value SENT.
+                stage("02 FILTER", engaged: params.highPassHz > 0 || params.lowPassHz > 0) {
+                    knob("Low cut", value: bind(\.highPassHz), in: 0...300, unit: "Hz")
+                    knob("High cut", value: bind(\.lowPassHz), in: 0...20000, unit: "Hz")
                 }
-                stage("TONE", engaged: abs(params.lowShelfDb) > 0.05
+                stage("03 TONE", engaged: abs(params.lowShelfDb) > 0.05
                       || abs(params.presenceDb) > 0.05 || abs(params.highShelfDb) > 0.05) {
-                    knob("Low", value: Binding(
-                        get: { params.lowShelfDb },
-                        set: { v in model.editMastering { $0.lowShelfDb = v } }),
-                        in: -6...6, unit: "dB")
-                    knob("Presence", value: Binding(
-                        get: { params.presenceDb },
-                        set: { v in model.editMastering { $0.presenceDb = v } }),
-                        in: -6...6, unit: "dB")
-                    knob("Air", value: Binding(
-                        get: { params.highShelfDb },
-                        set: { v in model.editMastering { $0.highShelfDb = v } }),
-                        in: -6...6, unit: "dB")
+                    knob("Low", value: bind(\.lowShelfDb), in: -12...12, unit: "dB")
+                    knob("Presence", value: bind(\.presenceDb), in: -12...12, unit: "dB")
+                    knob("Air", value: bind(\.highShelfDb), in: -12...12, unit: "dB")
                 }
-                stage("RIDE", engaged: params.maxRideDb > 0.05) {
-                    knob("Target", value: Binding(
-                        get: { params.targetLufs },
-                        set: { v in model.editMastering { $0.targetLufs = v } }),
-                        in: -24...(-9), unit: "LUFS")
-                    knob("Max ride", value: Binding(
-                        get: { params.maxRideDb },
-                        set: { v in model.editMastering { $0.maxRideDb = v } }),
-                        in: 0...12, unit: "dB")
+                stage("04 RIDE", engaged: params.maxRideDb > 0.05) {
+                    knob("Target", value: bind(\.targetLufs), in: -24...(-9), unit: "LUFS")
+                    knob("Max ride", value: bind(\.maxRideDb), in: 0...12, unit: "dB")
                 }
-                stage("GLUE", engaged: params.glueAmount > 0.005) {
-                    knob("Amount", value: Binding(
-                        get: { params.glueAmount },
-                        set: { v in model.editMastering { $0.glueAmount = v } }),
-                        in: 0...1, unit: "")
+                stage("05 GLUE", engaged: params.glueAmount > 0.005) {
+                    knob("Amount", value: bind(\.glueAmount), in: 0...1, unit: "")
+                    knob("Ratio", value: bind(\.glueRatio), in: 1...10, unit: ":1")
+                    knob("Attack", value: bind(\.glueAttackMs), in: 1...200, unit: "ms")
+                    knob("Release", value: bind(\.glueReleaseMs), in: 20...1000, unit: "ms")
+                    knob("Makeup", value: bind(\.glueMakeupDb), in: -6...6, unit: "dB")
+                    Toggle("Multiband", isOn: Binding(
+                        get: { params.glueMultiband },
+                        set: { v in model.editMastering { $0.glueMultiband = v } }))
+                        .toggleStyle(.switch).controlSize(.mini).font(.plexMono(9))
+                    if params.glueMultiband {
+                        knob("Low band", value: bind(\.glueBandLowDb), in: -6...6, unit: "dB")
+                        knob("Mid band", value: bind(\.glueBandMidDb), in: -6...6, unit: "dB")
+                        knob("High band", value: bind(\.glueBandHighDb), in: -6...6, unit: "dB")
+                    }
                 }
-                stage("WIDTH", engaged: abs(params.stereoWidth - 1) > 0.005) {
-                    knob("Width", value: Binding(
-                        get: { params.stereoWidth },
-                        set: { v in model.editMastering { $0.stereoWidth = v } }),
-                        in: 0...2, unit: "×")
+                stage("06 WIDTH", engaged: abs(params.stereoWidth - 1) > 0.005) {
+                    knob("Width", value: bind(\.stereoWidth), in: 0...2, unit: "×")
                 }
-                stage("CEILING", engaged: true) {
-                    knob("True peak", value: Binding(
-                        get: { params.ceilingDbfs },
-                        set: { v in model.editMastering { $0.ceilingDbfs = v } }),
-                        in: -6...(-0.1), unit: "dBFS")
+                stage("07 CEILING", engaged: params.limiterEnabled) {
+                    knob("True peak", value: bind(\.ceilingDbfs), in: -6...(-0.5), unit: "dBFS")
+                    Toggle("Master protection", isOn: Binding(
+                        get: { params.limiterEnabled },
+                        set: { v in model.editMastering { $0.limiterEnabled = v } }))
+                        .toggleStyle(.switch).controlSize(.mini).font(.plexMono(9))
+                    Text(params.limiterEnabled ? "In" : "Bypass")
+                        .font(.plexMono(9)).foregroundStyle(params.limiterEnabled ? Studio.accent : Studio.amber)
                 }
             }
             .opacity(params.enabled ? 1 : 0.5)
             .disabled(!params.enabled)
+        }
+    }
+
+    var compareRow: some View {
+        HStack(spacing: 8) {
+            MonoLabel("Compare")
+            ForEach(["A", "B"], id: \.self) { slot in
+                Button(slot) { model.selectMasteringCompareSlot(slot) }
+                    .buttonStyle(.plain)
+                    .font(.plexMono(10, .semibold))
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 4)
+                        .fill(model.masteringCompareSlot == slot ? Studio.blue : Studio.surface))
+                    .foregroundStyle(model.masteringCompareSlot == slot ? Studio.onAccent : Studio.secondary)
+                    .help("Recall comparison \(slot); the current settings are retained in the other slot")
+                    .accessibilityLabel("Comparison \(slot)")
+            }
+            Menu("Starting point") {
+                Button("Streaming · -14 LUFS") { model.applyMasteringPreset("streaming") }
+                Button("Podcast · -16 LUFS") { model.applyMasteringPreset("podcast") }
+                Button("Broadcast · -23 LUFS") { model.applyMasteringPreset("broadcast") }
+                Divider()
+                Button("Neutral · protection only") { model.applyMasteringPreset("neutral") }
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            Menu("Reset stage") {
+                ForEach(Array(["Input", "Filter", "Tone", "Ride", "Glue", "Width", "Ceiling"].enumerated()),
+                        id: \.offset) { index, name in
+                    Button(String(format: "%02d · %@", index + 1, name)) {
+                        model.resetMasteringStage(name.lowercased())
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            Text("A/B slots and the whole rack persist across restarts.")
+                .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+        }
+    }
+
+    var presetsRow: some View {
+        HStack(spacing: 8) {
+            MonoLabel("My presets")
+            TextField("Preset name", text: $presetName)
+                .textFieldStyle(.roundedBorder).frame(width: 160)
+            Button("Save") {
+                if let saved = model.saveMasteringUserPreset(name: presetName) { selectedPresetId = saved.id }
+            }
+            .buttonStyle(GhostButtonStyle())
+            .help("Save the current rack as a named preset (same name = overwrite)")
+            Picker("Saved presets", selection: $selectedPresetId) {
+                Text("Saved presets").tag(String?.none)
+                ForEach(model.masteringUserPresets) { preset in
+                    Text(preset.name).tag(Optional(preset.id))
+                }
+            }
+            .labelsHidden().frame(width: 170)
+            let hasPresets = !model.masteringUserPresets.isEmpty
+            Button("Apply") { model.applyMasteringUserPreset(id: selectedPresetId) }
+                .buttonStyle(GhostButtonStyle()).disabled(!hasPresets)
+            Button("Rename") { model.renameMasteringUserPreset(id: selectedPresetId, to: presetName) }
+                .buttonStyle(GhostButtonStyle()).disabled(!hasPresets)
+                .help("Rename the selected preset to the name typed on the left")
+            Button("Delete") {
+                if model.deleteMasteringUserPreset(id: selectedPresetId) { selectedPresetId = nil }
+            }
+            .buttonStyle(GhostButtonStyle(tint: Studio.red)).disabled(!hasPresets)
         }
     }
 
