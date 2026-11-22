@@ -193,6 +193,7 @@ struct SourcesToolsRow: View {
             .fixedSize()
             AutoAssignInputsToggle()
             Spacer(minLength: 0)
+            GradeSelectedButton()
             Button(model.sourcesWorkspace.columns.inspectorOpen ? "Close inspector" : "Open inspector") {
                 if model.sourcesWorkspace.columns.inspectorOpen {
                     model.sourcesWorkspace.columns.inspectorOpen = false
@@ -207,6 +208,7 @@ struct SourcesToolsRow: View {
 
 struct SourcesTableRow: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     let slot: ShowInputSlot
     @ObservedObject var box: SlotFactsBox
 
@@ -325,9 +327,14 @@ struct SourcesTableRow: View {
             Button("Inspect") { model.sourcesWorkspace.inspect(slot.id) }
                 .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.accent)
                 .accessibilityLabel("Inspect input \(slot.id)")
+            Button("Grade") { model.openGradeWorkspace(slotId: slot.id) { openWindow(id: PopoutWindow.sourceGrade, value: $0) } }
+                .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.accent)
+                .disabled(!assigned)
+                .accessibilityLabel("Grade input \(slot.id)")          // SourcesTableRowControl.cs:78
             if slot.keyEnabled {
                 Text("KEY").font(.plexMono(9, .semibold)).foregroundStyle(Studio.accent)
             }
+            SlotGradedChip(store: model.sourceGrades, slotId: slot.id)
             moreMenu
         }
     }

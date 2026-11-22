@@ -21,6 +21,10 @@ extension ShellTests {
             ("grade2/curve-keys", testCurveKeysSelectNudgeAndDelete),
             ("grade2/editor-curves-validated-one-undo", testEditorCurveEditsAreValidatedAndOneUndoPerGesture),
             ("grade2/editor-import-cube", testImportCubeAddsASelectedLutOrSaysWhy),
+            // Task 4 (G4): Sources table row, toolbar and inspector header.
+            ("grade2/g4-three-routes-one-editor", testRowToolbarAndInspectorOpenTheSameEditor),
+            ("grade2/g4-refusals", testGradeEntryRefusalsUseTheWindowsWords),
+            ("grade2/g4-graded-chip", testTheGradedChipFollowsTheStore),
         ]
     }
 
@@ -209,5 +213,53 @@ extension ShellTests {
         editor.importCube(text: text, name: "Ninth")
         expectEqual(editor.document?.operations.count, 8, "a ninth is refused")
         expectEqual(editor.status, "A grade can contain up to eight adjustments.", "VM.Advanced.cs:185")
+    }
+
+    // ── Task 4 ───────────────────────────────────────────────────────────────
+
+    @MainActor static func testRowToolbarAndInspectorOpenTheSameEditor() {
+        let model = gradeModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "16778240", name: "Guest")
+        model.assignSlot(2, kind: "capture", sourceId: "cam-1", name: "Cam")
+        var opened: [String] = []
+        // Row "Grade" on input 1, toolbar "Grade selected…" with input 1 selected, inspector header.
+        expectEqual(model.openGradeWorkspace(slotId: 1) { opened.append($0) }, nil, "row Grade opens")
+        model.sourcesWorkspace.selectedSlotId = 1
+        expectEqual(model.openGradeWorkspace(slotId: model.sourcesWorkspace.selectedSlotId) { opened.append($0) }, nil,
+                    "toolbar Grade selected… opens")
+        expectEqual(opened, ["16778240", "16778240"], "both open the raw Zoom pid's window (the frame key), never zoom:<pid>")
+        expectEqual(model.gradeEditors.count, 1, "the same editor, not a second one")
+        expectEqual(model.openGradeWorkspace(slotId: 2) { opened.append($0) }, nil, "a capture input")
+        expectEqual(opened.last, "capture:cam-1", "capture frame key")
+        expectEqual(model.gradeNotice, "", "a successful open clears the notice")
+        expect(SourcesWorkspaceState.gradeSelectedEnabled(selected: 1, slots: model.slots), "toolbar enabled on an assigned input")
+        expect(!SourcesWorkspaceState.gradeSelectedEnabled(selected: 3, slots: model.slots), "disabled on an unassigned input")
+        expect(!SourcesWorkspaceState.gradeSelectedEnabled(selected: nil, slots: model.slots), "disabled with no selection")
+        expectEqual(SourceInspectorGradeCopy.pictureTitle, "Source grading", "SourcesWorkspaceControl.Inspector.cs:142")
+        expectEqual(SourceInspectorGradeCopy.openButton, "Open grade workspace…", "Inspector.cs:144")
+    }
+
+    @MainActor static func testGradeEntryRefusalsUseTheWindowsWords() {
+        let model = gradeModel()
+        var opened: [String] = []
+        expectEqual(model.openGradeWorkspace(slotId: nil) { opened.append($0) }, AppModel.gradeNoSourceText, "no selection")
+        expectEqual(model.openGradeWorkspace(slotId: 4) { opened.append($0) }, AppModel.gradeNoSourceText, "an unassigned input")
+        expectEqual(model.gradeNotice, AppModel.gradeNoSourceText, "the refusal is shown")
+        for (slot, id) in [(1, "a"), (2, "b"), (3, "c"), (4, "d")] { model.assignSlot(slot, kind: "capture", sourceId: id, name: id) }
+        for slot in 1...3 { _ = model.openGradeWorkspace(slotId: slot) { opened.append($0) } }
+        expectEqual(model.openGradeWorkspace(slotId: 4) { opened.append($0) }, AppModel.gradeEditorLimitText, "a fourth editor")
+        expectEqual(opened.count, 3, "a refusal opens no window")
+    }
+
+    @MainActor static func testTheGradedChipFollowsTheStore() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        model.assignSlot(1, kind: "capture", sourceId: "cam", name: "Cam")
+        expect(!model.slotIsGraded(1), "no chip before a grade")
+        _ = awaitApply(model.sourceGrades, SourceColorGrade(exposure: 5), "capture:cam", binding: "capture:cam")
+        expect(model.slotIsGraded(1), "GRADED once the core acknowledged a grade")
+        expect(!model.slotIsGraded(2), "an unassigned input never shows it")
     }
 }

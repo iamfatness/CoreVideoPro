@@ -127,22 +127,20 @@ struct GradeInspectorSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Grade").font(.grotesk(13, .semibold))
+            Text(SourceInspectorGradeCopy.pictureTitle).font(.grotesk(13, .semibold))
             if let context {
+                Text(SourceInspectorGradeCopy.pictureBody).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(GradeInspectorSection.line(store.summary(for: context.gradeSourceId)))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Grade…") {
-                    switch model.openGradeEditor(sourceId: context.gradeSourceId) {
-                    case .opened(let editor):
-                        model.gradeNotice = ""
-                        openWindow(id: PopoutWindow.sourceGrade, value: editor.sourceId)
-                    case .refused(let text):
-                        model.gradeNotice = text
-                    }
+                Button(SourceInspectorGradeCopy.openButton) {
+                    model.openGradeWorkspace(slotId: context.slotId) { openWindow(id: PopoutWindow.sourceGrade, value: $0) }
                 }
                 .buttonStyle(GhostButtonStyle())
-                .accessibilityLabel("Grade input \(context.slotId)")
+                .accessibilityLabel("Open the grade workspace for input \(context.slotId)")
+                Text(SourceInspectorGradeCopy.roiNote).font(.grotesk(10)).foregroundStyle(Studio.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Choose a source for this input to grade it.")
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)

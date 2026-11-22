@@ -108,6 +108,7 @@ struct SourceInspector: View {
             HStack {
                 Text("Input \(slotId)").font(.grotesk(15, .semibold))
                 Spacer()
+                InspectorGradeHeaderButton(slotId: slotId, assigned: slot.map { $0.kind != "unassigned" } ?? false)
                 Button("Close inspector") { model.sourcesWorkspace.columns.inspectorOpen = false }
                     .buttonStyle(GhostButtonStyle())
             }
