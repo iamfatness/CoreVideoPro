@@ -958,32 +958,9 @@ final class AppModel: ObservableObject {
             status = .failed("corevideo-native not found — run scripts/run-mac-shell.sh")
             return
         }
-        var env: [String: String] = [:]
-        if let enginePath = paths.engineBinaryPath {
-            env["COREVIDEO_ZOOM_ENGINE_PATH"] = enginePath
-        }
-        if let key = UserDefaults.standard.string(forKey: "zoomPublicAppKey"), !key.isEmpty {
-            env["COREVIDEO_ZOOM_PUBLIC_APP_KEY"] = key
-        }
-        // The core waits this long for SDK auth, then again for the join
-        // verdict. Its built-in default is 7 s, which the Windows shell has
-        // never used (MediaCorePaths.cs sets 45000). Unset here, a Mac join
-        // reported "Timed out waiting for Zoom meeting join result." 7 s in,
-        // a moment before Zoom's real answer (2026-11-15, signed 1.0.0).
-        env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = ProcessInfo.processInfo
-            .environment["COREVIDEO_ZOOM_JOIN_WAIT_MS"] ?? ZoomJoinStatus.coreJoinWaitMs
-        // VST3 discovery. `resolvePluginHostExecutablePath` (MediaCore.cpp) only
-        // does sibling-of-the-exe lookup under _WIN32, so on macOS the core finds
-        // the host ONLY through this env var — without it pluginHost.status is
-        // permanently "absent". Likewise `scanRoots` (plugin-host.cpp) reads the
-        // Windows COMMONPROGRAMFILES vars plus this single override, so a macOS
-        // scan walks nothing unless we name a root. See VstInserts.swift.
-        if let hostPath = paths.pluginHostPath {
-            env["COREVIDEO_PLUGIN_HOST_PATH"] = hostPath
-        }
-        if ProcessInfo.processInfo.environment["COREVIDEO_VST3_SCAN_PATH"] == nil {
-            env["COREVIDEO_VST3_SCAN_PATH"] = VstScanRoots.effectiveRoot
-        }
+        let env = CoreLaunchEnvironment.extras(
+            paths: paths, processEnvironment: ProcessInfo.processInfo.environment,
+            zoomPublicAppKey: UserDefaults.standard.string(forKey: "zoomPublicAppKey"))
         let bridge = MediaCoreBridge(corePath: corePath, environmentExtras: env)
         self.bridge = bridge
         bridge.onStatus = { [weak self] status in
@@ -5551,6 +5528,52 @@ final class AppModel: ObservableObject {
     }
 }
 
+// The environment the shell adds when it launches the core: pure, so the
+// shell suite can pin it (ShellTestsGraphicsFonts). Moved out of AppModel's
+// launch unchanged, plus COREVIDEO_GRAPHICS_FONTS_DIR.
+enum CoreLaunchEnvironment {
+    static func extras(paths: ShellPaths.Paths, processEnvironment: [String: String],
+                       zoomPublicAppKey: String?) -> [String: String] {
+        var env: [String: String] = [:]
+        if let enginePath = paths.engineBinaryPath {
+            env["COREVIDEO_ZOOM_ENGINE_PATH"] = enginePath
+        }
+        if let key = zoomPublicAppKey, !key.isEmpty {
+            env["COREVIDEO_ZOOM_PUBLIC_APP_KEY"] = key
+        }
+        // The core waits this long for SDK auth, then again for the join
+        // verdict. Its built-in default is 7 s, which the Windows shell has
+        // never used (MediaCorePaths.cs sets 45000). Unset here, a Mac join
+        // reported "Timed out waiting for Zoom meeting join result." 7 s in,
+        // a moment before Zoom's real answer (2026-11-15, signed 1.0.0).
+        env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = processEnvironment["COREVIDEO_ZOOM_JOIN_WAIT_MS"]
+            ?? ZoomJoinStatus.coreJoinWaitMs
+        // VST3 discovery. `resolvePluginHostExecutablePath` (MediaCore.cpp) only
+        // does sibling-of-the-exe lookup under _WIN32, so on macOS the core finds
+        // the host ONLY through this env var — without it pluginHost.status is
+        // permanently "absent". Likewise `scanRoots` (plugin-host.cpp) reads the
+        // Windows COMMONPROGRAMFILES vars plus this single override, so a macOS
+        // scan walks nothing unless we name a root. See VstInserts.swift.
+        if let hostPath = paths.pluginHostPath {
+            env["COREVIDEO_PLUGIN_HOST_PATH"] = hostPath
+        }
+        if processEnvironment["COREVIDEO_VST3_SCAN_PATH"] == nil {
+            env["COREVIDEO_VST3_SCAN_PATH"] = VstScanRoots.effectiveRoot
+        }
+        // Graphics fonts (Metal graphics backend G2). On a pkg install the core
+        // runs from /Library/Application Support/CoreVideo Pro/ (CoreLocation),
+        // where make-macos-pkg.sh stages ONLY the binary, so the core's own
+        // lookup (GraphicsFonts/ beside the executable) finds nothing and Segoe
+        // UI graphics would fail strict. Name the app's folder explicitly.
+        if let override = processEnvironment["COREVIDEO_GRAPHICS_FONTS_DIR"], !override.isEmpty {
+            env["COREVIDEO_GRAPHICS_FONTS_DIR"] = override
+        } else if let fonts = paths.graphicsFontsDirectory {
+            env["COREVIDEO_GRAPHICS_FONTS_DIR"] = fonts
+        }
+        return env
+    }
+}
+
 // Locates the core + engine relative to the app bundle (Resources) or the
 // repo build tree (dev runs from run-mac-shell.sh).
 enum ShellPaths {
@@ -5558,6 +5581,10 @@ enum ShellPaths {
         var corePath: String?
         var engineBinaryPath: String?
         var pluginHostPath: String?  // corevideo-plugin-host (VST3 scan on macOS)
+        /// The app's bundled graphics fonts (Selawik for Segoe UI). The core
+        /// looks beside its own executable, which the pkg-installed copy in
+        /// /Library has not got, so the launch names this folder explicitly.
+        var graphicsFontsDirectory: String?
         /// True when corePath is the pkg-installed copy the camera extension can
         /// verify (CoreLocation); false means the camera refuses this core's frames.
         var coreCameraEligible = false
@@ -5608,7 +5635,16 @@ enum ShellPaths {
         paths.pluginHostPath = pluginHostCandidates.first {
             FileManager.default.isExecutableFile(atPath: $0)
         }
+        paths.graphicsFontsDirectory = graphicsFontsDirectory(bundleResources: bundleResources, repoRoot: repoRoot())
         return paths
+    }
+
+    /// The app's GraphicsFonts folder, else a dev build's (run-mac-shell.sh).
+    static func graphicsFontsDirectory(bundleResources: String, repoRoot: String) -> String? {
+        [bundleResources + "/GraphicsFonts", repoRoot + "/native/build-metal/GraphicsFonts"].first {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: $0, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
     }
 
     static func repoRoot() -> String {
