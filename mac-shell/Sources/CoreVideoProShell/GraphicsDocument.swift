@@ -234,6 +234,11 @@ enum GraphicsValue {
 
 // ── the document ─────────────────────────────────────────────────────────────
 
+struct GraphicsTemplateReference: Equatable {
+    var templateId: String
+    var templateVersion: Int
+}
+
 struct GraphicsTemplatePin: Equatable {
     var templateId: String
     var templateVersion: Int
@@ -272,6 +277,39 @@ struct GraphicsDocument: @unchecked Sendable {
     }
 
     func row(_ id: String) -> GraphicsRow? { playlist.first { $0.id == id } }
+
+    /// GraphicsWorkspaceLibrary.ReferencedTemplates: every template version a playlist row, a
+    /// row's image, a saved cue's draft (and its image) or the studio lower-third cue names, in
+    /// document order without repeats. Cues and the lower third are read verbatim (D3).
+    var referencedTemplates: [GraphicsTemplateReference] {
+        var out: [GraphicsTemplateReference] = []
+        func add(_ object: JSONObject?) {
+            guard let object, let id = object["templateId"] as? String else { return }
+            let reference = GraphicsTemplateReference(templateId: id, templateVersion: (object["templateVersion"] as? NSNumber)?.intValue ?? 0)
+            if !out.contains(reference) { out.append(reference) }
+        }
+        for row in playlist {
+            if !row.templateId.isEmpty { add(["templateId": row.templateId, "templateVersion": row.templateVersion]) }
+            add(row.image)
+        }
+        let cueDrafts = (json["cues"] as? [JSONObject] ?? []).map { $0["draft"] as? JSONObject }
+        let lowerThird = ((json["studioLowerThird"] as? JSONObject)?["cue"] as? JSONObject)?["draft"] as? JSONObject
+        for draft in cueDrafts + [lowerThird] {
+            add(draft)
+            add(draft?["image"] as? JSONObject)
+        }
+        return out
+    }
+
+    /// The show's `designs` section as installable manifests (GraphicsDesign.Definition, no
+    /// package root): the fallback when a referenced design version has no template pin.
+    var designPins: [GraphicsTemplatePin] {
+        (json["designs"] as? [JSONObject] ?? []).compactMap {
+            guard let id = $0["templateId"] as? String, let definition = $0["definition"] as? JSONObject else { return nil }
+            return GraphicsTemplatePin(templateId: id, templateVersion: ($0["templateVersion"] as? NSNumber)?.intValue ?? 0,
+                                       manifestHash: "", definition: definition, packageRoot: "")
+        }
+    }
 
     /// GraphicsDocumentStore.Validate, in the C#'s check order (the first failing
     /// check names the error), within plan D3.

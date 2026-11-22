@@ -73,10 +73,9 @@ extension ShellTests {
         app.graphics.saveDelayNs = 0
         var surfaceId: UInt32 = 0
 
-        /// One empty sync: the core answers with its snapshot; graphics observes it.
+        /// The core's snapshot from one sync reply; graphics observes it.
         @discardableResult
-        func poll() -> JSONObject {
-            let reply = awaitMain(8) { (try? await bridge.request(["type": "media-core-sync", "elapsedMs": app.elapsedMs(), "commands": []])) ?? [:] } ?? [:]
+        func absorb(_ reply: JSONObject) -> JSONObject {
             let snapshot = reply["snapshot"] as? JSONObject ?? [:]
             if !snapshot.isEmpty { app.graphics.observe(snapshot: snapshot) }
             if let id = (snapshot["programSharedTexture"] as? JSONObject)?["iosurfaceId"] as? NSNumber {   // as AppModel.applySharedTexture
@@ -84,14 +83,26 @@ extension ShellTests {
             }
             return snapshot
         }
+        /// One empty sync from synchronous test code (NOT from inside a main-actor job).
+        @discardableResult
+        func poll() -> JSONObject {
+            absorb(awaitMain(8) { (try? await bridge.request(["type": "media-core-sync", "elapsedMs": app.elapsedMs(), "commands": []])) ?? [:] } ?? [:])
+        }
         func waitFor(_ what: String, _ limit: TimeInterval = 10, _ condition: () -> Bool) -> Bool {
             let end = Date().addingTimeInterval(limit)
             while Date() < end { poll(); if condition() { return true }; RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
             expect(false, "live: timed out waiting for \(what)")
             return false
         }
-        // The cue wait polls the REAL core (the app's 2 Hz sync does this in production).
-        app.graphics.playout.sleep = { ns in try? await Task.sleep(nanoseconds: ns); _ = poll() }
+        // The cue wait polls the REAL core (the app's 2 Hz sync does this in production). It must
+        // await the request directly: the playout's wait already runs as a main-actor job, so the
+        // synchronous poll() (awaitMain + run-loop spin) cannot start its nested main-actor task
+        // from here and would stall for its whole 8 s limit, which once read as an 8 s "first
+        // preparation" (2026-11-22, mac-graphics-warmup).
+        app.graphics.playout.sleep = { ns in
+            try? await Task.sleep(nanoseconds: ns)
+            _ = absorb((try? await bridge.request(["type": "media-core-sync", "elapsedMs": app.elapsedMs(), "commands": []])) ?? [:])
+        }
 
         guard waitFor("graphics available", 15, { app.graphics.available }) else { return }
         log("graphics available, epoch \(app.graphics.state?.coreEpoch ?? "?")")
@@ -111,24 +122,17 @@ extension ShellTests {
         app.graphics.document.playlist = rows
         let title = GraphicsPlayout.entry(for: rows.first { $0.id == "title" }!)
 
-        // 0. Measure the first preparation of this template on this core (diagnostic).
+        // 1. The FIRST Show after a core start: this template has never been prepared on this core.
+        // It must be accepted on the first try, inside the shipped 5 s cue budget (warm-up plan W2;
+        // the earlier "8 s first preparation" was this fixture's own nested poll, see the sleep above).
         let started = Date()
-        let firstCue = awaitMain(15) { await app.graphics.playout.cue(title) }
-        let i0 = app.graphics.state?.instance(title.instanceId)
-        log(String(format: "first Cue after %.2fs: %@ (cuePending=%@ cuePreparation=%@ cueWarning=%@ preparation=%@)",
-                   Date().timeIntervalSince(started), firstCue?.reason ?? "nil", "\(i0?.cuePending ?? false)",
-                   i0?.cuePreparation ?? "-", i0?.cueWarning ?? "-", i0?.preparation ?? "-"))
-        if firstCue?.accepted != true {
-            _ = waitFor("the first cue to finish preparing", 20) { app.graphics.state?.instance(title.instanceId)?.cuePending == false }
-            log(String(format: "first preparation finished after %.2fs", Date().timeIntervalSince(started)))
-        }
-        _ = awaitMain(10) { await app.graphics.playout.clearCued() }
-        poll()
-
-        // 1. Show
         let shown = awaitMain(15) { await app.graphics.playout.show(title) }
-        log("Show: \(shown?.accepted == true) \(shown?.reason ?? "nil")")
-        expectEqual(shown?.accepted, true, "live: Show accepted by the real core")
+        let firstShowSeconds = Date().timeIntervalSince(started)
+        let i0 = app.graphics.state?.instance(title.instanceId)
+        log(String(format: "first Show after core start: %@ %@ in %.2fs (preparation=%@ cueWarning=%@)",
+                   "\(shown?.accepted == true)", shown?.reason ?? "nil", firstShowSeconds, i0?.preparation ?? "-", i0?.cueWarning ?? "-"))
+        expectEqual(shown?.accepted, true, "live: the first Show after a core start is accepted, no retry")
+        expect(firstShowSeconds < 5, "live: the first Show lands inside the 5 s cue budget (\(firstShowSeconds)s)")
         _ = waitFor("first draw of the title", 10) {
             (app.graphics.state?.instance(title.instanceId)?.firstDrawSubmittedFrame ?? 0) > 0
                 && app.graphics.state?.instance(title.instanceId)?.isOnProgram == true

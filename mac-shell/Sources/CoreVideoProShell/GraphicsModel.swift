@@ -82,6 +82,7 @@ final class GraphicsModel: ObservableObject {
     func observe(snapshot: JSONObject) {
         if let capable = Self.capability(GraphicsGateway.capability, in: snapshot), capable != self.capable {
             self.capable = capable
+            resyncDesignsIfDue()   // the graphics node may be unchanged (and skipped below)
         }
         guard let node = snapshot["graphics"] as? JSONObject else { return }
         let dictionary = node as NSDictionary
@@ -93,8 +94,10 @@ final class GraphicsModel: ObservableObject {
         if !previousEpoch.isEmpty, previousEpoch != next.coreEpoch {
             playout.epochChanged()
             status = Self.restartedText
+            designResyncPending = true
         }
         reproject()
+        resyncDesignsIfDue()
     }
 
     /// A new core process: its graphics are gone until its first snapshot says otherwise.
@@ -105,6 +108,38 @@ final class GraphicsModel: ObservableObject {
         state = nil
         lastNode = nil
         reproject()
+        designResyncPending = true   // GraphicsDesignResync.Arm: handled when the new core's graphics state arrives
+    }
+
+    // ── design reinstall per core generation (spec 5.3) ──────────────────────
+
+    /// GraphicsDesignResync: armed on every core generation, fires exactly once per armed new
+    /// epoch with graphics state present.
+    private var designResyncPending = false
+    private var designResyncEpoch = ""
+    /// The running reinstall (tests await it).
+    private(set) var designResync: Task<Void, Never>?
+
+    func resyncDesignsIfDue() {
+        // `available` too: a snapshot can carry the graphics node before the capability is
+        // confirmed, and a reinstall sent then is refused by the gateway and never retried.
+        // `documentLoaded` too: at launch the show loads off the main thread, and a resync run
+        // before it would see no references and spend this core's one attempt on nothing.
+        guard designResyncPending, available, documentLoaded, let epoch = state?.coreEpoch, !epoch.isEmpty, epoch != designResyncEpoch else { return }
+        designResyncPending = false
+        designResyncEpoch = epoch
+        let references = document.referencedTemplates, designs = document.designPins
+        guard references.contains(where: { GraphicsPlayout.isDesignTemplateId($0.templateId) }) else { return }
+        designResync = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.playout.ensureDesignsInstalled(references, designs: designs)
+            // A core that restarted again mid-way re-arms and reports for itself.
+            if !result.accepted, self.state?.coreEpoch == epoch {
+                // The status line is overwritten by the next report(); the log keeps it.
+                ShellLog.write("graphics: design reinstall failed epoch=\(epoch): \(result.reason)")
+                self.status = "Graphics designs: " + result.reason
+            }
+        }
     }
 
     func reproject() {

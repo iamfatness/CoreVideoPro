@@ -74,6 +74,7 @@ extension GraphicsModel {
         documentStatus = load.status
         documentLoaded = true
         reproject()
+        resyncDesignsIfDue()   // a core that came up before the show finished loading
     }
 
     var rows: [GraphicsRow] { document.playlist }
