@@ -20,10 +20,12 @@
 // uploads it once. MTLDevice texture creation and replaceRegion are safe off
 // the render thread; the texture is never written again after publication.
 //
-// G1 scope: legacy overlays (lower third, caption, brand bug, Tiles name line,
-// the failed-slate name label). Template content is G2 and is refused with an
-// explicit warning; the core cannot send one to Metal yet anyway
-// (supportsGraphicsInstances() is false).
+// Content: legacy overlays (lower third, caption, brand bug, Tiles name line,
+// the failed-slate name label; G1) and template graphics (G2), resolved and laid
+// out on the worker with Core Text measurement, drawn with Core Graphics, and
+// packed into an atlas for crawls and layered motion. Fonts resolve through
+// graphics/GraphicsTextCoreText (the owner's substitution table, bundled
+// Selawik). The Metal adapter reports supportsGraphicsInstances() true.
 //
 // ObjC++ only: include from .mm translation units compiled with -fobjc-arc.
 
@@ -91,7 +93,8 @@ class CoreTextOverlayRaster {
   const std::shared_ptr<const std::string>& sharedWarning() const { return sharedWarning_; }
   // Keeps the last call's texture alive (e.g. across OverlayRasterRetention).
   std::shared_ptr<const void> lease() const { return activeLease_; }
-  // Atlas runs for layered templates: always null until G2.
+  // Atlas runs (crawls, layered motion) for the last call's prepared raster;
+  // null for a single-image raster.
   std::shared_ptr<const graphics::GraphicsRunLayout> activeRuns() const;
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource();
   // Surface parity with the D3D raster. A Metal command buffer retains the
