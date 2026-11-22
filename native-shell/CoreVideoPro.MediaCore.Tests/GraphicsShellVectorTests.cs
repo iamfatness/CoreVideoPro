@@ -213,4 +213,199 @@ public sealed class GraphicsShellVectorTests
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }
+
+    // ── document: playlist row validity + GraphicsDocumentStore load outcomes ──────
+
+    internal static NativeGraphicsState RealCatalog() =>
+        JsonSerializer.Deserialize<NativeGraphicsState>(File.ReadAllText(NodePath("program-and-cue.json")), Web)!;
+
+    internal static IReadOnlyList<GraphicsPlaylistRow> InterviewRows() =>
+        GraphicsWorkspaceLibrary.DefaultPlaylistFor(GraphicsShowStarters.All.First(s => s.Id == "interview"), RealCatalog());
+
+    private static readonly JsonSerializerOptions Store = new(JsonSerializerDefaults.Web) { WriteIndented = true, MaxDepth = 32 };
+
+    internal static string DocumentPath(string name) => ControlRepoPaths.Contract(Path.Combine("graphics-shell", "documents", name));
+
+    /// <summary>A show document written by the real Windows store: default interview rows,
+    /// a saved cue, a template pin, a sources column, a shot layout and an unknown future
+    /// section. The Mac must load it and re-save it without losing anything.</summary>
+    internal static string WindowsShowDocument()
+    {
+        var catalog = RealCatalog();
+        var graphic = GraphicsShowStarters.Prepare(GraphicsShowStarters.All.First(s => s.Id == "interview"), catalog)[1];
+        var definition = JsonSerializer.SerializeToElement(new { templateId = "centered-title", templateVersion = 1, runtime = "declarative" });
+        var document = new GraphicsShowDocument
+        {
+            ShowId = "default", Authority = "legacy", Playlist = InterviewRows(),
+            Cues = [new GraphicsSavedCue { Id = "welcome", Name = "Welcome", Draft = graphic.Draft }],
+            Templates = [new GraphicsSavedTemplate("centered-title", 1, new string('a', 64), definition)],
+            SourceColumns = [new GraphicsSourceColumn("pronouns", "Pronouns", new Dictionary<int, string> { [1] = "they/them" })],
+            ShotLayouts = GraphicsWorkspaceLibrary.DefaultShotLayouts(),
+            Metadata = new() { ["futureSection"] = JsonSerializer.SerializeToElement(new { keep = true, nested = new[] { 1, 2 } }) },
+        };
+        return Encoding.UTF8.GetString(JsonSerializer.SerializeToUtf8Bytes(document, Store)).Replace("\r\n", "\n") + "\n";
+    }
+
+    [Fact]
+    public void DocumentVectors()
+    {
+        // The fixture document itself is regenerated / verified like an area file.
+        var windows = WindowsShowDocument();
+        var fixture = DocumentPath("windows-show.json");
+        if (Environment.GetEnvironmentVariable("COREVIDEO_WRITE_GRAPHICS_SHELL_VECTORS") == "1")
+        { Directory.CreateDirectory(Path.GetDirectoryName(fixture)!); File.WriteAllText(fixture, windows, new UTF8Encoding(false)); }
+        else Assert.True(File.Exists(fixture) && File.ReadAllText(fixture).Replace("\r\n", "\n") == windows, $"{fixture} differs; regenerate.");
+
+        var rows = new JsonArray();
+        var defaults = InterviewRows();
+        JsonNode Ser(object o) => JsonSerializer.SerializeToNode(o, Web)!;
+        var guest = Ser(defaults[0]).AsObject();
+        JsonObject With(Action<JsonObject> change) { var copy = guest.DeepClone().AsObject(); change(copy); return copy; }
+        var rowCases = new List<(string Id, JsonNode Row)>();
+        for (var i = 0; i < defaults.Count; i++) rowCases.Add(("default-" + defaults[i].Id, Ser(defaults[i])));
+        rowCases.AddRange(new (string, JsonNode)[] {
+            ("minimal", JsonNode.Parse("""{"id":"a","name":"A"}""")!),
+            ("bad-id-uppercase", With(r => r["id"] = "Bad")),
+            ("id-49-chars", With(r => r["id"] = new string('a', 49))),
+            ("id-48-chars", With(r => r["id"] = new string('a', 48))),
+            ("unknown-kind", With(r => r["kind"] = "crawl")),
+            ("empty-name", With(r => r["name"] = "")),
+            ("name-129", With(r => r["name"] = new string('n', 129))),
+            ("name-wrong-type", With(r => r["name"] = 5)),
+            ("hotkey-f13", With(r => r["hotkey"] = "F13")),
+            ("hotkey-f0", With(r => r["hotkey"] = "F0")),
+            ("hotkey-lower", With(r => r["hotkey"] = "f1")),
+            ("hotkey-f12", With(r => r["hotkey"] = "F12")),
+            ("play-out-5000", With(r => r["playOutAfterMs"] = 5000)),
+            ("play-out-15000", With(r => r["playOutAfterMs"] = 15000)),
+            ("template-without-version", With(r => r["templateVersion"] = 0)),
+            ("version-without-template", With(r => { r["templateId"] = ""; r["templateVersion"] = 1; })),
+            ("template-version-fraction", With(r => r["templateVersion"] = 1.5)),
+            ("style-center-anchor", With(r => r["style"]!["anchor"] = "center")),
+            ("style-name-size-200", With(r => r["style"]!["nameSize"] = 200)),
+            ("style-bad-colour", With(r => r["style"]!["nameColor"] = "#12345")),
+            ("style-missing-uses-default", With(r => r.Remove("style"))),
+            ("motion-ok", With(r => r["motion"] = JsonNode.Parse("""{"layers":"whole","in":{"type":"slide","direction":"up","easing":"ease-out","durationMs":300},"out":{"type":"fade","durationMs":200}}"""))),
+            ("motion-bad-type", With(r => r["motion"] = JsonNode.Parse("""{"in":{"type":"zoom"},"out":{}}"""))),
+            ("motion-too-long", With(r => r["motion"] = JsonNode.Parse("""{"in":{"durationMs":3001},"out":{}}"""))),
+            ("variants-ok", With(r => r["variants"] = JsonNode.Parse("""[{"id":"v1","name":"Ada","title":"Host"},{"id":"v2","name":"Bo"}]"""))),
+            ("variants-duplicate-ids", With(r => r["variants"] = JsonNode.Parse("""[{"id":"v1","name":"Ada"},{"id":"v1","name":"Bo"}]"""))),
+            ("variant-title-257", With(r => r["variants"] = JsonNode.Parse("[{\"id\":\"v1\",\"name\":\"Ada\",\"title\":\"" + new string('t', 257) + "\"}]"))),
+            ("placement-ok", With(r => r["placement"] = JsonNode.Parse("""{"anchor":"upper-center","x":0,"y":10,"scale":1.5}"""))),
+            ("placement-scale-5", With(r => r["placement"] = JsonNode.Parse("""{"anchor":"center","x":0,"y":0,"scale":5}"""))),
+            ("clock-countdown", With(r => r["clock"] = JsonNode.Parse("""{"mode":"countdown","zone":"utc","format":"hm","finish":"hide","offsetMinutes":0,"durationSeconds":600}"""))),
+            ("clock-bad-mode", With(r => r["clock"] = JsonNode.Parse("""{"mode":"stopwatch"}"""))),
+            ("image-ok", With(r => r["image"] = JsonNode.Parse("""{"templateId":"logo-pack","templateVersion":1,"assetId":"logo"}"""))),
+            ("image-missing-asset", With(r => r["image"] = JsonNode.Parse("""{"templateId":"logo-pack","templateVersion":1,"assetId":""}"""))),
+            ("fields-33", With(r => { var f = new JsonObject(); for (var k = 0; k < 33; k++) f["f" + k] = "x"; r["fields"] = f; })),
+            ("source-mapping-bad-key", With(r => r["sourceMappings"] = JsonNode.Parse("""{"Name":"name"}"""))),
+            ("source-mapping-ok", With(r => r["sourceMappings"] = JsonNode.Parse("""{"name":"pronouns"}"""))),
+            ("image-path-nul", With(r => r["imagePath"] = "a\u0000b")),
+        });
+        foreach (var (id, row) in rowCases)
+        {
+            bool valid;
+            try { valid = JsonSerializer.Deserialize<GraphicsPlaylistRow>(row.ToJsonString(), Web)?.IsValid == true; }
+            catch (JsonException) { valid = false; }
+            rows.Add(Row("row-" + id, "validateRow", new JsonObject { ["row"] = row.DeepClone() }, new JsonObject { ["valid"] = valid }));
+        }
+
+        var directory = Path.Combine(Path.GetTempPath(), "cvp-graphics-doc-vectors-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var minimal = """{"schemaVersion":3}""";
+            var loads = new (string Id, string? Primary, string? Backup)[] {
+                ("missing", null, null),
+                ("minimal-v3", minimal, null),
+                ("v1-upgrades", """{"schemaVersion":1,"showId":"old"}""", null),
+                ("v2-upgrades", """{"schemaVersion":2,"playlist":[{"id":"a","name":"A"}]}""", null),
+                ("v4-read-only", """{"schemaVersion":4,"playlist":[]}""", null),
+                ("schema-0", """{"schemaVersion":0}""", null),
+                ("schema-missing", """{"showId":"x"}""", null),
+                ("schema-string", """{"schemaVersion":"3"}""", null),
+                ("duplicate-nested-key", """{"schemaVersion":3,"playlist":[{"id":"a","name":"A","name":"B"}]}""", null),
+                ("duplicate-top-key", """{"schemaVersion":3,"showId":"a","showId":"b"}""", null),
+                ("authority-volt", """{"schemaVersion":3,"authority":"volt"}""", null),
+                ("authority-bad", """{"schemaVersion":3,"authority":"instances"}""", null),
+                ("show-id-blank", """{"schemaVersion":3,"showId":"  "}""", null),
+                ("show-id-65", "{\"schemaVersion\":3,\"showId\":\"" + new string('s', 65) + "\"}", null),
+                ("playlist-duplicate-ids", """{"schemaVersion":3,"playlist":[{"id":"a","name":"A"},{"id":"a","name":"B"}]}""", null),
+                ("playlist-invalid-row", """{"schemaVersion":3,"playlist":[{"id":"a","name":""}]}""", null),
+                ("cues-65", "{\"schemaVersion\":3,\"cues\":[" + string.Join(",", Enumerable.Repeat("{}", 65)) + "]}", null),
+                ("template-bad-hash", """{"schemaVersion":3,"templates":[{"templateId":"t","templateVersion":1,"manifestHash":"xyz","definition":{}}]}""", null),
+                ("template-ok", "{\"schemaVersion\":3,\"templates\":[{\"templateId\":\"t\",\"templateVersion\":1,\"manifestHash\":\"" + new string('b', 64) + "\",\"definition\":{},\"packageRoot\":\"\"}]}", null),
+                ("unknown-section-kept", """{"schemaVersion":3,"futureSection":{"a":1}}""", null),
+                ("corrupt-primary-good-backup", """{"schemaVersion":3,"playlist":[{"id":"a","name":""}]}""", """{"schemaVersion":3,"playlist":[{"id":"b","name":"B"}]}"""),
+                ("no-primary-good-backup", null, """{"schemaVersion":3,"playlist":[{"id":"b","name":"B"}]}"""),
+                ("both-invalid", """{"schemaVersion":0}""", """{"showId":"x"}"""),
+                ("backup-duplicate-key", """{"schemaVersion":0}""", """{"schemaVersion":3,"a":1,"a":2}"""),
+                ("backup-invalid-playlist", """{"schemaVersion":0}""", """{"schemaVersion":3,"playlist":[{"id":"a","name":""}]}"""),
+                ("windows-show", windows, null),
+            };
+            foreach (var (id, primary, backup) in loads)
+            {
+                var path = Path.Combine(directory, id, "default.json");
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                if (primary is not null) File.WriteAllText(path, primary, new UTF8Encoding(false));
+                if (backup is not null) File.WriteAllText(path + ".bak", backup, new UTF8Encoding(false));
+                var load = new GraphicsDocumentStore(path).LoadAsync().GetAwaiter().GetResult();
+                var expected = new JsonObject
+                {
+                    ["readOnly"] = load.ReadOnly, ["recoveredBackup"] = load.RecoveredBackup, ["status"] = load.Status,
+                    ["showId"] = load.Document.ShowId, ["authority"] = load.Document.Authority,
+                    ["playlistIds"] = new JsonArray(load.Document.Playlist.Select(r => (JsonNode)r.Id).ToArray()),
+                };
+                var input = new JsonObject();
+                if (id == "windows-show") input["primaryFile"] = "documents/windows-show.json"; else if (primary is not null) input["primary"] = primary;
+                if (backup is not null) input["backup"] = backup;
+                rows.Add(Row("load-" + id, "load", input, expected));
+            }
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+        Check("document", "GraphicsPlaylistRow.IsValid and GraphicsDocumentStore.LoadAsync outcomes (plan D3: unported sections are counted, not re-validated).", rows);
+    }
+
+    // ── playout: identity, entries, cue fields, style wire, default rows ───────────
+
+    [Fact]
+    public void PlayoutVectors()
+    {
+        var rows = new JsonArray();
+        foreach (var (row, source) in new[] { ("guest", ""), ("guest", "zoom:16778240"), ("title", "capture:Cámara 1"),
+                     ("guest", "media:clip-1"), ("logo", "zoom:🎙️ host"), ("live-bug", "variant:v1") })
+            rows.Add(Row($"instance-id-{row}-{rows.Count}", "instanceIdFor", new JsonObject { ["rowId"] = row, ["sourceId"] = source },
+                new JsonObject { ["instanceId"] = GraphicsPlayoutService.InstanceIdFor(row, source) }));
+
+        var guestRow = new GraphicsPlaylistRow { Id = "guest", Kind = GraphicsPlaylistRow.Guest, Name = "Guest name", FollowSources = true };
+        var slots = new[] {
+            new GraphicsRosterSlot(3, "zoom:300", "Cy"), new GraphicsRosterSlot(1, "zoom:100", "Ada"), new GraphicsRosterSlot(2, null, "Empty"),
+            new GraphicsRosterSlot(4, "zoom:100", "Ada again"), new GraphicsRosterSlot(5, "capture:cam", "Desk cam"), new GraphicsRosterSlot(6, "", "Blank"),
+        };
+        var entries = GraphicsPlayoutService.GuestEntries(guestRow, slots, (_, name) => (name, ""));
+        rows.Add(Row("guest-entries", "guestEntries",
+            new JsonObject { ["rowId"] = "guest", ["slots"] = new JsonArray(slots.Select(s => (JsonNode)new JsonObject {
+                ["slotNumber"] = s.SlotNumber, ["sourceId"] = s.SourceId, ["derivedName"] = s.DerivedName }).ToArray()) },
+            new JsonObject { ["entries"] = new JsonArray(entries.Select(e => (JsonNode)new JsonObject {
+                ["sourceId"] = e.SourceId, ["name"] = e.Label, ["title"] = e.Title, ["slotNumber"] = e.SlotNumber, ["instanceId"] = GraphicsPlayoutService.InstanceIdFor(e) }).ToArray()) }));
+
+        var catalog = RealCatalog();
+        var defaults = InterviewRows();
+        foreach (var (rowIndex, sourceId, name, title) in new[] { (0, "zoom:100", "Ada Lovelace", ""), (0, "", "", ""), (1, "", "", ""),
+                     (1, "zoom:100", "Ada", "Host"), (3, "", "", "") })
+        {
+            var row = defaults[rowIndex];
+            var template = catalog.Templates.First(t => t.TemplateId == row.TemplateId && t.TemplateVersion == row.TemplateVersion);
+            var entry = sourceId.Length == 0 ? GraphicsPlayoutService.EntryFor(row) : new GraphicsPlaylistEntry(row.Id, sourceId, name, title) { SlotNumber = 1 };
+            var fields = GraphicsLayoutResolver.CueFields(row, entry, template.Runtime == "declarative", template.Fields, []);
+            var draft = new NativeGraphicsDraft(row.TemplateId, row.TemplateVersion, JsonSerializer.SerializeToElement(fields), row.Style, new());
+            rows.Add(Row($"cue-fields-{row.Id}-{(sourceId.Length == 0 ? "row" : "guest")}-{rows.Count}", "cueFieldsAndStyle",
+                new JsonObject { ["row"] = JsonSerializer.SerializeToNode(row, Web), ["entry"] = new JsonObject {
+                    ["sourceId"] = entry.SourceId, ["name"] = entry.Label, ["title"] = entry.Title },
+                    ["templateId"] = template.TemplateId, ["templateVersion"] = template.TemplateVersion },
+                new JsonObject { ["fields"] = JsonSerializer.SerializeToNode(fields, Web), ["style"] = JsonNode.Parse(draft.StyleWire().GetRawText()) }));
+        }
+        rows.Add(Row("default-rows-interview", "defaultRows", new JsonObject { ["starter"] = "interview", ["nodeFile"] = "nodes/program-and-cue.json" },
+            new JsonObject { ["rows"] = JsonSerializer.SerializeToNode(defaults, Web) }));
+        Check("playout", "GraphicsPlayoutService identity and entries, GraphicsLayoutResolver.CueFields (no Sources columns), StyleWire, and the interview default rows.", rows);
+    }
 }
