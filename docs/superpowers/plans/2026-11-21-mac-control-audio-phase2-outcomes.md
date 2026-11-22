@@ -18,11 +18,27 @@ from `fc675541`. Owner steps: `docs/owner-acceptance/mac-control-audio-phase2.md
 | `a2b46a93` | RC6 | `media.rundown.load/.preview/.take`, `volt-rundown` bin kind |
 | `1eef951b` | RC5 | Companion request shapes vs the Mac server, recorded fixture, module vitest, live-check script, README |
 
+## Review round (independent review, 2026-11-21)
+
+Each finding was checked against the code first; all seven were real. Fixed test-first, one commit each:
+
+| # | Finding | Verdict | Commit |
+|---|---|---|---|
+| 1 | `requestAudioRouteControl` wrote the grid, operator intent, ISO-exclusive edits on other sources and the unrevisioned base matrix before the core judged `expectedRevision` | Real (pre-existing from RC3, same feature). A stale request was refused and then applied ~100 ms later by the base matrix. Now conflict/rejected write nothing and drop the remote draft; applied or unconfirmed take the grid's path (unconfirmed may have applied, so leaving it out of the base would revert a late apply) | `2bbf9c82` |
+| 2 | Master meters not reset on a new core; no staleness gate on the guide meters | Real. `onConnected` resets every master meter to no-evidence; the guide meters carry the #870 MeterWarning words like the rail | `9128639f` |
+| 3 | busSends / LISTEN never reach the core when nothing is routed | Real. The core applies busSends/monitorBusId from a matrix with empty `sends` when it holds none; the Mac now sends such a matrix when it carries bus state, and once more after the state is cleared | `8b5b6a4c` |
+| 4 | Hardening-timeout test raced a 0.4 s timer | Real (Phase 1 test, file touched here). Handler held by the test, own 1 s server | `d3091b3f` |
+| 5 | Pipelined-request check could pass vacuously | Real (Phase 1 test). Handler held until the extra bytes are on the socket | `d3091b3f` |
+| 6 | `core.bodies.isEmpty` vacuous in volt-take | Real. Now asserts no refusal produced a Take batch | `d3091b3f` |
+| 7 | A rack edit in the last 5 s before quit was lost | Real (any pref). Quit writes the prefs | `f93292e9` |
+
+The `timerSleepForTesting` / `ManualTimers` seam from `def55f05` was not needed (none of the fixes waits on a product timer) and was not cherry-picked.
+
 ## Test counts (final, 2026-11-21, this worktree)
 
 | Command | Result |
 |---|---|
-| `cd mac-shell && swift build -c release && COREVIDEO_SHELL_TESTS=1 ./.build/release/CoreVideoProShell` | **5958 shell checks passed, 0 failed** (baseline 5676), run twice back to back with other agents building |
+| `cd mac-shell && swift build -c release && COREVIDEO_SHELL_TESTS=1 ./.build/release/CoreVideoProShell` | **5994 shell checks passed, 0 failed** after the review round (baseline 5676), run twice back to back with other agents building |
 | `COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell` | `self-check: PASS` (prefs round trip covers the five new mastering keys) |
 | `bash scripts/lint-mac-design.sh` | `Design lint passed.` |
 | `npm run contract:check` | clean |
