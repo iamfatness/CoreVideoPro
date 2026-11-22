@@ -249,7 +249,14 @@ struct ChannelInserts: Equatable {
 // Every field is optional core-side and absent keys keep struct defaults that
 // are bit-identical to the pre-B1 fixed values — so an untouched rack is a
 // true no-op, and `enabled` alone gates the whole chain.
-struct MasteringParams: Equatable {
+//
+// The 21 Windows fields (MasteringSettings, MasteringPresetCatalog.cs:10-31). The
+// ten added for A3 (low-pass .. band trims, limiter) carry the Windows/core
+// defaults (AudioMastering.h:29-58), so sending them explicitly is a no-op. The
+// target stays a continuous LUFS value on the Mac (Phase 1 D10); presets set
+// exactly -14/-16/-23. Codable for ShellPrefs: decoded key-by-key with defaults
+// so an older file never throws (the ShellPrefs rule).
+struct MasteringParams: Equatable, Codable {
     var enabled = false
     var targetLufs = -16.0
     var ceilingDbfs = -1.0
@@ -261,15 +268,52 @@ struct MasteringParams: Equatable {
     var presenceDb = 0.0
     var highShelfDb = 0.0
     var stereoWidth = 1.0
+    var lowPassHz = 0.0
+    // Top-level `limiterEnabled` of sync-participant-audio-mix (MediaCore.cpp:2943),
+    // never a key of the `mastering` object. Windows MasterLimiterEnabled.
+    var limiterEnabled = true
+    var glueRatio = 2.0
+    var glueAttackMs = 30.0
+    var glueReleaseMs = 250.0
+    var glueMakeupDb = 0.0
+    var glueMultiband = false
+    var glueBandLowDb = 0.0
+    var glueBandMidDb = 0.0
+    var glueBandHighDb = 0.0
 
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+        }
+        let d = MasteringParams()
+        enabled = v(.enabled, d.enabled); targetLufs = v(.targetLufs, d.targetLufs)
+        ceilingDbfs = v(.ceilingDbfs, d.ceilingDbfs); glueAmount = v(.glueAmount, d.glueAmount)
+        maxRideDb = v(.maxRideDb, d.maxRideDb); inputGainDb = v(.inputGainDb, d.inputGainDb)
+        highPassHz = v(.highPassHz, d.highPassHz); lowShelfDb = v(.lowShelfDb, d.lowShelfDb)
+        presenceDb = v(.presenceDb, d.presenceDb); highShelfDb = v(.highShelfDb, d.highShelfDb)
+        stereoWidth = v(.stereoWidth, d.stereoWidth); lowPassHz = v(.lowPassHz, d.lowPassHz)
+        limiterEnabled = v(.limiterEnabled, d.limiterEnabled); glueRatio = v(.glueRatio, d.glueRatio)
+        glueAttackMs = v(.glueAttackMs, d.glueAttackMs); glueReleaseMs = v(.glueReleaseMs, d.glueReleaseMs)
+        glueMakeupDb = v(.glueMakeupDb, d.glueMakeupDb); glueMultiband = v(.glueMultiband, d.glueMultiband)
+        glueBandLowDb = v(.glueBandLowDb, d.glueBandLowDb); glueBandMidDb = v(.glueBandMidDb, d.glueBandMidDb)
+        glueBandHighDb = v(.glueBandHighDb, d.glueBandHighDb)
+    }
+
+    /// The `mastering` object, the 20 keys Windows sends (MediaCoreCommandBuilder.cs:519-545).
     var json: JSONObject {
         [
             "enabled": enabled, "targetLufs": targetLufs,
             "ceilingDbfs": ceilingDbfs, "glueAmount": glueAmount,
             "maxRideDb": maxRideDb, "inputGainDb": inputGainDb,
-            "highPassHz": highPassHz, "lowShelfDb": lowShelfDb,
+            "highPassHz": highPassHz, "lowPassHz": lowPassHz, "lowShelfDb": lowShelfDb,
             "presenceDb": presenceDb, "highShelfDb": highShelfDb,
             "stereoWidth": stereoWidth,
+            "glueRatio": glueRatio, "glueAttackMs": glueAttackMs, "glueReleaseMs": glueReleaseMs,
+            "glueMakeupDb": glueMakeupDb, "glueMultiband": glueMultiband,
+            "glueBandLowDb": glueBandLowDb, "glueBandMidDb": glueBandMidDb, "glueBandHighDb": glueBandHighDb,
         ]
     }
 }
@@ -4976,7 +5020,7 @@ final class AppModel: ObservableObject {
                 "insertSettings": inserts.settingsJson,
             ]
         }
-        return ["type": "sync-participant-audio-mix", "limiterEnabled": true,
+        return ["type": "sync-participant-audio-mix", "limiterEnabled": mastering.limiterEnabled,
                 "mastering": mastering.json, "channels": channels]
     }
 
