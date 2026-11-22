@@ -227,7 +227,18 @@ struct SourcesTableRow: View {
             Cell { thumbnail }
             Cell { sourceCell }
             Cell { Text(assigned ? type.rawValue : "—").font(.grotesk(11)).foregroundStyle(Studio.secondary) }
-            Cell { Text(assigned ? box.facts.format : "—").font(.plexMono(10)) }
+            Cell {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(assigned ? box.facts.format : "—").font(.plexMono(10))
+                        .foregroundStyle(box.facts.formatStale ? Studio.amber : Studio.textPrimary)
+                    // Windows FormatDetailLabel: frame age while stale, else the cap note.
+                    if assigned, !box.facts.formatDetail.isEmpty {
+                        Text(box.facts.formatDetail).font(.plexMono(9))
+                            .foregroundStyle(box.facts.formatStale ? Studio.amber : Studio.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
             Cell { Text(assigned ? box.facts.fps : "—").font(.plexMono(10)) }
             Cell {
                 Text(box.facts.chip).font(.plexMono(9, .semibold))

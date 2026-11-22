@@ -159,9 +159,10 @@ struct SourceInspector: View {
             HStack(spacing: 8) {
                 Text(facts.chip).font(.plexMono(10, .semibold))
                     .foregroundStyle(SlotSignalFacts.signalColor(facts.chip))
-                Text(facts.format).font(.plexMono(10))
-                if let age = facts.frameAgeMs {
-                    Text(String(format: "%.1f s old", age / 1000)).font(.plexMono(10)).foregroundStyle(Studio.amber)
+                Text(facts.formatWithRate).font(.plexMono(10))
+                if !facts.formatDetail.isEmpty {
+                    Text(facts.formatDetail).font(.plexMono(10))
+                        .foregroundStyle(facts.formatStale ? Studio.amber : Studio.secondary)
                 }
             }
             Text(SourceAssignmentHint.text(assigned: slot.kind != "unassigned", missing: slot.offline,

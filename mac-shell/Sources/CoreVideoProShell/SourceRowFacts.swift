@@ -131,6 +131,12 @@ struct SourceRowFacts: Equatable {
     var frameAgeMs: Double? = nil
     var tally = "none"         // pgm | pvw | talking | hold | none
     var writer = "OFF"         // OFF | ARMED | REC | ERROR | —
+    /// Windows FormatDetailLabel (MultiviewInputRow.cs:69): the frame age while stale,
+    /// else the configured-cap note, else "".
+    var formatDetail = ""
+    /// Windows FormatLabel "W×H@fps"; the rate is dropped while stale or unmeasured
+    /// (ResolutionLabel / FrameRateLabel, :38-41).
+    var formatWithRate: String { fps == "—" || format == "—" ? format : "\(format)@\(fps)" }
     /// MultiviewInputRow.cs:56: PGM only for a LIVE row on Program.
     var chip: String { signal == "LIVE" && tally == "pgm" ? "PGM" : signal }
 }
@@ -176,6 +182,9 @@ struct SourceRowFactsProjection {
 
     /// A new epoch clears every Zoom format and frame clock (:86-99).
     mutating func applyRoster(_ next: ZoomRosterFact) {
+        // Windows ApplyRosterFact (:80-82): no epoch, no roster fact. An older core's
+        // unrevisioned roster may still drive the slot law; it never becomes a row fact.
+        guard !next.epoch.isEmpty else { return }
         if roster?.epoch != next.epoch { zoomFrames.removeAll() }
         engineIsStopped = false
         roster = next
@@ -298,6 +307,7 @@ struct SourceRowFactsProjection {
             facts.signal = "STALLED"
             facts.formatStale = true
             facts.frameAgeMs = age
+            facts.formatDetail = Self.ageDetail(age)
             return participant.talking
         }
         facts.fps = frame.fps > 0 ? String(frame.fps) : "—"
@@ -306,6 +316,11 @@ struct SourceRowFactsProjection {
     }
 
     // ── shared rules ────────────────────────────────────────────────────
+
+    /// "age 2.3s stale" (Windows FormatDetailLabel, one decimal).
+    static func ageDetail(_ ageMs: Double) -> String {
+        String(format: "age %.1fs stale", ageMs / 1000)
+    }
 
     static func inMeeting(_ state: String) -> Bool { state == "in_meeting" || state == "in-meeting" }
 
