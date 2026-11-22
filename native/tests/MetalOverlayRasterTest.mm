@@ -312,6 +312,23 @@ TEST(MetalOverlayRaster, ACacheHitAllocatesNothing) {
   EXPECT_STREQ(raster.preparationState(), "ready");
 }
 
+// The cache key includes the raster's pixel size: the same content at a new
+// band size (a Tiles reflow, a Program vs monitor canvas) is its own
+// preparation, never the old texture stretched.
+TEST(MetalOverlayRaster, ATileIsPreparedPerPixelSize) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  const auto overlay = lowerThird("SIZE PROBE", "TWO SIZES");
+  const auto small = waitPrepared(raster, device, overlay, 200, 50);
+  ASSERT_EQ(small.state, "ready") << small.warning;
+  const auto large = waitPrepared(raster, device, overlay, 400, 100);
+  ASSERT_EQ(large.state, "ready") << large.warning;
+  EXPECT_EQ(small.texture.width, 200u);
+  EXPECT_EQ(large.texture.width, 400u);
+  EXPECT_EQ(large.texture.height, 100u);
+  EXPECT_EQ(raster.cacheCounters().completed, 2u);
+}
+
 TEST(MetalOverlayRaster, AdmissionRulesMatchWindowsWording) {
   DEVICE_OR_SKIP(device);
   CoreTextOverlayRaster raster;
