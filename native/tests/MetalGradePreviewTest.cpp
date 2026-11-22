@@ -279,4 +279,138 @@ TEST(MetalGradePreview, ALowerThirdDemandIsNotBuiltOnMetal) {
   EXPECT_EQ(surface.reason, "native-appearance-preview-not-built");
   compositor->submitGradePreviews({});
 }
+
+// ── Task 7 (G6): scopes ─────────────────────────────────────────────────────────────────────
+// Ports of IsolatedMonitorPixelTest.cpp:263-360, judged on the published 1536x512 IOSurface.
+// Expected cells come from independent Rec.709 equations over the fixture patch, never from the
+// worker. Panel layout (D3DGradeScopes.h:33-72): x in [0,1/3) histogram, [1/3,2/3) waveform,
+// [2/3,1] vectorscope; image y grows downward, the scope's y upward.
+namespace {
+GradePreviewSurface awaitScopes(ICompositor& compositor, MonitorRenderRequest& request, const std::string& id, int64_t revision) {
+  return awaitGrade(compositor, request, id, revision, /*wantScopes=*/true);
+}
+int green(uint32_t id, float fx, float fy) { return surfacePixel(id, fx, fy)[1]; }
+}  // namespace
+
+TEST(MetalGradeScopes, KnownNeutralRgbAndSkinPatchesLandInThePredictedCells) {
+  METAL_GRADE_OR_SKIP(compositor);
+  auto request = requestWith(bgraFrame("cam", kSize, kSize, 0, 0, 0));
+  GradePreviewDemand demand{"patches", "cam", 1, {}};
+  demand.scopesEnabled = true; demand.histogramMode = 0; demand.waveformMode = 0;
+  request.gradePreviews.push_back(demand);
+  const int patches[][3] = {{0, 0, 0}, {255, 255, 255}, {128, 128, 128}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {190, 134, 110}};
+  int64_t revision = 0;
+  for (const auto& rgbPatch : patches) {
+    ++revision;
+    request.frames[0] = bgraFrame("cam", kSize, kSize, uint8_t(rgbPatch[2]), uint8_t(rgbPatch[1]), uint8_t(rgbPatch[0]), revision);
+    request.gradePreviews[0].revision = revision;
+    const auto surface = awaitScopes(*compositor, request, "patches", revision);
+    ASSERT_NE(surface.scopes.texture.iosurfaceId, 0u) << "patch " << revision;
+    EXPECT_EQ(surface.scopes.texture.width, 1536); EXPECT_EQ(surface.scopes.texture.height, 512);
+    EXPECT_EQ(surface.scopes.sourceFrameId, revision); EXPECT_FALSE(surface.scopes.original);
+    const float r = rgbPatch[0] / 255.f, g = rgbPatch[1] / 255.f, b = rgbPatch[2] / 255.f;
+    const float luma = .2126f * r + .7152f * g + .0722f * b;
+    const int bin = std::min(255, int(luma * 255));
+    const int cb = std::min(255, std::max(0, int(((b - luma) / 1.8556f + .5f) * 255)));
+    const int cr = std::min(255, std::max(0, int(((r - luma) / 1.5748f + .5f) * 255)));
+    const uint32_t id = surface.scopes.texture.iosurfaceId;
+    EXPECT_GT(green(id, (bin + .5f) / 768.f, .5f), 180) << "luma histogram bar, patch " << revision;
+    EXPECT_GT(green(id, .5f, 1 - (bin + .5f) / 256.f), 240) << "luma waveform trace, patch " << revision;
+    const auto vector = surfacePixel(id, (2 + (cb + .5f) / 256.f) / 3.f, 1 - (cr + .5f) / 256.f);
+    EXPECT_GT(vector[1], 240) << "vectorscope density, patch " << revision;
+    EXPECT_GT(vector[0], 150) << "vectorscope density (blue of .35,1,.65), patch " << revision;
+    // An independent negative: a histogram bin far from this patch's luma carries no bar.
+    const int far = bin < 128 ? 250 : 5;
+    EXPECT_LT(green(id, (far + .5f) / 768.f, .5f), 60) << "no bar away from the patch, patch " << revision;
+  }
+  compositor->submitGradePreviews({});
+}
+
+TEST(MetalGradeScopes, GradedAndOriginalAnalysisMoveTheRedHistogramToThePredictedCode) {
+  METAL_GRADE_OR_SKIP(compositor);
+  const Json half = Json::Array{Json::Object{{"x", 0}, {"y", 0}}, Json::Object{{"x", 1}, {"y", .5}}};
+  const Json line = Json::Array{Json::Object{{"x", 0}, {"y", 0}}, Json::Object{{"x", 1}, {"y", 1}}};
+  CompositorColorGrade grade;
+  ASSERT_TRUE(readAdvancedGrade(Json::Object{{"version", 2}, {"colorSpace", "rec709-sdr"}, {"operations", Json::Array{
+      Json::Object{{"id", "red-half"}, {"kind", "curves"}, {"curves", Json::Array{line, half, line, line}}}}}}, grade.advanced));
+  auto request = requestWith(patch(false));      // R=177
+  GradePreviewDemand demand{"curves", "cam", 1, grade};
+  demand.scopesEnabled = true;                   // histogram RGB overlay (mode 1)
+  request.gradePreviews.push_back(demand);
+  auto surface = awaitScopes(*compositor, request, "curves", 1);
+  ASSERT_NE(surface.scopes.texture.iosurfaceId, 0u);
+  const int gradedRed = surfacePixel(surface.texture.iosurfaceId, .5f, .5f)[2];
+  EXPECT_NEAR(gradedRed, 89, 2) << "the red-half curve maps 177 to ~88.5";
+  EXPECT_GT(surfacePixel(surface.scopes.texture.iosurfaceId, (gradedRed + .5f) / 256.f / 3.f, .5f)[2], 128)
+      << "graded analysis: red bar at the graded code";
+  EXPECT_LT(surfacePixel(surface.scopes.texture.iosurfaceId, 177.5f / 256.f / 3.f, .5f)[2], 60)
+      << "graded analysis: nothing at the original code";
+  request.gradePreviews[0].revision = 2; request.gradePreviews[0].scopesOriginal = true;
+  surface = awaitScopes(*compositor, request, "curves", 2);
+  ASSERT_EQ(surface.scopes.revision, 2); EXPECT_TRUE(surface.scopes.original);
+  EXPECT_GT(surfacePixel(surface.scopes.texture.iosurfaceId, 177.5f / 256.f / 3.f, .5f)[2], 128)
+      << "Analyze original: red bar at the source code 177";
+  compositor->submitGradePreviews({});
+}
+
+TEST(MetalGradeScopes, AOnePixelRoiSamplesOnlyThatPixelAndProgramIsUntouched) {
+  METAL_GRADE_OR_SKIP(compositor);
+  auto pixels = std::make_shared<std::vector<uint8_t>>(size_t(kSize) * kSize * 4, 0);
+  for (int y = 0; y < kSize; ++y) for (int x = 0; x < kSize; ++x) {
+    const size_t i = (size_t(y) * kSize + x) * 4; (*pixels)[i + 2] = x >= 32 ? 255 : 0; (*pixels)[i + 3] = 255;
+  }
+  auto frame = bgraFrame("cam", kSize, kSize, 0, 0, 0, 500); frame.pixels = pixels;
+  auto plan = programPlan("cam"); plan.skipCpuReadback = false;
+  const auto before = programCentre(compositor->render(plan, {frame}));
+  auto request = requestWith(frame);
+  GradePreviewDemand demand{"roi", "cam", 1, {}};
+  demand.scopesEnabled = true; demand.histogramMode = demand.waveformMode = 0;
+  demand.scopeRoi = {true, .75, .5, 1. / 64, 1. / 64, 1};
+  request.gradePreviews.push_back(demand);
+  const auto surface = awaitScopes(*compositor, request, "roi", 1);
+  const uint32_t id = surface.scopes.texture.iosurfaceId;
+  ASSERT_NE(id, 0u);
+  EXPECT_EQ(surface.scopes.roiPixels.x, 48); EXPECT_EQ(surface.scopes.roiPixels.y, 32);
+  EXPECT_EQ(surface.scopes.roiPixels.width, 1); EXPECT_EQ(surface.scopes.roiPixels.height, 1);
+  // Red luma = .2126*255 = 54.2 -> bin 54. The black half must not appear at all.
+  EXPECT_GT(green(id, 54.5f / 768, .5f), 180) << "histogram: the selected red pixel";
+  EXPECT_GT(green(id, .36f, 1 - 54.5f / 256), 240) << "waveform spans the region's full width (left)";
+  EXPECT_GT(green(id, .64f, 1 - 54.5f / 256), 240) << "waveform spans the region's full width (right)";
+  EXPECT_LT(green(id, .5f / 768, .5f), 80) << "histogram: no black from outside the region";
+  EXPECT_EQ(programCentre(compositor->render(plan, {frame})), before);
+  compositor->submitGradePreviews({});
+}
+
+TEST(MetalGradeScopes, ACircleMaskRemovesCornerColoursFromAllThreeScopes) {
+  METAL_GRADE_OR_SKIP(compositor);
+  auto pixels = std::make_shared<std::vector<uint8_t>>(size_t(kSize) * kSize * 4, 0);
+  for (int y = 0; y < kSize; ++y) for (int x = 0; x < kSize; ++x) {
+    const double nx = (x + .5) / 32 - 1, ny = (y + .5) / 32 - 1; const bool corner = nx * nx + ny * ny > 1.08;
+    const size_t i = (size_t(y) * kSize + x) * 4; (*pixels)[i + 1] = corner ? 0 : 255; (*pixels)[i + 2] = corner ? 255 : 0; (*pixels)[i + 3] = 255;
+  }
+  auto frame = bgraFrame("cam", kSize, kSize, 0, 0, 0, 501); frame.pixels = pixels;
+  auto plan = programPlan("cam"); plan.skipCpuReadback = false;
+  const auto before = programCentre(compositor->render(plan, {frame}));
+  auto request = requestWith(frame);
+  GradePreviewDemand demand{"circle", "cam", 1, {}};
+  demand.scopesEnabled = true; demand.scopeRoi.enabled = true; demand.histogramMode = demand.waveformMode = 0;
+  request.gradePreviews.push_back(demand);
+  auto measure = [&](int64_t revision, const std::string& shape) {
+    request.gradePreviews[0].revision = revision; request.gradePreviews[0].scopeRoi.shape = shape;
+    const auto surface = awaitScopes(*compositor, request, "circle", revision);
+    const uint32_t id = surface.scopes.texture.iosurfaceId;
+    const float redLuma = .2126f;
+    const int cb = int(((-redLuma) / 1.8556f + .5f) * 255), cr = std::min(255, int(((1 - redLuma) / 1.5748f + .5f) * 255));
+    return std::array<int, 3>{green(id, 54.5f / 768, .9f), green(id, (1 + .05f) / 3, 1 - 54.5f / 256),
+                              green(id, (2 + (cb + .5f) / 256) / 3, 1 - (cr + .5f) / 256)};
+  };
+  const auto rectangle = measure(1, "rectangle"), circle = measure(2, "circle");
+  for (int i = 0; i < 3; ++i) {
+    std::fprintf(stderr, "[metal-circle-mask] scope=%d rectangle=%d circle=%d\n", i, rectangle[i], circle[i]);
+    EXPECT_GT(rectangle[i], 30) << "the red corners are measured with a rectangle, scope " << i;
+    EXPECT_LT(circle[i], 30) << "the circle masks the red corners, scope " << i;
+  }
+  EXPECT_EQ(programCentre(compositor->render(plan, {frame})), before);
+  compositor->submitGradePreviews({});
+}
 #endif

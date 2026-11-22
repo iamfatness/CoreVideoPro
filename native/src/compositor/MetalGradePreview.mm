@@ -33,6 +33,7 @@
 #include "compositor/AdvancedGrade.h"
 #include "compositor/CompositorShaderParams.h"
 #include "compositor/MetalCompositorShaders.h"
+#include "compositor/MetalGradeScopesShaders.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/MonitorRenderWorker.h"
 
@@ -94,10 +95,20 @@ struct SourceUpload {
   const void* bytes = nullptr;   // the immutable buffer last uploaded (held-frame dedup)
 };
 
+// The scopes of one editor (G6): the 256x144 analysis draw, the 328,708 bins, the 1536x512 image.
+struct ScopeWork {
+  id<MTLTexture> analysis = nil;
+  id<MTLBuffer> bins = nil;
+  Surface image;
+};
+constexpr int kScopeSampleWidth = 256, kScopeSampleHeight = 144, kScopeWidth = 1536, kScopeHeight = 512;
+constexpr NSUInteger kScopeBins = 328708;
+
 struct Instance {
   std::string sourceId;
   SourceUpload upload;
   Surface preview;
+  std::unique_ptr<ScopeWork> scopes;
 };
 
 std::pair<int, int> sourceSize(const VideoFrame& frame) {
@@ -133,6 +144,7 @@ class Backend {
     textured_ = pipeline(library, vertex, @"compositorTextured");
     i420_ = pipeline(library, vertex, @"compositorI420");
     if (!textured_ || !i420_) throw std::runtime_error("grade preview pipeline creation failed");
+    initializeScopes();
     MTLSamplerDescriptor* sampler = [[MTLSamplerDescriptor alloc] init];
     sampler.minFilter = sampler.magFilter = MTLSamplerMinMagFilterLinear;
     sampler.sAddressMode = sampler.tAddressMode = MTLSamplerAddressModeClampToEdge;
@@ -178,6 +190,8 @@ class Backend {
       observation.texture.height = instance.preview.height;
       observation.texture.frameNumber = ++instance.preview.frames;
       observation.texture.sourceEpoch = source->sourceEpoch;
+      if (demand.scopesEnabled) renderScopes(commands, instance, demand, *source, observation);
+      else instance.scopes.reset();
       result.gradePreviews.push_back(std::move(observation));
     }
     // Drop every instance no longer demanded (its surfaces and upload go with it).
@@ -322,6 +336,101 @@ class Backend {
     return texture;
   }
 
+  // Scopes (G6): their own library so a scope failure marks scopes unavailable and nothing else
+  // (the D3D gradeScopeFailures_ rule, D3D11CompositorAdapter.cpp:1065-1075).
+  void initializeScopes() {
+    NSError* error = nil;
+    id<MTLLibrary> library = [device_ newLibraryWithSource:[NSString stringWithUTF8String:kMetalGradeScopeSource]
+                                                   options:nil error:&error];
+    if (!library) {
+      ::corevideo::core::nativeLogf("[grade-preview] scopes unavailable: %s\n",
+          error ? error.localizedDescription.UTF8String : "no diagnostics");
+      return;
+    }
+    id<MTLFunction> bins = [library newFunctionWithName:@"gradeScopeBins"];
+    id<MTLFunction> peak = [library newFunctionWithName:@"gradeScopePeak"];
+    if (bins) scopeBins_ = [device_ newComputePipelineStateWithFunction:bins error:&error];
+    if (peak) scopePeak_ = [device_ newComputePipelineStateWithFunction:peak error:&error];
+    MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = [library newFunctionWithName:@"gradeScopeVertex"];
+    desc.fragmentFunction = [library newFunctionWithName:@"gradeScopeImage"];
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    if (desc.vertexFunction && desc.fragmentFunction)
+      scopeImage_ = [device_ newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (!scopeBins_ || !scopePeak_ || !scopeImage_)
+      ::corevideo::core::nativeLogf("[grade-preview] scopes unavailable: pipeline creation failed\n");
+  }
+
+  // D3D11CompositorAdapter.cpp:1197-1229 + D3DGradeScopes::render: draw the source (graded, or
+  // original for scopesOriginal) cropped to the ROI into 256x144, bin it, find the peaks, draw the
+  // scope image, and stamp the measurement with the frame and the demand it answers.
+  void renderScopes(id<MTLCommandBuffer> commands, Instance& instance, const GradePreviewDemand& demand,
+                    const VideoFrame& frame, GradePreviewSurface& observation) {
+    auto& scope = observation.scopes;
+    scope.revision = demand.revision; scope.original = demand.scopesOriginal; scope.roi = demand.scopeRoi;
+    scope.roiPixels = demand.scopeRoi.pixels(instance.upload.width, instance.upload.height);
+    scope.sourceEpoch = observation.sourceEpoch; scope.sourceFrameId = observation.sourceFrameId;
+    scope.captureTimestamp100ns = observation.captureTimestamp100ns;
+    if (!scopeBins_ || !scopePeak_ || !scopeImage_) { scope.status = "unavailable"; return; }
+    if (!instance.scopes) {
+      auto work = std::make_unique<ScopeWork>();
+      MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+          width:kScopeSampleWidth height:kScopeSampleHeight mipmapped:NO];
+      desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; desc.storageMode = MTLStorageModePrivate;
+      work->analysis = [device_ newTextureWithDescriptor:desc];
+      work->bins = [device_ newBufferWithLength:kScopeBins * sizeof(uint32_t) options:MTLResourceStorageModePrivate];
+      if (!work->analysis || !work->bins || !work->image.ensure(device_, kScopeWidth, kScopeHeight)) {
+        scope.status = "unavailable"; return;
+      }
+      instance.scopes = std::move(work);
+    }
+    auto& work = *instance.scopes;
+    // Sample only inside the selected pixel centres (D3D11CompositorAdapter.cpp:2524-2532): bilinear
+    // filtering must never pull an adjacent, unselected pixel into a tiny region.
+    float offset[2] = {0.f, 0.f}, scale[2] = {1.f, 1.f};
+    if (demand.scopeRoi.enabled) {
+      const auto& r = scope.roiPixels;
+      const float w = float(instance.upload.width), h = float(instance.upload.height);
+      offset[0] = float(r.x + .5) / w; offset[1] = float(r.y + .5) / h;
+      scale[0] = float(r.width - 1) / w; scale[1] = float(r.height - 1) / h;
+    }
+    draw(commands, work.analysis, instance.upload, frame, demand.scopesOriginal ? CompositorColorGrade{} : demand.grade,
+         offset, scale);
+    const float modes[4] = {float(demand.histogramMode), float(demand.waveformMode), float(demand.scopeView),
+                            demand.scopeRoi.enabled && demand.scopeRoi.shape == "circle" ? 1.f : 0.f};
+    id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+    [blit fillBuffer:work.bins range:NSMakeRange(0, kScopeBins * sizeof(uint32_t)) value:0];
+    [blit endEncoding];
+    id<MTLComputeCommandEncoder> compute = [commands computeCommandEncoder];
+    [compute setComputePipelineState:scopeBins_];
+    [compute setTexture:work.analysis atIndex:0];
+    [compute setBuffer:work.bins offset:0 atIndex:0];
+    [compute setBytes:modes length:sizeof(modes) atIndex:1];
+    [compute dispatchThreadgroups:MTLSizeMake(16, 9, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+    [compute setComputePipelineState:scopePeak_];
+    [compute setBuffer:work.bins offset:0 atIndex:0];
+    [compute dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [compute endEncoding];
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = work.image.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> image = [commands renderCommandEncoderWithDescriptor:pass];
+    [image setRenderPipelineState:scopeImage_];
+    [image setFragmentBuffer:work.bins offset:0 atIndex:0];
+    [image setFragmentBytes:modes length:sizeof(modes) atIndex:1];
+    [image drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [image endEncoding];
+    scope.texture.participantId = "grade:scopes:" + demand.instanceId;
+    scope.texture.iosurfaceId = work.image.iosurfaceId;
+    scope.texture.width = kScopeWidth; scope.texture.height = kScopeHeight;
+    scope.texture.frameNumber = ++work.image.frames;
+    scope.texture.sourceEpoch = observation.sourceEpoch;
+    scope.status = observation.status;
+  }
+
+  id<MTLComputePipelineState> scopeBins_ = nil, scopePeak_ = nil;
+  id<MTLRenderPipelineState> scopeImage_ = nil;
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
   id<MTLRenderPipelineState> textured_ = nil, i420_ = nil;
