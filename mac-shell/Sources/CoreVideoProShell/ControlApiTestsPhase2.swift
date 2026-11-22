@@ -12,6 +12,7 @@ extension ShellTests {
             ("control/volt-load", testVoltRundownLoad),
             ("control/volt-preview", testVoltRundownPreview),
             ("control/volt-take", testVoltRundownTake),
+            ("control/companion-request-shapes", testCompanionRequestShapesAgainstTheMacServer),
         ]
     }
 
@@ -123,5 +124,158 @@ extension ShellTests {
         expectEqual(invoke(s, "media.rundown.take", ["clip-1", "s1", "L2"]), .success, "ready: the ordinary Take runs")
         expectEqual(core.bodies.isEmpty ? nil : core.types().first, "begin-take-transition", "the button's Take batch")
         expectEqual(model.programSceneId, "s1", "the clip scene is on Program")
+    }
+
+    // ── RC5: the Companion module's requests against the Mac server ──────────
+
+    /// The headers Node's global fetch (undici) sends, plus the module's own
+    /// (companion-module-corevideopro/src/main.ts headers(): Content-Type on EVERY
+    /// request, Bearer when a token is configured).
+    @MainActor
+    static func companionHttp(_ method: String, _ path: String, port: UInt16, host: String = "127.0.0.1",
+                              body: String? = nil, token: String? = nil, contentType: Bool = true) -> String {
+        var head = "\(method) \(path) HTTP/1.1\r\nhost: \(host):\(port)\r\nconnection: keep-alive\r\n"
+        if contentType { head += "content-type: application/json\r\n" }
+        if let token { head += "authorization: Bearer \(token)\r\n" }
+        head += "accept: */*\r\naccept-language: *\r\nsec-fetch-mode: cors\r\nuser-agent: node\r\naccept-encoding: gzip, deflate\r\n"
+        let bytes = Data((body ?? "").utf8)
+        if body != nil { head += "content-length: \(bytes.count)\r\n" }
+        return raw(port, Data((head + "\r\n").utf8) + bytes)
+    }
+
+    /// The `ws` package's upgrade (main.ts connectWebSocket): no Origin, a
+    /// permessage-deflate offer, `?token=` only when a token is configured.
+    @MainActor
+    static func companionWebSocketFirstFrame(port: UInt16, query: String = "") -> (status: String, frame: [String: Any]?) {
+        let upgrade = "GET /ws\(query) HTTP/1.1\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            + "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"
+            + "Host: 127.0.0.1:\(port)\r\n\r\n"
+        let client = RawClient(port: port)
+        client.run(Data(upgrade.utf8))
+        func parse() -> (String, [String: Any]?) {
+            let all = client.bytesSoFar
+            guard let end = all.range(of: Data("\r\n\r\n".utf8)) else { return ("", nil) }
+            let status = String(decoding: all[..<end.lowerBound], as: UTF8.self).components(separatedBy: "\r\n").first ?? ""
+            let frame = [UInt8](all[end.upperBound...])
+            guard frame.count >= 2, frame[0] == 0x81 else { return (status, nil) }
+            var length = Int(frame[1] & 0x7f), offset = 2
+            if length == 126, frame.count >= 4 { length = Int(frame[2]) << 8 | Int(frame[3]); offset = 4 }
+            else if length == 127, frame.count >= 10 { length = frame[2..<10].reduce(0) { $0 << 8 | Int($1) }; offset = 10 }
+            guard frame.count >= offset + length else { return (status, nil) }
+            let object = try? JSONSerialization.jsonObject(with: Data(frame[offset..<(offset + length)])) as? [String: Any]
+            return (status, object)
+        }
+        spin(until: { parse().1 != nil }, limit: 3)
+        client.connection.cancel()
+        let result = parse()
+        return (result.0, result.1)
+    }
+
+    static func body(_ response: String) -> [String: Any] {
+        guard let range = response.range(of: "\r\n\r\n") else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: Data(response[range.upperBound...].utf8)) as? [String: Any]) ?? [:]
+    }
+
+    /// The seven presets (companion-module-corevideopro/src/presets.ts) and the
+    /// feedback flags they light. The module's own vitest (src/mac.test.ts) checks
+    /// this list against buildPresets() over the recorded fixture this case writes.
+    static let companionPresetActions = ["transport.ftb.toggle", "transport.take", "transport.record.toggle",
+                                         "transport.stream.toggle", "transport.engine.toggle",
+                                         "automation.autoAssignInputs.set", "graphics.lowerThird.toggle"]
+    static let companionPresetFeedbacks = ["programBlackout", "canTake", "recording", "streaming", "engineOn",
+                                           "autoAssignInputs", "lowerThirdOnAir"]
+
+    @MainActor
+    static func testCompanionRequestShapesAgainstTheMacServer() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        let (server, started) = startServer(ControlRouter(surface: surface),
+                                            ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil))
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+
+        // fetchManifest: GET /manifest WITH Content-Type (the module sends it on GETs too).
+        let manifestResponse = companionHttp("GET", "/manifest", port: port)
+        expect(manifestResponse.hasPrefix("HTTP/1.1 200"), "GET /manifest with the module's headers is 200")
+        let manifest = body(manifestResponse)
+        let ids = Set((manifest["Actions"] as? [[String: Any]] ?? []).compactMap { $0["Id"] as? String })
+        expectEqual(ids.count, 40, "the Mac manifest lists its 40 supported actions (PascalCase)")
+        for action in companionPresetActions where action != "automation.autoAssignInputs.set" {
+            expect(ids.contains(action), "preset action \(action) is in the Mac manifest")
+        }
+        expect(!ids.contains("automation.autoAssignInputs.set"), "the autoassign preset's action is absent on Mac (STU)")
+
+        // invokeAction: POST /invoke, positional args, Content-Type.
+        let take = companionHttp("POST", "/invoke", port: port, body: #"{"action":"transport.take","args":[]}"#)
+        expect(take.hasPrefix("HTTP/1.1 200"), "the take preset invokes: \(take.prefix(20))")
+        expectEqual(core.bodies.count, 1, "and reached the model's Take")
+        let autoassign = companionHttp("POST", "/invoke", port: port,
+                                       body: #"{"action":"automation.autoAssignInputs.set","args":[true]}"#)
+        expect(autoassign.hasPrefix("HTTP/1.1 422"), "the autoassign preset answers 422, not 400")
+        expectEqual(body(autoassign)["error"] as? String,
+                    "'automation.autoAssignInputs.set' is not available on macOS yet (Studio and Settings follow-ons).",
+                    "with the generated reason")
+        // The module's Content-Type is load-bearing: the Mac refuses an invoke without it.
+        expect(companionHttp("POST", "/invoke", port: port, body: #"{"action":"transport.take","args":[]}"#,
+                             contentType: false).hasPrefix("HTTP/1.1 415"), "no Content-Type is 415 (Mac hardening)")
+        // A LAN address typed into the module while the Mac binds loopback: refused (owner doc note).
+        expect(companionHttp("GET", "/manifest", port: port, host: "192.168.1.20").hasPrefix("HTTP/1.1 403"),
+               "Host naming a LAN address on a loopback bind is 403 (DNS-rebinding guard)")
+
+        // connectWebSocket: the first frame is the whole ControlState.
+        let ws = companionWebSocketFirstFrame(port: port)
+        expectEqual(ws.status, "HTTP/1.1 101 Switching Protocols", "the ws package's upgrade is accepted")
+        let state = ws.frame ?? [:]
+        for field in companionPresetFeedbacks where field != "autoAssignInputs" {
+            expect(state[field] is Bool, "preset feedback \(field) is a Bool in the first frame")
+        }
+        expect(state["autoAssignInputs"] == nil, "autoAssignInputs is not published on Mac (its preset is absent)")
+
+        // With a token: Bearer on HTTP, ?token= on /ws (main.ts).
+        let (tokenServer, tokenStarted) = startServer(ControlRouter(surface: surface),
+                                                      ControlServerOptions(port: 0, host: "127.0.0.1", authToken: "s3cret"))
+        defer { tokenServer.stop() }
+        if case .success(let tokenPort)? = tokenStarted {
+            expect(companionHttp("GET", "/manifest", port: tokenPort, token: "s3cret").hasPrefix("HTTP/1.1 200"), "Bearer accepted")
+            expect(companionHttp("GET", "/manifest", port: tokenPort).hasPrefix("HTTP/1.1 401"), "no token is 401")
+            expectEqual(companionWebSocketFirstFrame(port: tokenPort, query: "?token=s3cret").status,
+                        "HTTP/1.1 101 Switching Protocols", "?token= on the upgrade")
+        } else { expect(false, "token server starts") }
+
+        // The recorded fixture the module's vitest reads (drift-checked here).
+        let fixture: [String: Any] = [
+            "note": "Written by the Mac shell harness case control/companion-request-shapes "
+                + "(COREVIDEO_WRITE_COMPANION_FIXTURE=1 rewrites it). Do not edit by hand.",
+            "manifest": manifest,
+            "stateKeys": state.keys.sorted(),
+        ]
+        let encoded = (try? JSONSerialization.data(withJSONObject: fixture, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        let relative = "companion-module-corevideopro/src/fixtures/mac-control.json"
+        if ProcessInfo.processInfo.environment["COREVIDEO_WRITE_COMPANION_FIXTURE"] == "1" {
+            let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+            let url = root.appendingPathComponent(relative)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? (encoded + Data("\n".utf8)).write(to: url)
+        }
+        let onDisk = repoFile(relative).flatMap { try? JSONSerialization.jsonObject(with: $0) as? NSDictionary }
+        expect(onDisk?.isEqual(to: fixture) == true,
+               "\(relative) matches what the Mac serves (rerun with COREVIDEO_WRITE_COMPANION_FIXTURE=1)")
+
+        // Optional live leg: the module's OWN compiled code (fetchManifest, invokeAction,
+        // the ws client) against this server. Needs Node and a built module copy.
+        let env = ProcessInfo.processInfo.environment
+        if let script = env["COREVIDEO_COMPANION_LIVE_SCRIPT"], let dist = env["COREVIDEO_COMPANION_MODULE_DIR"] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["node", script, "--module", dist, "--base", "http://127.0.0.1:\(port)", "--allow-take"]
+            let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
+            do { try process.run() } catch { expect(false, "live leg: node runs (\(error))"); return }
+            spin(until: { !process.isRunning }, limit: 20)
+            let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            FileHandle.standardError.write(Data(output.utf8))
+            expectEqual(process.terminationStatus, 0, "live leg: the module's own code passes against the Mac server")
+        }
     }
 }

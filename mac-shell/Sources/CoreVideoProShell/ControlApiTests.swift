@@ -839,6 +839,8 @@ extension ShellTests {
         private var received = Data()
         private let lock = NSLock()
         var soFar: String { lock.lock(); defer { lock.unlock() }; return String(decoding: received, as: UTF8.self) }
+        /// The raw bytes so far (a WebSocket frame header is not UTF-8).
+        var bytesSoFar: Data { lock.lock(); defer { lock.unlock() }; return received }
         init(port: UInt16) {
             connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
         }
