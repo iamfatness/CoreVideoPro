@@ -2336,6 +2336,14 @@ void MediaCore::syncStillMediaDesired() {
   if (takeTransition_.waitingForColdMedia) {
     addRoutes(takeTransition_.outgoingRoutes, "media:");
   }
+  // Sources Phase 2, Task 5: a still that sits in a Show Input slot is on the wall even
+  // when no scene routes it. Same key as a routed still (one cache entry for both). A clip
+  // is never decoded here: it has transport state the wall does not own (plan D10).
+  for (const auto& source : multiviewSources_) {
+    if (source.kind != "media" || source.mediaAssetId.empty() || source.mediaAssetPath.empty()) continue;
+    if (!modules::isStillImageMediaAsset(source.mediaAssetKind, source.mediaAssetPath)) continue;
+    desired.push_back({"media:" + source.mediaAssetId, modules::normalizeMediaAssetPath(source.mediaAssetPath)});
+  }
   stillMediaCache_->setDesired(std::move(desired));
 }
 
@@ -3657,11 +3665,13 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
       source.participantId = entry.getString("participantId");
       source.captureDeviceId = entry.getString("captureDeviceId");
       source.mediaAssetId = entry.getString("mediaAssetId");
+      source.mediaAssetPath = entry.getString("mediaAssetPath");
+      source.mediaAssetKind = entry.getString("mediaAssetKind");
       source.label = entry.getString("label");
       source.slot = entry.get("slot") ? static_cast<int>(entry.getNumber("slot", autoSlot)) : autoSlot;
       signature += std::to_string(source.slot) + ":" + source.kind + ":" + source.sourceId + ":" +
                    source.participantId + ":" + source.captureDeviceId + ":" + source.mediaAssetId + ":" +
-                   source.label + "|";
+                   source.mediaAssetPath + ":" + source.mediaAssetKind + ":" + source.label + "|";
       parsed.push_back(std::move(source));
       ++autoSlot;
     }
@@ -3686,6 +3696,8 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
   multiviewCanvasHeight_ = resolvedHeight;
   // A layout change is a structural change; force the next render's event emit.
   multiviewStructureEmitted_ = false;
+  // A still in a slot is decoded for the wall even when no scene routes it.
+  syncStillMediaDesired();
   return true;
 }
 

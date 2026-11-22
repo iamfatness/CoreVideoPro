@@ -1546,6 +1546,10 @@ class MediaCore {
     std::string participantId;
     std::string captureDeviceId;
     std::string mediaAssetId;
+    // Additive (Sources Phase 2, Task 5): a media slot's file, so a still that only the
+    // wall shows is decoded. Windows sends neither; empty keeps the route-only behaviour.
+    std::string mediaAssetPath;
+    std::string mediaAssetKind;
     int slot = 0;
     std::string label;
   };
