@@ -13,7 +13,11 @@ instruction), on top of G1. Date 2026-11-21. This Mac (Apple Silicon), other age
 | ac5c8686 | 3 | `measureText` uses Core Text on a Metal build |
 | bb9112b1 | 4 | template raster on the Core Text worker (shapes, gradients, images, text, effects, atlas) |
 | 2c7c38f8 | 5 | adapter rules 5.8/5.9, prepared-resource memo, `supportsGraphicsInstances()` true, `GraphicsRpcPixelTest` on Metal |
-| (this) | 6 | outcomes |
+| c0383311 | 6 | outcomes |
+| 389a6405 | review 1 | **ship-blocker fix:** the shell tells the installed core where the graphics fonts are |
+| ef984435 | review 2 | facts carry the raster warning by reference (no per-frame copy) |
+| 27275d49 | review 3 | stale `CoreTextOverlayRaster.h` comments |
+| (this) | review | outcomes updated |
 
 ## Font policy as shipped
 
@@ -35,6 +39,20 @@ instruction), on top of G1. Date 2026-11-21. This Mac (Apple Silicon), other age
   `codesign --verify --deep --strict` reports "valid on disk / satisfies its Designated Requirement" (fonts are
   sealed resources, no code to sign). `make-macos-pkg.sh` packages that .app unchanged. The notarized release was
   **not** run (by instruction).
+- **The installed core (review fix 1, ship-blocker).** The first version of this slice only worked when the core ran
+  from inside the app. On a pkg install the shell runs the root-owned copy at
+  `/Library/Application Support/CoreVideo Pro/corevideo-native` (`CoreLocation`), and `make-macos-pkg.sh` stages
+  only that binary there (its exact-payload and BOM assertions are unchanged). The core's lookup (`GraphicsFonts/`
+  beside the executable) found nothing, Segoe UI resolved unavailable and strict Program graphics failed. Now the
+  shell's core launch environment carries `COREVIDEO_GRAPHICS_FONTS_DIR = <app>/Contents/Resources/GraphicsFonts`
+  (dev runs fall back to `native/build-metal/GraphicsFonts`; an explicit process value wins), built by the pure
+  `CoreLaunchEnvironment.extras` (moved unchanged out of `AppModel`'s launch, plus the new key). Other launch
+  sites: `--vcam-device-probe` and the vcam sink helper never raster (the helper inherits the core's environment
+  anyway). Proof: `ShellTestsGraphicsFonts` (red before, red with the key removed), and
+  `scripts/tests/test_core_graphics_fonts_location.py`, which copies a built core into an empty folder (the
+  `/Library` layout): with the variable a Segoe UI graphic reaches Program with the Selawik warning; without it
+  the strict graphic fails exactly as installs did ("Requested graphics font is unavailable; choose an installed
+  font."). Not yet seen on a real pkg install (the coordinator verifies that).
 - **Bundled core, end to end:** the bundled `Contents/Resources/corevideo-native`, driven over stdio with
   `COREVIDEO_GRAPHICS_FONTS_DIR` unset, advertised `graphics-instances`, prepared a `compact-solid` with
   `fontFamily: "Segoe UI"` to `ready`, drew it (`firstDrawSubmittedFrame: 5`), warned "Font Segoe UI is not
@@ -44,10 +62,11 @@ instruction), on top of G1. Date 2026-11-21. This Mac (Apple Silicon), other age
 
 | suite | result | command |
 |---|---|---|
-| G2 + G1 graphics suites | 85/85, 5x loop green | `./native/build-metal/corevideo-native-tests --gtest_filter='MetalCompositor.*:MetalOverlayRaster.*:GraphicsFontResolver.*:GraphicsTextMeasure.*:GraphicsCompositionPixel.*:GraphicsRpcPixel.*'` |
+| G2 + G1 graphics suites | 86/86 after the review fixes (3x loop; 85/85 5x before) | `./native/build-metal/corevideo-native-tests --gtest_filter='MetalCompositor.*:MetalOverlayRaster.*:GraphicsFontResolver.*:GraphicsTextMeasure.*:GraphicsCompositionPixel.*:GraphicsRpcPixel.*'` |
 | full Metal ctest `-LE realtime` | 4/4 entries; 2155 gtest cases in the binary (10 realtime excluded) | `ctest --test-dir native/build-metal --output-on-failure -LE realtime` (CI configure flags incl. `-DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON`) |
 | stub ctest | 5/5 entries; 2020 gtest cases | `cmake -S native -B native/build-stub -G Ninja && cmake --build native/build-stub && ctest --test-dir native/build-stub --output-on-failure` |
-| shell tests | none touched (the shell was built only to assemble the bundle check) | |
+| shell suite | 5686 checks passed, 0 failed | `COREVIDEO_SHELL_TESTS=1 mac-shell/.build/release/CoreVideoProShell` (after `swift build -c release` in `mac-shell`); baseline before the review fixes 5676 |
+| installed-core fonts | PASS (with the variable: ready, Selawik warning; without: failed, as installs did) | `python3 -I scripts/tests/test_core_graphics_fonts_location.py` |
 
 New: `GraphicsFontResolver.*` (4), `GraphicsTextMeasure.*` (3), `MetalOverlayRaster.{SegoeUiResolvesToBundledSelawik…,
 TemplateShapes…, TemplateGradient…, TemplateTextBaselines…, TemplateCenterAlignment…, TemplateTextEffects…,
@@ -93,6 +112,13 @@ the whole of `GraphicsRpcPixelTest.cpp` except the private preview and thumbnail
   notes above, green on Metal.
 - Template layout measures with Core Text; raster and measurement share one resolver and one line breaker.
 - `preparedResource()` returns one identity per prepared texture with zero allocations per tick once held.
+- Facts carry warnings without a per-frame copy (review fix 2): `MetalOverlayRaster.AdapterFactsCarryTheWarningWithoutAPerTickCopy`
+  renders the same cued look for 20 steady-state frames with Arial (no warning) and Segoe UI (57-character warning);
+  render-thread allocations are identical. Before the fix the warning added exactly 20 allocations over 20 frames.
+  `GraphicsFrameFact` gained `sharedReason` (appended last, so the D3D11 adapter's positional initializers are
+  unchanged) and `reasonText()`; the D3D11 adapter still copies, flagged for a Windows session. Remaining per-frame
+  allocations on that path (the frame's facts vector itself, and an instance id longer than the small-string buffer)
+  are the same on both platforms and were not changed.
 
 ## Unverified
 
