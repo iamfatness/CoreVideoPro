@@ -33,6 +33,7 @@
 #include "core/FrameAllocation.h"
 #include "modules/Interfaces.h"
 #include "modules/MediaClipDecoder.h"
+#include "modules/PixelBufferVideoFrame.h"
 #include "modules/StillMediaFrameCache.h"
 
 namespace corevideo::modules {
@@ -47,6 +48,10 @@ constexpr const char* kWebmRefusal =
 // 1080p), and the owner already queues up to three, so more here buys memory
 // and nothing else.
 constexpr size_t kSamplesDecodedAhead = 1;
+
+// Every decoded frame copied into CPU BGRA, process-wide. The zero-copy path
+// (N4) must leave this untouched; the test reads it, production never does.
+std::atomic<uint64_t> g_cpuFrameCopies{0};
 
 std::string lowercaseExtension(const std::string& path) {
   auto extension = std::filesystem::path(path).extension().string();
@@ -84,10 +89,15 @@ struct VideoReaderState {
   std::string error;
   AVAssetReader* reader = nil;  // also read by the destructor, to cancel
   AVURLAsset* asset = nil;      // likewise, to cancel a load in flight
+  // Set before the reader starts, read on the reader queue only. ZERO-COPY
+  // (N4): hand the decoder's IOSurface-backed buffer over retained, instead of
+  // copying it into CPU BGRA.
+  bool zeroCopy = false;
   // Reader-queue only. A track output, or a video-composition output for a
   // rotated track (both are AVAssetReaderOutput and copy the same way).
   AVAssetReaderOutput* output = nil;
   bool straightenAlpha = false;
+  bool loggedZeroCopyRefusal = false;
   int64_t lastPts100ns = -1;
   int64_t lastDuration100ns = 0;
   double copyTotalMs = 0, copyMaxMs = 0;
@@ -218,6 +228,7 @@ AVVideoComposition* uprightComposition(AVAssetTrack* track, const TrackTransform
 std::shared_ptr<const std::vector<uint8_t>> copyBgra(CVImageBufferRef image, int& width, int& height,
                                                     bool straightenAlpha) {
   static core::FrameAllocationFailures allocationFailures("media-decoder-avf");
+  g_cpuFrameCopies.fetch_add(1, std::memory_order_relaxed);
   width = static_cast<int>(CVPixelBufferGetWidth(image));
   height = static_cast<int>(CVPixelBufferGetHeight(image));
   if (width <= 0 || height <= 0) return nullptr;
@@ -279,7 +290,21 @@ void decodeNext(const std::shared_ptr<VideoReaderState>& state) {
       if (!image) { CFRelease(sampleBuffer); continue; }  // a marker sample with no picture
       const auto copyStart = std::chrono::steady_clock::now();
       ClipVideoSample decoded;
-      decoded.bgra = copyBgra(image, decoded.width, decoded.height, state->straightenAlpha);
+      if (state->zeroCopy) {
+        // ZERO-COPY (N4): the buffer itself, retained by PixelBufferVideoFrame
+        // until the last frame AND the last Metal pass sampling it let go, so
+        // the decoder's pool can never recycle it under a reader.
+        decoded.gpu = makePixelBufferVideoFrame(image);
+        if (decoded.gpu) {
+          decoded.width = decoded.gpu->width;
+          decoded.height = decoded.gpu->height;
+        } else if (!state->loggedZeroCopyRefusal) {
+          state->loggedZeroCopyRefusal = true;
+          ::corevideo::core::nativeLogf("[media-decoder] %s: decoded buffer is not an IOSurface-backed BGRA buffer; "
+                                        "copying to CPU BGRA instead of zero-copy\n", state->path.c_str());
+        }
+      }
+      if (!decoded.gpu) decoded.bgra = copyBgra(image, decoded.width, decoded.height, state->straightenAlpha);
       const auto copyMs = elapsedMs(copyStart);
       decoded.pts100ns = (std::max)(int64_t{0}, to100ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)));
       auto duration = to100ns(CMSampleBufferGetDuration(sampleBuffer));
@@ -291,7 +316,7 @@ void decodeNext(const std::shared_ptr<VideoReaderState>& state) {
       state->lastPts100ns = decoded.pts100ns;
       state->lastDuration100ns = duration;
       CFRelease(sampleBuffer);
-      if (!decoded.bgra) continue;  // allocation failed: drop this sample, keep reading
+      if (!decoded.bgra && !decoded.gpu) continue;  // allocation failed: drop this sample, keep reading
       // The measurement the load drill reads: what the CPU copy costs per frame.
       state->copyTotalMs += copyMs;
       state->copyMaxMs = (std::max)(state->copyMaxMs, copyMs);
@@ -354,10 +379,20 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
       AVVideoTransferFunctionKey : AVVideoTransferFunction_ITU_R_709_2,
       AVVideoYCbCrMatrixKey : AVVideoYCbCrMatrix_ITU_R_709_2,
     };
-    NSDictionary* settings = @{
+    NSMutableDictionary* settings = [@{
       (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
       AVVideoColorPropertiesKey : colour,
-    };
+    } mutableCopy];
+    NSMutableDictionary* composedSettings = [@{
+      (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+    } mutableCopy];
+    if (state->zeroCopy) {
+      // Buffers Metal can wrap as a texture in place (N4).
+      for (NSMutableDictionary* each in @[ settings, composedSettings ]) {
+        each[(id)kCVPixelBufferIOSurfacePropertiesKey] = @{};
+        each[(id)kCVPixelBufferMetalCompatibilityKey] = @YES;
+      }
+    }
     AVAssetReaderOutput* output = nil;
     @try {
       if (transform.rotated) {
@@ -370,9 +405,7 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
         // unrotated clip keeps the plain track output byte for byte.
         AVAssetReaderVideoCompositionOutput* composed =
             [AVAssetReaderVideoCompositionOutput assetReaderVideoCompositionOutputWithVideoTracks:@[ track ]
-                                                                                   videoSettings:@{
-              (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
-            }];
+                                                                                   videoSettings:composedSettings];
         composed.videoComposition = uprightComposition(track, transform, asset.duration);
         composed.alwaysCopiesSampleData = NO;
         output = composed;
@@ -412,13 +445,14 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
 
 class AvfClipVideoReader final : public IClipVideoReader {
  public:
-  AvfClipVideoReader(const std::string& path, std::function<void()> wake)
+  AvfClipVideoReader(const std::string& path, std::function<void()> wake, bool zeroCopy)
       : state_(std::make_shared<VideoReaderState>()),
         queue_(dispatch_queue_create("com.corevideo.media-decoder.video",
                                      dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
                                                                              QOS_CLASS_USER_INITIATED, 0))) {
     state_->path = path;
     state_->wake = std::move(wake);
+    state_->zeroCopy = zeroCopy;
     const auto state = state_;
     dispatch_async(queue_, ^{ openVideo(state); });
   }
@@ -662,10 +696,11 @@ class AvfClipAudioReader final : public IClipAudioReader {
 
 class AvfClipReaderFactory final : public IClipReaderFactory {
  public:
+  explicit AvfClipReaderFactory(bool zeroCopy) : zeroCopy_(zeroCopy) {}
   std::unique_ptr<IClipVideoReader> openVideo(const std::string& path, std::function<void()> wake,
                                               std::string& error) override {
     error.clear();
-    return std::make_unique<AvfClipVideoReader>(path, std::move(wake));
+    return std::make_unique<AvfClipVideoReader>(path, std::move(wake), zeroCopy_);
   }
 
   // Returns a reader at once; "no audio track" is learned on the reader's queue
@@ -690,16 +725,31 @@ class AvfClipReaderFactory final : public IClipReaderFactory {
     frame.pixels = std::move(pixels.bgra);
     return true;
   }
+
+ private:
+  bool zeroCopy_ = false;
 };
 
 }  // namespace
 
 std::shared_ptr<IClipReaderFactory> createAvFoundationClipReaderFactory() {
-  return std::make_shared<AvfClipReaderFactory>();
+  return std::make_shared<AvfClipReaderFactory>(/*zeroCopy=*/false);
 }
+
+std::shared_ptr<IClipReaderFactory> createAvFoundationZeroCopyClipReaderFactory() {
+  return std::make_shared<AvfClipReaderFactory>(/*zeroCopy=*/true);
+}
+
+uint64_t avfMediaDecoderCpuFrameCopiesForTest() { return g_cpuFrameCopies.load(); }
 
 std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory() {
   return [] { return std::unique_ptr<IMediaDecoder>(new MediaClipDecoder(createAvFoundationClipReaderFactory())); };
+}
+
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationZeroCopyMediaDecoderFactory() {
+  return [] {
+    return std::unique_ptr<IMediaDecoder>(new MediaClipDecoder(createAvFoundationZeroCopyClipReaderFactory()));
+  };
 }
 
 }  // namespace corevideo::modules
@@ -714,6 +764,10 @@ std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFa
 namespace corevideo::modules {
 
 std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory() {
+  return {};
+}
+
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationZeroCopyMediaDecoderFactory() {
   return {};
 }
 

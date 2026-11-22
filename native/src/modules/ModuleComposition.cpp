@@ -438,16 +438,22 @@ ModuleSet createDefaultModules() {
   if (prepareCpuSources && modules.compositor->rendererName() == "d3d11")
     modules.cpuSourcePreparation = std::make_shared<CpuSourcePreparation>(true);
   bool mediaDecoderConstructed = false;
+  bool mediaDecoderZeroCopy = false;
   if (auto mediaDecoderFactory = createMediaFoundationMediaDecoderFactory()) {
     modules.mediaDecoderFactory = std::move(mediaDecoderFactory);
     mediaDecoderConstructed = true;
-  } else if (auto avfMediaDecoderFactory = createAvFoundationMediaDecoderFactory()) {
+  } else if (auto avfMediaDecoderFactory = modules.compositor->rendererName() == "metal"
+                 // Zero-copy only for Metal (N4, plan default P5): its frames carry
+                 // no CPU pixels, which a CPU compositor could not draw.
+                 ? createAvFoundationZeroCopyMediaDecoderFactory()
+                 : createAvFoundationMediaDecoderFactory()) {
     modules.mediaDecoderFactory = std::move(avfMediaDecoderFactory);
     mediaDecoderConstructed = true;
+    mediaDecoderZeroCopy = modules.compositor->rendererName() == "metal";
   }
   recordCapability(modules, "media-clip-playback", mediaDecoderConstructed ? "available"
       : (COREVIDEO_WITH_MF_ENCODER || COREVIDEO_WITH_AVF_MEDIA_DECODER)
-          ? "failed-to-construct" : "omitted", COREVIDEO_STUB ? "stub-build" : "");
+          ? "failed-to-construct" : "omitted", COREVIDEO_STUB ? "stub-build" : mediaDecoderZeroCopy ? "zero-copy" : "");
   bool monitorConstructed = false;
   if (auto monitorOutput = createWasapiMonitorOutput()) {
     modules.monitorOutput = std::move(monitorOutput);

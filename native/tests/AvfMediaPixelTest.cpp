@@ -86,15 +86,38 @@ std::unique_ptr<corevideo::modules::ICompositor> metalOrSkipReason(std::string& 
     return;                                                                                      \
   }                                                                                              \
   auto modules_ = corevideo::modules::createStubModules();                                       \
+  [[maybe_unused]] auto* compositorRaw_ = compositor_.get();                                     \
   modules_.compositor = std::move(compositor_);                                                  \
   modules_.mediaDecoderFactory = decoderFactoryForTest();                                        \
   modules_.captureDevice = std::make_unique<NoCaptureDevice>();                                  \
   MediaCore core(std::move(modules_));                                                           \
   core.useZoomSourcesForTest({})
 
+// Every test below runs twice: on the CPU-BGRA decoder (N1) and, as <Name>ZeroCopy, on the zero-copy
+// decoder production uses with a Metal compositor (N4), with IDENTICAL pixel expectations.
+bool g_zeroCopy = false;
 std::function<std::unique_ptr<corevideo::modules::IMediaDecoder>()> decoderFactoryForTest() {
-  return corevideo::modules::createAvFoundationMediaDecoderFactory();
+  return g_zeroCopy ? corevideo::modules::createAvFoundationZeroCopyMediaDecoderFactory()
+                    : corevideo::modules::createAvFoundationMediaDecoderFactory();
 }
+}  // namespace
+namespace corevideo::modules { uint64_t avfMediaDecoderCpuFrameCopiesForTest(); }
+namespace {
+// Runs a test body on the zero-copy decoder and proves the decoder copied no frame into CPU BGRA.
+struct ZeroCopyRun {
+  uint64_t copiesBefore = corevideo::modules::avfMediaDecoderCpuFrameCopiesForTest();
+  ZeroCopyRun() { g_zeroCopy = true; }
+  ~ZeroCopyRun() {
+    g_zeroCopy = false;
+    EXPECT_EQ(corevideo::modules::avfMediaDecoderCpuFrameCopiesForTest(), copiesBefore)
+        << "the zero-copy run copied decoded frames into CPU BGRA";
+  }
+};
+#define AVF_PIXEL_TEST(Name)                                   \
+  void Name##Body();                                           \
+  TEST(AvfMediaPixel, Name) { Name##Body(); }                  \
+  TEST(AvfMediaPixel, Name##ZeroCopy) { ZeroCopyRun run_; Name##Body(); } \
+  void Name##Body()
 
 // One FULL tick, then a short real-time step so the decoder workers advance.
 Json tick(MediaCore& core, Json::Array commands = {}) {
@@ -195,7 +218,7 @@ static bool at(MediaCore& core, float fx, float fy, Pixel& out) {
 // PILLARBOXED and UPRIGHT. Fixture facts: the display picture is 36x64, so on
 // the 320x180 thumbnail it spans x 0.342..0.658; its display quadrants are TL
 // BLUE, TR RED, BL WHITE, BR GREEN (storage TL RED rotated to display TR).
-TEST(AvfMediaPixel, APortraitClipIsPillarboxedUprightOnProgram) {
+AVF_PIXEL_TEST(APortraitClipIsPillarboxedUprightOnProgram) {
   constexpr Pixel kWhite = {0xD0, 0xD0, 0xD0};
   const auto p = tmp("portrait.mp4"); Cleanup c{p};
   ASSERT_EQ(corevideo::testing::writeQuadrantClip(p.string(), 64, 36, 90, 60), "");
@@ -218,7 +241,7 @@ TEST(AvfMediaPixel, APortraitClipIsPillarboxedUprightOnProgram) {
       << "the side of a portrait picture on 16:9 Program is pillarbox, got " << show(edge);
 }
 
-TEST(AvfMediaPixel, AClipOnProgramRollsFromItsFirstFrameAndNeverShowsASlate) {
+AVF_PIXEL_TEST(AClipOnProgramRollsFromItsFirstFrameAndNeverShowsASlate) {
   // Fixture: 640x360 @30, 30 RED frames (1 s) then 60 BLUE (2 s).
   const auto p = tmp("roll.mp4"); Cleanup c{p};
   ASSERT_EQ(corevideo::testing::writeFlatColourClip(p.string(), 640, 360, 30,
@@ -265,7 +288,7 @@ TEST(AvfMediaPixel, AClipOnProgramRollsFromItsFirstFrameAndNeverShowsASlate) {
   EXPECT_TRUE(row->get("onProgram")->asBool());
 }
 
-TEST(AvfMediaPixel, APausedClipHoldsTheExactOnAirPixels) {
+AVF_PIXEL_TEST(APausedClipHoldsTheExactOnAirPixels) {
   const auto p = tmp("pause.mp4"); Cleanup c{p};
   ASSERT_EQ(corevideo::testing::writeFlatColourClip(p.string(), 640, 360, 30,
                 {{30, 0x20, 0x20, 0xE0}, {60, 0xE0, 0x20, 0x20}}), "");
@@ -327,7 +350,7 @@ TEST(AvfMediaPixel, APausedClipHoldsTheExactOnAirPixels) {
   }
 }
 
-TEST(AvfMediaPixel, ACuedClipTakenToProgramStartsOnItsPosterFrame) {
+AVF_PIXEL_TEST(ACuedClipTakenToProgramStartsOnItsPosterFrame) {
   // The real-decoder twin of ProgramPixelContinuity.ACuedClipTakenToProgramNeverShowsThePlaceholder.
   // The route wire has no source-less fill colour, so the outgoing picture is a still route.
   const auto clip = tmp("cue.mp4"); Cleanup c1{clip};
@@ -372,7 +395,7 @@ TEST(AvfMediaPixel, ACuedClipTakenToProgramStartsOnItsPosterFrame) {
   EXPECT_TRUE(tickUntilCentre(core, kBlue, 2500)) << "the taken clip never rolled past its poster";
 }
 
-TEST(AvfMediaPixel, ALoopingVideoBackgroundKeepsChangingPastItsEnd) {
+AVF_PIXEL_TEST(ALoopingVideoBackgroundKeepsChangingPastItsEnd) {
   // Fixture: 64x64 @30, 15 RED then 15 BLUE = 1 s. A scene background always loops.
   const auto p = tmp("loop.mp4"); Cleanup c{p};
   ASSERT_EQ(corevideo::testing::writeFlatColourClip(p.string(), 64, 64, 30,
@@ -403,7 +426,7 @@ TEST(AvfMediaPixel, ALoopingVideoBackgroundKeepsChangingPastItsEnd) {
   EXPECT_GE(transitions, 4) << "the background stopped changing (it did not loop)";
 }
 
-TEST(AvfMediaPixel, AStillSceneBackgroundRenders) {
+AVF_PIXEL_TEST(AStillSceneBackgroundRenders) {
   // Spec correction 4: no scene background, still or video, rendered on Mac before this slice.
   const auto p = tmp("bg.png"); Cleanup c{p};
   ASSERT_EQ(corevideo::testing::writeFlatColourPng(p.string(), 64, 64, 0x20, 0xE0, 0x20), "");
@@ -418,7 +441,7 @@ TEST(AvfMediaPixel, AStillSceneBackgroundRenders) {
   EXPECT_TRUE(green) << "the still background never rendered; last centre " << show(pixel);
 }
 
-TEST(AvfMediaPixel, ANonLoopingClipEndsOnProgramOnItsLastFrame) {
+AVF_PIXEL_TEST(ANonLoopingClipEndsOnProgramOnItsLastFrame) {
   // #1214. Fixture: 640x360 @30, 27 RED, then ONE frame each of BLUE, GREEN and WHITE (1 s). The
   // clip's last frame is WHITE, and the two before it are individually identifiable too, so a clip
   // that ends short says by how many frames.
@@ -458,7 +481,7 @@ TEST(AvfMediaPixel, ANonLoopingClipEndsOnProgramOnItsLastFrame) {
 // would paint the warming/failed slate over everything), nothing warns that
 // the file "could not be opened", and the transport ends when the audio does.
 // Fixture: a 1.0 s 440 Hz AAC .m4a (no video track) and a GREEN 64x64 PNG.
-TEST(AvfMediaPixel, AnAudioBedOnProgramDrawsNothingOverTheSceneAndEnds) {
+AVF_PIXEL_TEST(AnAudioBedOnProgramDrawsNothingOverTheSceneAndEnds) {
   const auto bed = tmp("bed.m4a"); Cleanup c1{bed};
   const auto bg = tmp("bg.png"); Cleanup c2{bg};
   ASSERT_EQ(corevideo::testing::writeToneOnlyAudio(bed.string(), 1000, 440.0), "");
@@ -496,7 +519,7 @@ TEST(AvfMediaPixel, AnAudioBedOnProgramDrawsNothingOverTheSceneAndEnds) {
 // still background BGR(0x20,0xE0,0x20); clip BGRA(0x20,0x20,0xE0, a=0x80). The
 // expected centre is computed here from those constants alone. An opaque clip
 // would read RED; a premultiplied clip drawn as straight would read R ~0x50.
-TEST(AvfMediaPixel, AnAlphaStingKeysOverTheSceneAsAStraightAlphaBlend) {
+AVF_PIXEL_TEST(AnAlphaStingKeysOverTheSceneAsAStraightAlphaBlend) {
   const auto clip = tmp("alpha.mov"); Cleanup c1{clip};
   const auto bg = tmp("bg.png"); Cleanup c2{bg};
   const auto written = corevideo::testing::writeFlatColourClip(clip.string(), 64, 64, 30, {{60, 0x20, 0x20, 0xE0, 0x80}},
@@ -517,6 +540,82 @@ TEST(AvfMediaPixel, AnAlphaStingKeysOverTheSceneAsAStraightAlphaBlend) {
   (void)tick(core, {load});
   EXPECT_TRUE(tickUntilCentre(core, expected, 3000)) << "want " << show(expected) << ", last centre "
                                                      << [&] { Pixel p{}; centre(core, p); return show(p); }();
+}
+
+
+// N4 (plan 2026-11-21 Task 6). Program composited from the zero-copy decoder
+// equals Program composited from the CPU-BGRA decoder, point for point, and
+// the zero-copy core uploads NO media texture. Fixture: a static 640x360
+// quadrant clip (every frame identical), routed full canvas, looping.
+namespace {
+bool programSamples(MediaCore& core, std::vector<Pixel>& out) {
+  out.clear();
+  for (const float fx : {0.1f, 0.3f, 0.7f, 0.9f}) {
+    for (const float fy : {0.2f, 0.4f, 0.6f, 0.8f}) {
+      Pixel p{};
+      if (!at(core, fx, fy, p)) return false;
+      out.push_back(p);
+    }
+  }
+  return true;
+}
+}  // namespace
+
+static void runQuadrantProgram(const std::filesystem::path& clip, bool zeroCopy, std::vector<Pixel>& samples,
+                               corevideo::modules::CompositorSourceTexStats& stats, bool& skipped) {
+  skipped = false;
+  g_zeroCopy = zeroCopy;
+  std::string skipReason_;
+  auto compositor_ = metalOrSkipReason(skipReason_);
+  if (!compositor_) { skipped = true; g_zeroCopy = false; return; }
+  auto* compositor = compositor_.get();
+  auto modules_ = corevideo::modules::createStubModules();
+  modules_.compositor = std::move(compositor_);
+  modules_.mediaDecoderFactory = decoderFactoryForTest();
+  modules_.captureDevice = std::make_unique<NoCaptureDevice>();
+  MediaCore core(std::move(modules_));
+  core.useZoomSourcesForTest({});
+  auto route = Json::Object{{"routeId", "r"}, {"mode", "fixed"}, {"mediaAssetId", "clip"}, {"mediaAssetName", "clip"},
+                            {"mediaAssetKind", "stinger"}, {"mediaAssetPath", clip.string()}, {"mediaAssetLoop", true},
+                            {"rect", rect()}};
+  (void)tick(core, {scene("load-scene-graph", "s", {Json(route)})});
+  const Pixel red = {0x20, 0x20, 0xE0};
+  for (const auto deadline = steadyMs() + 3000; steadyMs() < deadline;) {
+    (void)tick(core);
+    Pixel tl{};
+    if (at(core, 0.25f, 0.25f, tl) && near(tl, red)) break;
+  }
+  const auto before = compositor->sourceTexStats();
+  for (const auto end = steadyMs() + 1500; steadyMs() < end;) (void)tick(core);  // 1.5 s of the rolling clip (45 frames)
+  (void)programSamples(core, samples);
+  const auto after = compositor->sourceTexStats();
+  stats.cachedUploads = after.cachedUploads - before.cachedUploads;
+  stats.zeroCopyBinds = after.zeroCopyBinds - before.zeroCopyBinds;
+  g_zeroCopy = false;
+}
+
+TEST(AvfMediaPixel, ZeroCopyProgramMatchesTheBgraPathPixelForPixel) {
+  const auto p = tmp("quad.mp4"); Cleanup c{p};
+  ASSERT_EQ(corevideo::testing::writeQuadrantClip(p.string(), 640, 360, 0, 60), "");
+  std::vector<Pixel> bgra, zero;
+  corevideo::modules::CompositorSourceTexStats bgraStats, zeroStats;
+  bool skipped = false;
+  runQuadrantProgram(p, false, bgra, bgraStats, skipped);
+  if (skipped) { std::fprintf(stderr, "[  SKIPPED ] AvfMediaPixel.ZeroCopyProgramMatchesTheBgraPathPixelForPixel: no Metal\n"); return; }
+  const auto copiesBefore = corevideo::modules::avfMediaDecoderCpuFrameCopiesForTest();
+  runQuadrantProgram(p, true, zero, zeroStats, skipped);
+  EXPECT_EQ(corevideo::modules::avfMediaDecoderCpuFrameCopiesForTest(), copiesBefore) << "the zero-copy core copied frames";
+  ASSERT_EQ(bgra.size(), 16u) << "the BGRA core produced no GPU readback";
+  ASSERT_EQ(zero.size(), 16u) << "the zero-copy core produced no GPU readback";
+  for (size_t i = 0; i < bgra.size(); ++i) {
+    for (int ch = 0; ch < 3; ++ch) EXPECT_NEAR(zero[i][ch], bgra[i][ch], 2) << "sample " << i << " channel " << ch;
+  }
+  std::fprintf(stderr, "[avf-pixel] 1.5 s rolling: BGRA path uploads=%llu zero-copy binds=%llu; zero-copy path uploads=%llu binds=%llu\n",
+               static_cast<unsigned long long>(bgraStats.cachedUploads), static_cast<unsigned long long>(bgraStats.zeroCopyBinds),
+               static_cast<unsigned long long>(zeroStats.cachedUploads), static_cast<unsigned long long>(zeroStats.zeroCopyBinds));
+  EXPECT_GE(bgraStats.cachedUploads, 3u) << "fixture: the BGRA path uploads each new clip frame it draws";
+  EXPECT_EQ(zeroStats.cachedUploads, 0u) << "the zero-copy path uploaded a media texture";
+  EXPECT_GE(zeroStats.zeroCopyBinds, 3u) << "the zero-copy path was not taken for the rolling clip";
 }
 
 #endif  // !COREVIDEO_STUB && COREVIDEO_WITH_METAL && COREVIDEO_WITH_AVF_MEDIA_DECODER

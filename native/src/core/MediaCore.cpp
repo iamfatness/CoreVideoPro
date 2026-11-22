@@ -6438,7 +6438,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         s_stageIngestUs + s_subFetchUs + s_subStoreUs + s_subTapUs + s_subPollUs + s_subMergeUs;
     ::corevideo::core::nativeVerboseLogf("[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
                  "plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
-                 "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
+                 "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld zerocopy=%lld\n",
                  ingestTotalUs / (s_stageTicks * 1000.0),
                  s_subFetchUs / (s_stageTicks * 1000.0), s_subStoreUs / (s_stageTicks * 1000.0),
                  s_subTapUs / (s_stageTicks * 1000.0), s_subPollUs / (s_stageTicks * 1000.0),
@@ -6449,7 +6449,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
                  static_cast<long long>(texStats.cachedUploads - s_lastTexStats.cachedUploads),
                  static_cast<long long>(texStats.cacheHits - s_lastTexStats.cacheHits),
                  static_cast<long long>(texStats.textureCreates - s_lastTexStats.textureCreates),
-                 static_cast<long long>(texStats.scratchUploads - s_lastTexStats.scratchUploads));
+                 static_cast<long long>(texStats.scratchUploads - s_lastTexStats.scratchUploads),
+                 static_cast<long long>(texStats.zeroCopyBinds - s_lastTexStats.zeroCopyBinds));
     s_lastTexStats = texStats;
     s_stageIngestUs = s_stagePlanUs = s_stageProgramUs = s_stageMultiviewUs = s_stagePreviewUs = 0;
     s_stageEmitUs = 0;

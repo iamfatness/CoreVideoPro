@@ -2097,6 +2097,10 @@ std::unique_ptr<ICompositor> createMetalCompositor();
 std::function<std::unique_ptr<IMediaDecoder>()> createMediaFoundationMediaDecoderFactory();
 // One AVFoundation-backed MediaClipDecoder per call; empty unless COREVIDEO_WITH_AVF_MEDIA_DECODER.
 std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory();
+// The same decoder handing Metal the decoder's own IOSurface-backed buffer
+// (no CPU BGRA copy, plan 2026-11-21 N4). Only for a Metal compositor: its
+// frames carry no CPU pixels. Empty when the option is off.
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationZeroCopyMediaDecoderFactory();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 // macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
 std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();
