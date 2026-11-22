@@ -37,6 +37,7 @@ extension ShellTests {
             ("control/route-set-custom-bus", testControlRouteSetAcceptsLiveBuses),
             // Review fixes.
             ("audio-meters/respawn-resets-master-meters", testARespawnedCoreNeverShowsTheDeadCoresMeters),
+            ("audio-buses/bus-state-with-nothing-routed", testBusStateReachesTheCoreWithNothingRouted),
         ]
     }
 
@@ -521,5 +522,34 @@ extension ShellTests {
         // A new core's snapshot that has not published masterMeter yet keeps the dash.
         model.applySnapshotForTesting(["audioMixSession": ["masterLevel": 0] as JSONObject])
         expectEqual(model.integratedLufs, -120, "a missing masterMeter is no evidence, not the old value")
+    }
+
+    // ── Review fix 3: bus state reaches the core with nothing routed ─────────
+
+    /// The core applies busSends and monitorBusId from a matrix with an empty
+    /// `sends` when it holds no sends (MediaCore.cpp:3245-3393; Windows sends the
+    /// matrix on every production sync). The Mac never sends an EMPTY matrix, but
+    /// one that carries bus state is not empty.
+    @MainActor
+    static func testBusStateReachesTheCoreWithNothingRouted() {
+        let model = AppModel()   // no sources, no edits
+        expect(model.routingBaseCommand() == nil, "nothing routed and default bus state: still no matrix")
+        model.setListening("iso-2", on: true)
+        let listen = model.routingBaseCommand()
+        expectEqual(listen?["monitorBusId"] as? String, "iso-2", "LISTEN with nothing routed is sent")
+        expectEqual((listen?["sends"] as? [JSONObject])?.count, 0, "with an empty sends list")
+        model.setListening("iso-2", on: false)
+        model.setBusSend("aux-1", target: "mon", enabled: true)
+        expectEqual((model.routingBaseCommand()?["busSends"] as? [JSONObject])?.count, 1, "a bus send with nothing routed is sent")
+        var reasserted: [JSONObject] = []
+        model.audioReassertObserver = { reasserted = $0 }
+        model.reassertAudioConsole()
+        expect(reasserted.contains { $0["type"] as? String == "sync-audio-routing-matrix" },
+               "a respawned core gets the bus state with nothing routed")
+        model.setBusSend("aux-1", target: "mon", enabled: false)
+        // Back to default: one matrix carrying the cleared state must go out, so the
+        // core does not keep LISTEN or a bus send the operator turned off.
+        expectEqual((model.routingBaseCommand()?["busSends"] as? [JSONObject])?.count, 0,
+                    "turning the last bus state off still sends the cleared state once")
     }
 }

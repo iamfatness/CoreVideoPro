@@ -4250,9 +4250,22 @@ final class AppModel: ObservableObject {
                 .map { "capture:" + $0.sourceId },
             mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
             operatorEdits: operatorRouteEdits)
-        guard !sends.isEmpty else { return nil }
+        let busSends = AudioBusPolicy.busSends(buses)
+        let monitorBusId = listenBusId ?? ""
+        // Never an EMPTY matrix (the core holds-last on a blank). A matrix whose
+        // sends are empty but that carries bus state is not empty: the core
+        // applies busSends/monitorBusId from it when it holds no sends
+        // (MediaCore.cpp:3245-3393), the nothing-routed case. It also goes out
+        // once more after the last bus state is turned off, so the core never
+        // keeps a LISTEN or bus send the operator cleared.
+        if sends.isEmpty {
+            let lastBusState = lastRoutingBaseSent?.last
+            let coreMayHoldBusState = !((lastBusState?["busSends"] as? [JSONObject]) ?? []).isEmpty
+                || !((lastBusState?["monitorBusId"] as? String) ?? "").isEmpty
+            guard !busSends.isEmpty || !monitorBusId.isEmpty || coreMayHoldBusState else { return nil }
+        }
         return ["type": "sync-audio-routing-matrix", "sends": sends,
-                "busSends": AudioBusPolicy.busSends(buses), "monitorBusId": listenBusId ?? ""]
+                "busSends": busSends, "monitorBusId": monitorBusId]
     }
 
     private var routingBaseTask: Task<Void, Never>?
