@@ -53,4 +53,24 @@ public sealed class GradeFixtureTests
             doc!.Validate();
         }
     }
+
+    // Grading Phase 2, Task 1 (G3): the shared .cube verdicts, also read by the core
+    // (AdvancedGrade.CubeFixturesHaveTheSharedVerdictInTheCore) and the Mac shell harness.
+    [Fact]
+    public void CubeVerdictsMatchCubeLutParser()
+    {
+        using var file = JsonDocument.Parse(File.ReadAllText(Fixture()));
+        var checkedCount = 0;
+        foreach (var entry in file.RootElement.GetProperty("cubes").EnumerateArray())
+        {
+            var name = entry.GetProperty("name").GetString();
+            var expected = entry.GetProperty("valid").GetBoolean();
+            bool valid;
+            try { CubeLutParser.Parse(entry.GetProperty("text").GetString()!); valid = true; }
+            catch (ArgumentException) { valid = false; }
+            Assert.True(valid == expected, $"{name}: expected {(expected ? "valid" : "invalid")}");
+            ++checkedCount;
+        }
+        Assert.Equal(26, checkedCount);
+    }
 }

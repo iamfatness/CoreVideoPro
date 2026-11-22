@@ -101,3 +101,26 @@ TEST(AdvancedGrade, SharedFixturesHaveTheDeclaredVerdictInTheCore) {
         << "the core must accept what the Mac shell writes: " << entry.getString("name");
   }
 }
+
+// Grading Phase 2, Task 1 (G3): the shared `.cube` verdicts. The core parser must agree with the
+// C# CubeLutParser (GradeFixtureTests) and the Mac shell's CubeLutParser on every row; the hash is
+// computed here so only the parsing rules are under test.
+#include "compositor/CubeLut.h"
+#include <iomanip>
+TEST(AdvancedGrade, CubeFixturesHaveTheSharedVerdictInTheCore) {
+  const auto fixtures = rpc::Json::parse(readGradeRepoFile("contracts/grade.fixtures.json"));
+  ASSERT_TRUE(fixtures && fixtures->isObject() && fixtures->get("cubes"));
+  int checked = 0, valid = 0;
+  for (const auto& entry : fixtures->get("cubes")->asArray()) {
+    const auto text = entry.getString("text");
+    const auto digest = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    std::ostringstream hex; hex << std::hex << std::setfill('0');
+    for (auto byte : digest) hex << std::setw(2) << int(byte);
+    const bool parsed = modules::parseGradeCube(text, hex.str()) != nullptr;
+    EXPECT_EQ(parsed, entry.get("valid")->asBool()) << entry.getString("name");
+    ++checked; valid += parsed;
+  }
+  // Fixture invariant (rule 1): 26 rows, 7 of them valid. Update with the fixture file.
+  EXPECT_EQ(checked, 26);
+  EXPECT_EQ(valid, 7);
+}
