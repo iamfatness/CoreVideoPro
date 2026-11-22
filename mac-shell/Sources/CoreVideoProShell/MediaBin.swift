@@ -39,7 +39,12 @@ struct MediaAsset: Identifiable, Equatable {
 }
 
 enum MediaBin {
-    static let kinds = ["stinger", "lower-third", "audio-bed", "slate"]
+    static let kinds = ["stinger", "lower-third", "audio-bed", "slate", "volt-rundown"]
+    /// Windows MediaBinClassifier.VoltRundownFolder: Volt's staged clips (RC6).
+    static let voltRundownFolder = "Volt Rundown"
+
+    /// The folder under `root` each kind is scanned from (only Volt's differs).
+    static func folder(for kind: String) -> String { kind == "volt-rundown" ? voltRundownFolder : kind }
     static let videoExtensions = ["mp4", "mov", "webm"]
     static let imageExtensions = ["png", "jpg", "jpeg", "gif"]
     static let audioExtensions = ["wav", "mp3", "aac", "m4a"]
@@ -66,6 +71,10 @@ enum MediaBin {
         let lowerName = fileName.lowercased()
         let ext = (fileName as NSString).pathExtension.lowercased()
         guard supportedExtensions.contains(ext) else { return nil }
+        // Windows ClassifyFile: a Volt-staged .mp4 first, before the slate check.
+        if lowerPath.hasPrefix(voltRundownFolder.lowercased() + "/") && ext == "mp4" {
+            return "volt-rundown"
+        }
         if lowerPath.contains("slates/") || lowerName.hasPrefix("slate") {
             return "slate"
         }
@@ -82,6 +91,7 @@ enum MediaBin {
         case "lower-third": return "Lower-third"
         case "audio-bed": return "Audio bed"
         case "slate": return "Slate"
+        case "volt-rundown": return voltRundownFolder
         default: return kind
         }
     }
@@ -176,7 +186,7 @@ enum MediaBin {
         let fm = FileManager.default
         var assets: [MediaAsset] = []
         for kind in kinds {
-            let dir = root + "/" + kind
+            let dir = root + "/" + folder(for: kind)
             guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
             for name in names.sorted() where !name.hasPrefix(".") {
                 if let asset = assetFrom(path: dir + "/" + name) {

@@ -84,12 +84,17 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         case "transport.ftb.set":
             return blackout(await model.setProgramBlackout(bool(0)))
         case "transport.take":
-            // Windows RunTake: refuse when CanTake is false, else the one Take path.
-            guard model.canTake else { return .fail(takeUnavailable) }
-            switch await model.take() {
-            case .success: return .success
-            case .failed(let why): return .fail(why.isEmpty ? "Take was not confirmed by the media core." : why)
+            return await runTake(model)
+        // ── Volt rundown (RC6, VoltRundown.swift; Windows StudioControlSurface.cs:361-369) ──
+        case "media.rundown.load":
+            return model.loadVoltRundownClip(string(0))
+        case "media.rundown.preview":
+            return model.previewVoltRundownClip(string(0), scene: string(1), route: optionalString(2) ?? "")
+        case "media.rundown.take":
+            if let refusal = model.checkVoltRundownPreview(string(0), scene: string(1), route: optionalString(2) ?? "") {
+                return .fail(refusal)
             }
+            return await runTake(model)
         case "transport.record.toggle":
             return toggle(model, what: "recording", desired: { $0.recordingDesired }, model.toggleRecording)
         case "transport.record.set":
@@ -215,7 +220,19 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "audio.monitor.set", "audio.monitor.volume", "audio.route.set",
         // Phase 2 (A3)
         "audio.masterLimiter.set",
+        // Phase 2 (RC6)
+        "media.rundown.load", "media.rundown.preview", "media.rundown.take",
     ]
+
+    /// Windows RunTake: refuse when CanTake is false, else the one Take path.
+    @MainActor
+    static func runTake(_ model: AppModel) async -> ControlInvokeResult {
+        guard model.canTake else { return .fail(takeUnavailable) }
+        switch await model.take() {
+        case .success: return .success
+        case .failed(let why): return .fail(why.isEmpty ? "Take was not confirmed by the media core." : why)
+        }
+    }
 
     /// The `default:` branch's text (Windows' unknown-action wording).
     static func undispatched(_ id: String) -> String { "Unknown action '\(id)'." }

@@ -96,7 +96,7 @@ extension ShellTests {
             expect(false, "contracts/control.platforms.json is readable from the checkout"); return
         }
         // Each slice updates this number: RC1 13, after RC2 25, after RC3 36.
-        expectEqual(fileSupported.count, 37, "supported rows in the platform file (Phase 2: +audio.masterLimiter.set)")
+        expectEqual(fileSupported.count, 40, "supported rows in the platform file (Phase 2: +audio.masterLimiter.set, +3 media.rundown)")
         expectEqual(AppModelControlSurface.supportedActionIds, fileSupported,
                     "the dispatcher's ids equal the platform file's supported rows (Windows SupportedActionIds twin)")
         expectEqual(Set(ControlCatalog.actions.map(\.id)), fileSupported,
@@ -143,7 +143,7 @@ extension ShellTests {
             expectEqual(json(response.body)["error"] as? String, expected, "\(id) says why, in the operator's words")
             checked += 1
         }
-        expectEqual(checked, 73, "110 - 37 unavailable ids checked (each slice updates this)")
+        expectEqual(checked, 70, "110 - 40 unavailable ids checked (each slice updates this)")
         expectEqual(surface.invocations.count, 0, "an unavailable action never reaches the surface")
         let bogus = route(router, "POST", "/invoke", #"{"action":"bogus.id"}"#)
         expectEqual(bogus.status, 400, "an id in neither file keeps Windows' 400")

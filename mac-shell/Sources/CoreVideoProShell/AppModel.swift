@@ -2967,7 +2967,7 @@ final class AppModel: ObservableObject {
 
     // Rects lifted from SceneCanvasLayoutService: single, two-up (0.02 gap),
     // pip (full frame + 0.28 corner inset).
-    private static let layoutRects: [String: [(Double, Double, Double, Double)]] = [
+    static let layoutRects: [String: [(Double, Double, Double, Double)]] = [
         "single": [(0, 0, 1, 1)],
         "two-up": [(0, 0, 0.49, 1), (0.51, 0, 0.49, 1)],
         "pip": [(0, 0, 1, 1), (0.68, 0.68, 0.28, 0.28)],

@@ -199,21 +199,21 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "media.rundown.load", title: "Load Volt clip", description: "Refresh the local media bin and return the staged clip's source id.", params: [
                 ControlParam(name: "clip", type: .string, required: true, description: "Staged clip key"),
             ]),
-            availability: .blocked(workstream: "MED", label: "Media clip playback")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "media.rundown.preview", title: "Preview Volt clip", description: "Cue a staged clip to a named scene route on Preview.", params: [
                 ControlParam(name: "clip", type: .string, required: true, description: "Staged clip key"),
                 ControlParam(name: "scene", type: .string, required: true, description: "Scene id"),
                 ControlParam(name: "route", type: .string, required: false, description: "Route id; optional in a scene with one eligible route"),
             ]),
-            availability: .blocked(workstream: "MED", label: "Media clip playback")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "media.rundown.take", title: "Take Volt clip", description: "Take the specified staged clip when it is still on Preview.", params: [
                 ControlParam(name: "clip", type: .string, required: true, description: "Staged clip key"),
                 ControlParam(name: "scene", type: .string, required: true, description: "Scene id"),
                 ControlParam(name: "route", type: .string, required: false, description: "Route id; optional in a scene with one eligible route"),
             ]),
-            availability: .blocked(workstream: "MED", label: "Media clip playback")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "input.assign", title: "Assign input", description: "Assign a source to a Show Input slot (1-10).", params: [
                 ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
