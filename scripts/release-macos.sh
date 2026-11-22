@@ -288,6 +288,9 @@ for pair in "ffmpeg|us.iamfatness.corevideopro.ffmpeg" "corevideo-child-guard|us
     if grep -q "<key>" <<<"$ents"; then die "$helper carries entitlements; it must carry none"; fi
 done
 [ -s "$APP/Contents/Resources/notices/ffmpeg/PROVENANCE.txt" ] || die "ffmpeg notices missing from the app"
+for notice in SOURCE.txt FFMPEG-COPYING.LGPLv3 FFMPEG-COPYING.GPLv3; do
+    [ -s "$APP/Contents/Resources/notices/ffmpeg/$notice" ] || die "ffmpeg notice $notice missing from the app"
+done
 FFMPEG_SHIPPED_SHA256="$(shasum -a 256 "$APP/Contents/Resources/ffmpeg" | cut -d' ' -f1)"
 FFMPEG_VERSION_LINE="$("$APP/Contents/Resources/ffmpeg" -hide_banner -version | head -1)"
 FFMPEG_LICENCE_LINE="$(grep -m1 '^  Licence:' "$APP/Contents/Resources/notices/ffmpeg/PROVENANCE.txt" | sed 's/^ *//')"
@@ -349,6 +352,10 @@ fi
 # Assembled in $WORK; published to $OUT only after verification.
 PUB="$WORK/out"
 mkdir -p "$PUB"
+# The corresponding source the ffmpeg notice (SOURCE.txt) promises, published
+# with the pkg (owner decision 2026-11-21: assets on every Mac GitHub release).
+log "stage the ffmpeg corresponding source (release assets)"
+scripts/build-macos-ffmpeg.sh --source-bundle "$PUB/ffmpeg-source" >/dev/null || die "could not stage the ffmpeg source"
 
 # ── PKG (guided installer; built from the stapled app) ──────────────────────
 log "build + sign .pkg"
@@ -451,3 +458,4 @@ rm -rf "$OLD"
 cat "$OUT/manifest.json"
 [ "$NOTARIZE" = "1" ] || echo "NOTE: --skip-notarize build; NOT distributable"
 echo "release: $OUT/$PKG_NAME"
+echo "ffmpeg source assets (upload every file to the same GitHub release): $OUT/ffmpeg-source/"

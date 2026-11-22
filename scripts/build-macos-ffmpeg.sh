@@ -3,6 +3,11 @@
 #
 #   scripts/build-macos-ffmpeg.sh            build (or reuse the cache); print the output dir
 #   scripts/build-macos-ffmpeg.sh --audit <path/to/ffmpeg>
+#   scripts/build-macos-ffmpeg.sh --source-bundle <dir>
+#       copy the corresponding source (the three pinned tarballs, SHA-256
+#       checked, + this script + the lock) into <dir>: the assets each Mac
+#       GitHub release publishes (owner decision 2026-11-21), which the
+#       app's notices/ffmpeg/SOURCE.txt points at.
 #                                            licence + capability audit only (exit 1 on any gap)
 #
 # Output dir (printed as the LAST line of stdout):
@@ -93,6 +98,11 @@ if [ "${1:-}" = "--audit" ]; then
     audit "${2:?--audit needs a path}"
     exit $?
 fi
+SOURCE_BUNDLE=""
+if [ "${1:-}" = "--source-bundle" ]; then
+    SOURCE_BUNDLE="${2:?--source-bundle needs a directory}"
+    shift 2
+fi
 [ $# -eq 0 ] || die "unknown argument '$1'"
 
 [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] || die "build on an Apple Silicon Mac"
@@ -105,7 +115,7 @@ done
 CACHE="${COREVIDEO_FFMPEG_CACHE:-$HOME/Library/Caches/CoreVideoPro/ffmpeg-lgpl}"
 KEY="$(cat "$LOCK" "$SELF" | shasum -a 256 | cut -c1-16)"
 OUT="$CACHE/$KEY"
-if [ -f "$OUT/BUILD_OK" ] && [ -x "$OUT/bin/ffmpeg" ]; then
+if [ -z "$SOURCE_BUNDLE" ] && [ -f "$OUT/BUILD_OK" ] && [ -x "$OUT/bin/ffmpeg" ]; then
     audit "$OUT/bin/ffmpeg" || die "cached build at $OUT fails the audit; delete it and rebuild"
     echo "$OUT"
     exit 0
@@ -129,6 +139,20 @@ fetch() {  # fetch <url> <sha256> <file>
 fetch "$FFMPEG_URL" "$FFMPEG_SHA256" "ffmpeg-$FFMPEG_VERSION.tar.xz"
 fetch "$OPENSSL_URL" "$OPENSSL_SHA256" "openssl-$OPENSSL_VERSION.tar.gz"
 fetch "$SRT_URL" "$SRT_SHA256" "srt-$SRT_VERSION.tar.gz"
+
+if [ -n "$SOURCE_BUNDLE" ]; then
+    # The corresponding source for the shipped binary: exactly what it was
+    # built from (fetch re-verified every pin above), unmodified.
+    mkdir -p "$SOURCE_BUNDLE"
+    for f in "ffmpeg-$FFMPEG_VERSION.tar.xz" "openssl-$OPENSSL_VERSION.tar.gz" "srt-$SRT_VERSION.tar.gz"; do
+        cp "$DOWNLOADS/$f" "$SOURCE_BUNDLE/$f"
+    done
+    cp "$SELF" "$SOURCE_BUNDLE/build-macos-ffmpeg.sh"
+    cp "$LOCK" "$SOURCE_BUNDLE/macos-ffmpeg.lock"
+    ( cd "$SOURCE_BUNDLE" && shasum -a 256 ffmpeg-* openssl-* srt-* build-macos-ffmpeg.sh macos-ffmpeg.lock >SHA256SUMS )
+    echo "$SOURCE_BUNDLE"
+    exit 0
+fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cvp-ffmpeg.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -219,8 +243,11 @@ fi
 N="$STAGE/notices/ffmpeg"
 mkdir -p "$N"
 cp "$WORK/ffmpeg/LICENSE.md" "$N/FFMPEG-LICENSE.md"
-for f in COPYING.LGPLv2.1 COPYING.LGPLv3; do
-    [ -f "$WORK/ffmpeg/$f" ] && cp "$WORK/ffmpeg/$f" "$N/FFMPEG-$f"
+# LGPLv3 is a set of additional permissions ON the GPLv3, so the GPLv3 text
+# is part of the licence and must ship with it (review finding 5).
+for f in COPYING.LGPLv2.1 COPYING.LGPLv3 COPYING.GPLv3; do
+    [ -f "$WORK/ffmpeg/$f" ] || die "ffmpeg source has no $f"
+    cp "$WORK/ffmpeg/$f" "$N/FFMPEG-$f"
 done
 cp "$WORK/openssl/LICENSE.txt" "$N/OPENSSL-LICENSE.txt"
 cp "$WORK/srt/LICENSE" "$N/LIBSRT-LICENSE-MPL-2.0.txt"
@@ -252,6 +279,31 @@ esac
     echo "scripts/build-macos-ffmpeg.sh from the CoreVideo Pro source tree, or set"
     echo "COREVIDEO_FFMPEG_BIN_DIR to a directory holding a replacement ffmpeg."
 } >"$N/PROVENANCE.txt"
+{
+    echo "Corresponding source for the bundled ffmpeg"
+    echo
+    echo "Contents/Resources/ffmpeg is ffmpeg $FFMPEG_VERSION built, unmodified, from the"
+    echo "pinned sources listed in PROVENANCE.txt and licensed under the GNU LGPL"
+    echo "version 3 or later (FFMPEG-COPYING.LGPLv3, which adds permissions to the GNU"
+    echo "GPL version 3 in FFMPEG-COPYING.GPLv3). OpenSSL (Apache-2.0) and libsrt"
+    echo "(MPL-2.0) are statically linked into that one executable."
+    echo
+    echo "Every CoreVideo Pro for macOS release on GitHub publishes, as assets of that"
+    echo "same release, the complete corresponding source of the ffmpeg it ships:"
+    echo
+    echo "  ffmpeg-$FFMPEG_VERSION.tar.xz"
+    echo "  openssl-$OPENSSL_VERSION.tar.gz"
+    echo "  srt-$SRT_VERSION.tar.gz"
+    echo "  build-macos-ffmpeg.sh   (the exact build script, configure lines included)"
+    echo "  macos-ffmpeg.lock       (the pins and their SHA-256s)"
+    echo "  SHA256SUMS"
+    echo
+    echo "  https://github.com/iamfatness/CoreVideoPro/releases"
+    echo "  (choose the release whose version matches this app's About box)"
+    echo
+    echo "To use a modified or replacement ffmpeg, set COREVIDEO_FFMPEG_BIN_DIR to the"
+    echo "directory holding it; the media core runs it as a separate process."
+} >"$N/SOURCE.txt"
 
 mkdir -p "$CACHE"
 rm -rf "$OUT.tmp"
