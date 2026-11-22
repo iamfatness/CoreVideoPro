@@ -610,3 +610,153 @@ TEST(AvfEncoderRecording, BgraIsoSizeChangeAfterOpenIsRefusedNotCropped) {
 }  // namespace
 
 #endif  // COREVIDEO_WITH_AVF_ENCODER
+
+// ── O2 (2026-11-22 settings quick wins): scale not crop, HEVC, honest AV1 ──
+
+namespace {
+
+// A Program frame whose bottom-right quadrant is bright (BGRA 230) and the rest
+// dark (BGRA 30). Fixture invariant: every check samples a quadrant CENTRE, so
+// the scaler's edge filtering never decides a verdict.
+ProgramFrame quadrantProgramFrame(int64_t frameNumber, int width, int height) {
+  ProgramFrame frame;
+  frame.frameNumber = frameNumber;
+  frame.width = width;
+  frame.height = height;
+  frame.programFullBgra.width = width;
+  frame.programFullBgra.height = height;
+  frame.programFullBgra.bgra.assign(static_cast<size_t>(width) * height * 4u, 30);
+  for (int y = height / 2; y < height; ++y) {
+    for (int x = width / 2; x < width; ++x) {
+      const size_t o = (static_cast<size_t>(y) * width + x) * 4u;
+      frame.programFullBgra.bgra[o + 0] = frame.programFullBgra.bgra[o + 1] = frame.programFullBgra.bgra[o + 2] = 230;
+      frame.programFullBgra.bgra[o + 3] = 255;
+    }
+  }
+  return frame;
+}
+
+int lumaAt(const corevideo::testing::DecodedMp4Video& decoded, int x, int y) {
+  const auto& last = decoded.frames.back();
+  const size_t o = (static_cast<size_t>(y) * decoded.width + x) * 4u;
+  return (last[o] + last[o + 1] + last[o + 2]) / 3;
+}
+
+std::string recordProgram(IEncoderSink& encoder, const std::string& folder, int srcW, int srcH,
+                          const std::string& codec = "h264") {
+  auto request = testRequest(folder);  // writer 640x360
+  request.videoCodec = codec;
+  encoder.configureRecording(request);
+  (void)encoder.start({"recording"}, {});
+  for (int i = 1; i <= 12; ++i) {
+    encoder.submit(quadrantProgramFrame(i, srcW, srcH));
+    const auto pcm = tonePcm(960, 2);
+    encoder.submitAudio(pcm.data(), 960, 2, 48000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  encoder.stopRecording();
+  return encoder.session().recordingArtifactPath;
+}
+
+bool fileContains(const std::string& path, const std::string& needle) {
+  std::FILE* file = std::fopen(path.c_str(), "rb");
+  if (!file) return false;
+  std::string bytes;
+  char chunk[65536];
+  size_t read = 0;
+  while ((read = std::fread(chunk, 1, sizeof(chunk), file)) > 0) bytes.append(chunk, read);
+  std::fclose(file);
+  return bytes.find(needle) != std::string::npos;
+}
+
+}  // namespace
+
+// A 1280x720 Program into a 640x360 recording is scaled: the bright quadrant
+// lands bottom-right. Mutation: restore the top-left crop -> the crop shows only
+// the source's dark top-left quadrant, so (480,270) reads dark -> red.
+TEST(AvfEncoderRecording, ProgramScalesToTheRequestedSizeWithoutCropping) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("o2-scale");
+  const auto path = recordProgram(*encoder, dir.string(), 1280, 720);
+  ASSERT_FALSE(path.empty());
+  const auto decoded = corevideo::testing::decodeMp4VideoToBgra(path);
+  ASSERT_TRUE(decoded.error.empty()) << decoded.error;
+  ASSERT_EQ(decoded.width, 640);
+  ASSERT_EQ(decoded.height, 360);
+  ASSERT_FALSE(decoded.frames.empty());
+  EXPECT_GT(lumaAt(decoded, 480, 270), 180) << "bottom-right quadrant missing: Program was cropped";
+  EXPECT_LT(lumaAt(decoded, 160, 90), 80);
+  EXPECT_LT(lumaAt(decoded, 480, 90), 80);
+  EXPECT_LT(lumaAt(decoded, 160, 270), 80);
+  fs::remove_all(dir);
+}
+
+// A 4:3 source (960x720) into 16:9 (640x360) is letterboxed: fit 480x360 centred,
+// so x<80 and x>=560 are black bars. Mutation: stretch to the full width -> the
+// bars carry picture -> red.
+TEST(AvfEncoderRecording, ProgramLetterboxesAnotherAspect) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("o2-letterbox");
+  const auto path = recordProgram(*encoder, dir.string(), 960, 720);
+  const auto decoded = corevideo::testing::decodeMp4VideoToBgra(path);
+  ASSERT_TRUE(decoded.error.empty()) << decoded.error;
+  ASSERT_FALSE(decoded.frames.empty());
+  EXPECT_LT(lumaAt(decoded, 40, 270), 20) << "left bar should be black";
+  EXPECT_LT(lumaAt(decoded, 600, 270), 20) << "right bar should be black";
+  EXPECT_GT(lumaAt(decoded, 440, 270), 180) << "bright quadrant inside the fitted picture";
+  EXPECT_GT(lumaAt(decoded, 200, 90), 20) << "the dark source picture is not a bar";
+  fs::remove_all(dir);
+}
+
+// H.265 is honoured and written as an hvc1 track; the session says h265.
+// Mutation: ignore the codec (always H.264) -> no hvc1 box, session h264 -> red.
+TEST(AvfEncoderRecording, HevcRecordingWritesAnHvc1Track) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("o2-hevc");
+  const auto path = recordProgram(*encoder, dir.string(), 640, 360, "h265");
+  const auto session = encoder->session();
+  ASSERT_EQ(session.recordingStatus, "stopped") << session.recordingWarning;
+  EXPECT_GT(session.recordingVideoFrameCount, 0);
+  EXPECT_EQ(session.recordingVideoCodec, "h265");
+  EXPECT_TRUE(fileContains(path, "hvc1")) << "no hvc1 sample entry: the track is not HEVC";
+  EXPECT_FALSE(fileContains(path, "avc1")) << "an H.264 track was written for an H.265 request";
+  fs::remove_all(dir);
+}
+
+// AV1 is refused at open, loudly, and nothing is written as H.264.
+// Mutation: fall back to H.264 -> the take records and the status is not failed -> red.
+TEST(AvfEncoderRecording, Av1RecordingIsRefusedLoudly) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("o2-av1");
+  auto request = testRequest(dir.string());
+  request.videoCodec = "av1";
+  encoder->configureRecording(request);
+  const auto started = encoder->start({"recording"}, {});
+  EXPECT_EQ(started.recordingStatus, "failed");
+  EXPECT_NE(started.recordingWarning.find("AV1"), std::string::npos) << started.recordingWarning;
+  recordSomeAv(*encoder, 3);
+  EXPECT_EQ(encoder->session().recordingVideoFrameCount, 0);
+  bool anyMedia = false;
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+    const auto ext = it->path().extension();
+    anyMedia = anyMedia || ext == ".mp4" || ext == ".mov";
+  }
+  EXPECT_FALSE(anyMedia) << "an AV1 refusal must not leave a media file behind";
+  fs::remove_all(dir);
+}
+
+// The session reports the real container. Mutation: the "mp4" literal -> red.
+TEST(AvfEncoderRecording, MovReportsItsRealContainerAndCodec) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("o2-mov-report");
+  auto request = testRequest(dir.string());
+  request.format = "mov";
+  encoder->configureRecording(request);
+  const auto started = encoder->start({"recording"}, {});
+  EXPECT_EQ(started.recordingFormat, "mov");
+  EXPECT_EQ(started.recordingContainerFormat, "mov");
+  EXPECT_EQ(started.recordingVideoCodec, "h264");
+  encoder->stopRecording();
+  fs::remove_all(dir);
+}

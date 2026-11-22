@@ -19,6 +19,7 @@
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_AVF_ENCODER
 
+#import <Accelerate/Accelerate.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -65,8 +66,26 @@ class AvfMp4Writer {
   bool open(const std::string& path, int width, int height, int fps, double bitrateMbps,
             const std::string& codec, std::string& errorOut,
             VideoInput videoInput = VideoInput::Bgra) {
-    (void)codec;  // H.264-only, matching the product default
+    // O2: honour the requested codec; never write a different one silently.
+    // AVAssetWriter writes HEVC as an 'hvc1' sample entry (QuickTime and
+    // editors open it). AVFoundation has no AV1 encoder, so AV1 is refused at
+    // open with a sentence (EncoderPolicy: no substitute, ever).
+    NSString* avCodec = nil;
+    std::string codecName;
+    if (codec.empty() || codec == "h264") {
+      avCodec = AVVideoCodecTypeH264;
+      codecName = "h264";
+    } else if (codec == "h265" || codec == "hevc") {
+      avCodec = AVVideoCodecTypeHEVC;
+      codecName = "h265";
+    } else {
+      errorOut = codec == "av1"
+                     ? "AV1 recording is not available on this Mac (no AV1 encoder in AVFoundation)."
+                     : "Recording codec '" + codec + "' is not available on this Mac.";
+      return false;
+    }
     finalize();
+    codec_ = codecName;
     lastVideoPts100ns_ = 0;
     lastAudioEnd100ns_ = 0;
     inputKind_ = videoInput;
@@ -98,7 +117,7 @@ class AvfMp4Writer {
       return false;
     }
     NSDictionary* videoSettings = @{
-      AVVideoCodecKey : AVVideoCodecTypeH264,
+      AVVideoCodecKey : avCodec,
       AVVideoWidthKey : @(width_),
       AVVideoHeightKey : @(height_),
       AVVideoCompressionPropertiesKey :
@@ -129,6 +148,8 @@ class AvfMp4Writer {
   // The size this writer opened at (even-aligned for NV12). An MP4 video track
   // has one size for its lifetime, so later frames are conformed to it.
   int openedWidth() const { return width_; }
+  // The codec this writer opened with ("h264" | "h265").
+  const std::string& codec() const { return codec_; }
   int openedHeight() const { return height_; }
 
   bool ensureAudioStream(int channels, int sampleRate, int audioBitrateKbps,
@@ -195,23 +216,15 @@ class AvfMp4Writer {
     CVPixelBufferLockBaseAddress(buffer, 0);
     auto* dst = static_cast<uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
     const size_t dstStride = CVPixelBufferGetBytesPerRow(buffer);
-    // Legacy crop/pad of a mismatched source (top-left copy). The ISO caller now
-    // guarantees matching sizes (it conforms I420 and refuses BGRA size changes
-    // before calling); only Program still relies on this branch.
-    const int copyWidth = std::min(srcWidth, width_);
-    const int copyHeight = std::min(srcHeight, height_);
-    for (int y = 0; y < height_; ++y) {
-      uint8_t* row = dst + static_cast<size_t>(y) * dstStride;
-      if (y < copyHeight) {
-        std::memcpy(row, bgra + static_cast<size_t>(y) * srcStride,
-                    static_cast<size_t>(copyWidth) * 4u);
-        if (copyWidth < width_) {
-          std::memset(row + static_cast<size_t>(copyWidth) * 4u, 0,
-                      static_cast<size_t>(width_ - copyWidth) * 4u);
-        }
-      } else {
-        std::memset(row, 0, static_cast<size_t>(width_) * 4u);
+    if (srcWidth == width_ && srcHeight == height_) {
+      for (int y = 0; y < height_; ++y) {
+        std::memcpy(dst + static_cast<size_t>(y) * dstStride, bgra + static_cast<size_t>(y) * srcStride,
+                    static_cast<size_t>(width_) * 4u);
       }
+    } else if (!scaleInto(bgra, srcWidth, srcHeight, srcStride, dst, dstStride, errorOut)) {
+      CVPixelBufferUnlockBaseAddress(buffer, 0);
+      CVPixelBufferRelease(buffer);
+      return false;
     }
     CVPixelBufferUnlockBaseAddress(buffer, 0);
     const BOOL appended = [adaptor_ appendPixelBuffer:buffer withPresentationTime:ptsToTime(pts100ns)];
@@ -224,6 +237,44 @@ class AvfMp4Writer {
     }
     ++videoFrameCount_;
     lastVideoPts100ns_ = pts100ns;
+    return true;
+  }
+
+  // O2: a source of another size is SCALED to fit, aspect preserved, centred on
+  // black — never cropped. The old top-left copy put a quarter of a 4K canvas
+  // into a 1080p recording (the defect class CLAUDE.md records for the Windows
+  // thumbnail recording). vImage on the writer thread; the scratch buffer is
+  // reused, so a steady-state frame allocates nothing.
+  bool scaleInto(const uint8_t* bgra, int srcWidth, int srcHeight, int srcStride, uint8_t* dst,
+                 size_t dstStride, std::string& errorOut) {
+    const double scale = std::min(static_cast<double>(width_) / srcWidth,
+                                  static_cast<double>(height_) / srcHeight);
+    const int fitWidth = std::clamp(static_cast<int>(srcWidth * scale + 0.5), 1, width_);
+    const int fitHeight = std::clamp(static_cast<int>(srcHeight * scale + 0.5), 1, height_);
+    const int x0 = (width_ - fitWidth) / 2;
+    const int y0 = (height_ - fitHeight) / 2;
+    if (fitWidth < width_ || fitHeight < height_) {
+      for (int y = 0; y < height_; ++y) {
+        std::memset(dst + static_cast<size_t>(y) * dstStride, 0, static_cast<size_t>(width_) * 4u);
+      }
+    }
+    vImage_Buffer source{const_cast<uint8_t*>(bgra), static_cast<vImagePixelCount>(srcHeight),
+                         static_cast<vImagePixelCount>(srcWidth), static_cast<size_t>(srcStride)};
+    vImage_Buffer target{dst + static_cast<size_t>(y0) * dstStride + static_cast<size_t>(x0) * 4u,
+                         static_cast<vImagePixelCount>(fitHeight), static_cast<vImagePixelCount>(fitWidth),
+                         dstStride};
+    const vImage_Error need = vImageScale_ARGB8888(&source, &target, nullptr, kvImageGetTempBufferSize);
+    if (need > 0 && static_cast<size_t>(need) > scaleScratch_.size()) {
+      scaleScratch_.resize(static_cast<size_t>(need));
+    }
+    const vImage_Error result = vImageScale_ARGB8888(
+        &source, &target, scaleScratch_.empty() ? nullptr : scaleScratch_.data(), kvImageNoFlags);
+    if (result != kvImageNoError) {
+      errorOut = "vImage scale " + std::to_string(srcWidth) + "x" + std::to_string(srcHeight) + " -> " +
+                 std::to_string(width_) + "x" + std::to_string(height_) + " failed (" +
+                 std::to_string(result) + ")";
+      return false;
+    }
     return true;
   }
 
@@ -525,6 +576,8 @@ class AvfMp4Writer {
   AVAssetWriterInput* audioInput_ = nil;
   AVAssetWriterInputPixelBufferAdaptor* adaptor_ = nil;
   std::string path_;
+  std::string codec_ = "h264";
+  std::vector<uint8_t> scaleScratch_;
   int width_ = 0;
   int height_ = 0;
   int fps_ = 30;
@@ -853,13 +906,16 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     session_.recordingSessionId = request_.sessionId;
     session_.recordingTargetFolder = dir.string();
     session_.recordingFilenamePrefix = prefix;
-    session_.recordingFormat = "mp4";
+    // The real container and codec (O2: these were literals, so a MOV or an
+    // HEVC take reported "mp4"/"h264").
+    const std::string container = ext == ".mov" ? "mov" : "mp4";
+    session_.recordingFormat = container;
     session_.recordingArtifactPath = artifact.string();
     session_.recordingWidth = writer_.width();
     session_.recordingHeight = writer_.height();
     session_.recordingFps = request_.fps;
-    session_.recordingContainerFormat = "mp4";
-    session_.recordingVideoCodec = "h264";
+    session_.recordingContainerFormat = container;
+    session_.recordingVideoCodec = writer_.codec();
     session_.recordingAudioCodec = "aac";
     session_.recordingAudioBitrateKbps = request_.audioBitrateKbps;
     session_.recordingMetadataValid = true;

@@ -332,8 +332,10 @@ if(COREVIDEO_WITH_AVF_ENCODER)
   if(NOT APPLE)
     message(FATAL_ERROR "COREVIDEO_WITH_AVF_ENCODER supports the macOS adapter only.")
   endif()
+  # Accelerate: vImage scales a Program frame whose size differs from the
+  # writer's (scale, never crop — O2).
   target_link_libraries(corevideo_native PUBLIC
-    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework Accelerate")
 endif()
 
 if(COREVIDEO_WITH_AVF_MEDIA_DECODER)
