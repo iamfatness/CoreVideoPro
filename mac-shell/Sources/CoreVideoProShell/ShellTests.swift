@@ -2914,6 +2914,7 @@ enum ShellTests {
         model.toggleSlotIso(1)
         model.toggleSlotIso(2)
         model.streamingDesired = true            // stream up
+        model.streamKey = "quit-test-key"        // only a VALID destination is sent (D1)
         startRecordingThroughTheRealPath(model, core)
         model.roster = []                        // transient roster loss mid-take (#1183)
         model.toggleRecording()                  // operator stops the recording

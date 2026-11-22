@@ -429,8 +429,8 @@ struct FooterOutputsGroup: View {
                     active: streaming, activeFill: Studio.blue,
                     flyoutShown: $streamShown,
                     action: {
-                        // No key yet: open the settings instead of a doomed start.
-                        if !streaming && model.streamKey.isEmpty { streamShown = true }
+                        // Nothing valid to start: open the options instead of a doomed start.
+                        if !streaming && model.streamStartRefusal != nil { streamShown = true }
                         else { model.toggleStreaming() }
                     }
                 ) {

@@ -129,6 +129,9 @@ struct ShellPrefs: Codable, Equatable {
     var lowerThirdPosition = "lower-left"
     var logoBugAssetId = ""
     var streamUrl = "rtmp://a.rtmp.youtube.com/live2"  // key lives in the Keychain
+    // SRT/HLS rows (mac streaming Phase 2). OPTIONAL: an older file without the
+    // key must decode; the SRT passphrase is never here (Keychain).
+    var streamDestinations: StreamDestinationsConfig?
     var recentMeetings: [String] = []  // most-recent first, capped at 5
     var scenes: [PersistedScene] = []  // custom scenes survive relaunches
     var webinar = false
@@ -227,6 +230,8 @@ struct ShellPrefs: Codable, Equatable {
         lowerThirdPosition = v(.lowerThirdPosition, "lower-left")
         logoBugAssetId = v(.logoBugAssetId, "")
         streamUrl = v(.streamUrl, "rtmp://a.rtmp.youtube.com/live2")
+        streamDestinations = ((try? c.decodeIfPresent(StreamDestinationsConfig.self,
+                                                      forKey: .streamDestinations)) ?? nil)
         recentMeetings = v(.recentMeetings, [])
         scenes = v(.scenes, [])
         webinar = v(.webinar, false)

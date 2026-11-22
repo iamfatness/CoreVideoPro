@@ -577,6 +577,17 @@ final class AppModel: ObservableObject {
     @Published var streamingDesired = false
     @Published var streamStatus = ""       // sender status from outputSenderSession
     @Published var streamDetail = ""       // lastResultCode / warning
+    /// The destination list (mac streaming Phase 2, D1). rtmpUrl is NOT read
+    /// from here: `streamUrl` stays the one RTMP URL (remote configure,
+    /// Diagnostics and the flyout all write it); see `streamConfig`.
+    @Published var streamDestinations = StreamDestinationsConfig()
+    /// SRT passphrase: Keychain only (StreamKeychain.srtPassphraseAccount).
+    @Published var srtPassphrase = ""
+    /// Per-destination status rows, projected from the core's lifecycle +
+    /// supervisor on every snapshot (DestinationStatusProjection).
+    @Published var destinationRows: [String: DestinationStatus] = [:]
+    /// What the sender resolved as its ffmpeg ("" until a sender reports one).
+    @Published var streamRuntimeDetail = ""
 
     // The LAST snapshots as the core sent them. applySnapshot/applyZoom cherry-
     // pick the slices the panes bind to; the Health surface and the support
@@ -622,6 +633,10 @@ final class AppModel: ObservableObject {
     /// prefs); false = not saved. Tests replace it so the harness never writes
     /// the operator's Keychain.
     var streamKeySaver: (String) -> Bool = { StreamKeychain.save($0); return true }
+    /// Where Start streaming stores the secrets it is about to use: (value,
+    /// Keychain account). Tests replace it so the harness never writes the
+    /// operator's Keychain.
+    var streamSecretSaver: (String, String) -> Void = { StreamKeychain.save($0, account: $1) }
     /// Per-source grades (grading plan Task 5): the only sender of set-source-grade.
     /// Harness-only: the saved-grade file the NEXT AppModel() uses (nil → SourceGradeFile.path),
     /// so one harness case's debounced save can never land in another case.
@@ -774,6 +789,7 @@ final class AppModel: ObservableObject {
         prefs.lowerThirdPosition = lowerThirdPosition
         prefs.logoBugAssetId = logoBug?.id ?? ""
         prefs.streamUrl = streamUrl
+        prefs.streamDestinations = streamDestinations
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
@@ -831,6 +847,7 @@ final class AppModel: ObservableObject {
     private func restorePrefs() {
         applyRestoredPrefs(ShellPrefs.load())
         streamKey = StreamKeychain.load()
+        srtPassphrase = StreamKeychain.load(account: StreamKeychain.srtPassphraseAccount)
     }
 
     /// Everything a relaunch restores from the prefs file, minus the file read
@@ -909,6 +926,7 @@ final class AppModel: ObservableObject {
             logoBug = mediaAssets.first { $0.id == prefs.logoBugAssetId }
         }
         streamUrl = prefs.streamUrl
+        if let saved = prefs.streamDestinations { streamDestinations = saved }
         recentMeetings = prefs.recentMeetings
         webinar = prefs.webinar
         if !prefs.scenes.isEmpty {
@@ -1102,6 +1120,7 @@ final class AppModel: ObservableObject {
             self.recordingStatus = "interrupted"
             self.streamStatus = "interrupted"
             self.streamDetail = "Media core exited; output continuity was interrupted."
+            self.destinationRows = [:]
             self.pushWarning("media core exited (code \(code)) — relaunching")
         }
     }
@@ -1966,16 +1985,7 @@ final class AppModel: ObservableObject {
             applyMultiviewTiles(multiview["tiles"] as? [JSONObject])
         }
         if let session = snapshot["outputSenderSession"] as? JSONObject {
-            let senders = session["senders"] as? [JSONObject] ?? []
-            if let rtmp = senders.first(where: { $0["destination"] as? String == "rtmp" }) {
-                streamStatus = rtmp["status"] as? String ?? ""
-                let code = rtmp["lastResultCode"] as? String ?? ""
-                let warning = rtmp["warning"] as? String ?? ""
-                streamDetail = warning.isEmpty ? code : warning
-            } else if !streamingDesired {
-                streamStatus = ""
-                streamDetail = ""
-            }
+            applyStreamSenders(session)
         }
         if let auto = snapshot["autoProduction"] as? JSONObject {
             autoRuleId = auto["ruleId"] as? String ?? ""
@@ -4083,19 +4093,65 @@ final class AppModel: ObservableObject {
 
     // ── streaming (RTMP via the core's ffmpeg sender) ────────────────────────
 
-    private func streamDestinationSettings() -> [JSONObject] {
-        // O1: the operator's encoder settings overwrite the row's fields (plan D6:
-        // the streaming lane's per-destination builder applies the same call).
-        [streamEncoder.apply(to: [
-            "id": "rtmp", "label": "Stream", "protocol": "rtmp",
-            "url": streamUrl, "streamKey": streamKey,
-            // An explicit destination bitrate WINS over streamOutputProfile in
-            // the core (#606), so this must be the operator's value too.
-            "fps": 30, "targetBitrateMbps": streamBitrateMbps, "audioBitrateKbps": 160,
-            "videoCodec": "h264", "encoderMode": "auto",
-            "keyframeIntervalSeconds": 2.0, "rateControl": "cbr",
-            "h264Profile": "high", "bFrames": 2, "allowEnhancedRtmp": false,
-        ])]
+    /// The destination list as the wire sees it: `streamUrl` is the RTMP URL.
+    var streamConfig: StreamDestinationsConfig {
+        var config = streamDestinations
+        config.rtmpUrl = streamUrl
+        return config
+    }
+
+    var streamSecrets: StreamDestinationSecrets {
+        StreamDestinationSecrets(rtmpKey: streamKey, srtPassphrase: srtPassphrase)
+    }
+
+    /// Why Start streaming cannot start (Windows ValidateSelectedDestinations), or nil.
+    var streamStartRefusal: String? { StreamDestinationPolicy.validateSelected(streamConfig, streamSecrets) }
+
+    /// One row per destination from the core's sender records. The labels are
+    /// decided from lifecycle + supervisor (never `status`). `streamStatus` /
+    /// `streamDetail` keep feeding the quit guard and the control surface: the
+    /// first stream sender (rtmp, srt, hls order) whose lifecycle is not
+    /// terminal, so a live SRT-only stream still guards a careless quit.
+    func applyStreamSenders(_ session: JSONObject) {
+        let desired = Set(streamingDesired
+                          ? StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets) : [])
+        var rows: [String: DestinationStatus] = [:]
+        var senders: [JSONObject] = []
+        for id in StreamDestinationPolicy.destinationIds {
+            let sender = DestinationStatusProjection.sender(id, in: session)
+            if let sender { senders.append(sender) }
+            rows[id] = DestinationStatusProjection.project(sender, desired: desired.contains(id))
+        }
+        if rows != destinationRows { destinationRows = rows }
+        let runtime = senders.compactMap { $0["runtimeDetail"] as? String }.first { !$0.isEmpty } ?? ""
+        if runtime != streamRuntimeDetail { streamRuntimeDetail = runtime }
+        func lifecycleState(_ sender: JSONObject) -> String {
+            (sender["lifecycle"] as? JSONObject)?["state"] as? String ?? ""
+        }
+        let chosen = senders.first { !["completed", "idle"].contains(lifecycleState($0)) } ?? senders.first
+        if let chosen {
+            streamStatus = chosen["status"] as? String ?? ""
+            let code = chosen["lastResultCode"] as? String ?? ""
+            let warning = chosen["warning"] as? String ?? ""
+            streamDetail = warning.isEmpty ? code : warning
+        } else if !streamingDesired {
+            streamStatus = ""
+            streamDetail = ""
+        }
+    }
+
+    /// Retry a destination the supervisor gave up on: the documented operator
+    /// reset (`recover-output-sender`), which always clears give-up.
+    func retryDestination(_ id: String) {
+        guard StreamDestinationPolicy.destinationIds.contains(id) else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        Task {
+            _ = try? await self.outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [["type": "recover-output-sender", "destination": id,
+                              "reason": "operator-retry"] as JSONObject],
+            ])
+        }
     }
 
     // start-program-output is FULL-STATE for the destination set, so record
@@ -4103,7 +4159,9 @@ final class AppModel: ObservableObject {
     func startProgramOutput(recording: Bool, streaming: Bool) -> JSONObject {
         var destinations: [String] = []
         if recording { destinations.append("recording") }
-        if streaming { destinations.append("rtmp") }
+        if streaming {
+            destinations += StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets)
+        }
         let isoIds = resolvedIsoSourceIds(recording: recording)
         var command: JSONObject = [
             "type": "start-program-output", "destinations": destinations,
@@ -4113,7 +4171,14 @@ final class AppModel: ObservableObject {
         ]
         if streaming {
             command["streamOutputProfile"] = streamOutputProfile()
-            command["destinationSettings"] = streamDestinationSettings()
+            // An explicit destination bitrate WINS over streamOutputProfile in the
+            // core (#606), so every row carries the operator's value.
+            // O1 (plan D6): the operator's advanced encoder settings overwrite the
+            // RTMP and HLS rows' fields; Windows sends none of them on the SRT row
+            // (StudioViewModel.StreamDestinations.cs), so neither does the Mac.
+            command["destinationSettings"] = StreamDestinationPolicy.destinationSettings(
+                streamConfig, streamSecrets, bitrateMbps: streamBitrateMbps)
+                .map { ($0["id"] as? String) == "srt" ? $0 : streamEncoder.apply(to: $0) }
         }
         // O1: Windows sends recordingOutputProfile on every start
         // (MediaCoreCommandBuilder.cs:743); without it the core records at its
@@ -4145,11 +4210,12 @@ final class AppModel: ObservableObject {
             streamDetail = ""
             return
         }
-        guard !streamKey.isEmpty, !streamUrl.isEmpty else {
-            pushWarning("stream: URL and key are required")
+        if let refusal = streamStartRefusal {
+            pushWarning("stream: \(refusal)")
             return
         }
-        StreamKeychain.save(streamKey)
+        streamSecretSaver(streamKey, "rtmp")
+        streamSecretSaver(srtPassphrase, StreamKeychain.srtPassphraseAccount)
         streamingDesired = true
         Task {
             do {

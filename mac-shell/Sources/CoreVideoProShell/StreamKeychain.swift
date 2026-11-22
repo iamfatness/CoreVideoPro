@@ -7,12 +7,22 @@
 import Foundation
 
 enum StreamKeychain {
-    static var store: KeychainStore {
-        KeychainStore(service: "us.iamfatness.corevideopro.stream-key", account: "rtmp")
+    private static let service = "us.iamfatness.corevideopro.stream-key"
+    private static let account = "rtmp"
+    /// The SRT destination's passphrase (mac streaming Phase 2, D1): same
+    /// service, its own account, never in ShellPrefs.
+    static let srtPassphraseAccount = "srt-passphrase"
+
+    static func store(account: String = StreamKeychain.account) -> KeychainStore {
+        KeychainStore(service: service, account: account)
     }
 
-    static func load() -> String { store.readString() ?? "" }
+    static func load(account: String = StreamKeychain.account) -> String {
+        store(account: account).readString() ?? ""
+    }
 
     /// An empty key deletes the item.
-    static func save(_ key: String) { store.writeString(key) }
+    static func save(_ key: String, account: String = StreamKeychain.account) {
+        store(account: account).writeString(key)
+    }
 }

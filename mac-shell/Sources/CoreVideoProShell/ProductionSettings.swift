@@ -28,7 +28,7 @@ enum ProductionSettingsPolicy {
     /// fixed 1080p30 H.264 recipe (separate stream render sizes are Tier 2.8);
     /// only the bitrate is the operator's, and the line says what is sent.
     /// The stream encodes the Program canvas at the RTMP destination's fixed
-    /// 30 fps (streamDestinationSettings), so the size is the canvas height.
+    /// 30 fps (StreamDestinationPolicy.destinationSettings), so the size is the canvas height.
     /// O1: built from the live encoder settings (rate control, audio kbps), not literals.
     static func streamRecipeLabel(bitrateMbps: Double, height: Int = 1080,
                                   encoder: StreamEncoderSettings = StreamEncoderSettings()) -> String {

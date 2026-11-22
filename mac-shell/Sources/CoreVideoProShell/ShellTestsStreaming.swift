@@ -20,6 +20,11 @@ extension ShellTests {
             ("streaming/invalid-row-never-sent", testAnInvalidEnabledRowIsNeverSent),
             ("streaming/status-projection-table", testDestinationStatusProjectionTable),
             ("streaming/status-never-live-from-a-launch", testStatusIsNeverLiveFromALaunch),
+            ("streaming/start-sends-every-valid-destination", testStartSendsEveryValidDestination),
+            ("streaming/start-refuses-with-the-windows-sentence", testStartRefusesWithTheWindowsSentence),
+            ("streaming/retry-sends-recover-output-sender", testRetrySendsRecoverOutputSender),
+            ("streaming/snapshot-projects-rows-and-quit-status", testSnapshotProjectsRowsAndQuitStatus),
+            ("streaming/prefs-keep-rows-never-the-passphrase", testPrefsKeepRowsNeverThePassphrase),
         ]
     }
 
@@ -234,5 +239,138 @@ extension ShellTests {
         let retiredLive = sender("live", status: "live", supervisor: sup(healthy: false))
         expect(!DestinationStatusProjection.project(retiredLive, desired: true).isLive,
                "the retired 'live' lifecycle name still needs a healthy supervisor")
+    }
+
+    // ── AppModel wiring (Task 7) ─────────────────────────────────────────────
+
+    /// A model whose outbound requests are captured, and whose Keychain writes
+    /// go nowhere (the harness must never touch the operator's Keychain).
+    @MainActor
+    private static func streamingModel() -> (AppModel, () -> [JSONObject], () -> [(String, String)]) {
+        let model = AppModel()
+        final class Box: @unchecked Sendable {
+            let lock = NSLock()
+            var bodies: [JSONObject] = []
+            var saved: [(String, String)] = []
+        }
+        let box = Box()
+        model.quitRequestForTesting = { body, _ in
+            box.lock.withLock { box.bodies.append(body) }
+            return [:]
+        }
+        model.streamSecretSaver = { value, account in box.lock.withLock { box.saved.append((value, account)) } }
+        return (model, { box.lock.withLock { box.bodies } }, { box.lock.withLock { box.saved } })
+    }
+
+    private static func commands(_ body: JSONObject?) -> [JSONObject] { body?["commands"] as? [JSONObject] ?? [] }
+
+    @MainActor
+    static func testStartSendsEveryValidDestination() {
+        let (model, bodies, saved) = streamingModel()
+        model.streamKey = "rtmp-key-1"
+        model.streamDestinations.srtEnabled = true
+        model.streamDestinations.srtHost = "receiver.example.com"
+        model.streamDestinations.srtKeyLength = "16"
+        model.srtPassphrase = "srt-passphrase-1"
+        model.toggleStreaming()
+        spin(until: { !bodies().isEmpty }, limit: 3)
+        let start = commands(bodies().first).first { $0["type"] as? String == "start-program-output" }
+        expectEqual(start?["destinations"] as? [String], ["rtmp", "srt"], "both valid destinations start")
+        let ids = (start?["destinationSettings"] as? [JSONObject])?.map { $0["id"] as? String ?? "" }
+        expectEqual(ids, ["rtmp", "srt"], "one settings row each")
+        expect(model.streamingDesired, "streaming intent set")
+        let accounts = saved().map(\.1)
+        expect(accounts.contains("rtmp") && accounts.contains(StreamKeychain.srtPassphraseAccount),
+               "both secrets go to the Keychain seam, never prefs")
+    }
+
+    @MainActor
+    static func testStartRefusesWithTheWindowsSentence() {
+        let (model, bodies, _) = streamingModel()
+        model.streamDestinations.rtmpEnabled = false
+        model.streamDestinations.srtEnabled = true          // no host
+        model.toggleStreaming()
+        spin(until: { false }, limit: 0.3)
+        expect(bodies().isEmpty, "nothing is sent for an invalid destination set")
+        expect(!model.streamingDesired, "no streaming intent")
+        expect(model.warnings.contains { $0.contains("Configure SRT host before streaming.") },
+               "the operator reads Windows' sentence")
+        expectEqual(model.streamStartRefusal, "Configure SRT host before streaming.", "the refusal is exposed for the UI")
+    }
+
+    @MainActor
+    static func testRetrySendsRecoverOutputSender() {
+        let (model, bodies, _) = streamingModel()
+        model.retryDestination("srt")
+        spin(until: { !bodies().isEmpty }, limit: 3)
+        let sent = commands(bodies().first)
+        expectEqual(sent.count, 1, "exactly one command")
+        expectEqual(sent.first?["type"] as? String, "recover-output-sender", "the operator reset")
+        expectEqual(sent.first?["destination"] as? String, "srt", "for that destination")
+        expectEqual(sent.first?["reason"] as? String, "operator-retry", "with a reason")
+        model.retryDestination("ndi")
+        spin(until: { false }, limit: 0.2)
+        expectEqual(bodies().count, 1, "Retry is only for the three stream destinations")
+    }
+
+    @MainActor
+    static func testSnapshotProjectsRowsAndQuitStatus() {
+        let (model, _, _) = streamingModel()
+        let healthy: JSONObject = ["healthy": true, "gaveUp": false, "consecutiveFailures": 0,
+                                   "nextAttemptInMs": 0, "lastProgressAgeMs": 200, "reason": ""]
+        let gaveUp: JSONObject = ["healthy": false, "gaveUp": true, "consecutiveFailures": 5,
+                                  "nextAttemptInMs": 0, "lastProgressAgeMs": -1, "reason": "gave up after 5 failures"]
+        func lifecycle(_ state: String) -> JSONObject {
+            ["sessionId": "s", "desiredActive": true, "state": state, "health": "healthy", "finalized": false]
+        }
+        model.applySnapshotForTesting(["outputSenderSession": [
+            "senders": [
+                ["destination": "rtmp", "status": "live", "lifecycle": lifecycle("producing"),
+                 "supervisor": healthy, "runtimeDetail": "ffmpeg:/Applications/CoreVideo Pro.app/Contents/Resources/ffmpeg"],
+                ["destination": "srt", "status": "failed", "lastResultCode": "supervisor-gave-up",
+                 "warning": "gave up after 5 failures", "lifecycle": lifecycle("failed"), "supervisor": gaveUp],
+            ] as [JSONObject]] as JSONObject])
+        expectEqual(model.destinationRows["rtmp"]?.label, "Live", "rtmp row")
+        expectEqual(model.destinationRows["srt"]?.label, "Stopped retrying", "srt row")
+        expect(model.destinationRows["srt"]?.showsRetry == true, "srt offers Retry")
+        expectEqual(model.destinationRows["hls"]?.label, "Off", "absent and not desired")
+        expectEqual(model.streamStatus, "live", "the quit guard reads the first non-terminal sender (rtmp)")
+        expectEqual(model.streamRuntimeDetail, "ffmpeg:/Applications/CoreVideo Pro.app/Contents/Resources/ffmpeg",
+                    "the resolved ffmpeg reaches the UI")
+        // An SRT-only live stream still guards a quit.
+        model.applySnapshotForTesting(["outputSenderSession": [
+            "senders": [
+                ["destination": "rtmp", "status": "stopped", "lifecycle": lifecycle("completed"), "supervisor": healthy],
+                ["destination": "srt", "status": "live", "lifecycle": lifecycle("producing"), "supervisor": healthy],
+            ] as [JSONObject]] as JSONObject])
+        expectEqual(model.streamStatus, "live", "a completed RTMP does not hide a live SRT")
+        expect(QuitGuardPolicy.streamLive(QuitOutputs(streamStatus: model.streamStatus)), "quit guard sees it")
+    }
+
+    @MainActor
+    static func testPrefsKeepRowsNeverThePassphrase() {
+        let model = AppModel()
+        model.streamDestinations.srtEnabled = true
+        model.streamDestinations.srtHost = "venue.example.net"
+        model.streamDestinations.srtPort = "7001"
+        model.streamDestinations.srtStreamId = "program"
+        model.streamDestinations.hlsEnabled = true
+        model.streamDestinations.hlsPlaylistUrl = "https://origin.example/live/program.m3u8"
+        model.srtPassphrase = "never-in-prefs-123"
+        guard let data = try? JSONEncoder().encode(model.currentPrefs()) else {
+            expect(false, "prefs encode"); return
+        }
+        let text = String(decoding: data, as: UTF8.self)
+        expect(!text.contains("never-in-prefs-123"), "the SRT passphrase never reaches the prefs file")
+        guard let after = relaunched(model) else { expect(false, "relaunch"); return }
+        expectEqual(after.streamDestinations.srtHost, "venue.example.net", "srt host survives a relaunch")
+        expectEqual(after.streamDestinations.srtPort, "7001", "srt port survives")
+        expectEqual(after.streamDestinations.srtStreamId, "program", "srt stream id survives")
+        expect(after.streamDestinations.hlsEnabled, "hls toggle survives")
+        expectEqual(after.streamDestinations.hlsPlaylistUrl, "https://origin.example/live/program.m3u8", "hls url survives")
+        // An older prefs file without the key still loads (additive-safe decode).
+        let old = Data(#"{"streamUrl":"rtmp://example/live"}"#.utf8)
+        let decoded = try? JSONDecoder().decode(ShellPrefs.self, from: old)
+        expect(decoded != nil && decoded?.streamDestinations == nil, "an older prefs file decodes")
     }
 }
