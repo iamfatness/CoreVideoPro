@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -488,6 +489,34 @@ TEST(AvfMediaPixel, AnAudioBedOnProgramDrawsNothingOverTheSceneAndEnds) {
   std::fprintf(stderr, "[avf-pixel] audio bed ended %lld ms after it came on air\n", static_cast<long long>(endedAtMs));
   ASSERT_GE(endedAtMs, 0) << "the audio bed never ended";
   EXPECT_LE(endedAtMs, 2500) << "ended long after its 1 s of audio";
+}
+
+// N3 (plan 2026-11-21 Task 3). A ProRes 4444 sting with real alpha keys over
+// the scene on Program as a STRAIGHT-alpha blend. Fixture constants: GREEN
+// still background BGR(0x20,0xE0,0x20); clip BGRA(0x20,0x20,0xE0, a=0x80). The
+// expected centre is computed here from those constants alone. An opaque clip
+// would read RED; a premultiplied clip drawn as straight would read R ~0x50.
+TEST(AvfMediaPixel, AnAlphaStingKeysOverTheSceneAsAStraightAlphaBlend) {
+  const auto clip = tmp("alpha.mov"); Cleanup c1{clip};
+  const auto bg = tmp("bg.png"); Cleanup c2{bg};
+  const auto written = corevideo::testing::writeFlatColourClip(clip.string(), 64, 64, 30, {{60, 0x20, 0x20, 0xE0, 0x80}},
+                                                               /*prores4444=*/true);
+  ASSERT_EQ(written, "") << written;
+  ASSERT_EQ(corevideo::testing::writeFlatColourPng(bg.string(), 64, 64, 0x20, 0xE0, 0x20), "");
+  MAKE_CORE_OR_SKIP(core, "AnAlphaStingKeysOverTheSceneAsAStraightAlphaBlend");
+  const double a = 0x80 / 255.0;
+  const auto blend = [a](int src, int dst) { return static_cast<int>(std::lround(src * a + dst * (1.0 - a))); };
+  const Pixel expected = {blend(0x20, 0x20), blend(0x20, 0xE0), blend(0xE0, 0x20)};
+  auto route = Json::Object{{"routeId", "r"}, {"mode", "fixed"}, {"mediaAssetId", "clip"}, {"mediaAssetName", "clip"},
+                            {"mediaAssetKind", "stinger"}, {"mediaAssetPath", clip.string()}, {"mediaAssetLoop", true},
+                            {"rect", rect()}};
+  const Json load = Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "s"}, {"routes", Json::Array{Json(route)}},
+      {"background", Json::Object{{"mediaAssetId", "bg"}, {"mediaAssetName", "BG"}, {"mediaAssetKind", "stinger"},
+                                  {"mediaAssetPath", bg.string()}}}};
+  (void)tick(core, {load});
+  EXPECT_TRUE(tickUntilCentre(core, expected, 3000)) << "want " << show(expected) << ", last centre "
+                                                     << [&] { Pixel p{}; centre(core, p); return show(p); }();
 }
 
 #endif  // !COREVIDEO_STUB && COREVIDEO_WITH_METAL && COREVIDEO_WITH_AVF_MEDIA_DECODER
