@@ -13,6 +13,10 @@ final class ScriptedGraphicsCore {
     private(set) var commands: [JSONObject] = []
     var react: (JSONObject, inout JSONObject) -> (accepted: Bool, reason: String) = { _, _ in (true, "") }
     var hold = false
+    /// When it returns true for a command, send() throws as a dead bridge does (transport failure).
+    var failTransport: (JSONObject) -> Bool = { _ in false }
+    /// Number of sends parked by `hold` right now.
+    var heldCount: Int { held.count }
     private var held: [CheckedContinuation<Void, Never>] = []
     private var revision: Int64 = 100
 
@@ -37,6 +41,7 @@ final class ScriptedGraphicsCore {
         let command = (body["commands"] as? [JSONObject])?.first ?? [:]
         commands.append(command)
         if hold { await withCheckedContinuation { held.append($0) } }
+        if failTransport(command) { throw NSError(domain: "scripted-bridge", code: 1, userInfo: [NSLocalizedDescriptionKey: "media core did not answer"]) }
         let g = command["graphics"] as? JSONObject ?? [:]
         let outcome = react(command, &node)
         revision += 1

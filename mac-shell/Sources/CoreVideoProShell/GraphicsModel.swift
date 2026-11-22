@@ -134,7 +134,11 @@ final class GraphicsModel: ObservableObject {
             guard let self else { return }
             let result = await self.playout.ensureDesignsInstalled(references, designs: designs)
             // A core that restarted again mid-way re-arms and reports for itself.
-            if !result.accepted, self.state?.coreEpoch == epoch { self.status = "Graphics designs: " + result.reason }
+            if !result.accepted, self.state?.coreEpoch == epoch {
+                // The status line is overwritten by the next report(); the log keeps it.
+                ShellLog.write("graphics: design reinstall failed epoch=\(epoch): \(result.reason)")
+                self.status = "Graphics designs: " + result.reason
+            }
         }
     }
 

@@ -76,7 +76,10 @@ extension GraphicsPlayout {
         }
         var played = await show(subject)
         if !played.accepted || authorityIsInstances { return played }
-        let adopted = await adopt()
+        // Through the playout gate (review round 1): the gateway is single-slot, and an adopt sent
+        // while another playout step (e.g. the per-generation design reinstall) holds it would make
+        // that step's command refuse "graphics-command-overloaded".
+        let adopted = await gated { await adopt() }
         played.reason = adopted ? "Shown; lower thirds now follow the Graphics playlist."
             : played.reason + " Lower-third authority is still legacy; retry to adopt it."
         return played

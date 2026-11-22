@@ -336,33 +336,56 @@ final class GraphicsPlayout {
     /// Spec 5.3 / GraphicsDesignService.EnsureInstalledForPlaylistAsync (:179-190): after a core
     /// restart, install the DESIGN template versions the show references that this core lacks,
     /// from the pin, else the show's design entry. Non-design pins stay lazy (ensureCore), as on
-    /// Windows. Holds the playout gate so it never races an operator's Show installing the same
-    /// pin, but is not an operator action: no busy flag, no status (the model reports a failure).
+    /// Windows. Not an operator action: no busy flag, no status (the model reports a failure).
     /// No eviction when the library is full: the Mac has no designs to evict until G8.
+    ///
+    /// The gate is held for ONE design at a time (review round 1). Windows runs this under the
+    /// design service's own lock, but both platforms share one single-slot gateway, so a separate
+    /// lock would only turn a concurrent Show into "Graphics busy"; holding the playout gate across
+    /// every design instead blocked Show/Hide/F-keys for up to 5 s per design on a stuck core. Per
+    /// design, an operator action queued behind the reinstall waits for at most one install. The
+    /// loop stops at a transport failure or a core change: the rest would only fail the same way.
     func ensureDesignsInstalled(_ references: [GraphicsTemplateReference], designs: [GraphicsTemplatePin]) async -> GraphicsOperationResult {
-        await acquire()
-        defer { epoch = ""; release() }
-        do {
-            epoch = try available().coreEpoch
-            var problems: [String] = []
-            for reference in references where Self.isDesignTemplateId(reference.templateId) {
-                if try current(epoch).template(reference.templateId, reference.templateVersion) != nil { continue }
-                let matches = { (pin: GraphicsTemplatePin) in
-                    pin.templateId == reference.templateId && pin.templateVersion == reference.templateVersion
-                }
-                guard let pin = pins().first(where: matches) ?? designs.first(where: matches) else { continue }
-                let (installed, refusal) = try await install(pin, epoch: epoch)
-                if installed == nil { problems.append(refusal?.reason ?? Self.designInstallTimeout) }
-            }
-            var seen = Set<String>()
-            let distinct = problems.filter { seen.insert($0).inserted }
-            return distinct.isEmpty ? GraphicsOperationResult(accepted: true, reason: "Designs in use are installed.")
-                                    : refuse(distinct.joined(separator: " "))
-        } catch let failure as GraphicsPlayoutFailure {
-            return refuse(failure.message)
-        } catch {
-            return refuse(error.localizedDescription)
+        guard let epoch = observe()?.coreEpoch, !epoch.isEmpty else { return refuse(Self.unavailableMessage) }
+        var problems: [String] = []
+        for reference in references where Self.isDesignTemplateId(reference.templateId) {
+            let (problem, abort) = await installDesign(reference, designs: designs, epoch: epoch)
+            if let problem, !problems.contains(problem) { problems.append(problem) }
+            if abort { break }
         }
+        return problems.isEmpty ? GraphicsOperationResult(accepted: true, reason: "Designs in use are installed.")
+                                : refuse(problems.joined(separator: " "))
+    }
+
+    /// One design under one gate hold. `abort` when the rest of the reinstall cannot succeed.
+    private func installDesign(_ reference: GraphicsTemplateReference, designs: [GraphicsTemplatePin],
+                               epoch: String) async -> (problem: String?, abort: Bool) {
+        await acquire()
+        defer { self.epoch = ""; release() }
+        do {
+            self.epoch = epoch
+            if try current(epoch).template(reference.templateId, reference.templateVersion) != nil { return (nil, false) }
+            let matches = { (pin: GraphicsTemplatePin) in
+                pin.templateId == reference.templateId && pin.templateVersion == reference.templateVersion
+            }
+            guard let pin = pins().first(where: matches) ?? designs.first(where: matches) else { return (nil, false) }
+            let (installed, refusal) = try await install(pin, epoch: epoch)
+            if installed != nil { return (nil, false) }
+            guard let refusal else { return (Self.designInstallTimeout, false) }
+            return (refusal.reason, refusal.reason.hasPrefix(GraphicsGateway.transportFailedPrefix))
+        } catch let failure as GraphicsPlayoutFailure {
+            return (failure.message, true)   // the core changed or graphics went away
+        } catch {
+            return (error.localizedDescription, true)
+        }
+    }
+
+    /// Runs `body` holding the playout gate, without the busy flag or a status: for a gateway
+    /// command that is part of an operator action but issued after its playout step returned.
+    func gated<T>(_ body: () async -> T) async -> T {
+        await acquire()
+        defer { release() }
+        return await body()
     }
 
     /// ConfigureClock (:256-266): apply the row's clock when it differs from what the

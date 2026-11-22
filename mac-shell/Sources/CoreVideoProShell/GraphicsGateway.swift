@@ -244,6 +244,7 @@ enum GraphicsCommandRequest {
 final class GraphicsGateway {
     static let socialClientId = "graphics-social-review"
     static let capability = "graphics-instances"
+    static let transportFailedPrefix = "graphics-transport-failed"
 
     /// True when a core is running and advertises `graphics-instances`.
     var capable: () -> Bool
@@ -290,7 +291,7 @@ final class GraphicsGateway {
         do {
             reply = try await send(["type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [built.wire]])
         } catch {
-            return .refused("graphics-transport-failed: \(error.localizedDescription)", requestId: built.requestId)
+            return .refused("\(Self.transportFailedPrefix): \(error.localizedDescription)", requestId: built.requestId)
         }
         let snapshot = reply["snapshot"] as? JSONObject ?? [:]
         if !snapshot.isEmpty { onSnapshot(snapshot) }

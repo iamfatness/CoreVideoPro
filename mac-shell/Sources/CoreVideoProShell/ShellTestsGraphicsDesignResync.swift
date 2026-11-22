@@ -15,6 +15,9 @@ extension ShellTests {
             ("graphics-design-resync/not-armed-without-a-new-core", testDesignResyncNeedsANewCoreGeneration),
             ("graphics-design-resync/waits-for-the-capability", testDesignResyncWaitsForTheCapability),
             ("graphics-design-resync/waits-for-the-show-document", testDesignResyncWaitsForTheShowDocument),
+            ("graphics-design-resync/operator-show-waits-at-most-one-install", testDesignResyncAnOperatorShowWaitsForAtMostOneInstall),
+            ("graphics-design-resync/dead-bridge-stops-the-reinstall", testDesignResyncStopsAtATransportFailure),
+            ("graphics-design-resync/lower-third-adopt-during-reinstall", testDesignResyncLowerThirdAdoptDuringReinstall),
         ]
     }
 
@@ -64,18 +67,36 @@ extension ShellTests {
     /// arrives (with `profile` unless `capabilityLater`, in which case a second snapshot brings it).
     @MainActor
     static func restartCore(_ model: GraphicsModel, _ core: ScriptedGraphicsCore, epoch: String, capabilityLater: Bool = false) {
-        model.coreGenerationChanged()
-        core.node["coreEpoch"] = epoch
-        core.node["templates"] = realCatalogTemplates + [resyncManifest("design-held-aaa111", 1)]
         if capabilityLater {
-            model.observe(snapshot: ["graphics": core.node])
+            beginRestart(model, core, epoch: epoch, profile: false)
             _ = awaitMain(5) { await model.designResync?.value; return true }
             expectEqual(installedIds(core).count, 0, "nothing is sent before the new core confirms graphics")
             model.observe(snapshot: ["graphics": core.node, "profile": availableProfile])
         } else {
-            model.observe(snapshot: ["graphics": core.node, "profile": availableProfile])
+            beginRestart(model, core, epoch: epoch)
         }
         _ = awaitMain(5) { await model.designResync?.value; return true }
+    }
+
+    /// The restart without waiting for the reinstall it starts.
+    @MainActor
+    static func beginRestart(_ model: GraphicsModel, _ core: ScriptedGraphicsCore, epoch: String, profile: Bool = true) {
+        model.coreGenerationChanged()
+        core.node["coreEpoch"] = epoch
+        core.node["templates"] = realCatalogTemplates + [resyncManifest("design-held-aaa111", 1)]
+        model.observe(snapshot: profile ? ["graphics": core.node, "profile": availableProfile] : ["graphics": core.node])
+    }
+
+    /// Parks the playout's NEXT sleep (inside an install, between its install and list commands)
+    /// until the test resumes it: the reinstall is then genuinely mid-install, holding what it holds.
+    @MainActor
+    static func parkNextSleep(_ model: GraphicsModel, _ core: ScriptedGraphicsCore) -> ResyncPark {
+        let park = ResyncPark()
+        model.playout.sleep = { [weak core, weak model] _ in
+            if park.armed { park.armed = false; await withCheckedContinuation { park.parked = $0 } }
+            if let core { model?.observe(snapshot: ["graphics": core.node]) }
+        }
+        return park
     }
 
     @MainActor
@@ -94,7 +115,6 @@ extension ShellTests {
         expect(!installedIds(core).contains("pinned-title"), "a non-design pin stays lazy (installed on first Ensure, as on Windows)")
         expect(!installedIds(core).contains("design-held-aaa111"), "a design the core already has is not reinstalled")
         expectEqual(model.status, GraphicsModel.restartedText, "success leaves the restart notice on the status line")
-        expect(!model.busy, "the reinstall does not show the playout as busy")
     }
 
     /// One design is refused by the core, so a second run on the same core WOULD send something:
@@ -164,4 +184,98 @@ extension ShellTests {
         _ = awaitMain(5) { await model.designResync?.value; return true }
         expectEqual(installedIds(core).count, 4, "the reinstall runs when the show finishes loading")
     }
+
+    /// Review round 1, IMPORTANT 1: the reinstall holds the playout gate for one design at a time,
+    /// so an operator action that arrives mid-reinstall waits for at most the install in flight.
+    @MainActor
+    static func testDesignResyncAnOperatorShowWaitsForAtMostOneInstall() {
+        let (model, core) = resyncModel()
+        var rows = model.document.playlist
+        rows[1].templateId = "centered-title"   // the operator's row needs no install of its own
+        model.document.playlist = rows
+        let park = parkNextSleep(model, core)
+        beginRestart(model, core, epoch: "epoch-2")
+        spin(until: { park.parked != nil }, limit: 3)
+        expect(park.parked != nil, "the reinstall is mid-install (its first design's list is pending)")
+        expect(!model.busy, "a reinstall alone does not show the playout busy")
+        var shown: GraphicsOperationResult?
+        let title = GraphicsPlayout.entry(for: rows[1])
+        Task { @MainActor in shown = await model.playout.show(title) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        expect(model.busy, "the operator's Show is waiting (busy)")
+        park.parked?.resume()
+        park.parked = nil
+        spin(until: { shown != nil }, limit: 5)
+        _ = awaitMain(5) { await model.designResync?.value; return true }
+        expectEqual(shown?.accepted, true, "the operator's Show is accepted")
+        let t = core.transcript
+        guard let first = t.firstIndex(where: { $0.hasPrefix("graphics-instance-") }), first > 0 else {
+            expect(false, "the Show sent nothing: \(t)"); return
+        }
+        expectEqual(t[..<first].filter { $0 == "graphics-template-install" }.count, 1,
+                    "the Show waits for the one install in flight, not the whole reinstall (\(t))")
+        expectEqual(t[first - 1], "graphics-template-list", "and never lands inside an install, between its install and list")
+        expectEqual(installedIds(core).count, 4, "the reinstall finishes after the Show")
+    }
+
+    /// Review round 1, IMPORTANT 1: a dead bridge (or a core change) stops the loop; the rest would
+    /// only fail the same way, each after a bridge timeout.
+    @MainActor
+    static func testDesignResyncStopsAtATransportFailure() {
+        let (model, core) = resyncModel()
+        core.failTransport = { $0["type"] as? String == "graphics-template-install" }
+        restartCore(model, core, epoch: "epoch-2")
+        expectEqual(installedIds(core).count, 1, "one attempt, then the reinstall stops")
+        expect(model.status.hasPrefix("Graphics designs: \(GraphicsGateway.transportFailedPrefix)"), "named on the status line (\(model.status))")
+    }
+
+    /// Review round 1, IMPORTANT 2: the first lower-third Show after a restart adopts "instances"
+    /// authority. That adopt must go through the playout gate, or it can take the single-slot gateway
+    /// while the reinstall's next install is sent, which then refuses "graphics-command-overloaded"
+    /// and is never retried this core generation.
+    @MainActor
+    static func testDesignResyncLowerThirdAdoptDuringReinstall() {
+        let (model, core) = resyncModel()
+        var rows = model.document.playlist
+        rows[0].playOutAfterMs = 0   // no auto-out Hide joining the race
+        model.document.playlist = rows
+        let park = parkNextSleep(model, core)
+        beginRestart(model, core, epoch: "epoch-2")
+        spin(until: { park.parked != nil }, limit: 3)
+        // From the Show's on-air trigger on, park every send: whichever command reaches the gateway
+        // next holds its single slot until the test lets go.
+        let base = core.react
+        core.react = { [weak core] command, node in
+            let outcome = base(command, &node)
+            let g = command["graphics"] as? JSONObject ?? [:]
+            if command["type"] as? String == "graphics-instance-trigger", g["action"] as? String == "show" { core?.hold = true }
+            return outcome
+        }
+        var result: GraphicsOperationResult?
+        let guest = GraphicsPlayout.entry(for: model.document.playlist[0])
+        Task { @MainActor in
+            result = await model.playout.applyLowerThirdIntent(visible: true, subject: guest, authorityIsInstances: false) {
+                await model.adoptInstancesAuthority()
+            }
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        park.parked?.resume()
+        park.parked = nil
+        spin(until: { core.heldCount > 0 }, limit: 3)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))   // the other contender reaches the gateway
+        core.hold = false
+        core.releaseAll()
+        spin(until: { result != nil }, limit: 5)
+        _ = awaitMain(5) { await model.designResync?.value; return true }
+        expectEqual(result?.accepted, true, "the lower third is shown")
+        expectEqual(result?.reason, "Shown; lower thirds now follow the Graphics playlist.", "and the adopt was accepted")
+        expectEqual(installedIds(core).count, 4, "every design the show uses still reaches the new core (\(installedIds(core)); \(core.transcript); status: \(model.status))")
+        expect(!model.status.hasPrefix("Graphics designs:"), "no reinstall failure (\(model.status))")
+    }
+}
+
+@MainActor
+final class ResyncPark {
+    var armed = true
+    var parked: CheckedContinuation<Void, Never>?
 }

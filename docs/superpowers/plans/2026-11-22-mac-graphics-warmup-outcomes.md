@@ -53,18 +53,50 @@ a warm-up would add start-up cost for a 40-70 ms cold path.
   confirmed (a reinstall then is refused by the gateway and the epoch's one attempt is spent), and at
   launch the show loads off the main thread. Both re-check when they become true (capability flip in
   `observe`, `adopt()`), because `observe` skips an unchanged graphics node.
-- **The reinstall takes the playout gate** (plan W5). Windows runs it under the design service's own
-  gate, so a Windows Show is never blocked by it. The cost here: an operator action waits behind it, and
-  an install that never lands holds the gate for up to 5 s per missing design (the install budget).
-  Healthy installs land in milliseconds.
+- **The reinstall takes the playout gate one design at a time** (plan W5, corrected in review round 1
+  below). The first version held it across every design, which was wrong; see the review round.
 
 ## Open items
 
-1. **Independent review not run by this lane** (the fork cannot start subagents): the coordinator should
-   have a reviewer read `7361c8c9..HEAD` cold.
-2. **Gate hold on a stuck install** (above): bounded at 5 s per missing design; not seen in practice.
+1. ~~Independent review not run by this lane~~ — done by the coordinator; findings and fixes below.
+2. **Worst case on a stuck core** (corrected in review round 1): an operator action waits for at most ONE
+   install, i.e. up to the 5 s install budget, or the 6 s bridge timeout (`MediaCoreBridge.swift:311`) on
+   a dead transport. The reinstall as a whole stops at the first transport failure or core change; a core
+   that answers but never installs costs up to 5 s per missing design in the background, never in front
+   of the operator.
 3. **No library-full eviction** on the Mac reinstall (Windows evicts unused designs once): the Mac has no
    design lifecycle until G8, so a full library reports "The graphics library is full ..." instead.
 4. The in-process timing probe was temporary and is not committed; the numbers above are its output.
 5. Cold preparation was measured for the curated `centered-title` only; image-heavy or crawl templates
    were not timed (crawls refuse on the Mac until G5/G6).
+
+## Review round 1 (independent review, 2026-11-22)
+
+Verified sound by the reviewer: once per generation, stale-epoch handling, the launch races, and that
+the cue budget starts after `acquire()`.
+
+| # | Finding | Verdict | Fix |
+|---|---|---|---|
+| I1 | The reinstall held the playout gate across ALL designs; `install()` waits up to 5 s each and the loop kept going after failures (6 s bridge timeout) -> on a stuck core about 5-6 s x N designs (16-slot library: ~80 s) of blocked Show/Hide/Clear all/F-keys, right when the operator re-Shows after a restart. The earlier outcomes text ("up to 5 s per missing design") understated it as harmless. | **Real** | The gate is held per design (`installDesign`): an operator action waits for at most the one install in flight. The loop stops at a transport failure (`graphics-transport-failed`, now `GraphicsGateway.transportFailedPrefix`) or a core change. A separate lock, as on Windows, was rejected: both platforms share one single-slot gateway, so it would only turn concurrent Shows into "Graphics busy". |
+| I2 | `adoptInstancesAuthority()` called the gateway OUTSIDE the playout gate. After the first lower-third Show following a restart, its adopt could take the single-slot gateway while the reinstall's next install was sent; that install refused `graphics-command-overloaded`, was reported failed and was never retried this generation (a design only in `designs` then fails its Show). | **Real, reproduced** (mutation M-b below: 1 of 4 designs installed, status "Graphics designs: graphics-command-overloaded") | The adopt runs through the gate (`GraphicsPlayout.gated`), no busy flag or status of its own. It was the only gateway caller outside the gate. |
+| T1 | No test ran an operator Show DURING a reinstall; deleting the reinstall's `acquire()` passed everything. | Real | `operator-show-waits-at-most-one-install`: the reinstall parks mid-install (between an install and its list), a Show is started, and the transcript must show exactly one install before the Show and the Show never inside an install. |
+| T2 | `!model.busy` ran after awaiting the reinstall, so it could not fail. | Real | Removed there; the same check now runs WHILE the reinstall is parked mid-install, and busy is asserted true once the operator's Show is queued. |
+| T3 | No test for I2's sequence. | Real | `lower-third-adopt-during-reinstall`: from the Show's on-air trigger on, every send parks, so whichever command reaches the gateway next holds its slot; the lower third must be shown with authority adopted AND all 4 designs installed. |
+| M | Reinstall failures only reached the status line, which the next report() overwrites. | Real | Also written to ShellLog (`graphics: design reinstall failed epoch=...`). Not covered by a test. |
+
+Also added: `dead-bridge-stops-the-reinstall` (a transport failure on the first install -> one attempt,
+named on the status line). The scripted core gained `failTransport` and `heldCount` for these.
+
+**Evidence.** The old implementation (`63d7ee2d`) against the new tests: Show-during-reinstall red (all 4
+installs before the Show) and dead-bridge red (4 attempts). The I2 test passes on the old code: there
+the whole-loop gate made a Show wait for the entire reinstall, so the interleaving it pins could not
+happen in that order (it could with the Show first, then the reinstall; mutation M-b covers the ungated
+adopt under the new code). Mutations, each red against the full suite:
+- M-a, delete `acquire()` in `installDesign`: 4 failures (Show not waiting, Show lands inside an install,
+  only 2 designs installed, "graphics-command-overloaded");
+- M-b, adopt not gated: 2 failures (1 of 4 designs, overloaded on the status line);
+- M-c, no abort; M-d, transport failure not treated as abort: dead-bridge test red (4 attempts).
+A first run of the I2 test failed on the fixed code because of the test itself: the guest row's
+auto-out Hide re-armed the test's hold and parked the next install. The hook now arms only on the Show
+trigger and that row's auto-out is off.
+
