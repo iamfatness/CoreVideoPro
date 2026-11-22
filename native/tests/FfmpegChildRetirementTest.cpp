@@ -192,6 +192,7 @@ TEST(FfmpegChildRetirement, BytesSentCountsBytesWrittenToTransportStdin) {
 }  // namespace
 #else  // POSIX
 
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <filesystem>
@@ -275,6 +276,88 @@ TEST(FfmpegChildRetirement, PosixSenderRunsFfmpegUnderTheGuardAndStopReapsIt) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   EXPECT_TRUE(gone) << "Stop returned and the stubborn transport child (pid " << child << ") survived";
+  if (!gone) ::kill(child, SIGKILL);
+  sender.reset();
+  ::unsetenv("COREVIDEO_TEST_PROBE_MODE");
+  ::unsetenv("COREVIDEO_TEST_FFMPEG_PID_FILE");
+  fs::remove_all(folder, error);
+#endif
+}
+
+// Review finding 7: interrupt() arrives on another thread. It used to read
+// and signal ffmpegPid_ unlocked while the writer reaped and cleared it, so a
+// late interrupt could SIGTERM a recycled pid's whole process group. Signal
+// and reap are now serialized (ffmpegPidMutex_); this hammers interrupt()
+// through a stop of a child that ignores SIGTERM (the stopGroup path).
+// Meaningful as a race check under the TSan job; here it proves stop still
+// reaps the child with interrupt() contending for the lock.
+TEST(FfmpegChildRetirement, InterruptRacingStopNeverOutlivesTheReap) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(__APPLE__)
+  namespace fs = std::filesystem;
+  const fs::path folder = fs::temp_directory_path() / ("corevideo-posix-race-" + std::to_string(::getpid()));
+  std::error_code error;
+  fs::create_directories(folder, error);
+  ASSERT_FALSE(error) << error.message();
+  const fs::path ffmpeg = folder / "ffmpeg";
+  const fs::path marker = folder / "child.pid";
+  fs::remove(marker, error);
+  fs::copy_file(COREVIDEO_POSIX_CHILD_PROBE_PATH, ffmpeg, fs::copy_options::overwrite_existing, error);
+  ASSERT_FALSE(error) << error.message();
+  ::setenv("COREVIDEO_TEST_PROBE_MODE", "stubborn", 1);
+  ::setenv("COREVIDEO_TEST_FFMPEG_PID_FILE", marker.c_str(), 1);
+
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  corevideo::modules::OutputDestinationSettings settings;
+  settings.id = "rtmp";
+  settings.label = "RTMP";
+  settings.protocol = "rtmp";
+  settings.url = "rtmp://127.0.0.1:1/live";
+  settings.streamKey = "posix-race-child";
+  settings.ffmpegBinDirectory = folder.string();
+  settings.videoCodec = "h264";
+  corevideo::modules::ProgramFrame frame{16, 16, 2, 7, "posix-race-child", "metal"};
+  frame.programFullBgra.width = 16;
+  frame.programFullBgra.height = 16;
+  frame.programFullBgra.bgra.assign(16u * 16u * 4u, 0x10);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);  // a bound (#754)
+  double elapsedMs = 0;
+  while (!fs::exists(marker) && std::chrono::steady_clock::now() < deadline) {
+    sender->sync({"rtmp"}, &frame, elapsedMs, {settings});
+    elapsedMs += 33.3;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  pid_t child = 0;
+  if (fs::exists(marker)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::ifstream input(marker);
+    input >> child;
+  }
+  ASSERT_GT(child, 0) << "the sender never launched its transport child";
+
+  std::atomic<bool> stopHammer{false};
+  std::atomic<int> interrupts{0};
+  std::thread hammer([&] {
+    while (!stopHammer.load()) {
+      sender->interrupt("rtmp");
+      interrupts.fetch_add(1);
+    }
+  });
+  sender->sync({}, nullptr, elapsedMs + 1);   // stop while interrupt() contends
+  // Keep interrupting AFTER the reap: these must find no pid to signal.
+  const int afterStop = interrupts.load();
+  while (interrupts.load() < afterStop + 1000) std::this_thread::yield();
+  stopHammer = true;
+  hammer.join();
+
+  bool gone = false;
+  const auto stopDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < stopDeadline) {
+    if (::kill(child, 0) != 0) { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_TRUE(gone) << "the transport child (pid " << child << ") survived a stop raced by interrupt()";
   if (!gone) ::kill(child, SIGKILL);
   sender.reset();
   ::unsetenv("COREVIDEO_TEST_PROBE_MODE");

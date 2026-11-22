@@ -1214,6 +1214,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
 #else
     // The whole group: the guard forwards too, but a group signal reaches the
     // ffmpeg directly even if the guard is wedged.
+    std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
     posix_child::signalGroup(ffmpegPid_, SIGTERM);
 #endif
   }
@@ -2058,7 +2059,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     ::signal(SIGPIPE, SIG_IGN);
     ffmpegStdinFd_ = videoPipe[1];
     ffmpegAudioFd_ = activeAudioPresent_ ? audioPipe[1] : -1;
-    ffmpegPid_ = pid;
+    {
+      std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
+      ffmpegPid_ = pid;
+    }
     ffmpegRunning_ = true;
     if (useGpuDirect_) activateGpuVideoMuxInput();
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
@@ -2937,21 +2941,25 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) {
       return false;
     }
-    if (ffmpegPid_ > 0) {
-      int status = 0;
-      const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
-      if (result == ffmpegPid_) {
-        ffmpegPid_ = 0;
-        sender_.lastResultCode = "ffmpeg-exited";
-        std::string exitDetail = "FFmpeg process exited before accepting program frames.";
-        if (WIFEXITED(status)) {
-          exitDetail = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
-        } else if (WIFSIGNALED(status)) {
-          exitDetail = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
-        }
-        sender_.lastError = describeFfmpegSenderFailure(exitDetail, ffmpegStderrTail());
-        return false;  // FFmpeg exited
+    int status = 0;
+    bool exited = false;
+    {
+      std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
+      if (ffmpegPid_ > 0 && ::waitpid(ffmpegPid_, &status, WNOHANG) == ffmpegPid_) {
+        ffmpegPid_ = 0;   // reaped: nothing may signal this pid again
+        exited = true;
       }
+    }
+    if (exited) {
+      sender_.lastResultCode = "ffmpeg-exited";
+      std::string exitDetail = "FFmpeg process exited before accepting program frames.";
+      if (WIFEXITED(status)) {
+        exitDetail = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
+      } else if (WIFSIGNALED(status)) {
+        exitDetail = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
+      }
+      sender_.lastError = describeFfmpegSenderFailure(exitDetail, ffmpegStderrTail());
+      return false;  // FFmpeg exited
     }
     const auto& videoBytes = videoFrameBytes(frame);
     // BOUNDARY EVIDENCE (one-shot): ffmpeg is told `-s WxH -pix_fmt <fmt>` and
@@ -3229,14 +3237,22 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       ::close(ffmpegAudioFd_);
       ffmpegAudioFd_ = -1;
     }
-    if (ffmpegPid_ > 0) {
+    pid_t stopping = 0;
+    {
+      // Detach first: from here interrupt() sees no child, so it can never
+      // signal this pid after the reap below lets the kernel recycle it.
+      std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
+      stopping = ffmpegPid_;
+      ffmpegPid_ = 0;
+    }
+    if (stopping > 0) {
       // Closing the pipes signals EOF; give FFmpeg a brief chance to flush, then
       // terminate and reap. A second child cannot start while the old one lives.
       int status = 0;
       bool reaped = false;
       for (int attempt = 0; attempt < 50; ++attempt) {
-        const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
-        if (result == ffmpegPid_ || result < 0) {
+        const pid_t result = ::waitpid(stopping, &status, WNOHANG);
+        if (result == stopping || result < 0) {
           reaped = true;
           break;
         }
@@ -3245,9 +3261,8 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       if (!reaped) {
         // SIGTERM then SIGKILL to the PROCESS GROUP (guard + ffmpeg): killing
         // only the guard would orphan an ffmpeg that ignores SIGTERM.
-        posix_child::stopGroup(ffmpegPid_, std::chrono::milliseconds(500), &status);
+        posix_child::stopGroup(stopping, std::chrono::milliseconds(500), &status);
       }
-      ffmpegPid_ = 0;
     }
 #endif
     ffmpegRunning_ = false;
@@ -3445,6 +3460,11 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
 #else
   int ffmpegStdinFd_ = -1;
   int ffmpegAudioFd_ = -1;
+  // Review finding 7: interrupt() runs on another thread. A pid may be
+  // signalled ONLY while it is known unreaped, so every read for kill() and
+  // every successful reap + clear happen under this lock. It is never held
+  // across a sleep: the stop path detaches the pid under it, then reaps.
+  mutable std::mutex ffmpegPidMutex_;
   pid_t ffmpegPid_ = 0;          // the child guard's pid (= process group) when guarded
   bool ffmpegGuarded_ = false;
 #endif
