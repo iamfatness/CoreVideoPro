@@ -149,7 +149,16 @@ extension ShellTests {
         log(String(format: "after Hide %.3f%% differ from baseline", afterHide * 100))
         expect(afterHide < 0.001, "live: Hide returns Program to the baseline")
 
-        // 3. Cue, then the ordinary Mac Take
+        // 3. Cue, then the ordinary Mac Take. Take swaps Program and Preview, so the
+        //    comparison needs the baseline of the scene the Take lands on, graphic hidden
+        //    (review): Take there, sample, Take back, then Cue and Take onto it again.
+        _ = awaitMain(10) { await app.take() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8)); poll()
+        guard let otherBaseline = programPixels(surfaceId) else { expect(false, "live: no Program surface after the Take"); return }
+        log(String(format: "the other scene differs %.2f%% from the first (why a re-baseline is needed)",
+                   changedFraction(baseline.bytes, otherBaseline.bytes) * 100))
+        _ = awaitMain(10) { await app.take() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8)); poll()
         let cued = awaitMain(15) { await app.graphics.playout.cue(title) }
         log("Cue: \(cued?.accepted == true) \(cued?.reason ?? "nil")")
         expectEqual(cued?.accepted, true, "live: Cue accepted")
@@ -162,8 +171,8 @@ extension ShellTests {
             app.graphics.state?.instance(title.instanceId)?.isOnProgram == true
         }
         RunLoop.main.run(until: Date().addingTimeInterval(0.8)); poll()
-        let takeDelta = changedFraction(baseline.bytes, programPixels(surfaceId)?.bytes ?? [])
-        log(String(format: "after Take %.2f%% of Program pixels changed", takeDelta * 100))
+        let takeDelta = changedFraction(otherBaseline.bytes, programPixels(surfaceId)?.bytes ?? [])
+        log(String(format: "after Take %.2f%% of Program pixels changed against the same scene without the graphic", takeDelta * 100))
         expect(takeDelta > 0.005, "live: the cued title rode the Take onto Program pixels")
         _ = awaitMain(10) { await app.graphics.playout.clearAll() }
     }

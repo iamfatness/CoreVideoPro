@@ -26,7 +26,10 @@ struct GraphicsRowLine: Identifiable, Equatable {
     var label: String
     var id: String { entry.instanceId }
 
-    var canCue: Bool { if case .preparing = state { return false }; return state != .onProgram && !row.templateId.isEmpty }
+    var canCue: Bool {
+        if case .preparing = state { return false }
+        return state != .onProgram && !row.templateId.isEmpty && !row.needsDataPlayback
+    }
     var canShow: Bool { canCue }
     var canHide: Bool { state == .onProgram }
     var canClearCue: Bool { state == .cued }
@@ -138,7 +141,15 @@ extension GraphicsModel {
         setRows(next)
     }
 
-    func setName(_ id: String, _ name: String) { editRow(id) { $0.name = name } }
+    static let nameRequiredText = "A row needs a name of 1 to 128 characters. The previous name is kept."
+
+    /// The Name field may pass through empty while typing: an invalid name is not
+    /// stored and the message says exactly why (never "invalid or duplicate row").
+    func setName(_ id: String, _ name: String) {
+        guard (1...128).contains(name.utf16.count) else { documentStatus = Self.nameRequiredText; return }
+        if documentStatus == Self.nameRequiredText { documentStatus = "" }
+        editRow(id) { $0.name = name }
+    }
     func setField(_ id: String, _ key: String, _ value: Any) { editRow(id) { var f = $0.fields; f[key] = value; $0.fields = f } }
     func setHidesAfter(_ id: String, _ ms: Int) { editRow(id) { $0.playOutAfterMs = ms } }
     func setFollowSources(_ id: String, _ on: Bool) { editRow(id) { $0.json["followSources"] = on } }
@@ -175,10 +186,13 @@ extension GraphicsModel {
     func lines() -> [GraphicsRowLine] {
         var lines: [GraphicsRowLine] = []
         for row in rows {
-            let entries = row.kind == GraphicsRow.guest ? guestEntries(row) : [GraphicsPlayout.entry(for: row)]
+            let entries = row.hasVariants ? GraphicsPlayout.variantEntries(row)
+                : row.kind == GraphicsRow.guest ? guestEntries(row) : [GraphicsPlayout.entry(for: row)]
             for entry in entries {
-                lines.append(GraphicsRowLine(row: row, entry: entry, state: GraphicsRowStates.project(state?.instance(entry.instanceId)),
-                                             label: row.kind == GraphicsRow.guest ? row.name + " · " + entry.label : row.name))
+                let lineState = row.needsDataPlayback ? .failed(GraphicsPlayout.unsupportedDataText(row.name))
+                    : GraphicsRowStates.project(state?.instance(entry.instanceId))
+                lines.append(GraphicsRowLine(row: row, entry: entry, state: lineState,
+                                             label: row.kind == GraphicsRow.guest || row.hasVariants ? row.name + " · " + entry.label : row.name))
             }
         }
         return lines

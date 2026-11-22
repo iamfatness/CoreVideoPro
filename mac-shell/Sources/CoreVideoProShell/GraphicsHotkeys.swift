@@ -41,6 +41,9 @@ extension GraphicsModel {
     /// row resolves to the Program subject's entry, else its first entry.
     func resolveEntry(rowId: String, subjectSourceId: String?) -> GraphicsPlaylistEntry? {
         guard let row = rows.first(where: { $0.id == rowId }) else { return nil }
+        if row.hasVariants {   // names list: the next line after the one on Program (StudioControlSurface:799-802)
+            return GraphicsPlayout.nextVariant(row, onProgramSourceIds: strip.onProgram.filter { $0.rowId == row.id }.map(\.sourceId))
+        }
         guard row.kind == GraphicsRow.guest else { return GraphicsPlayout.entry(for: row) }
         let entries = guestEntries(row)
         return entries.first { subjectSourceId != nil && $0.sourceId == subjectSourceId } ?? entries.first

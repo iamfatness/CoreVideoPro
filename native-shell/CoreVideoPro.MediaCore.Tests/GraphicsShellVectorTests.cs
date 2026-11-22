@@ -408,4 +408,76 @@ public sealed class GraphicsShellVectorTests
             new JsonObject { ["rows"] = JsonSerializer.SerializeToNode(defaults, Web) }));
         Check("playout", "GraphicsPlayoutService identity and entries, GraphicsLayoutResolver.CueFields (no Sources columns), StyleWire, and the interview default rows.", rows);
     }
+
+    // ── review round: names lists, clock rows, data rows ────────────────────────────
+
+    /// A names-list row (logo-accent, three lines, cells for text-size incl. an out-of-range
+    /// and a non-number cell) and a countdown clock row, built from the real catalog.
+    internal static (GraphicsPlaylistRow Names, GraphicsPlaylistRow Clock) NamesAndClockRows()
+    {
+        var catalog = RealCatalog();
+        var accent = catalog.Templates.First(t => t.TemplateId == "logo-accent");
+        var clockTemplate = catalog.Templates.First(t => t.TemplateId == "clock-panel");
+        var names = new GraphicsPlaylistRow {
+            Id = "panel-names", Kind = GraphicsPlaylistRow.Title, Name = "Panel names", Hotkey = "F6",
+            TemplateId = accent.TemplateId, TemplateVersion = accent.TemplateVersion,
+            Fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal) {
+                ["name"] = JsonSerializer.SerializeToElement("Row default"), ["title"] = JsonSerializer.SerializeToElement(""),
+                ["text-size"] = JsonSerializer.SerializeToElement(42) },
+            Variants = [
+                new GraphicsPlaylistVariant { Id = "v-ada", Name = "Ada Lovelace", Title = "Mathematician",
+                    Cells = new Dictionary<string, string>(StringComparer.Ordinal) { ["text-size"] = "72" } },
+                new GraphicsPlaylistVariant { Id = "v-bo", Name = "Bo Diddley", Title = "",
+                    Cells = new Dictionary<string, string>(StringComparer.Ordinal) { ["text-size"] = "500" } },
+                new GraphicsPlaylistVariant { Id = "v-cy", Name = "Cy Twombly", Title = "Painter",
+                    Cells = new Dictionary<string, string>(StringComparer.Ordinal) { ["text-size"] = "big", ["show-logo"] = "false" } },
+            ],
+        };
+        var clock = new GraphicsPlaylistRow {
+            Id = "countdown", Kind = GraphicsPlaylistRow.LiveBug, Name = "Countdown", Hotkey = "F7",
+            TemplateId = clockTemplate.TemplateId, TemplateVersion = clockTemplate.TemplateVersion, ShowClock = true,
+            Clock = new NativeGraphicsClockConfiguration { Mode = "countdown", Zone = "utc", Format = "hm", Finish = "hide", DurationSeconds = 600 },
+        };
+        return (names, clock);
+    }
+
+    internal static string WindowsNamesClockDocument()
+    {
+        var (names, clock) = NamesAndClockRows();
+        var document = new GraphicsShowDocument { Playlist = [names, clock] };
+        return Encoding.UTF8.GetString(JsonSerializer.SerializeToUtf8Bytes(document, Store)).Replace("\r\n", "\n") + "\n";
+    }
+
+    [Fact]
+    public void NamesListAndClockVectors()
+    {
+        var text = WindowsNamesClockDocument();
+        var fixture = DocumentPath("windows-names-clock.json");
+        if (Environment.GetEnvironmentVariable("COREVIDEO_WRITE_GRAPHICS_SHELL_VECTORS") == "1")
+        { Directory.CreateDirectory(Path.GetDirectoryName(fixture)!); File.WriteAllText(fixture, text, new UTF8Encoding(false)); }
+        else Assert.True(File.Exists(fixture) && File.ReadAllText(fixture).Replace("\r\n", "\n") == text, $"{fixture} differs; regenerate.");
+
+        var (names, clock) = NamesAndClockRows();
+        var catalog = RealCatalog();
+        var accent = catalog.Templates.First(t => t.TemplateId == names.TemplateId);
+        var rows = new JsonArray();
+        var entries = GraphicsPlayoutService.VariantEntries(names);
+        rows.Add(Row("variant-entries", "variantEntries", new JsonObject { ["rowId"] = names.Id },
+            new JsonObject { ["entries"] = new JsonArray(entries.Select(e => (JsonNode)new JsonObject {
+                ["sourceId"] = e.SourceId, ["name"] = e.Label, ["title"] = e.Title, ["instanceId"] = GraphicsPlayoutService.InstanceIdFor(e) }).ToArray()) }));
+        foreach (var (id, onAir) in new[] { ("none", Array.Empty<string>()), ("first", new[] { "variant:v-ada" }),
+                     ("last-wraps", new[] { "variant:v-cy" }), ("two-on-air-takes-the-later", new[] { "variant:v-ada", "variant:v-bo" }) })
+            rows.Add(Row("next-variant-" + id, "nextVariant", new JsonObject { ["rowId"] = names.Id, ["onProgram"] = new JsonArray(onAir.Select(s => (JsonNode)s).ToArray()) },
+                new JsonObject { ["sourceId"] = GraphicsPlayoutService.NextVariant(names, onAir)?.SourceId }));
+        foreach (var entry in entries.Append(GraphicsPlayoutService.EntryFor(names)))
+        {
+            var fields = GraphicsLayoutResolver.CueFields(names, entry, true, accent.Fields, []);
+            rows.Add(Row("variant-cue-fields-" + (entry.SourceId.Length == 0 ? "row" : entry.SourceId[8..]), "cueFields",
+                new JsonObject { ["rowId"] = names.Id, ["sourceId"] = entry.SourceId, ["name"] = entry.Label, ["title"] = entry.Title },
+                new JsonObject { ["fields"] = JsonSerializer.SerializeToNode(fields, Web) }));
+        }
+        rows.Add(Row("clock-configuration", "clockConfiguration", new JsonObject { ["rowId"] = clock.Id },
+            new JsonObject { ["configuration"] = JsonSerializer.SerializeToNode(clock.Clock, Web), ["valid"] = clock.Clock!.IsValid }));
+        Check("names-clock", "Names-list expansion (VariantEntries / NextVariant), variant cue fields with cells (GraphicsMappedValues), and the clock configuration a clock row sends; rows from documents/windows-names-clock.json.", rows);
+    }
 }

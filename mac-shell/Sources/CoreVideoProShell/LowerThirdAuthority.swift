@@ -111,9 +111,17 @@ extension GraphicsPlayout {
 
 extension GraphicsModel {
     var authorityInstances: Bool { state?.familyAuthorities["lower-third"] == "instances" }
-    var playlistLowerThirdOnAir: Bool {
+    /// GraphicsPlayoutService.IsLowerThirdOnAir: a Program chip that is a Guest-row
+    /// instance, or any other instance whose template is a lower third (curated, or
+    /// family lower-third). Strip truth, never local intent.
+    var lowerThirdOnAir: Bool {
         let stripRows = rows.map(\.stripRow)
-        return strip.onProgram.contains { GraphicsStrip.row(of: $0.instanceId, in: stripRows)?.kind == GraphicsRow.guest }
+        return strip.onProgram.contains { item in
+            if let row = GraphicsStrip.row(of: item.instanceId, in: stripRows) { return row.kind == GraphicsRow.guest }
+            guard let state, let instance = state.instance(item.instanceId) else { return false }
+            return LowerThirdAuthority.curatedLowerThirds.contains(instance.templateId)
+                || state.templates.contains { $0.templateId == instance.templateId && $0.templateVersion == instance.templateVersion && $0.family == "lower-third" }
+        }
     }
 
     /// graphics-authority-set lower-third instances, as Windows' workspace client.
@@ -133,7 +141,7 @@ extension AppModel {
     var lowerThirdIntentVisible: Bool {
         let g = graphics
         return LowerThirdAuthority.intentVisible(
-            authorityInstances: g.authorityInstances, hasGuestRow: g.hasGuestRow, playlistOnAir: g.playlistLowerThirdOnAir,
+            authorityInstances: g.authorityInstances, hasGuestRow: g.hasGuestRow, playlistOnAir: g.lowerThirdOnAir,
             managedOnAir: LowerThirdAuthority.lowerThirds(g.state, sceneId: programSceneId).contains(where: \.isOnProgram),
             legacyOnAir: lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in")
     }

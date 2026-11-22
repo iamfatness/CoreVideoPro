@@ -48,6 +48,12 @@ extension ScriptedGraphicsCore {
                 case "uncue": instances[index]["cueRevision"] = 0
                 default: break
                 }
+            case "graphics-clock-control":
+                guard let index else { return (false, "instance-not-found") }
+                if g["action"] as? String == "configure" {
+                    instances[index]["clockRequestedConfiguration"] = g["configuration"]
+                    instances[index]["clockConfigurationRevision"] = ((instances[index]["clockConfigurationRevision"] as? NSNumber)?.intValue ?? 1) + 1
+                }
             case "graphics-template-install":
                 if let manifest = (g["manifest"] as? String).flatMap(GraphicsJSON.parseObject) {
                     var templates = node["templates"] as? [JSONObject] ?? []

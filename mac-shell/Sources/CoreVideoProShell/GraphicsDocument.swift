@@ -59,6 +59,12 @@ struct GraphicsRow: Equatable, Identifiable {
     var placement: JSONObject? { json["placement"] as? JSONObject }
     var clock: JSONObject? { json["clock"] as? JSONObject }
     var image: JSONObject? { json["image"] as? JSONObject }
+    var dataBinding: JSONObject? { json["dataBinding"] as? JSONObject }
+    /// A crawl or a remote/live feed: needs dataset publishing the Mac does not have yet (G5/G6).
+    var needsDataPlayback: Bool {
+        guard let binding = dataBinding else { return false }
+        return binding["crawl"] is JSONObject || GraphicsJSON.bool(binding["remote"]) || GraphicsJSON.bool(binding["liveFollow"])
+    }
 
     var stripRow: GraphicsStripRow {
         GraphicsStripRow(id: id, kind: kind, name: name, variantIds: variants.compactMap { $0["id"] as? String })

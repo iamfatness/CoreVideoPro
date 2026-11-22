@@ -198,6 +198,18 @@ final class GraphicsPlayout {
         await run {
             let cued = try await self.cueCore(entry)
             guard cued.accepted else { return cued }
+            // A names list is one lower third with many lines: showing a line takes the
+            // row's other lines off Program first (PlayInAsync, :164-170).
+            if entry.isVariant, let list = self.row(entry.rowId), list.hasVariants {
+                let stripRows = self.rows().map(\.stripRow)
+                let siblings = (self.observe()?.instances ?? []).filter {
+                    $0.isOnProgram && $0.instanceId != cued.instanceId && GraphicsStrip.row(of: $0.instanceId, in: stripRows)?.id == list.id
+                }
+                for sibling in siblings {
+                    let hidden = try await self.hideCore(sibling.instanceId)
+                    if !hidden.accepted { return self.refuse("Could not take the previous name off: " + hidden.reason) }
+                }
+            }
             var shown = try await self.send("graphics.instance.trigger", ["instanceId": cued.instanceId, "expectedRevision": cued.currentRevision,
                                                                           "target": "cue", "action": "show"])
             if shown.accepted, let row = self.row(entry.rowId) { self.armAutoOut(row, cued.instanceId, epoch: self.epoch) }
@@ -208,6 +220,7 @@ final class GraphicsPlayout {
 
     func ensureCore(_ entry: GraphicsPlaylistEntry) async throws -> GraphicsOperationResult {
         guard let row = row(entry.rowId) else { return refuse("That playlist row no longer exists.") }
+        if row.needsDataPlayback { return refuse(Self.unsupportedDataText(row.name)) }
         var state = try available()
         let epoch = state.coreEpoch
         self.epoch = epoch
@@ -247,9 +260,13 @@ final class GraphicsPlayout {
             var created = try await send("graphics.instance.create", body)
             guard created.accepted else { return created }
             guard created.currentRevision >= 1, created.instanceId == id else { return refuse("The native create result has no matching revision identity.") }
+            var fresh = (try current(epoch)).instance(id) ?? GraphicsInstance()
+            if fresh.instanceId.isEmpty { fresh.instanceId = id; fresh.revision = created.currentRevision }
+            try await configureClock(row, fresh)
             created.reason = "Ready."
             return created
         }
+        try await configureClock(row, existing)
         // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
         let designChanged = existing.templateVersion != version || !Self.sameMotion(existing.animations, motion)
         if !designChanged && Self.sameFields(existing.fields, values) && (identity == nil || existing.binding == identity) {
@@ -314,7 +331,83 @@ final class GraphicsPlayout {
         return (nil, nil)
     }
 
+    /// ConfigureClock (:256-266): apply the row's clock when it differs from what the
+    /// core already has. Non-fatal: a template without a clock refuses and the graphic still plays.
+    func configureClock(_ row: GraphicsRow, _ instance: GraphicsInstance) async throws {
+        guard let clock = row.clock, GraphicsRow.validClock(clock) else { return }
+        if let requested = instance.clockRequestedConfiguration, Self.sameClock(requested, clock) { return }
+        _ = try await send("graphics.clock.control", [
+            "instanceId": instance.instanceId, "expectedRevision": max(1, instance.revision), "action": "configure",
+            "configuration": Self.clockWire(clock), "expectedClockRevision": max(1, instance.clockConfigurationRevision),
+        ])
+    }
+
     // ── pure helpers ─────────────────────────────────────────────────────────
+
+    nonisolated static func unsupportedDataText(_ rowName: String) -> String {
+        "\(rowName): crawls and live data feeds arrive in a later Mac release, so this row cannot play here yet."
+    }
+
+    /// One entry per names-list line, in list order (VariantEntries, :117-119).
+    nonisolated static func variantEntries(_ row: GraphicsRow) -> [GraphicsPlaylistEntry] {
+        row.variants.compactMap { v in
+            guard let id = v["id"] as? String else { return nil }
+            return GraphicsPlaylistEntry(rowId: row.id, sourceId: GraphicsPlaylistEntry.variantPrefix + id,
+                                         name: v["name"] as? String ?? "", title: v["title"] as? String ?? "")
+        }
+    }
+
+    /// The line a bare hotkey plays: the one after the last line of this row on
+    /// Program (wrapping), else the first (NextVariant, :121-127).
+    nonisolated static func nextVariant(_ row: GraphicsRow, onProgramSourceIds: [String]) -> GraphicsPlaylistEntry? {
+        let entries = variantEntries(row)
+        guard !entries.isEmpty else { return nil }
+        let onAir = Set(onProgramSourceIds)
+        var current = -1
+        for (index, entry) in entries.enumerated() where onAir.contains(entry.sourceId) { current = index }
+        return entries[(current + 1) % entries.count]
+    }
+
+    /// NativeGraphicsClockConfiguration as Windows serializes it (defaults filled).
+    nonisolated static func clockWire(_ clock: JSONObject) -> JSONObject {
+        [
+            "mode": clock["mode"] as? String ?? "wall", "zone": clock["zone"] as? String ?? "local",
+            "format": clock["format"] as? String ?? "hms", "finish": clock["finish"] as? String ?? "hold-zero",
+            "offsetMinutes": (clock["offsetMinutes"] as? NSNumber)?.intValue ?? 0,
+            "durationSeconds": (clock["durationSeconds"] as? NSNumber)?.intValue ?? 300,
+            "restoreRemainingSeconds": clock["restoreRemainingSeconds"] ?? NSNull(),
+        ]
+    }
+
+    nonisolated static func sameClock(_ a: JSONObject, _ b: JSONObject) -> Bool {
+        let x = clockWire(a), y = clockWire(b)
+        return ["mode", "zone", "format", "finish", "offsetMinutes", "durationSeconds"].allSatisfy {
+            (x[$0] as AnyObject).isEqual(y[$0])
+        }
+    }
+
+    /// GraphicsMappedValues.ConvertCell for one names-list cell, or nil when the
+    /// cell does not fit the field (the row's own value then stands).
+    nonisolated static func convertCell(_ field: GraphicsTemplateField, _ cell: String) -> Any? {
+        let value: Any?
+        switch field.type {
+        case "string":
+            value = (!field.required || !cell.isEmpty) && cell.utf8.count <= (field.maxLength ?? 512) ? cell : nil
+        case "boolean":
+            switch cell.trimmingCharacters(in: .whitespaces).lowercased() { case "true": value = true; case "false": value = false; default: value = nil }
+        case "number":
+            let text = cell.trimmingCharacters(in: .whitespaces)
+            if !text.lowercased().contains("x"), let number = Double(text), number.isFinite,
+               number >= (field.minimum ?? -1e9), number <= (field.maximum ?? 1e9) { value = number } else { value = nil }
+        case "color":
+            value = (cell.utf16.count == 7 || cell.utf16.count == 9) && cell.utf16.count <= (field.maxLength ?? 128)
+                && cell.hasPrefix("#") && cell.dropFirst().allSatisfy(\.isHexDigit) ? cell : nil
+        default:
+            value = nil
+        }
+        guard let value else { return nil }
+        return field.choices.isEmpty || field.choices.contains { ($0 as AnyObject).isEqual(value) } ? value : nil
+    }
 
     nonisolated static func curated(_ id: String) -> Bool { ["compact-solid", "minimal-accent", "broadcast"].contains(id) }
 
@@ -332,6 +425,15 @@ final class GraphicsPlayout {
             for (key, value) in entry.bindings
             where declarative ? descriptors.contains(where: { $0.id == key && $0.type == "string" }) : (key == "name" || key == "title") {
                 values[key] = value
+            }
+        }
+        // GraphicsMappedValues.Apply for a names-list line's cells (Sources columns: a later slice).
+        if declarative, entry.isVariant,
+           let variant = row.variants.first(where: { GraphicsPlaylistEntry.variantPrefix + ($0["id"] as? String ?? "") == entry.sourceId }) {
+            let cells = variant["cells"] as? JSONObject ?? [:]
+            for field in descriptors where !["name", "title", "time", "label"].contains(field.id)
+                && ["string", "number", "color", "boolean"].contains(field.type) {
+                if let cell = cells[field.id] as? String, let value = convertCell(field, cell) { values[field.id] = value }
             }
         }
         for key in values.keys where declarative ? !descriptors.contains(where: { $0.id == key }) : !(key == "name" || key == "title") {

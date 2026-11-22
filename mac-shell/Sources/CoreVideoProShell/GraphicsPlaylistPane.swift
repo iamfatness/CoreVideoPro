@@ -115,8 +115,7 @@ struct GraphicsRowInspector: View {
         VStack(alignment: .leading, spacing: 6) {
             Divider().overlay(Studio.border)
             labeled("Name") {
-                TextField("Row name", text: Binding(get: { row.name }, set: { graphics.setName(row.id, $0) }))
-                    .textFieldStyle(StudioFieldStyle()).frame(width: 240)
+                GraphicsNameField(graphics: graphics, rowId: row.id, saved: row.name)
             }
             if row.kind == GraphicsRow.guest {
                 labeled("From Sources") {
@@ -162,5 +161,22 @@ struct GraphicsRowInspector: View {
             content()
             Spacer()
         }
+    }
+}
+
+/// The row Name, edited through a local draft so the field can pass through
+/// empty while the operator retypes it; only a valid name is stored
+/// (GraphicsModel.setName), and the status line says why otherwise.
+struct GraphicsNameField: View {
+    @ObservedObject var graphics: GraphicsModel
+    let rowId: String
+    let saved: String
+    @State private var draft: String?
+
+    var body: some View {
+        TextField("Row name", text: Binding(get: { draft ?? saved }, set: { draft = $0; graphics.setName(rowId, $0) }))
+            .textFieldStyle(StudioFieldStyle()).frame(width: 240)
+            .onSubmit { draft = nil }   // an invalid draft falls back to the stored name on commit
+            .onChange(of: rowId) { _ in draft = nil }
     }
 }

@@ -41,6 +41,12 @@ struct GraphicsTemplateField: Equatable {
     var id = ""
     var type = ""
     var defaultValue: Any?
+    /// NativeGraphicsTemplateField constraints (GraphicsMappedValues.ConvertCell reads them).
+    var required = false
+    var maxLength: Int?
+    var minimum: Double?
+    var maximum: Double?
+    var choices: [Any] = []
     static func == (a: GraphicsTemplateField, b: GraphicsTemplateField) -> Bool { a.id == b.id && a.type == b.type }
 }
 
@@ -204,7 +210,10 @@ struct GraphicsState {
         t.packageRoot = GraphicsJSON.string(json["packageRoot"])
         t.definition = json["definition"] as? JSONObject
         t.fields = (json["fields"] as? [JSONObject] ?? []).map {
-            GraphicsTemplateField(id: GraphicsJSON.string($0["id"]), type: GraphicsJSON.string($0["type"]), defaultValue: $0["default"])
+            GraphicsTemplateField(id: GraphicsJSON.string($0["id"]), type: GraphicsJSON.string($0["type"]), defaultValue: $0["default"],
+                                  required: GraphicsJSON.bool($0["required"]), maxLength: ($0["maxLength"] as? NSNumber)?.intValue,
+                                  minimum: ($0["minimum"] as? NSNumber)?.doubleValue, maximum: ($0["maximum"] as? NSNumber)?.doubleValue,
+                                  choices: $0["choices"] as? [Any] ?? [])
         }
         t.defaultPlacement = json["defaultPlacement"] as? JSONObject
         t.animations = json["animations"] as? JSONObject

@@ -134,7 +134,7 @@ extension ShellTests {
         expectEqual(saved.row("title")?.playOutAfterMs, 15000, "hides-after saved")
         model.setName("title", "")
         expectEqual(model.rows.first { $0.id == "title" }?.name, "Late show", "an invalid edit (empty name) is refused")
-        expectEqual(model.documentStatus, "The playlist has an invalid or duplicate row. Previous playlist retained.", "and says so")
+        expectEqual(model.documentStatus, GraphicsModel.nameRequiredText, "and says exactly why (review round)")
     }
 
     @MainActor

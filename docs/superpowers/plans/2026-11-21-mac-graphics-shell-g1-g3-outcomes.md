@@ -86,3 +86,47 @@ Tasks 7 and 8 share one commit (the playlist model wires the playout's rows and 
    MediaCore tests run on macOS (`Path.GetInvalidFileNameChars()` is NUL and `/` only there). Not touched.
 7. **Pixel proof by Program-surface diff, not a template-region check.** The changed fraction is small
    (0.55 %) but the Hide and Cue-alone legs show the baseline is stable to < 0.1 %.
+
+## Review round (independent review, 2026-11-22)
+
+Verdict: no on-air routing bugs in the normal path (Keychain, document store, Hide routing, restart, F-keys
+verified). One IMPORTANT gap and three LOW findings, all fixed test-first on this branch.
+
+**IMPORTANT — Windows row features were silently ignored by Mac playout (owner: full parity, implement).**
+- **Names lists (`variants`)**: now one line per name (`GraphicsPlayout.variantEntries`), the bare hotkey /
+  row-only Show steps to the next name after the one on Program (`nextVariant`, as `NextVariant` and
+  StudioControlSurface:799-802), showing a line takes the row's other lines off Program first (PlayInAsync
+  :164-170), and a line's cells fill its typed template fields (`convertCell`, a port of
+  GraphicsMappedValues.ConvertCell incl. bounds, required, choices; out-of-range or unparsable cells keep the
+  row's value). Before: one entry filled from `row.fields`, so the row default aired instead of the name.
+- **Clock rows**: Ensure applies the row's `clock` through `graphics.clock.control configure` after create and
+  before refreshing an existing instance, skipped when the instance already carries that configuration
+  (ConfigureClock :256-266). Non-fatal, as Windows.
+- **Data rows**: Windows plays a data-bound row from `row.Fields`, which its publish step overwrites with the
+  published revision, so a **local static** data row plays the same on both platforms (verified, no change
+  needed). **Crawl** and **remote / live-follow** rows need dataset publishing and feeds (G5/G6): the line now
+  shows a failed state and Cue/Show refuse with "`<row>`: crawls and live data feeds arrive in a later Mac
+  release, so this row cannot play here yet." Open item below.
+- New fixture `contracts/graphics-shell/documents/windows-names-clock.json` (written by the real Windows store:
+  a logo-accent names list with three lines and cells, a countdown clock row) and
+  `names-clock.vectors.json` (variant entries, next-variant incl. wrap, variant cue fields incl. an out-of-range
+  and a non-number cell, the clock wire). `GraphicsTemplateField` now carries required/maxLength/min/max/choices.
+
+**LOW**
+2. Live check: the Take leg compared against a baseline from the other scene (Take swaps PGM/PVW). It now
+   samples the scene the Take lands on with the graphic hidden (Take, sample, Take back, Cue, Take). Measured:
+   the two default scenes differ 0.00 %, the cued title still changes 0.55 % against the same scene.
+3. Name field: an empty or over-long name is not stored and the status says "A row needs a name of 1 to 128
+   characters. The previous name is kept." (not "invalid or duplicate row"); the field edits through a local
+   draft so it can pass through empty while retyping, falling back to the stored name on commit.
+4. `lowerThirdOnAir` follows Windows `IsLowerThirdOnAir`: any Program chip that is a Guest-row instance or a
+   lower-third-family / curated instance. Before, with authority `instances` and a managed (non-playlist)
+   lower third on air, the toggle read not-visible and Showed the guest.
+
+**Verification**: shell suite **6611 checks, 0 failed** (live check included: Show 0.55 %, Hide 0.000 %,
+Take 0.55 % vs the same scene). Exporter 5/5. Mutations, all red: no sibling hide, no clock configure, no
+names-list lines, lower-third on-air counting Guest rows only.
+
+**New open item**: crawl and remote/live-follow data rows refuse on Mac until the data slices (G5/G6).
+Names-list Sources-column mapping and the row inspector's names-list editor (paste / CSV) remain G4 work;
+Mac plays names lists a Windows show already has.
