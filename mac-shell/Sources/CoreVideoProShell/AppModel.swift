@@ -578,6 +578,14 @@ final class AppModel: ObservableObject {
             return try await self.gradeRequest(body)
         })
         model.gateway.elapsedMs = { [weak self] in self?.elapsedMs() ?? 0 }
+        // Guest rows expand over the Show Input slots, as Windows' ShowInputEditors.
+        model.rosterSlots = { [weak self] in
+            (self?.slots ?? []).map {
+                GraphicsRosterSlot(slotNumber: $0.id, sourceId: ControlSourceId.canonical(kind: $0.kind, sourceId: $0.sourceId),
+                                   derivedName: $0.name.isEmpty ? $0.sourceName : $0.name)
+            }
+        }
+        model.loadDocument()
         return model
     }()
     private(set) lazy var sourceGrades: SourceGradeStore = {

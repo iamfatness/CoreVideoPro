@@ -24,15 +24,27 @@ final class GraphicsModel: ObservableObject {
 
     /// True while a core process is up (set by AppModel from BridgeStatus).
     var coreRunning: () -> Bool
-    /// The playlist rows the strip names chips after (filled by the playlist slice).
-    var stripRows: () -> [GraphicsStripRow] = { [] }
+    /// The show document (playlist rows, template pins; everything else verbatim).
+    @Published var document = GraphicsDocument()
+    @Published var documentReadOnly = false
+    @Published var documentStatus = ""
+    @Published var documentLoaded = false
+    /// Show Input slots as playout sees them (AppModel supplies them).
+    var rosterSlots: () -> [GraphicsRosterSlot] = { [] }
+    let documentStore: GraphicsDocumentStore
+    let documentQueue = DispatchQueue(label: "us.iamfatness.corevideopro.graphics-document")
+    var saveTask: Task<Void, Never>?
+    /// Debounce for playlist saves (tests set 0).
+    var saveDelayNs: UInt64 = 300_000_000
 
     private(set) var gateway: GraphicsGateway!
     private(set) var playout: GraphicsPlayout!
     private var lastNode: NSDictionary?
 
-    init(coreRunning: @escaping () -> Bool, send: @escaping (JSONObject) async throws -> JSONObject) {
+    init(coreRunning: @escaping () -> Bool, send: @escaping (JSONObject) async throws -> JSONObject,
+         documentPath: String = GraphicsDocumentStore.defaultPath) {
         self.coreRunning = coreRunning
+        documentStore = GraphicsDocumentStore(path: documentPath)
         gateway = GraphicsGateway(capable: { [weak self] in self?.coreRunning() == true && self?.capable == true },
                                   observe: { [weak self] in self?.state }, send: send)
         playout = GraphicsPlayout(invoke: { [weak self] action, body in
@@ -42,6 +54,8 @@ final class GraphicsModel: ObservableObject {
         playout.onChange = { [weak self] in self?.playoutChanged() }
         // A command's own reply carries the freshest snapshot: observe it at once.
         gateway.onSnapshot = { [weak self] in self?.observe(snapshot: $0) }
+        playout.rows = { [weak self] in self?.document.playlist ?? [] }
+        playout.pins = { [weak self] in self?.document.templates ?? [] }
     }
 
     var available: Bool { gateway.available }
@@ -91,7 +105,7 @@ final class GraphicsModel: ObservableObject {
     }
 
     func reproject() {
-        let next = state.map { GraphicsStrip.project($0, rows: stripRows()) } ?? .empty
+        let next = state.map { GraphicsStrip.project($0, rows: document.playlist.map(\.stripRow)) } ?? .empty
         if next != strip { strip = next }
     }
 

@@ -240,7 +240,8 @@ struct GraphicsTemplatePin: Equatable {
     }
 }
 
-struct GraphicsDocument {
+/// A value: JSONSerialization containers are immutable once parsed, so a copy is safe to hand to the document queue.
+struct GraphicsDocument: @unchecked Sendable {
     static let currentSchemaVersion = 3
     /// The whole document as read (or a new one). Only `playlist` is rewritten on save.
     var json: JSONObject
@@ -338,8 +339,9 @@ struct GraphicsDocumentLoad {
 
 /// Atomic, version-guarded graphics persistence. Not an actor: callers run it
 /// off the main actor (spec 5.10); it holds no lock because the Mac has one
-/// owner (GraphicsModel) that serialises load and save.
-final class GraphicsDocumentStore {
+/// owner (GraphicsModel) that confines every load and save to its serial
+/// `documentQueue` — hence @unchecked Sendable.
+final class GraphicsDocumentStore: @unchecked Sendable {
     static let byteLimit = 2 * 1024 * 1024
     static let maxDepth = 32
 

@@ -3926,6 +3926,9 @@ enum ShellTests {
 
     @MainActor
     static func runAndExit() -> Never {
+        // Plan D4: the harness never reads or writes the operator's graphics show.
+        setenv("COREVIDEO_GRAPHICS_DOCUMENT_PATH",
+               (NSTemporaryDirectory() as NSString).appendingPathComponent("cvp-shell-tests-graphics-\(getpid())/default.json"), 1)
         // Before ANY test: a run whose prefs resolve to the real file aborts.
         ShellHarness.requireIsolatedPrefsOrExit()
         failures = []
@@ -4130,7 +4133,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()

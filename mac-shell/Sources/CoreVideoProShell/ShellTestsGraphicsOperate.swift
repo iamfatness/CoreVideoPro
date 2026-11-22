@@ -40,9 +40,12 @@ final class ScriptedGraphicsCore {
         let g = command["graphics"] as? JSONObject ?? [:]
         let outcome = react(command, &node)
         revision += 1
+        // Like the core: the result names the instance's revision after the command.
+        let instanceId = g["instanceId"] as? String ?? ""
+        let current = (node["instances"] as? [JSONObject] ?? []).first { $0["instanceId"] as? String == instanceId }?["revision"]
         let result: JSONObject = ["requestId": g["requestId"] as? String ?? "", "clientId": g["clientId"] as? String ?? "",
-                                  "instanceId": g["instanceId"] as? String ?? "", "accepted": outcome.accepted,
-                                  "reason": outcome.reason, "currentRevision": revision]
+                                  "instanceId": instanceId, "accepted": outcome.accepted,
+                                  "reason": outcome.reason, "currentRevision": (current as? NSNumber)?.int64Value ?? revision]
         var ops = node["operations"] as? [JSONObject] ?? []
         ops.append(result)
         node["operations"] = Array(ops.suffix(8))
@@ -91,7 +94,9 @@ extension ShellTests {
 
     @MainActor
     static func graphicsModel(_ core: ScriptedGraphicsCore, running: Bool = true) -> GraphicsModel {
-        let model = GraphicsModel(coreRunning: { running }, send: { try await core.send($0) })
+        let model = GraphicsModel(coreRunning: { running }, send: { try await core.send($0) },
+                                  documentPath: (graphicsTempDir() as NSString).appendingPathComponent("default.json"))
+        model.saveDelayNs = 0
         model.observe(snapshot: ["graphics": core.node, "profile": ["capabilityStates": ["graphics-instances": ["state": "available"]]]])
         return model
     }

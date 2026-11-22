@@ -55,6 +55,7 @@ struct GraphicsOperatePane: View {
                     }
                 }
                 GraphicsOnAirStrip(graphics: graphics)
+                GraphicsPlaylistPane(graphics: graphics)
                 Spacer(minLength: 0)
             }
             .padding(.vertical, 4)
