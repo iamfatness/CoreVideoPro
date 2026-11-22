@@ -469,6 +469,10 @@ def main():
                              "second (a fresh overlay raster preparation each time) and a hide/re-show "
                              "every five seconds, so the render tick is measured with the overlay "
                              "raster cycling (Metal graphics backend G1, spec 7.4)")
+    parser.add_argument("--source-preview-demand", action="store_true",
+                        help="hold the Sources tab's preview-demand lease (renewed every poll, as the "
+                             "shell renews it every second) so the core renders the source sheet "
+                             "(sources Phase 2, S6), then gate that the sheet was actually rendered")
     parser.add_argument("--ffmpeg", default=None,
                         help="ffmpeg bin dir or exe for --media fixtures "
                              "(default: COREVIDEO_FFMPEG_BIN_DIR, then PATH)")
@@ -633,7 +637,8 @@ def main():
                                              "text": f"DRILL GUEST {second}",
                                              "title": "CoreVideo show drill"}], elapsed)
         else:
-            response = step("poll", [], elapsed)
+            response = step("poll", [{"type": "set-source-preview-demand", "enabled": True}]
+                            if args.source_preview_demand else [], elapsed)
         for editor in preview_editors:
             core.request(dict(editor, type="set-grade-preview", renewOnly=True), step="grade-preview-renew")
         # Both ends of the operator-traffic window, for the --media block. The
@@ -848,6 +853,27 @@ def main():
             failures.extend("media: " + failure for failure in media_failures)
         else:
             print("PASS media sources held their rates with no decoder restart")
+
+    # Sources Phase 2 (S6): the monitor shed state is the judge of the sheet's cost, so it is
+    # printed on every run (demand on AND off) for the A/B; with demand on, a sheet that was
+    # never rendered means the run measured nothing.
+    shed = (snapshot.get("realtimeEvidence") or {}).get("monitorShed") or {}
+    print(f"MONITOR SHED divisor={shed.get('divisor')} level={shed.get('level')} "
+          f"entered={shed.get('enteredCount')} shedTicks={shed.get('shedTicks')} "
+          f"lastReason={shed.get('lastReason')}")
+    # The sheet is judged on the LAST operator-window poll: the lease is 3 s, and the record
+    # segment after the window renews nothing, so the final snapshot has (correctly) let it go.
+    sheet = (media_last or {}).get("sourceSheet") or {}
+    sheet_texture = sheet.get("texture") or {}
+    live_cells = sum(1 for cell in sheet.get("cells", []) if cell.get("state") in ("live", "held"))
+    print(f"SOURCE SHEET active={sheet.get('active')} surface={sheet_texture.get('iosurfaceId')} "
+          f"frame={sheet_texture.get('frameNumber')} liveCells={live_cells}")
+    if args.source_preview_demand:
+        if sheet.get("active") and live_cells > 0:
+            print("PASS source sheet rendered under the demand lease")
+        else:
+            failures.append(f"--source-preview-demand: no source sheet with a live cell "
+                            f"(active={sheet.get('active')}, liveCells={live_cells}); the run measured nothing")
 
     multiview = snapshot.get("multiviewSharedTexture") or {}
     roles = {tile.get("role") for tile in multiview.get("tiles", [])}
