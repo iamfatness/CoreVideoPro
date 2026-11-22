@@ -123,6 +123,12 @@ def main():
     parser.add_argument("--fake-engine", default=os.path.join(ROOT, "native/build-metal/corevideo-zoom-engine-fake"))
     parser.add_argument("--seconds", type=float, default=20.0)
     parser.add_argument("--out", default="")
+    parser.add_argument("--lone-core", action="store_true",
+                        help="run a COPY of the core outside the bundle (the pkg installs it in "
+                             "/Library/Application Support) with the shell's environment")
+    parser.add_argument("--no-shell-env", action="store_true",
+                        help="with --lone-core: omit the shell's guard/ffmpeg variables (the "
+                             "pre-fix behaviour; expected to FAIL)")
     args = parser.parse_args()
 
     resources = os.path.join(args.app, "Contents", "Resources")
@@ -135,6 +141,14 @@ def main():
             return 1
     out = args.out or tempfile.mkdtemp(prefix="cvp-stream-e2e-")
     os.makedirs(out, exist_ok=True)
+    if args.lone_core:
+        # Nothing sits beside this copy: exactly the pkg's
+        # /Library/Application Support/CoreVideo Pro/corevideo-native.
+        lone_dir = os.path.join(out, "lone-core")
+        os.makedirs(lone_dir, exist_ok=True)
+        lone = os.path.join(lone_dir, "corevideo-native")
+        subprocess.run(["cp", "-p", core_path, lone], check=True)
+        core_path = lone
     failures, notes = [], []
 
     rtmp_file = os.path.join(out, "received-rtmp.flv")
@@ -167,6 +181,10 @@ def main():
         "COREVIDEO_FAKE_ENGINE_FPS": "30",
         "COREVIDEO_FAKE_NO_CHURN": "1",
     }
+    if args.lone_core and not args.no_shell_env:
+        # What AppModel's launch block adds (ShellPaths.streamingEnvironment).
+        env["COREVIDEO_CHILD_GUARD_PATH"] = guard
+        env["COREVIDEO_FFMPEG_BIN_DIR"] = resources
     core = Core(core_path, env)
     time.sleep(1.5)
     joined = core.request({"type": "zoom-join", "payload": {"meetingNumber": "1234567890",
@@ -219,7 +237,9 @@ def main():
         if sender.get("destination") not in destinations:
             continue
         detail = sender.get("runtimeDetail", "")
-        notes.append(f"{sender['destination']}: runtimeDetail={detail}")
+        notes.append(f"{sender['destination']}: runtimeDetail={detail} childGuard={sender.get('childGuard')}")
+        if sender.get("childGuard") is not True:
+            failures.append(f"{sender['destination']} does not report childGuard=true")
         # "ffmpeg:<path>" after spawn, "available:<path>" once the runtime probe republishes it.
         if os.path.realpath(detail.split(":", 1)[-1]) != os.path.realpath(bundled_ffmpeg):
             failures.append(f"{sender['destination']} did not use the bundled ffmpeg: {detail!r}")

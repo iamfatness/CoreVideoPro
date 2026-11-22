@@ -2958,6 +2958,9 @@ rpc::Json CoreStateCapture::outputSenderSessionState(const AudioOutputObservatio
     if (!sender.runtimeDetail.empty()) {
       senderJson.emplace("runtimeDetail", sender.runtimeDetail);
     }
+    if (sender.childGuarded.has_value()) {
+      senderJson.emplace("childGuard", *sender.childGuarded);
+    }
     // PR19: the output supervisor's per-destination state, verbatim. /snapshot
     // serves sessionState as-is, so this is the whole path from "a destination
     // failed on a machine we cannot see" to "the support bundle says which one,

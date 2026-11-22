@@ -588,6 +588,10 @@ final class AppModel: ObservableObject {
     @Published var destinationRows: [String: DestinationStatus] = [:]
     /// What the sender resolved as its ffmpeg ("" until a sender reports one).
     @Published var streamRuntimeDetail = ""
+    /// Whether the core's stream ffmpeg runs under corevideo-child-guard (nil =
+    /// not reported yet). false means a crashed core can leave ffmpeg running.
+    @Published var streamChildGuard: Bool?
+    var warnedUnguardedChild = false
 
     // The LAST snapshots as the core sent them. applySnapshot/applyZoom cherry-
     // pick the slices the panes bind to; the Health surface and the support
@@ -1121,6 +1125,8 @@ final class AppModel: ObservableObject {
             self.streamStatus = "interrupted"
             self.streamDetail = "Media core exited; output continuity was interrupted."
             self.destinationRows = [:]
+            self.warnedUnguardedChild = false
+            self.streamChildGuard = nil
             self.pushWarning("media core exited (code \(code)) — relaunching")
         }
     }
@@ -4150,6 +4156,16 @@ final class AppModel: ObservableObject {
         if rows != destinationRows { destinationRows = rows }
         let runtime = senders.compactMap { $0["runtimeDetail"] as? String }.first { !$0.isEmpty } ?? ""
         if runtime != streamRuntimeDetail { streamRuntimeDetail = runtime }
+        // Warn, not fail closed (review default, recorded in the plan): an
+        // unguarded ffmpeg still streams, but it can outlive a crashed core.
+        let guards = senders.compactMap { $0["childGuard"] as? Bool }
+        let guarded: Bool? = guards.isEmpty ? nil : !guards.contains(false)
+        if guarded != streamChildGuard { streamChildGuard = guarded }
+        if guarded == false && !warnedUnguardedChild {
+            warnedUnguardedChild = true
+            pushWarning("stream: ffmpeg is running without its child guard; "
+                        + "if the media core crashes it can keep streaming. Reinstall CoreVideo Pro.")
+        }
         func lifecycleState(_ sender: JSONObject) -> String {
             (sender["lifecycle"] as? JSONObject)?["state"] as? String ?? ""
         }
@@ -6091,6 +6107,12 @@ enum CoreLaunchEnvironment {
         } else if let fonts = paths.graphicsFontsDirectory {
             env["COREVIDEO_GRAPHICS_FONTS_DIR"] = fonts
         }
+        // Streaming helpers (mac streaming Phase 2): the same pkg layout means
+        // nothing sits beside the core, so name the bundle's corevideo-child-guard
+        // and the directory of its LGPL ffmpeg (an operator's own
+        // COREVIDEO_FFMPEG_BIN_DIR wins). Without these the core ran Homebrew's
+        // GPL ffmpeg, or none, and ran it unguarded.
+        env.merge(ShellPaths.streamingEnvironment(paths, inherited: processEnvironment)) { $1 }
         return env
     }
 }
@@ -6106,6 +6128,11 @@ enum ShellPaths {
         /// looks beside its own executable, which the pkg-installed copy in
         /// /Library has not got, so the launch names this folder explicitly.
         var graphicsFontsDirectory: String?
+        /// corevideo-child-guard and the directory holding the bundled ffmpeg,
+        /// in the app's Resources (mac streaming Phase 2). The pkg runs the core
+        /// from /Library/Application Support, where neither sits beside it.
+        var childGuardPath: String?
+        var bundledFfmpegDirectory: String?
         /// True when corePath is the pkg-installed copy the camera extension can
         /// verify (CoreLocation); false means the camera refuses this core's frames.
         var coreCameraEligible = false
@@ -6157,6 +6184,16 @@ enum ShellPaths {
             FileManager.default.isExecutableFile(atPath: $0)
         }
         paths.graphicsFontsDirectory = graphicsFontsDirectory(bundleResources: bundleResources, repoRoot: repoRoot())
+        var helpers = streamingHelpers(resources: bundleResources) {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+        if helpers.childGuardPath == nil {
+            // Dev runs: the guard is built beside the dev core.
+            let dev = repoRoot() + "/native/build-metal/corevideo-child-guard"
+            if FileManager.default.isExecutableFile(atPath: dev) { helpers.childGuardPath = dev }
+        }
+        paths.childGuardPath = helpers.childGuardPath
+        paths.bundledFfmpegDirectory = helpers.bundledFfmpegDirectory
         return paths
     }
 
@@ -6166,6 +6203,27 @@ enum ShellPaths {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: $0, isDirectory: &isDirectory) && isDirectory.boolValue
         }
+    }
+
+    /// The bundle's guard and ffmpeg, if this app carries them.
+    static func streamingHelpers(resources: String, exists: (String) -> Bool) -> Paths {
+        var paths = Paths()
+        guard !resources.isEmpty else { return paths }
+        let guardPath = resources + "/corevideo-child-guard"
+        if exists(guardPath) { paths.childGuardPath = guardPath }
+        if exists(resources + "/ffmpeg") { paths.bundledFfmpegDirectory = resources }
+        return paths
+    }
+
+    /// Environment the core needs to use the bundle's guard and ffmpeg wherever
+    /// the core itself runs from. An operator's own COREVIDEO_FFMPEG_BIN_DIR wins.
+    static func streamingEnvironment(_ paths: Paths, inherited: [String: String]) -> [String: String] {
+        var env: [String: String] = [:]
+        if let guardPath = paths.childGuardPath { env["COREVIDEO_CHILD_GUARD_PATH"] = guardPath }
+        if let directory = paths.bundledFfmpegDirectory, inherited["COREVIDEO_FFMPEG_BIN_DIR"] == nil {
+            env["COREVIDEO_FFMPEG_BIN_DIR"] = directory
+        }
+        return env
     }
 
     static func repoRoot() -> String {

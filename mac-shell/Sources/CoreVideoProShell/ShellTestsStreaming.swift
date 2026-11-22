@@ -26,6 +26,8 @@ extension ShellTests {
             ("streaming/snapshot-projects-rows-and-quit-status", testSnapshotProjectsRowsAndQuitStatus),
             ("streaming/prefs-keep-rows-never-the-passphrase", testPrefsKeepRowsNeverThePassphrase),
             ("streaming/footer-health-reads-the-projection", testFooterHealthReadsTheProjection),
+            ("streaming/launch-env-names-the-bundled-guard-and-ffmpeg", testLaunchEnvNamesTheBundledGuardAndFfmpeg),
+            ("streaming/unguarded-helper-is-loud", testAnUnguardedHelperIsLoud),
         ]
     }
 
@@ -393,5 +395,71 @@ extension ShellTests {
         expectEqual(model.streamSummary, "RTMP live, SRT reconnecting in 5 s", "the footer summary line")
         model.destinationRows["srt"] = DestinationStatus(label: "Live", tone: .good, isLive: true)
         expectEqual(model.streamHealthLabel, "Live", "all confirmed")
+    }
+
+    /// Review blocker: a pkg install runs the core from /Library/Application
+    /// Support/CoreVideo Pro/, where nothing sits beside it. The shell must
+    /// name the bundle's guard and ffmpeg for it, and never override an
+    /// operator's own COREVIDEO_FFMPEG_BIN_DIR.
+    static func testLaunchEnvNamesTheBundledGuardAndFfmpeg() {
+        var paths = ShellPaths.Paths()
+        paths.childGuardPath = "/Applications/CoreVideo Pro.app/Contents/Resources/corevideo-child-guard"
+        paths.bundledFfmpegDirectory = "/Applications/CoreVideo Pro.app/Contents/Resources"
+        let env = ShellPaths.streamingEnvironment(paths, inherited: [:])
+        expectEqual(env["COREVIDEO_CHILD_GUARD_PATH"],
+                    "/Applications/CoreVideo Pro.app/Contents/Resources/corevideo-child-guard", "guard path")
+        expectEqual(env["COREVIDEO_FFMPEG_BIN_DIR"], "/Applications/CoreVideo Pro.app/Contents/Resources",
+                    "bundled ffmpeg directory")
+        let kept = ShellPaths.streamingEnvironment(paths, inherited: ["COREVIDEO_FFMPEG_BIN_DIR": "/opt/my-ffmpeg"])
+        expect(kept["COREVIDEO_FFMPEG_BIN_DIR"] == nil, "an operator's own ffmpeg dir is left alone (not overridden)")
+        expectEqual(kept["COREVIDEO_CHILD_GUARD_PATH"],
+                    "/Applications/CoreVideo Pro.app/Contents/Resources/corevideo-child-guard",
+                    "the guard is still named")
+        // Through the REAL launch builder (CoreLaunchEnvironment.extras), not only the helper.
+        let launch = CoreLaunchEnvironment.extras(paths: paths, processEnvironment: [:], zoomPublicAppKey: nil)
+        expectEqual(launch["COREVIDEO_CHILD_GUARD_PATH"],
+                    "/Applications/CoreVideo Pro.app/Contents/Resources/corevideo-child-guard",
+                    "the core launch names the bundle's guard")
+        expectEqual(launch["COREVIDEO_FFMPEG_BIN_DIR"], "/Applications/CoreVideo Pro.app/Contents/Resources",
+                    "the core launch names the bundle's ffmpeg directory")
+        let launchKept = CoreLaunchEnvironment.extras(
+            paths: paths, processEnvironment: ["COREVIDEO_FFMPEG_BIN_DIR": "/opt/my-ffmpeg"], zoomPublicAppKey: nil)
+        expect(launchKept["COREVIDEO_FFMPEG_BIN_DIR"] == nil,
+               "the launch leaves an operator's inherited COREVIDEO_FFMPEG_BIN_DIR to the child environment")
+        let none = ShellPaths.streamingEnvironment(ShellPaths.Paths(), inherited: [:])
+        expect(none.isEmpty, "nothing found, nothing invented")
+        // The resolver finds the bundle's copies from the app's Resources.
+        let found = ShellPaths.streamingHelpers(resources: "/X/Resources",
+                                                exists: { ["/X/Resources/corevideo-child-guard",
+                                                           "/X/Resources/ffmpeg"].contains($0) })
+        expectEqual(found.childGuardPath, "/X/Resources/corevideo-child-guard", "guard found in Resources")
+        expectEqual(found.bundledFfmpegDirectory, "/X/Resources", "ffmpeg dir found in Resources")
+        let missing = ShellPaths.streamingHelpers(resources: "/X/Resources", exists: { _ in false })
+        expect(missing.childGuardPath == nil && missing.bundledFfmpegDirectory == nil, "absent stays absent")
+    }
+
+    /// A helper that runs without the guard can outlive a killed core: say so.
+    @MainActor
+    static func testAnUnguardedHelperIsLoud() {
+        let (model, _, _) = streamingModel()
+        func lifecycle(_ state: String) -> JSONObject {
+            ["sessionId": "s", "desiredActive": true, "state": state, "health": "healthy", "finalized": false]
+        }
+        model.applySnapshotForTesting(["outputSenderSession": ["senders": [
+            ["destination": "rtmp", "status": "live", "lifecycle": lifecycle("producing"), "childGuard": true],
+        ] as [JSONObject]] as JSONObject])
+        expectEqual(model.streamChildGuard, true, "guarded is reported")
+        expect(!model.warnings.contains { $0.contains("child guard") }, "no warning while guarded")
+        model.applySnapshotForTesting(["outputSenderSession": ["senders": [
+            ["destination": "rtmp", "status": "live", "lifecycle": lifecycle("producing"), "childGuard": false],
+        ] as [JSONObject]] as JSONObject])
+        expectEqual(model.streamChildGuard, false, "unguarded is reported")
+        expectEqual(model.warnings.filter { $0.contains("child guard") }.count, 1, "warned once")
+        model.applySnapshotForTesting(["outputSenderSession": ["senders": [
+            ["destination": "rtmp", "status": "live", "lifecycle": lifecycle("producing"), "childGuard": false],
+        ] as [JSONObject]] as JSONObject])
+        expectEqual(model.warnings.filter { $0.contains("child guard") }.count, 1, "and only once per core")
+        expect(StreamHealthLine.childGuard(false).contains("can outlive"), "Health says what it means")
+        expectEqual(StreamHealthLine.childGuard(nil), "not reported yet", "absent is not claimed")
     }
 }

@@ -1157,6 +1157,13 @@ struct DiagnosePane: View {
                         ? "not configured"
                         : "configured (Keychain — never exported)",
                      tone: model.streamKey.isEmpty ? .warn : .good),
+            // mac streaming Phase 2: an unguarded ffmpeg can outlive a crashed core.
+            DiagItem(label: "ffmpeg child guard",
+                     value: StreamHealthLine.childGuard(model.streamChildGuard),
+                     tone: model.streamChildGuard == false ? .warn
+                         : model.streamChildGuard == true ? .good : .neutral),
+            DiagItem(label: "ffmpeg", value: model.streamRuntimeDetail.isEmpty ? nil : model.streamRuntimeDetail,
+                     wrap: true),
         ]
         for sender in snap.objects("outputSenderSession.senders") {
             let entry = Snap(sender)

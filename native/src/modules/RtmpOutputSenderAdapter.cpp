@@ -2037,6 +2037,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     }
     const pid_t pid = spawned.pid;
     ffmpegGuarded_ = spawned.guarded;
+    sender_.childGuarded = spawned.guarded;
 
     // Avoid SIGPIPE killing us when FFmpeg exits; writes return EPIPE instead.
     ::signal(SIGPIPE, SIG_IGN);

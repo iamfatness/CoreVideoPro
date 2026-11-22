@@ -276,3 +276,14 @@ enum DestinationStatusProjection {
         (session?["senders"] as? [JSONObject])?.first { $0["destination"] as? String == id }
     }
 }
+
+/// Health/Diagnostics wording for the stream helpers.
+enum StreamHealthLine {
+    static func childGuard(_ guarded: Bool?) -> String {
+        switch guarded {
+        case true?: return "on (ffmpeg ends with the media core)"
+        case false?: return "OFF: ffmpeg can outlive a crashed media core"
+        case nil: return "not reported yet"
+        }
+    }
+}

@@ -1045,6 +1045,10 @@ struct OutputSender {
   std::string sendArtifactPath;
   int64_t sendBytesWritten = 0;
   std::string runtimeDetail;
+  // POSIX: whether the transport child (ffmpeg) runs under corevideo-child-guard,
+  // i.e. dies with the core even on SIGKILL. Absent = not applicable / not
+  // launched yet (Windows uses a job object and never sets it).
+  std::optional<bool> childGuarded;
   // PR22: every destination carries a lifecycle and a terminal outcome. Before
   // this an RTMP/SRT/NDI stream that died mid-show had NOTHING an operator or a
   // support bundle could read as a state — only free-text adapter status

@@ -255,6 +255,11 @@ TEST(FfmpegChildRetirement, PosixSenderRunsFfmpegUnderTheGuardAndStopReapsIt) {
     input >> child;
   }
   ASSERT_GT(child, 0) << "the sender never launched its transport child";
+  // The snapshot says so, so the shell can warn when it is false (review item 1).
+  const auto published = sender->sync({"rtmp"}, &frame, elapsedMs, {settings});
+  ASSERT_FALSE(published.senders.empty());
+  EXPECT_EQ(published.senders.front().childGuarded, std::optional<bool>(true))
+      << "the sender must publish that its ffmpeg runs under the child guard";
   proc_bsdinfo info{};
   ASSERT_EQ(::proc_pidinfo(child, PROC_PIDTBSDINFO, 0, &info, sizeof(info)), static_cast<int>(sizeof(info)));
   EXPECT_NE(static_cast<pid_t>(info.pbi_ppid), ::getpid())
