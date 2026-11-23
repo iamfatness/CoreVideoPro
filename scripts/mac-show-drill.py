@@ -426,6 +426,37 @@ def media_report(first, last, seconds):
     return lines, failures
 
 
+def tiles_wall(scene_id, members, style_name=None):
+    """The `tiles` node the Mac/Windows shell sends for a CoreVideo Tiles scene
+    (MediaCoreCommandBuilder.SerializeTilesLayer keys and defaults verbatim)."""
+    style = {"tileAspect": "16:9", "customAspectRatio": 1.7777777777777777,
+             "gutterPercent": 0.741, "marginPercent": 0.741, "backgroundColor": "#000000",
+             "backgroundSourceId": "", "borderShape": "square", "borderColor": "#000000",
+             "borderThickness": 0, "cornerRadius": 16, "glowColor": "#FFFFFF", "glowSize": 0,
+             "glowIntensity": 100, "glowSoftness": 0, "animateLayout": False,
+             "animationDurationMs": 350, "fillMode": "auto", "nameEachTile": False}
+    if style_name == "rounded-glow":
+        style.update({"borderShape": "rounded", "cornerRadius": 24, "borderThickness": 2,
+                      "borderColor": "#657D87", "glowSize": 12, "glowColor": "#8AE0CA"})
+    return {"layerId": f"tiles:{scene_id}", "order": 0,
+            "rect": {"x": 0, "y": 0, "w": 1, "h": 1}, "opacity": 1,
+            "transparentBackground": False, "members": list(members), "overrides": {},
+            "style": style}
+
+
+def tiles_verdict(snapshot, load):
+    """FAIL unless the run actually drew a full wall: a drill that drew no wall
+    can never pass (plan Task 4 step 3)."""
+    node = (snapshot or {}).get("tiles")
+    if not isinstance(node, dict):
+        return "tiles: the snapshot has no tiles node (no wall was drawn)"
+    members = node.get("members") or []
+    held = node.get("heldCount")
+    if len(members) != load or held != 0:
+        return f"tiles: {len(members)} members drawn (want {load}), heldCount={held} (want 0)"
+    return None
+
+
 def wall_sources(sources):
     return [{"sourceId": f"zoom:{101 + i}", "kind": "zoom",
              "participantId": str(101 + i), "slot": i,
@@ -679,6 +710,12 @@ def main():
                              "(for shared CI runners that cannot source 60 Hz)")
     parser.add_argument("--load", type=int, default=0,
                         help="synthesize N 1080p Zoom feeds (the production wall)")
+    parser.add_argument("--tiles", action="store_true",
+                        help="with --load N: put a CoreVideo Tiles wall of all N feeds on Program and "
+                             "Preview (routes []), re-cue the Preview wall, and FAIL unless the "
+                             "snapshot's tiles node has N members and heldCount 0")
+    parser.add_argument("--tiles-style", choices=["plain", "rounded-glow"], default="plain",
+                        help="with --tiles: rounded-glow = radius 24, border 2, glow 12")
     parser.add_argument("--media", action="store_true",
                         help="put a 1080p60 clip and a looping 1080p30 video background on Program "
                              "and gate their decode/presentation rates")
@@ -783,6 +820,19 @@ def main():
                           "routes": [route("pgm-0")]})
         configure.append({"type": "set-preview-scene", "sceneId": "pvw",
                           "routes": [route("pvw-0")]})
+    if args.tiles:
+        if not args.load:
+            print("FAIL  --tiles needs --load N (the wall's members are the N synthetic feeds)")
+            core.kill()
+            return 1
+        tiles_members = [f"zoom:{101 + i}" for i in range(args.load)]
+        tiles_style = args.tiles_style if args.tiles_style != "plain" else None
+        for command in configure:
+            if command["type"] in ("load-scene-graph", "set-preview-scene"):
+                command["sceneId"] = "tiles-a"
+                command["routes"] = []
+                command["tiles"] = tiles_wall("tiles-a", tiles_members, tiles_style)
+        print(f"TILES {args.load}-member wall on Program and Preview (style {args.tiles_style})")
     if args.media:
         # The same Program scene plus a clip in the top-right quarter and a
         # looping video background behind everything.
@@ -874,8 +924,15 @@ def main():
         if tick % 5 == 0:
             # Re-cue preview (the solo-scene path) — the traffic that flooded.
             solo = "mv-solo-a" if tick % 10 == 0 else "mv-solo-b"
-            response = step("recue", [{"type": "set-preview-scene", "sceneId": solo,
-                                       "routes": [route("solo-0")]}], elapsed)
+            if args.tiles:
+                # Under --tiles the re-cue re-sends the same Preview wall.
+                response = step("recue", [{"type": "set-preview-scene", "sceneId": "tiles-a",
+                                           "routes": [],
+                                           "tiles": tiles_wall("tiles-a", tiles_members, tiles_style)}],
+                                elapsed)
+            else:
+                response = step("recue", [{"type": "set-preview-scene", "sceneId": solo,
+                                           "routes": [route("solo-0")]}], elapsed)
         elif args.lower_third:
             # Every poll tick (2 Hz) carries the overlay; the text changes once a
             # second and every fifth second the lower third is taken out, so the
@@ -948,6 +1005,14 @@ def main():
 
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
+    if args.tiles:
+        verdict = tiles_verdict(snapshot, args.load)
+        if verdict:
+            failures.append(verdict)
+        else:
+            node = snapshot.get("tiles") or {}
+            print(f"TILES {len(node.get('members') or [])} members drawn, heldCount 0, "
+                  f"blackCount {node.get('blackCount')}")
     if preview_editors:
         ready = [e for e in core.events if e.get("type") == "grade-preview" and e.get("status") == "ready"
                  and (e.get("texture") or {}).get("iosurfaceId")]
