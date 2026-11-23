@@ -14,6 +14,7 @@ import SwiftUI
 
 struct GraphicsPlaylistPane: View {
     @ObservedObject var graphics: GraphicsModel
+    @State private var socialOpen = false
 
     var body: some View {
         let lines = graphics.lines()
@@ -21,6 +22,15 @@ struct GraphicsPlaylistPane: View {
             HStack(spacing: 8) {
                 Text("PLAYLIST").font(.plexMono(10, .semibold)).tracking(1.6).foregroundStyle(Studio.secondary)
                 Spacer()
+                // Windows GraphicsPlayoutControl: "Social review…" before the add button,
+                // Graphics -> Operate only; disabled while the sheet is open.
+                Button("Social review…") { socialOpen = true }
+                    .buttonStyle(GhostButtonStyle())
+                    .disabled(socialOpen)
+                    .help("Review YouTube or Twitch chat; approve one message, then Show approved")
+                    .sheet(isPresented: $socialOpen) {
+                        SocialReviewSheet(model: graphics.socialReview) { socialOpen = false }
+                    }
                 Button("Add default rows") { graphics.addDefaultRows() }
                     .buttonStyle(GhostButtonStyle())
                     .disabled(graphics.documentReadOnly || !graphics.available)

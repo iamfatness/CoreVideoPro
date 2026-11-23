@@ -20,6 +20,7 @@ extension ShellTests {
             ("social/gateway-public-path-still-refuses-social-client", testSocialGatewaySymmetric),
             ("social/templates-are-byte-copies-of-contracts", testSocialTemplatesAreByteCopies),
             ("social/restart-reinstalls-template-on-next-show", testSocialRestartReinstallsTemplate),
+            ("social/playout-uses-the-created-revision", testSocialUsesCreatedRevision),
         ]
     }
 
@@ -34,6 +35,7 @@ extension ShellTests {
         private var waiters: [CheckedContinuation<Void, Never>] = []
         var installed = true   // false: the core lists no templates until an install lands
         var autoPrepare = false   // the cue lands prepared at once (no parked preparation)
+        var createRevision: Int64 = 1   // the core numbers revisions across instances
 
         init(provider: String = "YouTube") {
             state.schemaVersion = 1
@@ -77,9 +79,13 @@ extension ShellTests {
             var current = state.instances.first
             switch (action, body["action"] as? String ?? "") {
             case ("graphics.instance.create", _):
-                var made = GraphicsInstance(); made.instanceId = id; made.revision = 1; current = made
+                var made = GraphicsInstance(); made.instanceId = id; made.revision = createRevision; current = made
             case ("graphics.instance.cue", _):
-                if autoPrepare { current?.cueRevision = 1; current?.cuePending = false } else { current?.cuePending = true }
+                if (body["expectedRevision"] as? NSNumber)?.int64Value != current?.revision {
+                    return GraphicsOperationResult(instanceId: id, currentRevision: current?.revision ?? 0, reason: "revision-conflict")
+                }
+                let rev = current?.revision ?? 1
+                if autoPrepare { current?.cueRevision = rev; current?.cuePending = false } else { current?.cuePending = true }
             case ("graphics.instance.trigger", "show"):
                 current?.programRevision = 1; current?.cueRevision = 0; current?.visibility = "visible"
             case ("graphics.instance.trigger", "clear"): current?.programRevision = 0; current?.cueRevision = 0
@@ -95,12 +101,12 @@ extension ShellTests {
                 ShellTests.expect(false, "unexpected \(action)")
             }
             state.instances = current.map { [$0] } ?? []
-            return GraphicsOperationResult(instanceId: id, currentRevision: 1, accepted: true)
+            return GraphicsOperationResult(instanceId: id, currentRevision: current?.revision ?? createRevision, accepted: true)
         }
 
         func finishPreparation() {
             if var only = state.instances.first {
-                only.cueRevision = 1; only.cuePending = false
+                only.cueRevision = only.revision; only.cuePending = false
                 state.instances = [only]
             }
             ready = true
@@ -321,5 +327,21 @@ extension ShellTests {
         expectEqual(Array(actions.prefix(3)), ["graphics.template.install", "graphics.template.list", "graphics.instance.create"],
                     "install, list, then create")
         expectEqual(f.commands.first?.body["packageRoot"] as? String, "", "a manifest install with no package root")
+    }
+
+    /// The core numbers revisions across instances, so a later card is created
+    /// at revision > 1; Show must cue and trigger at THAT revision (live finding).
+    @MainActor static func testSocialUsesCreatedRevision() {
+        let f = SocialFixture()
+        f.createRevision = 7
+        f.ready = true; f.autoPrepare = true
+        let p = f.make()
+        let source = value(Task { await p.connect(provider: "YouTube") })!
+        let item = value(Task { await p.receive(source: source, id: "a", author: "Host", message: "Hello") })!!
+        expect(p.approve(item.key), "approve")
+        let shown = value(Task { await p.show(item.key) })
+        expectEqual(shown?.accepted, true, "shown at the created revision (\(shown?.reason ?? "nil"))")
+        let cue = f.commands.first { $0.action == "graphics.instance.cue" }?.body
+        expectEqual((cue?["expectedRevision"] as? NSNumber)?.int64Value, 7, "cue at expectedRevision 7")
     }
 }

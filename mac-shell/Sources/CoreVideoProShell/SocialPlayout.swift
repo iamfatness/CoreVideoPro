@@ -21,7 +21,12 @@ final class SocialPlayout {
 
     typealias Invoke = @MainActor (_ action: String, _ body: JSONObject) async -> GraphicsOperationResult
 
-    private struct Card { let key: SocialItemKey; let epoch: String; let id: String; let revision: Int64 = 1 }
+    /// `revision` is what the core's create returned. Windows hard-codes 1
+    /// (GraphicsSocialPlayout.Card), but the core numbers revisions across
+    /// instances: the second card in one core process is created at 2, and a
+    /// cue at expectedRevision 1 is refused with revision-conflict (found by the
+    /// live check, 2026-11-23). The Mac uses the created revision.
+    private struct Card { let key: SocialItemKey; let epoch: String; let id: String; var revision: Int64 = 1 }
 
     let review: SocialReview
     private let invoke: Invoke
@@ -122,7 +127,7 @@ final class SocialPlayout {
             return Self.refuse("The native social graphic template could not be verified.")
         }
         guard review.approved(key) != nil else { return Self.refuse("The message changed before Show.") }
-        let made = Card(key: key, epoch: epoch, id: Self.instancePrefix + newId())
+        var made = Card(key: key, epoch: epoch, id: Self.instancePrefix + newId())
         card = made
         attempted = made
         let created = await send("graphics.instance.create", epoch: epoch, [
@@ -130,13 +135,18 @@ final class SocialPlayout {
             "fields": ["author": item.author, "message": item.message],
         ])
         guard created.accepted else { return created }
+        let revision = created.currentRevision > 0 ? created.currentRevision
+            : current(epoch)?.instance(made.id)?.revision ?? 1
+        made.revision = revision
+        card = made
+        attempted = made
         let cued = await instanceCommand("graphics.instance.cue", made, ["rideTake": false])
         guard cued.accepted else { return cued }
         let started = now()
         while true {
             guard let observed = current(epoch) else { return Self.refuse("Native Graphics restarted.") }
             let instance = observed.instance(made.id)
-            if let instance, instance.cueRevision == 1, !instance.cuePending, instance.revision == 1 { break }
+            if let instance, instance.cueRevision == revision, !instance.cuePending, instance.revision == revision { break }
             if instance?.cuePreparation == "failed" || now().timeIntervalSince(started) >= 5 {
                 return Self.refuse("The social graphic could not prepare.")
             }
