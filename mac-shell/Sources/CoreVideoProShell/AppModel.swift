@@ -3205,31 +3205,32 @@ final class AppModel: ObservableObject {
     /// (`zoomAudioSourceIds` / `meetingAudioSubscribed`). Internal so the harness
     /// drives the real call site, not a hand-copied list.
     func resolveSpineSubscriptions() -> [JSONObject] {
-        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
-        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
-        // nondeterministic, uncapped and subscribed camera-off participants.
-        let programRouted = programSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
-        let previewRouted = previewSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
-        let multiviewAssigned = slots
-            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
-            .map(\.sourceId)
-        let isoArmed = isoRecordingEnabled
-            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
-        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
-        let audioIds = ZoomSourceBudget.audioParticipantIds(
-            programRouted: programRouted, previewRouted: previewRouted,
-            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed,
-            present: Set(roster.map(\.id)))
-        zoomAudioSourceIds = audioIds
+        let parts = ZoomSourceBudget.spineParts(spineSourceInput(), names: Dictionary(
+            roster.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }))
+        zoomAudioSourceIds = parts.subscriptions
+            .filter { $0["kind"] as? String == "participant-audio" }
+            .compactMap { $0["participantId"] as? String }
         meetingAudioSubscribed = !roster.isEmpty
-        return Self.spineSubscriptionPayloads(
-            ZoomSourceBudget.videoEntries(
-                programRouted: programRouted, previewRouted: previewRouted,
-                multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn),
-            audioParticipantIds: audioIds,
-            meetingHasParticipants: !roster.isEmpty)
+        return parts.subscriptions
+    }
+
+    /// The source-set input for the current show (Windows ZoomSourceSetPolicy.Input):
+    /// the room, both buses' routes AND Tiles walls (the same `tilesPayload(for:)` the
+    /// scene sync sends), the multiview wall, and ISO-armed guests.
+    func spineSourceInput() -> ZoomSourceBudget.Input {
+        var input = ZoomSourceBudget.Input()
+        input.participants = roster.map { ($0.id, $0.hasVideo) }
+        if !programSceneId.isEmpty {
+            input.programRoutes = buildRoutes(for: programSceneId, isProgram: true)
+            input.programTiles = tilesPayload(for: programSceneId)
+        }
+        if !previewSceneId.isEmpty {
+            input.previewRoutes = buildRoutes(for: previewSceneId)
+            input.previewTiles = tilesPayload(for: previewSceneId)
+        }
+        input.multiview = Self.multiviewSourcePayloads(slots, mediaAssets: mediaAssets)
+        input.iso = isoRecordingEnabled ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
+        return input
     }
 
     // The multiview roster on the wire: one tile per in-show slot that still has
@@ -3280,7 +3281,7 @@ final class AppModel: ObservableObject {
     // Until this shipped the Mac subscribed VIDEO ONLY: a live 9-guest meeting had
     // raw media active and audioMixSession.participants == 0 — no channels, nothing
     // to monitor.
-    static func spineSubscriptionPayloads(
+    nonisolated static func spineSubscriptionPayloads(
         _ entries: [ZoomSourceBudget.Entry], audioParticipantIds: [String],
         meetingHasParticipants: Bool
     ) -> [JSONObject] {

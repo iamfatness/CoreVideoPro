@@ -33,6 +33,9 @@ extension ShellTests {
             ("tiles/non-tiles-scene-no-key", testANonTilesSceneCarriesNoTilesKey),
             ("tiles/roster-change-resends-wall", testARosterChangeResendsAWallOnABus),
             ("tiles/no-layers-or-clips-on-a-wall", testAWallOnAPresetLayoutGetsNoLayersAndNoVoltClip),
+            // Task 10: the source set with Tiles tiers, from Windows-generated fixtures.
+            ("tiles/spine-fixtures", testEverySpineFixtureMatchesTheSwiftSourceSet),
+            ("tiles/spine-windows-facts", testTheSourceSetPortsTheWindowsSpineFacts),
         ]
     }
 
@@ -665,5 +668,145 @@ extension ShellTests {
         model.newScene(layout: "single")
         model.newScene(layout: "single")
         expectEqual(Set(model.scenes.map(\.id)).count, model.scenes.count, "\(w): new scenes never share an id")
+    }
+
+    // ── Task 10 ──────────────────────────────────────────────────────────────
+
+    static func loadSpineFixtures() -> [[String: Any]]? {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("contracts/tiles-spine.fixtures.json")),
+              let doc = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return doc["cases"] as? [[String: Any]]
+    }
+
+    static func spineInput(_ json: [String: Any]) -> (ZoomSourceBudget.Input, [String: String]) {
+        var input = ZoomSourceBudget.Input()
+        let people = json["participants"] as? [[String: Any]] ?? []
+        input.participants = people.map { ($0["id"] as? String ?? "", $0["videoOn"] as? Bool ?? false) }
+        input.programRoutes = json["programRoutes"] as? [JSONObject] ?? []
+        input.previewRoutes = json["previewRoutes"] as? [JSONObject] ?? []
+        input.programTiles = json["programTiles"] as? JSONObject
+        input.previewTiles = json["previewTiles"] as? JSONObject
+        input.stickyAudio = json["sticky"] as? [String] ?? []
+        input.iso = json["iso"] as? [String] ?? []
+        input.multiview = json["multiview"] as? [JSONObject] ?? []
+        let names = Dictionary(people.map { ($0["id"] as? String ?? "", $0["name"] as? String ?? "") },
+                               uniquingKeysWith: { first, _ in first })
+        return (input, names)
+    }
+
+    static func testEverySpineFixtureMatchesTheSwiftSourceSet() {
+        let w = "TilesSpineFixtureTests.EveryCaseMatchesTheWindowsBuilder (Swift twin)"
+        guard let cases = loadSpineFixtures() else {
+            expect(false, "\(w): contracts/tiles-spine.fixtures.json must be readable"); return
+        }
+        var checked = 0
+        for fixture in cases {
+            let name = fixture["name"] as? String ?? "?"
+            guard let inputJson = fixture["input"] as? [String: Any], let expected = fixture["expected"] as? [String: Any] else {
+                expect(false, "\(w): \(name) has input and a generated expected"); continue
+            }
+            let (input, names) = spineInput(inputJson)
+            let parts = ZoomSourceBudget.spineParts(input, names: names)
+            var actual: JSONObject = [
+                "subscriptions": parts.subscriptions, "sourceParticipantIds": parts.sourceParticipantIds,
+                "videoSubscriptionShortfall": parts.shortfall, "warnings": parts.warnings,
+            ]
+            if inputJson["multiview"] is [Any] {
+                actual["multiview"] = ["programNotice": parts.programNotice, "previewNotice": parts.previewNotice,
+                                       "labels": parts.multiviewSources.map { $0["label"] as? String ?? "" }]
+            }
+            if let difference = tilesJsonDifference(expected, tilesWire(actual), name) { expect(false, "\(w): \(difference)") }
+            checked += 1
+        }
+        expectEqual(checked, cases.count, "\(w): every case checked")
+        expect(checked >= 7, "\(w): at least 7 cases (a vacuous loop fails)")
+    }
+
+    private static func video(_ s: [ZoomSourceBudget.Source], max: Int = 10) -> [String] {
+        ZoomSourceBudget.decideVideo(s, max: max).subscribed.map { "\($0.participantId):\($0.purpose)" }
+    }
+
+    private static func fixedRoute(_ pid: String?, mode: String = "fixed") -> JSONObject {
+        var r: JSONObject = ["mode": mode]
+        if let pid { r["participantId"] = pid }
+        return r
+    }
+
+    private static func wall(_ pids: [String]) -> [JSONObject] {
+        pids.enumerated().map { ["kind": "zoom", "participantId": $0.element, "slot": $0.offset] }
+    }
+
+    static func testTheSourceSetPortsTheWindowsSpineFacts() {
+        let t = "ZoomMediaSpinePayloadBuilderTests"
+        typealias I = ZoomSourceBudget.Input
+        func people(_ ids: [String], off: Set<String> = []) -> [(id: String, videoOn: Bool)] { ids.map { ($0, !off.contains($0)) } }
+
+        var a = I(); a.participants = people((1...10).map { "p\($0)" })
+        a.programRoutes = [fixedRoute("p9")]; a.previewRoutes = [fixedRoute("p10")]; a.multiview = wall(["p1", "p2", "p3"])
+        expectEqual(video(ZoomSourceBudget.resolve(a), max: 3), ["p9:program", "p10:preview", "p1:multiview"],
+                    "\(t).ProgramAndPreviewRoutesOutrankTheWallAndTheActiveSpeakerDoesNotJumpTheQueue")
+
+        let host = "16778240", comms = "16783360", offWall = "16788480", offB = "16789504", offC = "16790528"
+        let pgm = "16791552", pvw = "16792576", alex = "50332672"
+        var b = I()
+        b.participants = people([host, comms, offWall, offB, offC, pgm, pvw, "16793600", "16794624", "16795648", "16796672", alex],
+                                off: [comms, offB, offC])
+        b.programRoutes = [fixedRoute(pgm)]; b.previewRoutes = [fixedRoute(pvw)]
+        b.multiview = [pgm, pvw, alex, "16793600", "16794624", "16795648", "16796672"].enumerated()
+            .map { ["kind": "zoom", "participantId": $0.element, "slot": $0.offset] }
+        let live = ZoomSourceBudget.resolve(b)
+        expectEqual(ZoomSourceBudget.decideVideo(live, max: 10).subscribed.map(\.participantId),
+                    [pgm, pvw, alex, "16793600", "16794624", "16795648", "16796672"],
+                    "\(t).LiveCase478_AWallGuestWhoJoinedLateIsSubscribedAndNothingUnroutedIs")
+        expect(!ZoomSourceBudget.audioIds(live).contains(host) && !ZoomSourceBudget.audioIds(live).contains(offWall),
+               "\(t).LiveCase478_AudioIsSubscribedForTheSameSourcesAndNobodyElse")
+
+        var c = I(); c.participants = people(["w1", "t1", "t2", "bg", "pv", "x"])
+        c.programTiles = ["members": ["zoom:t1", "zoom:t2", "capture:cam-1"], "style": ["backgroundSourceId": "zoom:bg"]]
+        c.previewTiles = ["members": ["zoom:t2", "zoom:pv"]]; c.multiview = wall(["w1"])
+        expectEqual(video(ZoomSourceBudget.resolve(c)),
+                    ["t1:program-tiles", "t2:program-tiles", "bg:program-tiles", "pv:preview-tiles", "w1:multiview"],
+                    "\(t).TilesMembersOfBothBusesAreSubscribedBecauseATilesSceneSendsNoRoutes (background read from the wire's style node)")
+
+        var d = I(); d.participants = people(["t1", "t2"])
+        d.programTiles = ["members": ["zoom:t1", "zoom:t2"]]; d.previewRoutes = [fixedRoute("t1")]
+        expectEqual(video(ZoomSourceBudget.resolve(d)), ["t1:preview", "t2:program-tiles"],
+                    "\(t).AFixedBusRouteSetsTheFullResolutionPurposeWhateverTierListsTheGuestFirst")
+
+        let members = (0..<10).map { "t\($0)" }
+        func cue(_ cued: Bool) -> I {
+            var e = I(); e.participants = people(members + ["cued"])
+            e.programTiles = ["members": members.map { "zoom:" + $0 }]
+            e.previewRoutes = cued ? [fixedRoute("cued")] : []; e.multiview = wall(["t0"])
+            return e
+        }
+        let after = ZoomSourceBudget.spineParts(cue(true), names: ["cued": "Cued guest"])
+        expectEqual(video(ZoomSourceBudget.resolve(cue(true))), video(ZoomSourceBudget.resolve(cue(false))),
+                    "\(t).AtTheCapCueingPreviewNeverTakesVideoFromAProgramGalleryMember: Program unchanged")
+        expectEqual(after.previewNotice, "no video: Cued guest (subscription limit 10)", "\(t).AtTheCap…: the PVW cell names them")
+        expectEqual(after.programNotice, "", "\(t).AtTheCap…: nothing on Program")
+
+        var f = I(); f.participants = people(["latched", "walled"], off: ["latched"])
+        f.stickyAudio = ["latched", "walled"]; f.multiview = wall(["walled"])
+        let sticky = ZoomSourceBudget.resolve(f)
+        expectEqual(video(sticky), ["walled:multiview"], "\(t).AStickyLatchedTilesMemberIsAnAudioOnlySourceUnlessAnotherTierListsThem")
+        expectEqual(ZoomSourceBudget.audioIds(sticky), ["walled", "latched"], "\(t).AStickyLatched…: audio")
+
+        var g = I(); g.participants = people(["off", "on"], off: ["off"]); g.multiview = wall(["off", "on"])
+        let camOff = ZoomSourceBudget.resolve(g)
+        expectEqual(video(camOff), ["on:multiview"], "\(t).ACameraOffWallGuestGetsAudioButNoVideo")
+        expectEqual(ZoomSourceBudget.audioIds(camOff), ["off", "on"], "\(t).ACameraOffWallGuestGetsAudioButNoVideo: audio")
+
+        var h = I(); h.participants = people(["w1", "w2", "x"])
+        h.programRoutes = [fixedRoute(nil, mode: "active-speaker")]; h.multiview = wall(["w1", "w2"])
+        let follow = ZoomSourceBudget.resolve(h)
+        expectEqual(video(follow), ["w1:multiview", "w2:multiview"], "\(t).AFollowSpeakerRouteGrantsNoFeedAndNoPurpose")
+        expect(!ZoomSourceBudget.audioIds(follow).contains("x"), "\(t).AFollowSpeaker…: a talking non-source gets nothing")
+
+        // The Mac multiview names a Zoom tile `participant-video`: it counts like Windows' `zoom`.
+        var m = I(); m.participants = people(["a"]); m.multiview = [["kind": "participant-video", "participantId": "a", "slot": 0]]
+        expectEqual(video(ZoomSourceBudget.resolve(m)), ["a:multiview"], "Mac multiview kind maps to the Windows zoom kind")
     }
 }

@@ -204,3 +204,39 @@ The reviewer found no behavioural divergence from the C#. Its findings were cove
 4. No "tiles wall on the" routes+wall warning appears anywhere in the snapshot.
 
 **Deviation:** plan step 3 says "Capture off". The fake engine keeps producing frames across `zoom-stop-capture`; only a leave destroys its targets. The proof turns Capture off and then leaves the meeting, which is the only way to make every frame stop. The first run did only Capture off and correctly failed "timed out waiting for an empty wall".
+
+### S1 slice review (independent, `e4cce344..0eac78ba`) and the Windows fixture gate
+
+- **Windows confirmation of the payload fixture:** CI `native-shell-windows` at `09328716`, which includes the 10-case fixture, shows `CoreVideoPro.WinUI.Tests` 2037/2037 passed. `TilesFixtureTests` requires every case in the file and at least 10, so all 10 are Windows-confirmed. It also passed at `e0a3c092` with the first 5. **S1's "not done until CI confirms" gate is met.**
+- No HIGH. The reviewer traced wire shape, both buses, Take, respawn, roster change, persistence, solo, multiview, media and Volt paths, and all were correct. Findings:
+  - **MEDIUM: the S1 live test cannot see the S2 subscription gap.** The wall seats every camera-on guest, while the S1 spine subscribes only slotted guests; the fake engine's 4 guests are all slotted. This is S2's own subject: Task 10 ports the Tiles tiers, Task 11 wires them, and Task 12 adds a live check with an unslotted wall guest. S1 must not run on a real show without S2, as the spec already says.
+  - **MEDIUM (not changed, recorded): an opt-in live test that skips counts as a pass.** This is the existing convention (`graphics-live` does the same). The skip line is printed loudly. A release gate must set `COREVIDEO_SHELL_LIVE_CORE`/`_ENGINE`; A1 does.
+  - **LOW (deferred to S4):** "Use Edit Tiles" names a control that arrives in S4, and the Scenes tab shows `sceneEditMessage` rather than `studioCommandStatus`.
+  - **LOW (recorded):** the collision assertion has no positive control. The shell never sends routes plus a wall, and I have not verified that the warning reaches the snapshot.
+  - **LOW (candidate follow-up):** `automationLowerThirdSource` treats a wall on Program as a preset layout.
+  - **LOW (recorded):** a roster that only reorders does not re-send the wall, which only affects tile order.
+
+## Slice S2
+
+### Task 10 — Windows-generated spine fixtures and the source-set port
+
+- `native-shell/CoreVideoPro.MediaCore.Tests/TilesSpineFixtureTests.cs` runs the real `ZoomMediaSpinePayloadBuilder` and writes `expected` under `COREVIDEO_REGENERATE_FIXTURES=1`; otherwise it asserts. It ran **on this Mac**: generated, then green (1/1).
+- `contracts/tiles-spine.fixtures.json`: the plan's 7 cases. Every generated `expected` was checked against the invariants:
+  - `meeting-audio` priority 0 comes first.
+  - Every source id is roster-present.
+  - The shortfall equals camera-on sources minus 10: 2, 1, 1 (multiview), and 0 for the rest.
+  - The preview notice names the cued guest; the 11th multiview label carries the unsubscribed suffix.
+  - Follow-speaker adds nobody, and the talking non-source appears in no list.
+  - The sticky id is audio-only, and the camera-off member gets audio without video.
+  - The wall background adds 108 at `program-tiles`.
+- Swift: `ZoomSourceBudget.resolve`, `decideVideo`, `audioIds`, `speakerCandidateIds` and the purpose predicates, ported verbatim (tier order and the purpose rule). Also `spineParts`, which covers subscriptions, source ids, shortfall, warning, notices and labels. The old `videoEntries` and `audioParticipantIds` are now thin wrappers. `resolveSpineSubscriptions` now reads both buses' walls from the same `tilesPayload(for:)` the scene sync sends. The Mac multiview `kind` `participant-video` counts as Windows' `zoom`.
+- Swift tests: the fixture twin (every case, at least 7) and the 8 `ZoomMediaSpinePayloadBuilderTests` facts by name, plus the `LiveCase478` audio fact and the Mac-kind mapping. `tiles/` filter: 211/211.
+
+| Mutation (Task 10) | Result |
+|---|---|
+| Preview routes above Program Tiles | red: `program-first-at-the-cap` plus the at-the-cap facts, 4 failures |
+| follow-speaker routes grant the bus purpose | **equivalent on Mac**. A follow route carries no participant, and the Mac source set takes no talking/directed-speaker input, so there is nobody to grant a purpose to. The fixture `follow-speaker-adds-nobody` and the `AFollowSpeakerRouteGrantsNoFeedAndNoPurpose` fact pin the observable rule: the talking non-source is in no list |
+| drop the wall background | red: `wall-background-source` and the both-buses fact |
+| cap audio | red: 4 fixture cases plus the camera-off and sticky facts, 6 failures |
+
+Shell, full suite: **8070 checks, 2 failed**, the known `.m4a` pair.
