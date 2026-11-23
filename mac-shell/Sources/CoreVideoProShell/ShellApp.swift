@@ -1213,7 +1213,8 @@ struct SceneRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(scene.name).font(.grotesk(12, .medium))
                         .foregroundStyle(Studio.textPrimary)
-                    Text(scene.layout).font(.grotesk(9))
+                    // Windows LayoutLabel (SceneDisplayItem.cs): "dynamic gallery".
+                    Text(scene.layout.replacingOccurrences(of: "-", with: " ")).font(.grotesk(9))
                         .foregroundStyle(Studio.secondary)
                 }
                 Spacer()

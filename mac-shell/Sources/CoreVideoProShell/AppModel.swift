@@ -3444,6 +3444,10 @@ final class AppModel: ObservableObject {
             bindSlot(slot, to: &route)
             return [route.json]
         }
+        // A Tiles scene sends NO routes (Windows BuildProductionSyncContext): the
+        // wall owns the scene, and a route beside it (the logo bug included)
+        // shares its order namespace and composites between tiles.
+        if isTilesScene(sceneId) { return [] }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
               let rects = Self.layoutRects[scene.layout] else { return [] }
         let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
@@ -3533,6 +3537,9 @@ final class AppModel: ObservableObject {
     // Seed the editable layer list from the layout preset the scene already
     // shows, so opening the editor never changes what is on screen.
     func ensureLayers(for sceneId: String) {
+        // A Tiles scene never gets layers (the wall owns it). Silent here: the
+        // scene editor calls this on appear; the explicit layer actions say why.
+        if isTilesScene(sceneId) { return }
         guard let index = scenes.firstIndex(where: { $0.id == sceneId }),
               scenes[index].layers.isEmpty,
               let rects = Self.layoutRects[scenes[index].layout] else { return }
@@ -3555,6 +3562,7 @@ final class AppModel: ObservableObject {
     }
 
     func addLayer(to sceneId: String) {
+        if refuseLayerEditOnTiles(sceneId) { return }
         guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
         ensureLayers(for: sceneId)
         let count = scenes[index].layers.count
@@ -4103,7 +4111,7 @@ final class AppModel: ObservableObject {
         sceneSyncRequestCount += 1
         sceneSyncTask?.cancel()
         sceneSyncTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            await self?.timerSleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
             await self?.pushScenes()
         }
@@ -4147,6 +4155,7 @@ final class AppModel: ObservableObject {
             if let background = backgroundPayload(for: programSceneId) {
                 graph["background"] = background
             }
+            if let tiles = tilesPayload(for: programSceneId) { graph["tiles"] = tiles }
             commands.append(graph)
         }
         if !previewSceneId.isEmpty {
@@ -4157,6 +4166,7 @@ final class AppModel: ObservableObject {
             if let background = backgroundPayload(for: previewSceneId) {
                 preview["background"] = background
             }
+            if let tiles = tilesPayload(for: previewSceneId) { preview["tiles"] = tiles }
             commands.append(preview)
         }
         // The bin SELECTION rides every scene sync (Windows BuildSyncCommands), so
@@ -5340,6 +5350,10 @@ final class AppModel: ObservableObject {
         guard let asset = selectedMediaAsset,
               let index = scenes.firstIndex(where: { $0.id == previewSceneId }) else { return mediaStatus }
         let sceneId = previewSceneId
+        if isTilesScene(sceneId) {   // the wall owns the scene (D5): no layer is added
+            mediaStatus = Self.tilesLayersRefusal
+            return mediaStatus
+        }
         ensureLayers(for: sceneId)
         var free = 0
         while scenes[index].layers.contains(where: { $0.id == "\(sceneId)-layer-\(free)" }) { free += 1 }

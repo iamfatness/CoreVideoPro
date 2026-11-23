@@ -24,6 +24,13 @@ extension ShellTests {
             ("tiles/payload-fixtures", testEveryTilesFixtureMatchesTheSwiftBuilder),
             ("tiles/payload-windows-facts", testTilesPayloadPortsTheWindowsBuilderFacts),
             ("tiles/local-source-policy", testTilesLocalSourcePolicyPortsTheWindowsFacts),
+            // Task 8: the wall in scene sync, the starter and the layer guards.
+            ("tiles/sync-both-buses-empty-routes", testATilesSceneSendsItsWallOnBothBusesWithEmptyRoutes),
+            ("tiles/take-same-wall-one-batch", testATakeOfTheSameWallKeepsItsLayerIdAndSendsOneBatch),
+            ("tiles/starter-preview-only", testTheTilesStarterIsANamedPreviewOnlyScene),
+            ("tiles/layer-edits-refused", testLayerEditsOnATilesSceneAreRefusedAndSendNoRoutes),
+            ("tiles/respawn-resends-wall", testACoreRespawnResendsTheWallOnBothBuses),
+            ("tiles/non-tiles-scene-no-key", testANonTilesSceneCarriesNoTilesKey),
         ]
     }
 
@@ -472,5 +479,152 @@ extension ShellTests {
                && !TilesLocalSourcePolicy.isLocalSourceId("zoom:1") && !TilesLocalSourcePolicy.isLocalSourceId("")
                && !TilesLocalSourcePolicy.isLocalSourceId(nil) && !TilesLocalSourcePolicy.isLocalSourceId("Capture:x"),
                "\(t).IsLocalSourceId_RecognisesOnlyCanonicalCaptureAndMediaIds")
+    }
+
+    // ── Task 8 ───────────────────────────────────────────────────────────────
+
+    /// takeModel (Program s2, Preview s1) plus two walls: t-pgm on Program,
+    /// t-pvw on Preview, a roster of 7 and 5 (camera on), a logo bug, and the
+    /// harness timer for the scene-sync debounce.
+    @MainActor
+    private static func tilesSyncModel(_ core: FakeTakeCore, programWall: Bool = true) -> (AppModel, ManualTimers) {
+        let model = takeModel(core)
+        model.scenes.append(SceneDef(id: "t-pgm", name: "Wall A", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.scenes.append(SceneDef(id: "t-pvw", name: "Wall B", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        if programWall { model.programSceneId = "t-pgm" }
+        model.previewSceneId = "t-pvw"
+        model.roster = [guest("7"), guest("5")]
+        model.logoBug = MediaAsset(id: "bug", name: "Bug", kind: "still", relativePath: "still/bug.png",
+                                   filePath: "/b/still/bug.png", naturalWidth: 200, naturalHeight: 100)
+        let timers = ManualTimers()
+        model.timerSleepForTesting = { await timers.sleep($0) }
+        return (model, timers)
+    }
+
+    /// Fires the parked debounce until a body carrying a scene graph lands.
+    @MainActor
+    private static func flushSceneSync(_ core: FakeTakeCore, _ timers: ManualTimers, after count: Int = 0) -> [JSONObject] {
+        spin(until: {
+            timers.fireAll()
+            return core.bodies.dropFirst(count).contains { body in
+                (body["commands"] as? [JSONObject] ?? []).contains { $0["type"] as? String == "load-scene-graph" }
+            }
+        }, limit: 3)
+        return core.bodies.dropFirst(count).last { body in
+            (body["commands"] as? [JSONObject] ?? []).contains { $0["type"] as? String == "load-scene-graph" }
+        }?["commands"] as? [JSONObject] ?? []
+    }
+
+    private static func command(_ commands: [JSONObject], _ type: String) -> JSONObject {
+        commands.first { $0["type"] as? String == type } ?? [:]
+    }
+
+    @MainActor static func testATilesSceneSendsItsWallOnBothBusesWithEmptyRoutes() {
+        let w = "Tiles scene sync (spec 3.2; Windows BuildProductionSyncContext)"
+        let core = FakeTakeCore()
+        let (model, timers) = tilesSyncModel(core)
+        model.syncScenes()
+        // The debounce runs on the harness timer, never on wall clock: it parks,
+        // and nothing is sent until the harness fires it.
+        spin(until: { timers.pending > 0 }, limit: 1)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))   // past the 120 ms a wall-clock sleep would take
+        let early = core.bodies.contains { body in
+            (body["commands"] as? [JSONObject] ?? []).contains { $0["type"] as? String == "load-scene-graph" } }
+        expect(!early, "\(w): no scene sync is sent before the harness fires the debounce (timer seam, not wall clock)")
+        let commands = flushSceneSync(core, timers)
+        let program = command(commands, "load-scene-graph"), preview = command(commands, "set-preview-scene")
+        expectEqual((program["routes"] as? [JSONObject])?.count, 0, "\(w): Program routes are []")
+        expectEqual((program["tiles"] as? JSONObject)?["layerId"] as? String, "tiles:t-pgm", "\(w): Program wall")
+        expectEqual((preview["routes"] as? [JSONObject])?.count, 0, "\(w): Preview routes are []")
+        expectEqual((preview["tiles"] as? JSONObject)?["members"] as? [String], ["zoom:7", "zoom:5"], "\(w): Preview members")
+        // A Tiles scene that somehow carries layers (an older file, a future
+        // editor) still sends no routes: the wall owns the scene.
+        model.scenes[model.scenes.firstIndex { $0.id == "t-pvw" }!].layers =
+            [SceneLayer(id: "t-pvw-layer-0", slotId: nil, x: 0, y: 0, width: 1, height: 1)]
+        expectEqual(model.buildRoutes(for: "t-pvw").count, 0, "\(w): layers on a wall send no routes, no logo bug")
+        // A scene is a Tiles scene by its settings (Windows Scene.DynamicGallery),
+        // not its layout word: a wall on a preset layout still sends no routes.
+        model.scenes.append(SceneDef(id: "t-preset", name: "Wall C", layout: "single", tiles: TilesSettings()))
+        expectEqual(model.buildRoutes(for: "t-preset").count, 0, "\(w): a wall on a preset layout sends no routes, no logo bug")
+        let anyBug = core.bodies.flatMap { $0["commands"] as? [JSONObject] ?? [] }
+            .flatMap { $0["routes"] as? [JSONObject] ?? [] }
+            .contains { ($0["routeId"] as? String ?? "").hasSuffix("-bug") }
+        expect(!anyBug, "\(w): the logo bug never rides a Tiles scene (D5)")
+    }
+
+    @MainActor static func testATakeOfTheSameWallKeepsItsLayerIdAndSendsOneBatch() {
+        let w = "Take of a wall (spec 3.2)"
+        let core = FakeTakeCore()
+        let (model, _) = tilesSyncModel(core, programWall: false)   // Program s2, Preview t-pvw
+        model.logoBug = nil
+        let box = runTake(model)
+        expectEqual(box.result, .success, "\(w): Take succeeds")
+        expectEqual(core.bodies.count, 1, "\(w): one media-core-sync body")
+        expectEqual(core.bodies.isEmpty ? [] : core.types(), ["begin-take-transition", "load-scene-graph", "set-preview-scene"],
+                    "\(w): transition, Program graph, Preview scene")
+        let commands = core.bodies.first?["commands"] as? [JSONObject] ?? []
+        expectEqual((command(commands, "load-scene-graph")["tiles"] as? JSONObject)?["layerId"] as? String, "tiles:t-pvw",
+                    "\(w): the wall keeps its layer id on Program, so the core cuts to it")
+        expect(command(commands, "set-preview-scene")["tiles"] == nil, "\(w): the outgoing non-Tiles scene carries no wall")
+    }
+
+    @MainActor static func testTheTilesStarterIsANamedPreviewOnlyScene() {
+        let w = "StarterSceneFactory Tiles starter / MakeUniqueSceneName"
+        let model = sceneEditModel()
+        let program = model.programSceneId
+        model.newTilesScene()
+        model.newTilesScene()
+        let walls = model.scenes.filter { $0.layout == AppModel.tilesLayout }
+        expectEqual(walls.map(\.name), ["CoreVideo Tiles", "CoreVideo Tiles 2"], "\(w): unique names")
+        expect(walls.allSatisfy { $0.tiles == TilesSettings() && $0.layers.isEmpty }, "\(w): default settings, no layers")
+        expectEqual(Set(walls.map(\.id)).count, 2, "\(w): distinct ids even within one second")
+        expectEqual(model.programSceneId, program, "\(w): Program unchanged")
+        expectEqual(model.previewSceneId, walls.last?.id ?? "", "\(w): Preview is the newest")
+        expectEqual(AppModel.uniqueSceneName("corevideo tiles", existing: ["CoreVideo Tiles", "COREVIDEO TILES 2"]),
+                    "corevideo tiles 3", "\(w): case-insensitive")
+    }
+
+    @MainActor static func testLayerEditsOnATilesSceneAreRefusedAndSendNoRoutes() {
+        let w = "Tiles layer guard (D5)"
+        let core = FakeTakeCore()
+        let (model, timers) = tilesSyncModel(core)
+        model.addLayer(to: "t-pvw")
+        expectEqual(model.studioCommandStatus, AppModel.tilesLayersRefusal, "\(w): Add layer refused")
+        model.studioCommandStatus = ""
+        model.toggleStudioLayoutEditing()
+        expectEqual(model.studioCommandStatus, AppModel.tilesLayersRefusal, "\(w): Edit layout refused")
+        expect(!model.studioLayoutEditing, "\(w): the editor does not open")
+        model.studioCommandStatus = ""
+        expectEqual(model.addOverlayLayer(placement: "lower-left", source: .activeSpeaker), AppModel.tilesLayersRefusal,
+                    "\(w): Add overlay refused")
+        model.ensureLayers(for: "t-pvw")
+        expect(model.scenes.first { $0.id == "t-pvw" }?.layers.isEmpty ?? false, "\(w): the wall has no layers")
+        model.syncScenes()
+        let commands = flushSceneSync(core, timers)
+        expectEqual((command(commands, "set-preview-scene")["routes"] as? [JSONObject])?.count, 0, "\(w): routes still []")
+    }
+
+    @MainActor static func testACoreRespawnResendsTheWallOnBothBuses() {
+        let w = "Global constraint: re-apply on every core generation"
+        let core = FakeTakeCore()
+        let (model, timers) = tilesSyncModel(core)
+        let before = core.bodies.count
+        model.onConnected()
+        let commands = flushSceneSync(core, timers, after: before)
+        expect(command(commands, "load-scene-graph")["tiles"] != nil, "\(w): Program wall resent")
+        expect(command(commands, "set-preview-scene")["tiles"] != nil, "\(w): Preview wall resent")
+    }
+
+    @MainActor static func testANonTilesSceneCarriesNoTilesKey() {
+        let w = "non-Tiles scene"
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        let timers = ManualTimers()
+        model.timerSleepForTesting = { await timers.sleep($0) }
+        model.syncScenes()
+        let commands = flushSceneSync(core, timers)
+        expect(!commands.isEmpty, "\(w): a sync landed")
+        expect(command(commands, "load-scene-graph")["tiles"] == nil, "\(w): Program graph has no tiles key")
+        expect(command(commands, "set-preview-scene")["tiles"] == nil, "\(w): Preview has no tiles key")
     }
 }

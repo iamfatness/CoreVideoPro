@@ -162,3 +162,24 @@ The reviewer found no behavioural divergence from the C#. Its findings were cove
 - **MEDIUM (fixed): the fallback name used the slot's display name.** It is now the slot label "Input NN", like Windows `SlotLabel`.
 - **LOW (fixed): both harnesses hard-coded 5 cases.** They now require "every case in the file, and at least 10".
 - **LOW (not changed): non-ASCII string semantics differ.** Swift grapheme counting and canonical equality versus C# ordinal comparison. Not reachable with Zoom ids.
+
+### Task 8 — the wall in scene sync, the starter and the guards
+
+- `AppModel+Tiles.swift`: `tilesLayout`, `tilesStarterName`, `tilesLayersRefusal`, `isTilesScene` (by settings, not layout word), `tilesPayload(for:)`, `uniqueSceneName`, `newTilesScene`, `refuseLayerEditOnTiles`.
+- Call sites:
+  - `buildRoutes` returns `[]` for a Tiles scene before any layer or logo-bug logic.
+  - `sceneSyncBatch` adds `tiles` to Program `load-scene-graph` and Preview `set-preview-scene`.
+  - `syncScenes` sleeps through `timerSleep`.
+  - Add layer, Edit layout and Add overlay are refused on a wall with the D5 text.
+  - The New scene menu has "New — CoreVideo Tiles · Auto-reflow wall".
+  - The `SceneRow` subtitle is the Windows `LayoutLabel` ("dynamic gallery").
+- **Two deviations from the plan text, both deliberate:**
+  - `ensureLayers` returns silently on a wall instead of setting the refusal. The scene editor calls it on appear, so the refusal would show just from looking at a wall. The explicit actions still say why.
+  - `cueSelectedInPreview` (media "cue in preview" appends a layer) is guarded too, with the refusal in `mediaStatus`.
+- Tests: the plan's six cases, plus a wall carrying injected layers and a wall on a preset layout.
+
+| Mutation (Task 8) | Result |
+|---|---|
+| the logo bug rides Tiles scenes (no early `[]` in `buildRoutes`) | red: "a wall on a preset layout sends no routes". On a `dynamic-gallery` layout the mutant is equivalent, because `layoutRects` has no entry for that word. That is why the test also puts a wall on a preset layout |
+| drop `tiles` from the Preview command | red: three failures (the members check, the respawn test, and the Preview tiles checks) |
+| `syncScenes` back on `Task.sleep` | red: "no scene sync is sent before the harness fires the debounce". It does not hang |
