@@ -14,8 +14,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -27,6 +30,8 @@
 #include <thread>
 #include <vector>
 
+#include "compositor/CompositorFaultInjection.h"
+#include "graphics/GraphicsCachePressure.h"
 #include "graphics/GraphicsInstances.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
@@ -488,6 +493,161 @@ TEST(MetalGraphicsBounds, CrawlLoopSwitchAdoptsAtTheBoundaryOnA1080pProgram) {
   const auto afterFull = full();
   EXPECT_NE(firstFull.programFullBgra.bgra, afterFull.programFullBgra.bgra) << "the readback never showed the new list";
   EXPECT_TRUE(inkInsideClip(plan(), afterFull));
+}
+
+// Review Focus 3. An update storm on air: one cue update per rendered frame,
+// no wait for readiness, 40 revisions. Fixture invariant: 40 > the 16-revision
+// resident limit, so the storm must cross it. Program's accepted pixels never
+// change until Program is retargeted; the latest revision is eventually
+// prepared; nothing fails; the resident high water never passes the limit.
+TEST(MetalGraphicsBounds, AnUpdatePerFrameKeepsAcceptedPixelsAndAdoptsTheLatest) {
+  MetalGraphicsRig rig;
+  RIG_OR_SKIP(rig);
+  ASSERT_TRUE(rig.command("graphics-instance-create", {{"scope", "global"}, {"templateId", "compact-solid"},
+      {"templateVersion", 1}, {"fields", Json::Object{{"name", "Accepted"}, {"title", "Engineer"}}}}));
+  ASSERT_TRUE(rig.command("graphics-instance-cue", {{"expectedRevision", 1}}));
+  ASSERT_TRUE(rig.command("graphics-instance-trigger", {{"expectedRevision", 1}, {"action", "show"}}));
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (rig.row().getNumber("firstDrawSubmittedFrame") <= 0 && std::chrono::steady_clock::now() < until) {
+    rig.render(rig.plan());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_GT(rig.row().getNumber("firstDrawSubmittedFrame"), 0.);
+  const auto accepted = rig.render(rig.plan()).preview.bgra;
+  ASSERT_FALSE(accepted.empty());
+  auto checkRow = [&](const std::string& when) {
+    const auto& row = rig.row();
+    EXPECT_EQ(std::string::npos, row.getString("warning").find("failed")) << when << ": " << row.getString("warning");
+    EXPECT_NE("failed", row.getString("preparation")) << when;
+    const auto* budget = rig.graphics.snapshot().get("resourceBudgetAtStatePublication");
+    ASSERT_TRUE(budget) << when;
+    if (budget) EXPECT_LE(budget->getNumber("residentHighWater"), budget->getNumber("residentLimit")) << when;
+  };
+  for (int n = 1; n <= 40; ++n) {
+    const double revision = rig.row().getNumber("revision");
+    ASSERT_TRUE(rig.command("graphics-instance-update", {{"expectedRevision", revision}, {"target", "cue"},
+        {"fields", Json::Object{{"name", "Storm " + std::to_string(n)}, {"title", "Engineer"}}}}));
+    const auto frame = rig.render(rig.plan());
+    const auto* fields = rig.row().get("programFields");
+    EXPECT_TRUE(fields && fields->getString("name") == "Accepted") << "update " << n << " retargeted Program";
+    EXPECT_EQ(accepted, frame.preview.bgra) << "update " << n << ": Program pixels changed during the storm";
+    checkRow("update " + std::to_string(n));
+  }
+  const auto settle = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!(rig.row().getString("preparation") == "ready" && rig.row().getNumber("revision") == 41.) &&
+         std::chrono::steady_clock::now() < settle) {
+    EXPECT_EQ(accepted, rig.render(rig.plan()).preview.bgra) << "Program changed while the latest revision prepared";
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ("ready", rig.row().getString("preparation"));
+  EXPECT_EQ(41., rig.row().getNumber("revision"));
+  checkRow("settled");
+  // A ready cue revision never reaches Program on its own.
+  EXPECT_EQ(1., rig.row().getNumber("programRevision"));
+  const auto* settledFields = rig.row().get("programFields");
+  EXPECT_TRUE(settledFields && settledFields->getString("name") == "Accepted") << "a cue update retargeted Program";
+  EXPECT_EQ(accepted, rig.render(rig.plan()).preview.bgra) << "Program changed without a Program update";
+  ASSERT_TRUE(rig.command("graphics-instance-update", {{"expectedRevision", 41}, {"target", "program"}}));
+  EXPECT_EQ(41., rig.row().getNumber("programRevision"));
+  const auto* fields = rig.row().get("programFields");
+  EXPECT_TRUE(fields && fields->getString("name") == "Storm 40");
+  EXPECT_NE(accepted, rig.render(rig.plan()).preview.bgra) << "the latest revision never aired";
+}
+
+namespace {
+// Worker gate for the held-name-line case (the CompositorFaultInjection hook).
+std::mutex gHeldGateMutex;
+std::condition_variable gHeldGateCv;
+std::atomic<bool> gHeldGateBlocked{false};
+void heldGateHook() {
+  std::unique_lock<std::mutex> lock(gHeldGateMutex);
+  gHeldGateCv.wait_for(lock, std::chrono::milliseconds(3000), [] { return !gHeldGateBlocked.load(); });
+}
+// Declare AFTER the compositor so a blocked worker is released before the
+// compositor joins it.
+struct HeldGate {
+  HeldGate() { corevideo::compositor::setOverlayRasterPrepareHookForTest(&heldGateHook); }
+  void block() { gHeldGateBlocked = true; }
+  void release() {
+    { std::lock_guard<std::mutex> lock(gHeldGateMutex); gHeldGateBlocked = false; }
+    gHeldGateCv.notify_all();
+  }
+  ~HeldGate() { release(); corevideo::compositor::setOverlayRasterPrepareHookForTest(nullptr); }
+};
+CompositorRenderPlanLayer nameLayer(const std::string& id, CompositorLayerRect rect, const std::string& name) {
+  CompositorRenderPlanLayer layer;
+  layer.layerId = "overlay:" + id;
+  layer.kind = "overlay-lower-third";
+  layer.rect = rect;
+  layer.order = 10;
+  layer.hasOverlayContent = true;
+  layer.overlay.text = name;
+  layer.overlay.brandColor = "#ff0000";
+  layer.overlay.brandBackgroundColor = "#0c1118";
+  layer.overlay.keyPhase = "on-air";
+  layer.overlay.keyProgress = 1.f;
+  return layer;
+}
+// Name line of a lower third at canvas rect (x0, y0, w, h): OverlayTileRaster
+// fractions x 0.06..0.88, y 0.18..0.52 (as MetalCompositorTest.cpp).
+int brightNameLine(const ProgramFramePreviewPixels& p, int x0, int y0, int w, int h) {
+  int count = 0;
+  for (int y = y0 + int(h * 0.18f); y < y0 + int(h * 0.52f); ++y)
+    for (int x = x0 + int(w * 0.06f); x < x0 + int(w * 0.88f); ++x) {
+      const auto c = previewPixelRgba(p, x, y);
+      if (((c >> 16) & 0xff) > 200 && ((c >> 8) & 0xff) > 200 && (c & 0xff) > 200) ++count;
+    }
+  return count;
+}
+std::vector<uint32_t> region(const ProgramFramePreviewPixels& p, int x0, int y0, int x1, int y1) {
+  std::vector<uint32_t> out;
+  for (int y = y0; y < y1; ++y)
+    for (int x = x0; x < x1; ++x) out.push_back(previewPixelRgba(p, x, y));
+  return out;
+}
+}  // namespace
+
+// G2 "What G3 needs": Tiles name-line retention under load. Starts from
+// MetalCompositor.AHeldNameLineKeepsItsTextWhileTheResizedRasterPrepares and
+// adds cache pressure: with the worker blocked, three GraphicsCachePressure
+// trims land between renders. The held raster is leased by the adapter's
+// retention, so a trim must not take it: its pixels are identical on every
+// render. After release the new size draws.
+TEST(MetalGraphicsBounds, AHeldNameLineSurvivesACacheTrimWhileItsNewSizePrepares) {
+  METAL_COMPOSITOR_OR_SKIP(compositor);
+  HeldGate gate;
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-held-trim";
+  plan.width = 320;
+  plan.height = 180;
+  plan.layers.push_back(fullRectParticipantPlan("x", "bg", 320, 180).layers.front());
+  auto held = nameLayer("held", {0.f, 0.f, 1.f, 0.4f}, "HELD NAME");
+  held.overlay.holdLastRaster = true;
+  plan.layers.push_back(held);
+  const std::vector<VideoFrame> frames{solidBgraFrame("bg", 64, 36, 0)};
+  const auto ready = renderUntilPrepared(*compositor, plan, frames);
+  ASSERT_GE(brightNameLine(ready.preview, 0, 0, 320, 72), 20);
+
+  gate.block();
+  plan.layers[1].rect = {0.f, 0.f, 1.f, 0.45f};  // 72 -> 81 px tall
+  std::vector<uint32_t> heldPixels;
+  for (int tick = 0; tick < 6; ++tick) {
+    if (tick >= 1 && tick <= 3) {
+      corevideo::graphics::GraphicsCachePressure::requestTrim();
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));  // let the cache owner act on it
+    }
+    const auto frame = compositor->render(plan, frames);
+    ASSERT_TRUE(hasWarning(frame, "graphics-preparing")) << "tick " << tick;
+    EXPECT_GE(brightNameLine(frame.preview, 0, 0, 320, 81), 20) << "tick " << tick << ": the held text is gone";
+    const auto now = region(frame.preview, 0, 0, 320, 81);
+    if (heldPixels.empty()) heldPixels = now;
+    else EXPECT_EQ(heldPixels, now) << "tick " << tick << ": the held raster changed under cache pressure";
+  }
+  gate.release();
+  const auto resized = renderUntilPrepared(*compositor, plan, frames);
+  EXPECT_FALSE(hasWarning(resized, "graphics-preparing"));
+  EXPECT_GE(brightNameLine(resized.preview, 0, 0, 320, 81), 20);
+  EXPECT_NE(heldPixels, region(resized.preview, 0, 0, 320, 81)) << "the new size never drew";
 }
 
 #endif  // COREVIDEO_WITH_METAL && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS

@@ -15,6 +15,7 @@
 #include <CoreText/CoreText.h>
 
 #include <cstdio>
+#include <dirent.h>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -100,5 +101,30 @@ TEST(GraphicsFontResolver, BundledFilesMatchTheirPinnedChecksums) {
 }
 
 }  // namespace
+
+// The core logs where it looked for the bundled faces and how many it
+// registered, so a missing GraphicsFonts directory in an installed layout is
+// visible in the log instead of only as "font unavailable" later. The
+// expectation counts the directory's .ttf/.otf files itself (never the
+// resolver's own count). Registration is once per process, so this reads the
+// summary after a resolution; the missing-directory wording is pinned by
+// scripts/tests/test_core_graphics_fonts_location.py in a fresh process.
+TEST(GraphicsFontResolver, BundledFontsSummaryNamesTheDirectoryAndCount) {
+  (void)resolveGraphicsFontFamily("Segoe UI");
+  const auto directory = graphicsFontsDirectory();
+  size_t faces = 0;
+  if (DIR* dir = opendir(directory.c_str())) {
+    while (const dirent* entry = readdir(dir)) {
+      std::string name = entry->d_name;
+      for (auto& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
+      const auto dot = name.rfind('.');
+      if (dot != std::string::npos && (name.substr(dot) == ".ttf" || name.substr(dot) == ".otf")) ++faces;
+    }
+    closedir(dir);
+  }
+  ASSERT_GT(faces, 0u) << "no bundled faces at " << directory;
+  EXPECT_EQ(bundledGraphicsFontsSummary(),
+            "graphics fonts: registered " + std::to_string(faces) + " faces from " + directory);
+}
 
 #endif  // __APPLE__
