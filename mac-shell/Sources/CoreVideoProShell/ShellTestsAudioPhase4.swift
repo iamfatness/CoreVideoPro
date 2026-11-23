@@ -35,6 +35,12 @@ extension ShellTests {
             ("a7-bus-eq-refused-with-reason", testBusEqRefusedWithReason),
             ("a7-bus-chain-reasserted-on-new-core", testBusChainReassertedOnNewCore),
             ("a7-primary-bus-label", testPrimaryBusLabel),
+            // Task 1-2 review fix-ups.
+            ("a7-fix-blank-add-is-noop", testFixBlankAddIsNoop),
+            ("a7-fix-host-handled-names", testFixHostHandledNames),
+            ("a7-fix-bus-slot-rule", testFixBusSlotRule),
+            ("a7-fix-vst-repick-is-noop", testFixVstRepickIsNoop),
+            ("a7-fix-empty-prefs-clears-vst", testFixEmptyPrefsClearsVst),
         ]
     }
 
@@ -163,6 +169,24 @@ extension ShellTests {
         expectEqual(comp.last?.x, 1, "comp last x")
         expectEqual(gate.last?.x, 1, "gate last x")
         expectEqual(eq.first?.x, 0, "EQ first x")
+        // Every point sits on the grid x == i/(n-1), first point included, for
+        // all three curves (and a non-default count). Mutation: start comp's or
+        // gate's grid at i+1, or divide by n instead of n-1 -> red here.
+        let grids: [(String, [DspPoint])] = [
+            ("eq", eq), ("comp", comp), ("gate", gate),
+            ("comp(knee 6)", DspCurveMath.compressorTransfer(thresholdDb: -18, ratio: 4, kneeDb: 6)),
+            ("gate(-40, -20)", DspCurveMath.gateTransfer(thresholdDb: -40, rangeDb: -20)),
+            ("eq(n=9)", DspCurveMath.eqResponse(highpassHz: 90, bandGainsDb: curveBands(3, 6), pointCount: 9)),
+        ]
+        for (what, points) in grids {
+            var offGrid: [Int] = []
+            for (index, point) in points.enumerated()
+            where abs(point.x - Double(index) / Double(points.count - 1)) > curveTolerance {
+                offGrid.append(index)
+            }
+            expect(offGrid.isEmpty, "\(what): every x == i/(n-1); off-grid indices \(offGrid)")
+            expectEqual(points.first?.x, 0, "\(what) first x")
+        }
         expectEqual(DspCurveMath.eqBandHz, [63, 125, 250, 500, 1000, 2000, 4000, 8000],
                     "EQ band centres (kEqBandHz)")
     }
@@ -312,6 +336,11 @@ extension ShellTests {
                     "Built-in Noise Gate does not process on a bus; audio passes through unchanged.", "gate reason")
     }
 
+    /// CONFIRMATORY (plan-authoring rule 8): onConnected() already re-sent the
+    /// mix command before Task 2, so this case pins the new ordered chain on
+    /// that existing path rather than driving a behaviour change. No mutation
+    /// of Task 2's code is expected to turn it red except breaking the chain
+    /// order on the wire, which a7-chain-order-is-toggle-order already owns.
     @MainActor
     private static func testChainReassertedOnNewCore() {
         let model = chainModel()
@@ -624,5 +653,145 @@ extension ShellTests {
                     "the channel target's detail follows")
         model.removeSend(source: "101", bus: "aux-1")
         expectEqual(model.primaryBusLabel("101"), "MASTER", "nothing routed falls back to MASTER (SVM:11660)")
+    }
+
+    // ── Task 1-2 review fix-ups ─────────────────────────────────────────────
+
+    @MainActor
+    private static func testFixBlankAddIsNoop() {
+        var inserts = ChannelInserts()
+        // Mutation: drop the blank guard in ChannelInserts.add -> red (it appends "").
+        expectEqual(inserts.add("   "), .rejectedBlank, "a whitespace name is rejected (SVM:5522)")
+        expectEqual(inserts.add(""), .rejectedBlank, "an empty name is rejected")
+        expectEqual(inserts.add("\n\t"), .rejectedBlank, "a newline/tab name is rejected")
+        expectEqual(inserts.chain, [], "nothing entered the chain")
+        // The SETUP path says nothing for a blank name, on a channel or a bus.
+        let model = targetModel()
+        model.selectProcessingTarget(AudioProcessingTargetPolicy.channelId("101"))
+        expectEqual(model.selectedProcessingTargetId, "channel:101", "precondition: channel target")
+        model.takeStatus = "before"
+        model.addProcessingInsert("   ")
+        expectEqual(model.takeStatus, "before", "no \"added\" status for a blank name on a channel")
+        expectEqual(model.channelInserts["101"]?.chain ?? [], [], "the channel chain is unchanged")
+        model.selectProcessingTarget(AudioProcessingTargetPolicy.defaultTargetId)
+        model.addProcessingInsert("  ")
+        expectEqual(model.takeStatus, "before", "no status for a blank name on a bus")
+        expect(model.busInserts["master"] == nil, "the bus chain is unchanged")
+    }
+
+    @MainActor
+    private static func testFixHostHandledNames() {
+        // The core's rule (PluginHostScan.h:72): contains "vst" or "host".
+        for name in ["Host Test", "vst pro", "VST:Pro-Q 3", "VST3 Bridge Slot", "My VST Compressor"] {
+            expect(InsertChainPolicy.isHostHandled(name), "\(name) is host-handled")
+        }
+        expect(!InsertChainPolicy.isHostHandled("Compressor") && !InsertChainPolicy.isHostHandled("Noise Gate"),
+               "built-ins are not host-handled")
+        expect(!InsertChainPolicy.isVst("Host Test") && !InsertChainPolicy.isVst("vst pro"),
+               "precondition: Windows isVst is narrower (the gap this fix closes)")
+        expect(InsertChainPolicy.coreKind("My VST Compressor") == nil,
+               "a host-handled name never reaches the built-in matcher")
+
+        let model = chainModel()
+        model.editInserts("11") { $0.chain = ["Compressor", "Host Test", "vst pro"] }
+        expect(!model.vstInsertsLive, "precondition: no live host")
+        // Mutation: filter the wire with isVst instead of isHostHandled -> red.
+        expectEqual(model.pluginInsertNames(for: "11"), ["Compressor"], "a dead host gets no plug-in name")
+        expectEqual(wireChannel(model.audioMixCommand(), "11")?["pluginInserts"] as? [String], ["Compressor"],
+                    "and neither does the wire")
+        // Mutation: slots test isVst instead of isHostHandled -> red (Host Test
+        // would read PASS, vst pro PASS).
+        for onBus in [false, true] {
+            let dead = InsertChainPolicy.slots(chain: ["Compressor", "Host Test", "vst pro"], onBus: onBus,
+                                               vstLive: false, vstStatusLine: "host down", labelStyle: .channel)
+            expectEqual(dead.map(\.statusLabel), ["LIVE", "BYPASS", "BYPASS"],
+                        "host-handled names read BYPASS without a live host (onBus \(onBus))")
+            expectEqual(dead.last?.tooltip, "host down", "with the host status line (onBus \(onBus))")
+        }
+        // "Voice Host" would be an EQ to the channel matcher, but the host hook takes it first.
+        let voiceHost = InsertChainPolicy.slots(chain: ["Voice Host"], onBus: false, vstLive: false,
+                                                vstStatusLine: "x", labelStyle: .channel)
+        expectEqual(voiceHost.map(\.statusLabel), ["BYPASS"], "a host-handled name is never LIVE without a host")
+        let live = InsertChainPolicy.slots(chain: ["Host Test", "vst pro"], onBus: false, vstLive: true,
+                                           vstStatusLine: "x", labelStyle: .target)
+        expectEqual(live.map(\.statusLabel), ["START", "START"], "with a live host they read START")
+        expectEqual(live.first?.tooltip, "Plug-in starting; audio continues unchanged.",
+                    "the Mac START text (no \"Click to open its controls.\")")
+        model.vstHost.serveRunning = true
+        expectEqual(model.pluginInsertNames(for: "11"), ["Compressor", "Host Test", "vst pro"],
+                    "a live host gets them in chain position")
+    }
+
+    @MainActor
+    private static func testFixBusSlotRule() {
+        let chain = ["Voice Compressor", "Noise Limiter", "Noise Gate"]
+        // Mutation: bus slots use the channel matcher (coreKind) -> red: "Voice
+        // Compressor" is an EQ there and would read PASS.
+        let bus = InsertChainPolicy.slots(chain: chain, onBus: true, vstLive: false,
+                                          vstStatusLine: "x", labelStyle: .target)
+        expectEqual(bus.map(\.statusLabel), ["LIVE", "LIVE", "PASS"],
+                    "bus: limiter then compressor process, the gate passes (AudioDsp.h applyBusInsertChain)")
+        expectEqual(bus.first?.tooltip, "Processing active.", "a processing bus insert's tooltip")
+        expectEqual(bus.last?.tooltip,
+                    "Built-in Noise Gate does not process on a bus; audio passes through unchanged.", "the PASS reason")
+        let channel = InsertChainPolicy.slots(chain: chain, onBus: false, vstLive: false,
+                                              vstStatusLine: "x", labelStyle: .channel)
+        expectEqual(channel.map(\.statusLabel), ["LIVE", "LIVE", "LIVE"], "all three process on a channel")
+        expect(InsertChainPolicy.busKind("Voice Compressor") == .compressor, "Voice Compressor compresses on a bus")
+        expect(InsertChainPolicy.busKind("Compressor Limiter") == .limiter, "limiter is checked first")
+        expect(InsertChainPolicy.busKind("Built-in EQ") == nil, "EQ passes on a bus")
+        // OD-1 still refuses EQ on a bus, and no longer refuses a compressor the
+        // bus WOULD run. Mutation: drop the busKind guard in busRefusal -> red.
+        expect(AudioProcessingTargetPolicy.busRefusal("Voice Compressor") == nil,
+               "a bus may take Voice Compressor")
+        expectEqual(AudioProcessingTargetPolicy.busRefusal("eq"),
+                    "Built-in EQ does not process on a bus yet; add a compressor or limiter.", "EQ still refused")
+        expectEqual(AudioProcessingTargetPolicy.busRefusal("Noise Gate"),
+                    "Noise Gate does not process on a bus yet; add a compressor or limiter.", "gate still refused")
+        let model = targetModel()
+        model.addProcessingInsert("Voice Compressor")
+        expectEqual(model.busInserts["master"], ["Voice Compressor"], "added to the master chain")
+        expectEqual(model.takeStatus, "Voice Compressor added to MASTER", "with the Windows status")
+        model.addProcessingInsert("eq")
+        expectEqual(model.busInserts["master"], ["Voice Compressor"], "EQ refused on the bus (OD-1)")
+    }
+
+    @MainActor
+    private static func testFixVstRepickIsNoop() {
+        let model = chainModel()
+        model.editInserts("11") { $0.chain = ["vst:Pro-Q 3", "Compressor"] }
+        // Mutation: drop the same-plug-in early return -> red (the VST moves last).
+        model.setVstChannelSelection("11", "vst:Pro-Q 3")
+        expectEqual(model.channelInserts["11"]?.chain, ["vst:Pro-Q 3", "Compressor"],
+                    "re-picking the current plug-in keeps its chain position")
+        model.setVstChannelSelection("11", "VST:pro-q 3")
+        expectEqual(model.channelInserts["11"]?.chain, ["vst:Pro-Q 3", "Compressor"],
+                    "the comparison is case-insensitive, like every chain compare")
+        model.setVstChannelSelection("11", "vst:Other")
+        expectEqual(model.channelInserts["11"]?.chain, ["Compressor", "vst:Other"],
+                    "a different plug-in still replaces it at the end")
+    }
+
+    @MainActor
+    private static func testFixEmptyPrefsClearsVst() {
+        // Pre-A7 restore was `vstChannelSelection = prefs.vstChannelSelections ?? [:]`:
+        // the saved map REPLACED the current one.
+        let model = AppModel()
+        model.channelInserts["101"] = ChannelInserts(chain: ["Compressor", "vst:Old"])
+        model.channelInserts["102"] = ChannelInserts(chain: ["vst:Keep", "Limiter"])
+        var prefs = ShellPrefs()
+        prefs.vstChannelSelections = ["102": "vst:Saved", "103": "vst:New"]
+        // Mutation: restore the append-only loop -> red ("vst:Old" survives on 101).
+        model.applyRestoredPrefs(prefs)
+        expectEqual(model.channelInserts["101"]?.chain, ["Compressor"],
+                    "a strip with no saved selection loses its VST; built-ins stay")
+        expectEqual(model.channelInserts["102"]?.chain, ["Limiter", "vst:Saved"],
+                    "a saved selection replaces the current VST")
+        expectEqual(model.channelInserts["103"]?.chain, ["vst:New"], "a new strip gets its saved selection")
+        let empty = AppModel()
+        empty.channelInserts["101"] = ChannelInserts(chain: ["vst:Old", "Compressor"])
+        empty.applyRestoredPrefs(ShellPrefs())
+        expectEqual(empty.channelInserts["101"]?.chain, ["Compressor"], "empty prefs clear the VST selection")
+        expect(empty.currentPrefs().vstChannelSelections == nil, "and nothing is saved back")
     }
 }
