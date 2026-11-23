@@ -1,4 +1,7 @@
 #include "modules/SharedGpuVideoEncoder.h"
+#if defined(__APPLE__) && COREVIDEO_HAS_VT_GPU_ENCODER
+#include "modules/VideoToolboxGpuVideoEncoder.h"
+#endif
 
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/H264CbrFiller.h"
@@ -235,7 +238,12 @@ std::unique_ptr<GpuVideoEncoder> SharedGpuVideoEncoderPool::createClient() {
 }
 
 std::unique_ptr<GpuVideoEncoder> createSharedProgramGpuVideoEncoder() {
+#if defined(__APPLE__) && COREVIDEO_HAS_VT_GPU_ENCODER
+  // Phase 4 O4a: VideoToolbox on Apple (Media Foundation's factory is nullptr there).
+  static SharedGpuVideoEncoderPool pool(&createVideoToolboxGpuVideoEncoder);
+#else
   static SharedGpuVideoEncoderPool pool(&createMediaFoundationGpuVideoEncoder);
+#endif
   return pool.createClient();
 }
 
