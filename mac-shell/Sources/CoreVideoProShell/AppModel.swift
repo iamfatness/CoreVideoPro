@@ -107,6 +107,9 @@ struct SceneDef: Identifiable {
     // Per-scene, exactly like Windows — the picker on the Studio rail describes
     // the selected scene, not a global setting.
     var backgroundAssetId = ""
+    /// CoreVideo Tiles settings: non-nil makes this a Tiles scene (Windows
+    /// `Scene.DynamicGallery`). A value type, so a copied scene never aliases it.
+    var tiles: TilesSettings? = nil
 }
 
 // One canvas layer: a slot binding plus its normalized rect/fit/opacity —
@@ -903,9 +906,18 @@ final class AppModel: ObservableObject {
                                               fitMode: layer.fitMode,
                                               opacity: layer.opacity,
                                               mediaAssetId: layer.mediaAssetId)
-                           })
+                           },
+                           tiles: scene.tiles?.persisted)
         }
         return prefs
+    }
+
+    /// `ScenePersistenceService.SceneFromPersisted`: explicit settings go through
+    /// the restore clamps; an older Tiles scene that kept the layout discriminator
+    /// but lost its settings gets the defaults (docs/archive/qa/tiles-incident-2026-09-07.md).
+    static func restoredTiles(_ saved: PersistedScene) -> TilesSettings? {
+        if let tiles = saved.tiles { return TilesSettings(persisted: tiles) }
+        return saved.layout == "dynamic-gallery" ? TilesSettings() : nil
     }
 
     private func restorePrefs() {
@@ -1005,7 +1017,8 @@ final class AppModel: ObservableObject {
                                         fitMode: layer.fitMode, opacity: layer.opacity,
                                         mediaAssetId: layer.mediaAssetId)
                          },
-                         backgroundAssetId: saved.backgroundAssetId)
+                         backgroundAssetId: saved.backgroundAssetId,
+                         tiles: Self.restoredTiles(saved))
             }
         }
         cameraExtensionOptedIn = prefs.cameraExtensionOptedIn
@@ -3671,7 +3684,8 @@ final class AppModel: ObservableObject {
                                                mediaAssetId: l.mediaAssetId)
                                 return l
                             },
-                            backgroundAssetId: source.backgroundAssetId)
+                            backgroundAssetId: source.backgroundAssetId,
+                            tiles: source.tiles)
         scenes.append(copy)
         previewSceneId = newId
         studioCommandStatus = "\(name) duplicated from \(source.name) and cued on preview"

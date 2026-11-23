@@ -96,3 +96,18 @@ Verification (2026-11-22, rebased onto `origin/main` `3529d568`; `native/build-m
 ## Environment event (2026-11-22 ~19:25)
 
 The App Store began updating Xcode in place to 27.2 mid-session. From then on every `/usr/bin` shim (`c++`, `git`, `swift`, `xcrun`, `python3`) failed with "You have not agreed to the Xcode license agreements", and `Xcode.app`'s `MacOSX26.5.sdk` path disappeared. Workaround used: `DEVELOPER_DIR=/Library/Developer/CommandLineTools` with `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk` (compiles and links C++, ObjC++ and Metal); Homebrew `python3`. Builds made before the update used the Xcode 26.5 SDK.
+
+## Slice S1
+
+### Task 6 — `TilesSettings` model and persistence
+
+- New `TilesSettings.swift` (`TilesRect`, `TilesMemberOverride`, `TilesSettings`, `PersistedTilesSettings`, `TilesHex`), `TilesPolicies.swift` (`TilesMembershipPolicy.normalizeMode` so far), `TilesLayerPayload.swift` (`normalizeAspect` so far). `SceneDef.tiles`, `PersistedScene.tiles`, save, restore (`AppModel.restoredTiles` = `SceneFromPersisted`) and `duplicateScene` carry it.
+- `init(persisted:)` follows `FromPersisted` clamp for clamp. Like Windows, only `borderColor`/`glowColor` are normalized on restore; `backgroundColor` passes through (the payload normalizes it, Task 7). Override cap of 64 takes keys in sorted order (Windows takes an arbitrary 64 of its dictionary).
+- `PersistedTilesSettings.init(from:)`: every key optional, and a key of the wrong JSON type also falls back to its default (`try?` per key), so one bad `tiles` object cannot empty `ShellPrefs.scenes`.
+- Shell: **7905 checks, 2 failed**; the 2 are `ShellTestsMedia.swift:278/286` (a generated `.m4a` probes 1068 ms vs 1000±25). Untouched by this branch; first seen after the macOS 27.2.1 / Xcode 27.2 update, AAC priming differs. Candidate issue. `tiles/` filter: 46/46.
+
+| Mutation | Result |
+|---|---|
+| `wallOrder = try c.decode(...)` (one key non-optional) | red: partial-object test (every scene lost) + clamp fixture |
+| `restoredTiles` drops the legacy `dynamic-gallery` default | red: legacy-layout test |
+| shallow copy of settings in `duplicateScene` | n/a: value types, the test is confirmatory (documented in its comment) |

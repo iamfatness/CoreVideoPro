@@ -46,6 +46,10 @@ struct PersistedScene: Codable, Equatable {
     var layout = "single"
     var backgroundAssetId = ""
     var layers: [PersistedLayer] = []
+    /// CoreVideo Tiles settings. Optional so older files decode; its own decoder
+    /// takes every key as optional, so a partial or newer object never fails the
+    /// scene (and with it the whole prefs file).
+    var tiles: PersistedTilesSettings?
 }
 
 struct PersistedLayer: Codable, Equatable {
