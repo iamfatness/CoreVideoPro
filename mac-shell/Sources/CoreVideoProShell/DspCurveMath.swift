@@ -4,8 +4,9 @@
 // DspCurveMath is a line-for-line port of
 // native-shell/CoreVideoPro.WinUI/Services/DspCurveMath.cs: the drawn responses
 // are computed from the SAME filter formulas the core runs (RBJ audio-EQ-cookbook
-// biquads mirroring native AudioDsp.h:1408-1435; the compressor/gate static
-// transfer functions mirroring the gain computer at AudioDsp.h:1548-1567), so a
+// biquads mirroring native AudioDsp.h:1407-1435 eqHighpass/eqPeaking; the
+// compressor/gate static transfer functions mirroring the gain computer at
+// AudioDsp.h:1549-1567), so a
 // graph shows the actual processing, not an illustration. Every function returns
 // normalised [0..1] points ready to scale into pixels. Pinned to vectors printed
 // by the Windows file itself (ShellTestsAudioPhase4.swift, a7-curve-*).
@@ -27,8 +28,8 @@ enum DspCurveMath {
     static let minDb = -24.0
     static let maxDb = 12.0
 
-    /// The 8-band centres. MUST match kEqBandHz in native AudioDsp.h
-    /// (DspCurveMath.cs `EqBandHz`).
+    /// The 8-band centres. MUST match kEqBandHz in native AudioDsp.h:1655
+    /// (DspCurveMath.cs:67 `EqBandHz`).
     static let eqBandHz: [Double] = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
 
     private struct Biquad {
@@ -168,7 +169,7 @@ enum DspCurveMath {
 
 /// Drawn processor response: EQ frequency response, compressor transfer or gate
 /// transfer, computed by DspCurveMath from the SAME parameters the core chain
-/// applies. Parameters follow DspResponseCurve.xaml.cs `Redraw`:
+/// applies. Parameters follow DspResponseCurve.xaml.cs:117-152 (Redraw):
 /// eq (p1 = highpassHz, bands = 8 gains), comp (p1 = thresholdDb, p2 = ratio,
 /// p3 = kneeDb), gate (p1 = thresholdDb, p2 = rangeDb).
 struct DspResponseCurve: View {
@@ -191,11 +192,11 @@ struct DspResponseCurve: View {
         self.isEngaged = isEngaged
     }
 
-    // DspResponseCurve.xaml: Grid Background="#060A0E" CornerRadius="3";
+    // DspResponseCurve.xaml:6-8: Grid Background="#060A0E" CornerRadius="3";
     // CurveLine StrokeThickness 1.5; ReferenceLine Stroke="#22303A" StrokeThickness 1.
     private static let background = Color(hex: 0x060A0E)
     private static let referenceStroke = Color(hex: 0x22303A)
-    // DspResponseCurve.xaml.cs:60-72: engaged = #3FD2A8 at opacity 1 (the core is
+    // DspResponseCurve.xaml.cs:64-74: engaged = #3FD2A8 at opacity 1 (the core is
     // processing); bypassed = #46545C at opacity 0.55 (a dim preview of what IN
     // would do). The graph must never look live when the insert is not on the chain.
     private static let engagedStroke = Color(hex: 0x3FD2A8)
@@ -214,7 +215,7 @@ struct DspResponseCurve: View {
         let kind = self.kind
         let engaged = isEngaged
         Canvas { context, size in
-            // DspResponseCurve.xaml.cs:128-152: Redraw skips a host under 8 px.
+            // DspResponseCurve.xaml.cs:121-124 (in Redraw, 117-152): skip a host under 8 px.
             guard size.width >= 8, size.height >= 8 else { return }
             var curve = Path()
             for (index, point) in points.enumerated() {

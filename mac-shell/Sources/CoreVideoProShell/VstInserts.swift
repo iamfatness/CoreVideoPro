@@ -237,12 +237,14 @@ extension AppModel {
     }
 
     // Channel insert list actually sent to the core: the strip's chain in its
-    // order (Windows PluginInserts), with VST names dropped unless the host can
-    // really run them — pushing a "vst:" insert at a dead host would be an
-    // insert that silently does nothing in the audio path.
+    // order (Windows PluginInserts), with plug-in names dropped unless the host
+    // can really run them — pushing one at a dead host would be an insert that
+    // silently does nothing in the audio path. "Plug-in name" is the CORE's
+    // rule (InsertChainPolicy.isHostHandled: contains "vst" or "host"), not the
+    // narrower Windows isVst: "Host Test" or "vst pro" go to the host too.
     func pluginInsertNames(for stripId: String) -> [String] {
         let chain = (channelInserts[stripId] ?? ChannelInserts()).chain
-        return vstInsertsLive ? chain : chain.filter { !InsertChainPolicy.isVst($0) }
+        return vstInsertsLive ? chain : chain.filter { !InsertChainPolicy.isHostHandled($0) }
     }
 
     // stripId -> the LAST VST name in that strip's chain. The VST picker and
@@ -257,7 +259,13 @@ extension AppModel {
 
     // The single-plug-in picker: replaces any VST already on the chain with
     // the new one (appended at the end), or removes it for nil ("None").
+    // Picking the plug-in that is already the strip's only VST is a no-op: it
+    // keeps its chain position and schedules no sync.
     func setVstChannelSelection(_ stripId: String, _ insertName: String?) {
+        if let insertName, !insertName.isEmpty {
+            let current = (channelInserts[stripId] ?? ChannelInserts()).chain.filter(InsertChainPolicy.isVst)
+            if current.count == 1, InsertChainPolicy.sameName(current[0], insertName) { return }
+        }
         editInserts(stripId) { inserts in
             inserts.chain.removeAll(where: InsertChainPolicy.isVst)
             if let insertName, !insertName.isEmpty { inserts.chain.append(insertName) }

@@ -201,7 +201,8 @@ struct ShowInputSlot: Identifiable, Equatable {
 // is silently ignored, so these names/keys must stay exact.
 //
 // A7 (Task 2): `chain` is the Windows `PluginInserts` list, in the order the
-// operator built it (SVM ToggleSelectedRackInsert / AddSelectedAudioInsert).
+// operator built it (SVM:5493-5516 ToggleSelectedRackInsert, SVM:5520-5542
+// AddSelectedAudioInsert).
 // The three enable flags are now views of it. A VST name ("vst:<plugin>")
 // lives in the chain too; AppModel.pluginInsertNames drops it while the host
 // is not live.
@@ -244,7 +245,7 @@ struct ChannelInserts: Equatable {
     var compEnabled: Bool { contains(Self.compName) }
     var limiterEnabled: Bool { contains(Self.limiterName) }
 
-    /// SVM ToggleSelectedRackInsert: remove it if present (case-insensitive),
+    /// SVM:5493-5516 (ToggleSelectedRackInsert): remove it if present (case-insensitive),
     /// else append it at the END of the chain.
     mutating func toggle(_ name: String) {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -255,17 +256,19 @@ struct ChannelInserts: Equatable {
         }
     }
 
-    /// SVM AddSelectedAudioInsert: normalise, refuse a case-insensitive
-    /// duplicate, else append.
+    /// SVM:5520-5542 (AddSelectedAudioInsert): a blank name is a silent no-op
+    /// (SVM:5522), else normalise, refuse a case-insensitive duplicate, else
+    /// append.
     @discardableResult
     mutating func add(_ raw: String) -> InsertChainPolicy.AddOutcome {
         let normalized = InsertChainPolicy.normalize(raw)
+        guard !normalized.isEmpty else { return .rejectedBlank }
         if contains(normalized) { return .duplicate(normalized) }
         chain.append(normalized)
         return .added(normalized)
     }
 
-    /// Removes every case-insensitive match (SVM RemoveAudioProcessingInsert's
+    /// Removes every case-insensitive match (SVM:2622, RemoveAudioProcessingInsert's
     /// RemoveAll). False when nothing matched.
     @discardableResult
     mutating func remove(_ name: String) -> Bool {
@@ -274,7 +277,7 @@ struct ChannelInserts: Equatable {
         return chain.count != before
     }
 
-    /// SVM ClearSelectedAudioInserts.
+    /// SVM:5544-5558 (ClearSelectedAudioInserts).
     mutating func clear() { chain.removeAll() }
 
     /// Settings for EVERY built-in on the chain, keyed by its exact chain name
@@ -1049,10 +1052,15 @@ final class AppModel: ObservableObject {
             gradeSaturation = prefs.colorGrade[2]
             gradeTemperature = prefs.colorGrade[3]
         }
-        // A7: a saved VST selection is APPENDED to that strip's chain.
-        for (stripId, selection) in prefs.vstChannelSelections ?? [:] where !selection.isEmpty {
+        // A7: the saved VST selections REPLACE the current ones, as the
+        // pre-A7 `vstChannelSelection = prefs.vstChannelSelections ?? [:]` did:
+        // a strip with no saved selection (or empty prefs) loses its VST, and a
+        // saved selection is appended to that strip's chain after the built-ins.
+        let savedVst = (prefs.vstChannelSelections ?? [:]).filter { !$0.value.isEmpty }
+        for stripId in Set(channelInserts.keys).union(savedVst.keys) {
             var inserts = channelInserts[stripId] ?? ChannelInserts()
-            if !inserts.contains(selection) { inserts.chain.append(selection) }
+            inserts.chain.removeAll(where: InsertChainPolicy.isVst)
+            if let selection = savedVst[stripId] { inserts.chain.append(selection) }
             channelInserts[stripId] = inserts
         }
         restoreMastering(from: prefs)
@@ -4931,6 +4939,8 @@ final class AppModel: ObservableObject {
             case .added(let normalized):
                 editInserts(channel) { $0 = inserts }   // schedules the mix sync
                 takeStatus = "\(normalized) added to \(name)"
+            case .rejectedBlank:
+                return   // unreachable behind the guard above; silent, as on Windows
             }
             return
         }

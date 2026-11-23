@@ -6,9 +6,12 @@
 // The core runs a chain IN LIST ORDER and matches each name by lowercase
 // substring (AudioDsp.h applyChannelInsertChain: gate/noise, high-pass/
 // highpass/low-cut/hpf, eq/voice, compressor, limiter, first match wins; a
-// bus runs only compressor and limiter, applyBusInsertChain). Every helper
-// below follows that matcher so the shell never reports a slot the core does
-// not process.
+// bus runs only limiter then compressor, applyBusInsertChain). Before either
+// matcher runs, any name containing "vst" or "host" (case-insensitive) is
+// consumed by the external plug-in host hook (PluginHostScan.h:72
+// isHostHandledInsertName; MediaCore.cpp processExternalInsert), live or not.
+// Every helper below follows those rules so the shell never reports a slot the
+// core does not process.
 
 import Foundation
 
@@ -26,11 +29,13 @@ enum InsertChainPolicy {
     enum AddOutcome: Equatable {
         case added(String)
         case duplicate(String)
+        /// A blank (empty or whitespace-only) name: nothing is added and
+        /// nothing is said (SVM:5522, `string.IsNullOrWhiteSpace` early return).
+        case rejectedBlank
     }
 
-    /// Channel slots read "1", "2" (SVM RefreshSelectedChannelInsertSlots,
-    /// `SlotLabel = $"{index + 1}"`); processing-target slots read "01", "02"
-    /// (SVM RefreshSelectedAudioProcessingSlots, `$"{index + 1:00}"`).
+    /// Channel slots read "1", "2" (SVM:2321 `SlotLabel = $"{index + 1}"`);
+    /// processing-target slots read "01", "02" (SVM:2690 `$"{index + 1:00}"`).
     enum LabelStyle {
         case channel
         case target
@@ -42,7 +47,7 @@ enum InsertChainPolicy {
         case gate, highpass, eq, compressor, limiter
     }
 
-    /// SVM NormalizeAudioInsertName.
+    /// SVM:5560-5567 (NormalizeAudioInsertName).
     static func normalize(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         switch trimmed.lowercased() {
@@ -53,7 +58,8 @@ enum InsertChainPolicy {
         }
     }
 
-    /// SVM IsBuiltInInsert (BuiltInInsertNames, SVM:2250-2258).
+    /// SVM:2252-2258 (IsBuiltInInsert, over BuiltInInsertNames at SVM:2250).
+    /// Windows-facing display only: the core decides processing by coreKind.
     static func isBuiltIn(_ name: String) -> Bool {
         let lowered = name.lowercased()
         guard !lowered.hasPrefix("vst:") else { return false }
@@ -62,16 +68,28 @@ enum InsertChainPolicy {
             || lowered.contains("compressor") || lowered.contains("limiter")
     }
 
-    /// SVM IsVstInsert.
+    /// SVM:2260-2262 (IsVstInsert). Windows-facing: the VST picker's notion of
+    /// "the plug-in on this strip". NARROWER than what the core hands to the
+    /// plug-in host; for wire and status decisions use isHostHandled.
     static func isVst(_ name: String) -> Bool {
         name.lowercased().hasPrefix("vst:") || name.range(of: "VST3", options: .caseInsensitive) != nil
     }
 
+    /// The core's isHostHandledInsertName (PluginHostScan.h:72): any name that
+    /// contains "vst" or "host", case-insensitive ("Host Test", "vst pro").
+    /// The core routes such a name to the external plug-in host on channels
+    /// AND buses, and bypasses it there when the host cannot run it; it never
+    /// reaches the built-in matchers.
+    static func isHostHandled(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return lowered.contains("vst") || lowered.contains("host")
+    }
+
     /// The core matcher's verdict for a channel insert, or nil for a name it
-    /// passes through. A VST name never reaches that matcher (the ordered
-    /// external-host hook consumes it first), so it has no built-in kind.
+    /// passes through. A host-handled name never reaches that matcher (the
+    /// ordered external-host hook consumes it first), so it has no built-in kind.
     static func coreKind(_ name: String) -> CoreKind? {
-        guard !isVst(name) else { return nil }
+        guard !isHostHandled(name) else { return nil }
         let lowered = name.lowercased()
         if lowered.contains("gate") || lowered.contains("noise") { return .gate }
         if lowered.contains("high-pass") || lowered.contains("highpass")
@@ -82,6 +100,18 @@ enum InsertChainPolicy {
         return nil
     }
 
+    /// The bus matcher's verdict (AudioDsp.h:1319-1342 applyBusInsertChain):
+    /// "limiter" is checked first, then "compressor"; everything else passes
+    /// through. So "Voice Compressor" compresses on a bus (on a channel the
+    /// "voice" branch makes it an EQ) and "Noise Limiter" limits on a bus.
+    static func busKind(_ name: String) -> CoreKind? {
+        guard !isHostHandled(name) else { return nil }
+        let lowered = name.lowercased()
+        if lowered.contains("limiter") { return .limiter }
+        if lowered.contains("compressor") { return .compressor }
+        return nil
+    }
+
     /// True when `a` and `b` name the same insert (Windows compares
     /// OrdinalIgnoreCase everywhere in the chain).
     static func sameName(_ a: String, _ b: String) -> Bool {
@@ -89,13 +119,15 @@ enum InsertChainPolicy {
     }
 
     /// The visible slot list. Status:
-    /// - a built-in the core processes in this position: `LIVE`, "Processing
-    ///   active." (SVM RefreshSelectedChannelInsertSlots tooltip);
-    /// - on a bus, a gate, high-pass or EQ: `PASS` (applyBusInsertChain runs
-    ///   only compressor and limiter; Windows shows LIVE here, OD-1);
-    /// - a VST while the host is not live: `BYPASS` with the host status line;
-    ///   with a live host, Windows' `START` text (SVM, "Plug-in starting; audio
-    ///   continues unchanged.") until V2 brings a processing verdict;
+    /// - a host-handled name (isHostHandled, the core's rule) while the host is
+    ///   not live: `BYPASS` with the host status line (never LIVE or PASS);
+    ///   with a live host, Windows' `START` text (SVM:2315) until V2 brings a
+    ///   processing verdict;
+    /// - on a channel, a name coreKind matches: `LIVE`, "Processing active."
+    ///   (SVM:2308);
+    /// - on a bus, a name busKind matches (limiter, compressor): `LIVE`; a
+    ///   gate, high-pass or EQ: `PASS` with the reason (Windows shows LIVE
+    ///   here, OD-1);
     /// - any other name: `PASS` (the core ignores unknown names).
     static func slots(chain: [String], onBus: Bool, vstLive: Bool, vstStatusLine: String,
                       labelStyle: LabelStyle) -> [InsertSlot] {
@@ -107,23 +139,26 @@ enum InsertChainPolicy {
             }
             let status: String
             let tooltip: String
-            if isVst(name) {
+            if isHostHandled(name) {
                 if vstLive {
                     status = "START"
+                    // SVM:2315 (channel). The target-style text at SVM:2686
+                    // appends " Click to open its controls."; the Mac omits it
+                    // DELIBERATELY for both styles because the Mac cannot open
+                    // a plug-in's controls yet (no editor window on this port),
+                    // so the sentence would promise a click that does nothing.
                     tooltip = "Plug-in starting; audio continues unchanged."
                 } else {
                     status = "BYPASS"
                     tooltip = vstStatusLine
                 }
-            } else if let kind = coreKind(name) {
-                if onBus && kind != .compressor && kind != .limiter {
-                    status = "PASS"
-                    let builtIn = name.lowercased().hasPrefix("built-in") ? name : "Built-in \(name)"
-                    tooltip = "\(builtIn) does not process on a bus; audio passes through unchanged."
-                } else {
-                    status = "LIVE"
-                    tooltip = "Processing active."
-                }
+            } else if onBus ? busKind(name) != nil : coreKind(name) != nil {
+                status = "LIVE"
+                tooltip = "Processing active."   // SVM:2308 / SVM:2679
+            } else if onBus, coreKind(name) != nil {
+                status = "PASS"
+                let builtIn = name.lowercased().hasPrefix("built-in") ? name : "Built-in \(name)"
+                tooltip = "\(builtIn) does not process on a bus; audio passes through unchanged."
             } else {
                 status = "PASS"
                 tooltip = "\(name) is not a built-in insert; audio passes through unchanged."
@@ -217,6 +252,8 @@ enum AudioProcessingTargetPolicy {
     /// button is dimmed with the same text. nil = the name may go on a bus.
     static func busRefusal(_ raw: String) -> String? {
         let name = InsertChainPolicy.normalize(raw)
+        // The bus matcher wins: "Voice Compressor" compresses on a bus.
+        guard InsertChainPolicy.busKind(name) == nil else { return nil }
         switch InsertChainPolicy.coreKind(name) {
         case .gate?, .highpass?, .eq?:
             return "\(name) does not process on a bus yet; add a compressor or limiter."
