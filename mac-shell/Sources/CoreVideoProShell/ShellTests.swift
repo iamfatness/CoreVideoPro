@@ -2211,10 +2211,7 @@ enum ShellTests {
         expectEqual(sides.right, 50, "R from the pgm-r tap")
         let none = StudioFooterReadout.masterLevels(snapshot: [:], fallback: 42)
         expect(none.left == 42 && none.right == 42, "no taps: mono master level on both sides")
-        for text in [StudioFooterReadout.ndiUnavailable] {
-            expect(text.contains("isn't available on Mac yet"), "unavailable output says so plainly")
-            expect(!text.contains("Developer ID"), "the app IS Developer ID signed; never blame it")
-        }
+        // (The NDI-unavailable sentence retired with Phase 4 N1b; see ndi/* cases.)
     }
 
     /// The bounce itself: status that comes and goes must never resize the footer.
@@ -4136,7 +4133,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + graphicsDesignResyncCases + graphicsLayoutParityCases + graphicsNamesCases + graphicsClockCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases + gradePhase2Cases + sourcesPhase2Cases + commsCases + commsModelCases + commsWiringCases + commsModelReviewCases + commsPageCases + commsKeysCases + controlRC7Cases + leftoverCases + socialCases + socialPlayoutCases + socialSheetCases + socialLiveCases + tilesCases + tilesLiveCases + graphicsDataCases + graphicsDataDesignCases + graphicsDataSheetCases
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + graphicsDesignResyncCases + graphicsLayoutParityCases + graphicsNamesCases + graphicsClockCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases + ndiPhase4Cases + gradePhase2Cases + sourcesPhase2Cases + commsCases + commsModelCases + commsWiringCases + commsModelReviewCases + commsPageCases + commsKeysCases + controlRC7Cases + leftoverCases + socialCases + socialPlayoutCases + socialSheetCases + socialLiveCases + tilesCases + tilesLiveCases + graphicsDataCases + graphicsDataDesignCases + graphicsDataSheetCases
         // COREVIDEO_SHELL_TESTS_FILTER=<prefix> runs only the matching cases (mutation runs,
         // iteration); COREVIDEO_SHELL_TEST_FILTER is accepted too. Unset, every case runs.
         let env = ProcessInfo.processInfo.environment

@@ -90,3 +90,114 @@ enum NdiOutputPolicy {
         ]]
     }
 }
+
+// ── AppModel wiring ─────────────────────────────────────────────────────────
+
+extension AppModel {
+    /// NDI goes out at the stream fps (Windows sends the stream profile's fps).
+    /// The Mac stream rows pin 30 until Task 7 adds the stream fps picker.
+    var ndiStreamFps: Int { 30 }
+
+    /// NDI is in the output set (on, with a name that validates).
+    var ndiOutputActive: Bool {
+        !NdiOutputPolicy.destinationSettings(ndiOutput, streamFps: ndiStreamFps).isEmpty
+    }
+
+    /// The footer tile / Settings card status line.
+    var ndiOutputStatus: String {
+        NdiOutputPolicy.status(enabled: ndiOutput.enabled, senders: ndiSenders,
+                               programName: ndiOutput.programName, refusalReason: ndiRefusalReason)
+    }
+
+    /// The NDI toggle (UI, and the control lane's transport.ndi.set/toggle).
+    /// Only turning ON is validated; a refusal changes nothing but the reason
+    /// and is returned. Off always succeeds; the same value is idempotent.
+    /// Never touches Stream or Record (Windows StudioViewModel.SetNdiOutput).
+    @discardableResult
+    func setNdiOutput(_ on: Bool) -> String? {
+        if on, let refusal = NdiOutputPolicy.validate(programName: ndiOutput.programName,
+                                                       coreHasNdiOutput: coreHasNdiOutput) {
+            ShellLog.write("ndi: on refused (\(refusal))")
+            ndiRefusalReason = refusal
+            return refusal
+        }
+        if on { ndiRefusalReason = nil }
+        guard ndiOutput.enabled != on else { return nil }
+        ndiOutput.enabled = on
+        persistPrefsNow()
+        sendNdiOutputSync()
+        return nil
+    }
+
+    /// Program name / group committed (Return or focus loss, Windows
+    /// OnNdiTextBoxKeyDown). While NDI is on, a name that no longer validates
+    /// turns NDI off with the reason; otherwise the live source is updated.
+    func commitNdiSettings(programName: String, groupName: String) {
+        guard programName != ndiOutput.programName || groupName != ndiOutput.groupName else { return }
+        ndiOutput.programName = programName
+        ndiOutput.groupName = groupName
+        // Windows OnNdiOutputOptionChanged: save, and with NDI off that is all.
+        // An edit while off must never touch the outputs (it would stop an idle
+        // session, or re-send a live stream's full state for nothing).
+        guard ndiOutput.enabled else {
+            persistPrefsNow()
+            return
+        }
+        if let reason = NdiOutputPolicy.validate(programName: programName, coreHasNdiOutput: coreHasNdiOutput) {
+            ShellLog.write("ndi: turned off (\(reason))")
+            ndiRefusalReason = reason
+            ndiOutput.enabled = false
+        }
+        persistPrefsNow()
+        sendNdiOutputSync()
+    }
+
+    /// One full-state output sync for what should be live now. With nothing left
+    /// (NDI off, not recording, not streaming) the session is stopped.
+    func sendNdiOutputSync() {
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        let nothingLeft = !ndiOutputActive && !recordingDesired && !streamingDesired
+        let command: JSONObject = nothingLeft
+            ? ["type": "stop-encoder-session", "reason": "NDI output turned off."]
+            : startProgramOutput(recording: recordingDesired, streaming: streamingDesired)
+        Task {
+            do {
+                _ = try await self.outputRequest([
+                    "type": "media-core-sync", "elapsedMs": self.elapsedMs(), "commands": [command],
+                ])
+            } catch {
+                // Loud, never a silent "Starting" forever. NDI stays on, as on
+                // Windows; the next core generation re-arms it.
+                ShellLog.write("ndi: output update failed (\(error.localizedDescription))")
+                self.pushWarning("NDI output update failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Every core generation: a persisted-on NDI output is started again.
+    func rearmNdiOutput() {
+        guard ndiOutputActive else { return }
+        sendNdiOutputSync()
+    }
+
+    func applyNdiSenders(_ session: JSONObject) {
+        let rows = (session["senders"] as? [JSONObject] ?? []).filter { $0["destination"] as? String == "ndi" }
+        if !NdiOutputPolicy.sameRows(rows, ndiSenders) { ndiSenders = rows }
+    }
+
+    func applyNdiCapability(_ snapshot: JSONObject) {
+        guard let states = (snapshot["profile"] as? JSONObject)?["capabilityStates"] as? JSONObject else { return }
+        let has = (states["ndi-output"] as? JSONObject)?["state"] as? String == "available"
+        if has != coreHasNdiOutput { coreHasNdiOutput = has }
+    }
+}
+
+extension NdiOutputPolicy {
+    /// Change gate for @Published sender rows (snapshots arrive several times a
+    /// second): only the fields the status line reads.
+    static func sameRows(_ a: [JSONObject], _ b: [JSONObject]) -> Bool {
+        let keys = ["destination", "status", "warning", "lastError", "runtimeDetail", "lastResultCode"]
+        func project(_ rows: [JSONObject]) -> [[String]] { rows.map { row in keys.map { row[$0] as? String ?? "" } } }
+        return project(a) == project(b)
+    }
+}

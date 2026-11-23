@@ -212,6 +212,76 @@ fixes are in "Task 1 note found in advance" above. Mutation M1d does not apply.
     `OutputSenderAdapter`, `RtmpCompatibility`, `FfmpegChildRetirement`, `PosixChildProcess`):
     **53/53**.
   - `build-macos-ffmpeg.sh --audit` passes on the cached LGPL ffmpeg, and still refuses Homebrew's build.
+## Task 9 (N1b): NDI output as its own output (shell)
+
+Branch `mac-outputs-phase4-n1b`, stacked on slice 1 (#1231). It needs only Task 8, not Task 1.
+
+**Lane split (confirmed by the coordinator).** The control lane's Task 6 owns `transport.ndi.set` and
+`transport.ndi.toggle`, the `ndi` feedback/OSC flag, the `contracts/control.platforms.json` rows and the
+regenerated manifest. It drives `AppModel.setNdiOutput(_:)`, which this task provides. So the plan's
+cases `ndi/control-set-and-toggle` and `ndi/osc-feedback-flag` and the contract/Companion steps live
+there, not here.
+
+- **Model (`NdiOutput.swift`).**
+  - `NdiOutputSettings{enabled=false, programName="CoreVideo Pro Program", groupName="public"}` is
+    persisted in `ShellPrefs.ndiOutput`. It is additive, and the round-trip self-check populates it.
+  - `NdiOutputPolicy.validate` is Windows `ValidateNdiOutput` minus the key clauses.
+  - `NdiOutputPolicy.status` is Windows `NdiStatus` minus " + key", and it reads `status` exactly as
+    Windows does.
+  - `destinationSettings` produces a row `{id:"ndi", label:"NDI", ndiName, ndiGroup, fps}`.
+- **AppModel.**
+  - `setNdiOutput(_:)` validates only when turning on. A refusal changes only the reason and is
+    returned. The same value is idempotent. It never touches Stream or Record.
+  - `startProgramOutput` appends `ndi` and its row whenever NDI is on.
+  - **Stream stop sends `stop-encoder-session` only when Record and NDI are both off** (Review Focus 2).
+  - `onConnected` re-arms NDI on every core generation (Review Focus 1). The core-exit handler clears
+    `ndiSenders`, so a stopped core reads "Starting", never a stale "Live".
+  - Name and group are committed on Return or focus loss. While NDI is on, a name that no longer
+    validates turns NDI off, never the stream. While NDI is off, an edit only saves.
+  - A failed update logs and pushes a warning; NDI stays on.
+  - `ndiStreamFps` is 30, because the Mac stream rows pin 30 until Task 7's picker.
+- **UI.** The footer NDI tile is live: the main button toggles, and the flyout holds the editor. The
+  Settings tab gains the Windows NDI card after Streaming destinations:
+  1. the "NDI output" switch;
+  2. the status line;
+  3. Program name | Group;
+  4. "NDI graphics key is not available on Mac."
+
+  Offscreen renders of the Settings tab and the footer were checked.
+- **Health.** `StudioHealthReadout.pressuredSenders` now skips `ndi`, so NDI pressure can never read as
+  stream backpressure.
+- **Tests: 18 `ndi/*` cases. Shell suite 7930 checks, the 2 pre-existing failures only.**
+  - Ports of the Windows telemetry, validation and destination tables.
+  - toggle-on-alone, refused-on, stream-stop-keeps-ndi, all-off-sends-stop.
+  - rearmed-on-core-generation, stopped-core-reads-starting, blank-name-while-on.
+  - not-streaming, never-asks-on-quit, record-start-and-stop-keep-ndi.
+  - rename while off and while on, pressure-is-not-stream-health, failed-update-is-loud, prefs.
+- **Shell suite.** The base shell at `3529d568`, built in a throwaway worktree, has the same 2 failures:
+  `ShellTestsMedia.swift:278/286`, an `.m4a` probe at 1068 ms against 1000±25 ms. That looks like an
+  AAC priming change on macOS 27.2.1. They are **pre-existing and not caused by this lane** (candidate
+  issue).
+- **Self-check and lint.** `COREVIDEO_SHELL_SELFCHECK=1` passes, including the prefs round-trip.
+  `lint-mac-design.sh` passes.
+- **Mutations** (each applied alone, rebuilt, restored):
+  - **M9a** (old stop rule): stream-stop-keeps-ndi red, 3 checks.
+  - **M9b** (no re-arm): rearmed-on-core-generation red.
+  - **M9c** (status from lifecycle): the status-table parity row red. This is deliberate parity with
+    Windows, as the plan notes.
+  - **M9d** (added: no `ndiSenders` reset on exit): stopped-core-reads-starting red.
+- **Review** (independent agent). All findings were real and are fixed:
+  - **A.** A rename while NDI was off sent `stop-encoder-session`, or re-sent a live stream's full state.
+    Now save-only, as Windows does; a case was added.
+  - **B.** A failed update was silent. Now a warning; a case was added.
+  - **C.** Test gaps: Record start/stop with NDI, quit guard, rename while on, a flaky re-arm wait that
+    matched any body, and the default name used as a fixture value. All added or fixed.
+  - **D.** An NDI sender with pressure could read as stream health. Now filtered; a case was added.
+  - **E.** Editor drafts went stale across the two editors, and a dismissed popover lost its edit. Drafts
+    now refresh when not focused, and the editor commits on disappear.
+- **Owed on owner hardware (Step 3).**
+  - Check that NDI Studio Monitor on a second machine sees "CoreVideo Pro Program" with audio, that a
+    stream stop/start leaves it running, and that a core kill reads Starting then Live.
+  - Record whether a Local Network prompt appears.
+
 
 ## Task 2 (O4a): `VideoToolboxGpuVideoEncoder`
 
