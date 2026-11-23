@@ -209,6 +209,8 @@ struct ShellPrefs: Codable, Equatable {
     // O1: the recording render profile and the stream encoder settings.
     var recordingProfile: RecordingProfile?
     var streamEncoder: StreamEncoderSettings?
+    // Phase 4 N1b: NDI output on/off, program name and group (Windows persists all three).
+    var ndiOutput: NdiOutputSettings?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -297,6 +299,7 @@ struct ShellPrefs: Codable, Equatable {
         commsPrivate = ((try? c.decodeIfPresent(Bool.self, forKey: .commsPrivate)) ?? nil)
         recordingProfile = ((try? c.decodeIfPresent(RecordingProfile.self, forKey: .recordingProfile)) ?? nil)
         streamEncoder = ((try? c.decodeIfPresent(StreamEncoderSettings.self, forKey: .streamEncoder)) ?? nil)
+        ndiOutput = ((try? c.decodeIfPresent(NdiOutputSettings.self, forKey: .ndiOutput)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -373,6 +376,11 @@ struct ShellPrefs: Codable, Equatable {
                                               targetBitrateMbps: 9, audioBitrateKbps: 192)
         p.streamEncoder = StreamEncoderSettings(audioBitrateKbps: 128, keyframeIntervalSeconds: 4,
                                                 rateControl: "vbr", h264Profile: "main", bFrames: 0)
+        var ndi = NdiOutputSettings()
+        ndi.enabled = true
+        ndi.programName = "Round Trip"
+        ndi.groupName = "studio"
+        p.ndiOutput = ndi
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"
