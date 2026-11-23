@@ -10,6 +10,7 @@ hand-diverge.
 | Here | ZComms |
 |---|---|
 | `talkback_sdk.{h,cpp}`, `talkback_sdk_win.{h,cpp}` | `src/zoom/` |
+| `talkback_sdk_mac.{h,mm}` (Apple engine only; compiled with `-fobjc-arc`, which its own `#error` enforces) | `src/zoom/` |
 | `talkback_channels.{h,cpp}`, `talkback_eligibility.h` | `src/zoom/` |
 | `reach.{h,cpp}`, `room_plan.{h,cpp}`, `duck_plan.{h,cpp}` | `src/zoom/` |
 | `audio_defs.h`, `clock.h`, `devices.{h,cpp}` | `src/audio/` |
