@@ -52,7 +52,7 @@ enum StudioTab: String, CaseIterable {
         let n = name.lowercased()
         guard let tab = StudioTab.allCases.first(where: {
             $0.rawValue.lowercased() == n || $0.navLabel.lowercased() == n
-        }) else { return nil }
+        }), tab != .comms || CommsGate.enabled else { return nil }
         self = tab
     }
 }
@@ -2217,6 +2217,7 @@ final class AppModel: ObservableObject {
     /// and the meeting state; it sends through the core like every request.
     lazy var comms: CommsModel = makeCommsModel()
     private var commsLeaseTimer: Timer?
+    var commsLeaseTimerIntervalForTesting: TimeInterval? { commsLeaseTimer?.timeInterval }
 
     private func makeCommsModel() -> CommsModel {
         let model = CommsModel(send: { [weak self] verb, payload in
@@ -2248,7 +2249,7 @@ final class AppModel: ObservableObject {
 
     /// The 500 ms lease renewal (Windows StudioViewModel.Comms.cs:36-43):
     /// always scheduled, sends only while a key is held.
-    func commsLeaseTick(nowMs: Int64 = CommsModel.monotonicMs()) async {
+    func commsLeaseTick() async {
         guard comms.anyHeld else { return }
         await comms.renewLeases()
     }

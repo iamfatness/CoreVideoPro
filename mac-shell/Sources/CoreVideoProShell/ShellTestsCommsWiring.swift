@@ -49,8 +49,11 @@ extension ShellTests {
     }
 
     static func testCommsTabNameResolves() {
-        expectEqual(StudioTab(name: "comms"), .comms, "by identifier")
-        expectEqual(StudioTab(name: "Comms"), .comms, "by label")
+        // Gated like the nav: a harness tab name cannot open it while the gate is off.
+        let expected: StudioTab? = CommsGate.enabled ? .comms : nil
+        expectEqual(StudioTab(name: "comms"), expected, "by identifier, only behind the gate")
+        expectEqual(StudioTab(name: "Comms"), expected, "by label, only behind the gate")
+        expectEqual(StudioTab(name: "audio"), .audio, "other tabs unaffected")
     }
 
     static func testCommsPrefsAbsentMeansOff() {
@@ -83,12 +86,12 @@ extension ShellTests {
         run { await m.comms.press(slot: 0) }
         core.clear()
         run {
-            for ms in stride(from: 0, through: 1500, by: 500) { await m.commsLeaseTick(nowMs: Int64(ms)) }
+            for _ in stride(from: 0, through: 1500, by: 500) { await m.commsLeaseTick() }
         }
         expectEqual(core.verbs.filter { $0 == "comms-key" }.count, 4, "renew at 0,500,1000,1500")
         run { await m.comms.release(slot: 0) }
         core.clear()
-        run { await m.commsLeaseTick(nowMs: 2000) }
+        run { await m.commsLeaseTick() }
         expect(core.sent.isEmpty, "nothing held, nothing sent")
     }
 
@@ -114,6 +117,7 @@ extension ShellTests {
         core.clear()
         m.handleBridgeStatus(.exited(code: 9))
         m.handleBridgeStatus(.connected(renderer: "metal"))
+        expectEqual(m.commsLeaseTimerIntervalForTesting, 0.5, "the 500 ms lease timer runs from every core generation")
         m.stopTimersForTesting()
         expect(!m.comms.anyHeld, "holds dropped on the core generation change")
         expectEqual(m.comms.pageState, .waiting, "the old report is gone")

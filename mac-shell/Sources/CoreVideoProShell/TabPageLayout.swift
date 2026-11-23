@@ -223,6 +223,7 @@ enum TabSnapshotHarness {
         seed(model)
         let wanted = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_LIST"]?
             .split(separator: ",").compactMap { StudioTab(rawValue: String($0)) }
+            .filter { $0 != .comms || CommsGate.enabled }
         for tab in wanted ?? StudioTab.navigation where tab != .studio {
             for width in [1360.0, 1920.0] {
                 let url = URL(fileURLWithPath: dir)
