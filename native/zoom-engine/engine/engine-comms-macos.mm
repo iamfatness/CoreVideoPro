@@ -224,7 +224,7 @@ private:
                 // Retry every 5 s, never spin: a denied grant is re-checked on
                 // the same cadence as any open failure, so turning access on in
                 // System Settings recovers without a restart.
-                if (!error.empty() && !engine_) next_open = now + 5000;
+                if (!error.empty()) next_open = now + 5000;
             }
             edgecomms::CommsAudioStatus st;
             {
@@ -471,9 +471,11 @@ void end_meeting()
 
 void on_silent_mic_dropped()
 {
-    // Guard state is main-queue state; the SDK's thread for this callback is
-    // not documented, so hop when needed. The revoke itself is immediate on
-    // the main queue.
+    // Ownership drops HERE, on whatever thread the SDK called from, as Windows
+    // does synchronously: the atomic is what capture-only reads. Guard state
+    // and the mute are main-queue work; the SDK's thread for this callback is
+    // not documented, so hop when needed.
+    g_owns_mic.store(false);
     auto act = ^{
         auto &s = S();
         if (s.guard.Dropped()) revoke_mic("virtual_mic_uninitialized");
