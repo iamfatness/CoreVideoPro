@@ -331,20 +331,14 @@ TEST(MetalOverlayRaster, ATileIsPreparedPerPixelSize) {
   EXPECT_EQ(raster.cacheCounters().completed, 2u);
 }
 
+// The metadata-bound and dimension cases moved to OverlayRasterContractCases.h
+// (OverlayRasterContract.MetadataBound / .Dimensions), shared with Windows.
 TEST(MetalOverlayRaster, AdmissionRulesMatchWindowsWording) {
   DEVICE_OR_SKIP(device);
   CoreTextOverlayRaster raster;
-  auto huge = lowerThird(std::string(70000, 'x'), "");
-  raster.beginFrame();
-  EXPECT_EQ(raster.rasterOverlayTexture(device, huge, {0, 0, 1, 1}, 100, 100), nil);
-  EXPECT_STREQ(raster.preparationState(), "failed");
-  EXPECT_EQ(raster.lastWarning(), "Graphics content exceeds preparation metadata budget.");
-  EXPECT_TRUE(raster.failedThisFrame());
-
   raster.beginFrame();
   EXPECT_EQ(raster.rasterOverlayTexture(device, lowerThird("A", ""), {0, 0, 1, 1}, 5000, 100), nil);
-  EXPECT_STREQ(raster.preparationState(), "failed");
-  EXPECT_EQ(raster.lastWarning(), "Invalid graphics raster dimensions.");
+  EXPECT_TRUE(raster.failedThisFrame());
 
   raster.beginFrame();
   EXPECT_FALSE(raster.failedThisFrame()) << "beginFrame clears the sticky per-frame flags";

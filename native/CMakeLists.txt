@@ -1113,6 +1113,9 @@ if(BUILD_TESTING)
     # with a malloc pass-through that counts only on a thread that arms it.
     target_sources(corevideo-native-tests PRIVATE tests/MetalOverlayRasterTest.mm)
     set_source_files_properties(tests/MetalOverlayRasterTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # Overlay raster contract (spec 7.1): the shared OverlayRasterContractCases.h on Metal.
+    target_sources(corevideo-native-tests PRIVATE tests/MetalOverlayRasterContractTest.mm)
+    set_source_files_properties(tests/MetalOverlayRasterContractTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     # Zero-copy IOSurface media frames into the Metal compositor (N4).
     target_sources(corevideo-native-tests PRIVATE tests/MetalZeroCopyTest.mm)
     set_source_files_properties(tests/MetalZeroCopyTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
