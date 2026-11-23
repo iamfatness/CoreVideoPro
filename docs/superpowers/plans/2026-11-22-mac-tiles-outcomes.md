@@ -193,3 +193,14 @@ The reviewer found no behavioural divergence from the C#. Its findings were cove
 - **LOW (fixed):** the `ensureLayers` guard is now pinned on a preset-layout wall. On a `dynamic-gallery` layout that mutant is equivalent.
 - **LOW (not changed):** `updateLayer`, `removeLayer`, `moveLayer` and `resetLayers` set no refusal on a wall. They cannot reach the wire, because `buildRoutes` is the single choke point.
 - Shell, full suite: **8053 checks, 2 failed**, the known `.m4a` AAC-priming pair.
+
+### Task 9 — S1 live proof against a real Metal core (fake engine)
+
+`ShellTestsTilesLive.swift`, `tiles-live/wall-cuts-and-owns-an-empty-scene`. It is opt-in through `COREVIDEO_SHELL_LIVE_CORE` and `COREVIDEO_SHELL_LIVE_ENGINE`, and otherwise skips loudly. It ran against `native/build-metal` with the fake engine: 4 participants, primary colours, 30 fps, no churn. **11/11 checks passed** on the first run that got that far:
+
+1. `newTilesScene()` puts the wall on Preview. The Preview composite is sampled before the Take, and it showed a picture at all 4 tile centres the Program wall later published.
+2. `take()` gave a take record of `verdict cut`, `wall continuous`, `subscriptionChurnDelta 0`, `restartedSources []` and `missingSources []`. The `tiles` node then had 4 members with `layerId tiles:<wall>`, and all 4 Program tile centres showed a picture rather than the background.
+3. All frames stop, and after the hold window plus 1 s the `tiles` node is present with `members: []`. Program is `#000000` (0,0,0) at every old tile centre and at the canvas centre, so the empty-plan guard holds and nothing improvises a grid.
+4. No "tiles wall on the" routes+wall warning appears anywhere in the snapshot.
+
+**Deviation:** plan step 3 says "Capture off". The fake engine keeps producing frames across `zoom-stop-capture`; only a leave destroys its targets. The proof turns Capture off and then leaves the meeting, which is the only way to make every frame stop. The first run did only Capture off and correctly failed "timed out waiting for an empty wall".
