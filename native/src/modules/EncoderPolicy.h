@@ -12,8 +12,14 @@ namespace corevideo::modules {
 // not tested. HEVC/H.265 ENCODE was not shipped at all from 2026-08-06 to
 // 2026-09-20; the OWNER REVERSED that on 2026-09-20 with the patent exposure
 // below accepted, so HEVC ships on Windows via NVENC (hevc_nvenc / the NVIDIA
-// HEVC Encoder MFT on the GPU-direct path). Not on macOS. The bullet below is
-// kept as the record of why it was excluded, not as current policy.
+// HEVC Encoder MFT on the GPU-direct path). On Apple it ships through
+// VideoToolbox (hevc_videotoolbox) since macOS parity Phase 4 (O3, 2026-11-22),
+// under the same accepted patent position; the OS encoder carries Apple's own
+// codec licensing. Stream ADMISSION is unchanged on both platforms: HEVC/AV1
+// are GPU-direct or nothing (StreamStartAdmission.h, Windows ruling
+// 2026-09-20), so on a Mac HEVC streams only once the VideoToolbox GPU-direct
+// encoder runs. The bullet below is kept as the record of why HEVC was
+// excluded, not as current policy.
 //
 // The reasoning is licensing as much as engineering, and it is worth keeping
 // written down because each exclusion looks like an oversight otherwise:
@@ -42,7 +48,7 @@ namespace corevideo::modules {
 // and patent position.
 inline bool isSupportedEncoder(const std::string& encoder) {
   return encoder == "h264_nvenc" || encoder == "hevc_nvenc" || encoder == "av1_nvenc" ||
-         encoder == "h264_videotoolbox" || encoder == "h264_mf";
+         encoder == "h264_videotoolbox" || encoder == "hevc_videotoolbox" || encoder == "h264_mf";
 }
 
 // Is there hardware for this codec on this platform?
@@ -52,7 +58,8 @@ inline bool isSupportedEncoder(const std::string& encoder) {
 //   getting H.264" instead of silently shipping the wrong codec.
 inline bool codecHasSupportedHardwareEncoder(const std::string& normalizedCodec) {
 #if defined(__APPLE__)
-  return normalizedCodec == "h264";
+  // H.264 and HEVC through VideoToolbox; no AV1 encoder exists on Apple Silicon.
+  return normalizedCodec == "h264" || normalizedCodec == "h265";
 #else
   // HEVC ships on Windows since 2026-09-20 (owner reversal, see the header comment).
   return normalizedCodec == "h264" || normalizedCodec == "h265" || normalizedCodec == "av1";
@@ -68,9 +75,13 @@ inline std::string preferredEncoderFor(const std::string& normalizedCodec,
     return "h264_nvenc";
   }
   if (normalizedMode == "videotoolbox") {
+#if defined(__APPLE__)
+    if (normalizedCodec == "h265") return "hevc_videotoolbox";
+#endif
     return "h264_videotoolbox";  // no AV1 encoder exists on Apple Silicon
   }
 #if defined(__APPLE__)
+  if (normalizedCodec == "h265") return "hevc_videotoolbox";
   return "h264_videotoolbox";
 #else
   if (normalizedCodec == "av1") return "av1_nvenc";
@@ -94,6 +105,9 @@ inline std::vector<std::string> encoderCandidatesFor(const std::string& normaliz
     return {preferredEncoderFor(normalizedCodec, normalizedMode)};
   }
 #if defined(__APPLE__)
+  if (normalizedCodec == "h265") {
+    return {"hevc_videotoolbox"};  // VideoToolbox or nothing: never an H.264 substitute
+  }
   return {"h264_videotoolbox"};
 #else
   if (normalizedCodec == "av1") {

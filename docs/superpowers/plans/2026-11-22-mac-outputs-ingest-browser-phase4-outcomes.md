@@ -137,3 +137,78 @@ certificate obligation stays open. Candidate fixes, each needing an owner call:
 - patch hlsenc in `build-macos-ffmpeg.sh` to forward the format's protocol options;
 - refuse `https://` HLS on Mac with a sentence;
 - accept and document the gap.
+
+## Task 1 (O3): Apple HEVC policy, a real POSIX encoder probe — shipped **without D11**
+
+**HLS over `https://` (D11) is NOT done and is pending an owner decision.** The coordinator relayed this on
+2026-11-23. Until the owner decides, ffmpeg is not patched and `https://` HLS is not refused. An HLS
+endpoint over `https://` still uploads **without certificate verification**. The cause and the candidate
+fixes are in "Task 1 note found in advance" above. Mutation M1d does not apply.
+
+- **What changed.**
+  - `EncoderPolicy.h`, Apple branch only: `hevc_videotoolbox` is supported, and H.265 has hardware.
+    `preferredEncoderFor("h265", videotoolbox|auto)` and `encoderCandidatesFor("h265", *)` return
+    `hevc_videotoolbox`. AV1 still has no encoder on Apple.
+  - The Windows branches are unchanged. `isSupportedEncoder` is shared, but nothing in `native/src`
+    calls it (review checked).
+  - Admission is unchanged (D1): HEVC is still GPU-direct or nothing.
+  - POSIX `ffmpegEncoderIsAvailable` now calls `posixFfmpegEncoderIsAvailable`
+    (`PosixFfmpegEncoderProbe.h`, header-only so tests reach it in any build). It runs the Windows argv
+    (`NUL` → `-`) through `posix_child::spawn` (guarded), with a 5000 ms budget and
+    `stopGroup(pid, 200 ms)` on timeout. Only exit 0 counts as available. Before this, it returned true
+    for everything.
+  - `build-macos-ffmpeg.sh` audits `hevc_videotoolbox`. **This changes the ffmpeg cache key: the next
+    release run rebuilds ffmpeg once (about 80 s).**
+  - The `corevideo-posix-child-probe` env mode can carry arguments: `exit <n>`, `argv-to <file>`,
+    `stubborn <pidfile>`.
+- **Addition beyond the plan: an Apple refusal sentence.** `admitStreamStart`'s no-hardware-encoder
+  sentence told a Mac operator to stream from a machine with an NVIDIA GPU. On Apple it now reads, for
+  example, "H.265 needs the GPU-direct hardware encoder, which is not available on this Mac
+  (no-encoder-texture). Choose H.264." For AV1 it adds "Apple Silicon has no AV1 encoder." Windows
+  text is unchanged.
+- **Tests (new).**
+  - `EncoderPolicy.AppleOffersHevcThroughVideoToolbox`.
+  - `EncoderPolicy.WindowsHevcPolicyIsUnchanged`: Windows-only; it does not compile on Mac.
+  - `PosixEncoderProbe.*` (5): `TrueOnlyOnExitZero`, `AMissingExecutableIsNotAvailable`,
+    `TimesOutAStubbornChildAndReapsIt` (it asserts the fixture invariant: the stubborn child is alive
+    before the budget expires), `PassesTheEncoderAndANullSink` (exact argv), and
+    `BundledFfmpegEncodesWithBothVideoToolboxEncoders`. The last is opt-in: it **passes** with
+    `COREVIDEO_TEST_FFMPEG=<cache a7ff16a2b56f5790>`, and also asserts `libx264` is unavailable.
+  - `StreamStartAdmission.AppleRefusalSentencesNameTheMacNotNvidia`.
+  - `OutputSenderAdapter.AppleRefusesHevcOffTheGpuPath`, **confirmatory** (rule 8). It pins D1 after
+    the flip, and passes with the old policy and with an always-true probe.
+  - The Apple branch of `EncoderPolicy.HevcShipsOnWindowsNvencOnly` pinned the old "no HEVC on Mac"
+    policy. It is now Windows-only, with a comment pointing at the new test.
+- **Mutations** (each applied alone, rebuilt, restored with `touch`):
+
+  | Mutation | Result |
+  |---|---|
+  | M1a: Apple H.264-only | `AppleOffersHevcThroughVideoToolbox` red |
+  | M1b: probe returns true | 4 of 5 `PosixEncoderProbe` red; the opt-in one was skipped |
+  | M1c: no timeout | `TimesOutAStubbornChildAndReapsIt` red: "did not give up within its budget" |
+  | M1e (added): Apple sentence reverts to the Windows text | `AppleRefusalSentencesNameTheMacNotNvidia` red |
+
+- **Review** (independent agent):
+  1. *Important:* on Apple every candidate list has one entry, and `selectFfmpegVideoEncoder` falls back
+     to `candidates.front()`. So the probe's verdict cannot change the selection. It costs a 30-frame
+     VideoToolbox encode on every ffmpeg start, and up to about 5.2 s if it hangs. On the GPU-direct
+     path its answer is overwritten (`gpu-direct-<codec>`).
+     - Windows has the same shape for H.265 and AV1 (one candidate, probed before the GPU decision).
+     - Kept as the plan specifies. **Recorded as advisory-only on Apple**, and listed as a candidate
+       issue: probe after the GPU decision, or make "no candidate opens" a refusal.
+     - The probe ends before the GPU encoder starts, so the two do not contend for VideoToolbox.
+     - Separately, a VideoToolbox session can be refused while other encoders hold the media engine
+       (exit 187 / OSStatus -12903, seen during a parallel AVF test run).
+  2. *Important:* `AppleRefusesHevcOffTheGpuPath` left `COREVIDEO_TEST_PROBE_MODE` set after an early
+     `ASSERT` return. Fixed with an RAII guard. `FakeFfmpeg` now also restores an inherited
+     `COREVIDEO_CHILD_GUARD_PATH` instead of unsetting it.
+  3. *Minor:* "this Mac cannot provide one" read wrongly for HEVC, whose policy now says hardware
+     exists. Reworded as above.
+- **Counts.**
+  - Full suite (before the review fix-ups): **2252 passed, 3 failed** of 2255. All three failures are
+    `AvfProgramTail.*`, the suite that flaked at baseline. Rerun alone twice after the rebuild:
+    **7/7 and 7/7**.
+  - Touched suites after the fix-ups (`EncoderPolicy`, `PosixEncoderProbe`, `StreamStartAdmission`,
+    `OutputSenderAdapter`, `RtmpCompatibility`, `FfmpegChildRetirement`, `PosixChildProcess`):
+    **53/53**.
+  - `build-macos-ffmpeg.sh --audit` passes on the cached LGPL ffmpeg, and still refuses Homebrew's build.

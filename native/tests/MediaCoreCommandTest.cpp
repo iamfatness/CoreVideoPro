@@ -5593,6 +5593,45 @@ TEST(OutputSenderAdapter, SrtNeverRefusesH265ForTheEnhancedRtmpCheckbox) {
 #endif
 }
 
+// Phase 4 O3, CONFIRMATORY (plan-authoring rule 8): Apple's encoder policy
+// now says H.265 has hardware (VideoToolbox), but admission keeps HEVC
+// GPU-direct-only (D1). Before the policy flip this was refused for a
+// different reason (no hardware at all), so it pins D1 AFTER the flip rather
+// than proving the flip. The fake ffmpeg exits 0 so encoder selection and the
+// resolver have something real to find; admission refuses before any spawn of
+// the transport child.
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(__APPLE__)
+#include <unistd.h>
+TEST(OutputSenderAdapter, AppleRefusesHevcOffTheGpuPath) {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / ("cvp-hevc-admission-" + std::to_string(::getpid()));
+  fs::create_directories(dir);
+  std::error_code error;
+  fs::copy_file(COREVIDEO_POSIX_CHILD_PROBE_PATH, dir / "ffmpeg", fs::copy_options::overwrite_existing, error);
+  // RAII: an early ASSERT return must not leave the mode set for later tests.
+  struct Cleanup {
+    fs::path dir;
+    Cleanup(fs::path d) : dir(std::move(d)) { ::setenv("COREVIDEO_TEST_PROBE_MODE", "exit 0", 1); }
+    ~Cleanup() {
+      ::unsetenv("COREVIDEO_TEST_PROBE_MODE");
+      std::error_code ignored;
+      fs::remove_all(dir, ignored);
+    }
+  } cleanup(dir);
+  ASSERT_FALSE(error) << error.message();
+
+  auto sender = corevideo::modules::createFfmpegSrtOutputSender();
+  ASSERT_NE(sender, nullptr);
+  auto settings = srtAdmissionSettings("h265");
+  settings.ffmpegBinDirectory = dir.string();
+  auto frame = startableProgramFrame("srt-h265-apple-admission");  // full BGRA, no encoder texture
+  const auto session = sender->sync({"srt"}, &frame, 33, {settings});
+
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].lastResultCode, "no-hardware-encoder");
+}
+#endif
+
 TEST(OutputSenderAdapter, RtmpStillRefusesH265WithoutEnhancedRtmp) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (!senderAdmissionFfmpegPresent("RtmpStillRefusesH265WithoutEnhancedRtmp")) return;

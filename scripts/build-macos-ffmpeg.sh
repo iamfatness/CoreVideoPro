@@ -75,7 +75,7 @@ audit() {  # audit <ffmpeg>
     grep -qE "^OpenSSL ${pinned_openssl//./\\.} " <<<"$text" \
         || { echo "audit: embedded OpenSSL is not the pinned $pinned_openssl" >&2; fail=1; }
     out="$("$bin" -hide_banner -encoders 2>&1 || true)"
-    for enc in h264_videotoolbox aac; do
+    for enc in h264_videotoolbox hevc_videotoolbox aac; do
         grep -qE "^ [A-Z.]{6} $enc( |$)" <<<"$out" || { echo "audit: missing encoder $enc" >&2; fail=1; }
     done
     out="$("$bin" -hide_banner -protocols 2>&1 || true)"
@@ -91,7 +91,7 @@ audit() {  # audit <ffmpeg>
         grep -qE " $filter " <<<"$out" || { echo "audit: missing filter $filter" >&2; fail=1; }
     done
     [ "$fail" = 0 ] || return 1
-    echo "audit: $bin OK (arm64, LGPL, system libraries only, h264_videotoolbox/aac, rtmp/rtmps/srt/https, flv/mpegts/hls)" >&2
+    echo "audit: $bin OK (arm64, LGPL, system libraries only, h264/hevc_videotoolbox + aac, rtmp/rtmps/srt/https, flv/mpegts/hls)" >&2
 }
 
 if [ "${1:-}" = "--audit" ]; then

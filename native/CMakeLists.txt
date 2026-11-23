@@ -1216,7 +1216,7 @@ if(BUILD_TESTING)
     # P1: the real guard plus a probe child / stand-in core (never shipped).
     add_executable(corevideo-posix-child-probe tests/PosixChildProbe.cpp)
     target_include_directories(corevideo-posix-child-probe PRIVATE src)
-    target_sources(corevideo-native-tests PRIVATE tests/PosixChildProcessTest.cpp)
+    target_sources(corevideo-native-tests PRIVATE tests/PosixChildProcessTest.cpp tests/PosixEncoderProbeTest.cpp)
     target_compile_definitions(corevideo-native-tests PRIVATE
       COREVIDEO_CHILD_GUARD_PATH="$<TARGET_FILE:corevideo-child-guard>"
       COREVIDEO_POSIX_CHILD_PROBE_PATH="$<TARGET_FILE:corevideo-posix-child-probe>")
