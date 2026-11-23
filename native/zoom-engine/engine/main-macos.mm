@@ -234,6 +234,22 @@ static std::string g_current_auth_mode = "jwt";
 - (void)onZoomSDKAuthReturn:(ZoomSDKAuthError)returnValue
 {
     if (returnValue == ZoomSDKAuthError_Success) {
+        // Opt into HD video so the meeting negotiates Group HD / 1080p streams
+        // when the account is entitled, exactly as the Windows engine does in
+        // onAuthenticationReturn (main.cpp, EnableHDVideo(true)). Without it the
+        // macOS SDK accepted every 1080p raw-data subscription (sdkCode 0) yet
+        // delivered 320x180 to every guest camera (installer 12, 2026-11-22).
+        ZoomSDKSettingService *settings = [[ZoomSDK sharedSDK] getSettingService];
+        ZoomSDKVideoSetting *video = settings ? [settings getVideoSetting] : nil;
+        if (video) {
+            const ZoomSDKError h_err = [video enableCatchHDVideo:YES];
+            EngineIpc::write(std::string(R"({"cmd":"debug","stage":"enable_hd_video","code":)") +
+                             std::to_string(static_cast<int>(h_err)) +
+                             R"(,"enabled":)" + ([video isCatchHDVideoOn] ? "true" : "false") + "}");
+        } else {
+            EngineIpc::write(std::string(R"({"cmd":"debug","stage":"create_setting_service_failed","code":)") +
+                             (settings ? "-2" : "-1") + "}");
+        }
         EngineIpc::write(R"({"cmd":"auth_ok"})");
         return;
     }

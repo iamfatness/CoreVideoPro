@@ -142,6 +142,9 @@ std::string buildZoomEngineSubscribeAudioCommand(const ZoomEngineSubscribeComman
 std::string buildZoomEngineUnsubscribeCommand(const std::string& sourceUuid);
 
 std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line);
+// True for the helper's debug stages that are written to the production log
+// (picture-quality evidence such as HD-video enablement and range excursions).
+bool zoomEngineDebugLineIsProductionLogged(const std::string& line);
 
 // SHM region names for a source. instanceToken must match the token the engine
 // was launched with (ZoomEngineProcessClient::instanceToken); empty reproduces

@@ -529,3 +529,22 @@ TEST(ZoomEngineClient, TheTakeoverChoiceRidesTheJoinCommandAndDefaultsOff) {
   ASSERT_NE(takeover.get("end_other_meeting"), nullptr);
   EXPECT_TRUE(takeover.get("end_other_meeting")->asBool());
 }
+
+// HD-video enablement is the evidence that explains a 320x180-everywhere meeting,
+// so it must reach the production log; ordinary debug telemetry must not.
+TEST(ZoomEngineDebugLog, HdVideoEvidenceIsProductionLoggedButOrdinaryDebugIsNot) {
+  using corevideo::modules::zoomEngineDebugLineIsProductionLogged;
+  EXPECT_TRUE(zoomEngineDebugLineIsProductionLogged(
+      R"({"cmd":"debug","stage":"enable_hd_video","code":0,"enabled":true})"));
+  EXPECT_TRUE(zoomEngineDebugLineIsProductionLogged(
+      R"({"cmd":"debug","stage":"create_setting_service_failed","code":-1})"));
+  EXPECT_TRUE(zoomEngineDebugLineIsProductionLogged(
+      R"({"cmd":"debug","stage":"video_range_classified"})"));
+  EXPECT_FALSE(zoomEngineDebugLineIsProductionLogged(
+      R"({"cmd":"debug","stage":"video_subscribe","code":0})"));
+  EXPECT_FALSE(zoomEngineDebugLineIsProductionLogged(R"({"cmd":"debug","stage":"before_init_sdk"})"));
+  auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"debug","stage":"enable_hd_video","code":0,"enabled":true})");
+  ASSERT_TRUE(event.has_value());
+  EXPECT_EQ(event->kind, corevideo::modules::ZoomEngineEventKind::Debug);
+}
