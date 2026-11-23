@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
+#include "compositor/CoreTextThumbnail.h"
 #include "graphics/GraphicsTextCoreText.h"
 #include "graphics/GraphicsTemplate.h"
 #include "modules/OverlayTileRaster.h"
@@ -593,7 +594,7 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     compositor::invokeOverlayRasterPrepareHook();
     const auto& overlay = request.overlay;
     const int widthPx = request.width, heightPx = request.height;
-    if (!request.device) return {{}, 0, "Native graphics preparation unavailable."};
+    if (!request.device && !request.thumbnail) return {{}, 0, "Native graphics preparation unavailable."};
     std::string warning;
     // Template content resolves HERE, on the worker (fields, brand, layout with
     // Core Text measurement). A resolve error is a failed preparation.
@@ -640,7 +641,16 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     int textureWidth = widthPx, textureHeight = heightPx;
     const double scale = drawing.height > 0 ? double(heightPx) / drawing.height : 1.0;
     std::shared_ptr<graphics::GraphicsRunLayout> runs;
-    if (templated && (drawing.crawl || (overlay.graphicsTemplate->definition->motionSummary().layered &&
+    // A thumbnail draws a crawl in one raster: each item at its start, clipped
+    // to the crawl window (CompositorOverlayRaster.cpp thumbnail parity).
+    if (drawing.crawl && request.thumbnail) {
+      for (auto& primitive : drawing.primitives) {
+        if (!primitive.crawlStart) continue;
+        primitive.box.x += *primitive.crawlStart;
+        primitive.clip = graphics::intersect(primitive.box, drawing.crawl->clip);
+      }
+    }
+    if (templated && !request.thumbnail && (drawing.crawl || (overlay.graphicsTemplate->definition->motionSummary().layered &&
                                         !overlay.graphicsTemplate->wholeGraphicMotion))) {
       runs = std::make_shared<graphics::GraphicsRunLayout>();
       runs->width = drawing.width;
@@ -768,6 +778,29 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     if (request.strictResources && !complete)
       return {{}, 0, warning.empty() ? "Graphics resources could not be prepared completely." : warning};
 
+    if (request.thumbnail) {
+      // PNG stores straight alpha: ImageIO un-premultiplies the premultiplied
+      // BGRA bitmap on encode (WIC's format converter does the same on Windows).
+      CfRef<CFDataRef> bytes(CFDataCreate(kCFAllocatorDefault, pixels.data(), CFIndex(pixels.size())));
+      CfRef<CGDataProviderRef> provider(bytes ? CGDataProviderCreateWithCFData(bytes.get()) : nullptr);
+      CfRef<CGImageRef> bitmap(provider ? CGImageCreate(size_t(textureWidth), size_t(textureHeight), 8, 32, stride,
+          space.get(), CGBitmapInfo(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little, provider.get(),
+          nullptr, false, kCGRenderingIntentDefault) : nullptr);
+      CfRef<CFMutableDataRef> encoded(CFDataCreateMutable(kCFAllocatorDefault, 0));
+      CfRef<CGImageDestinationRef> destination(bitmap && encoded
+          ? CGImageDestinationCreateWithData(encoded.get(), CFSTR("public.png"), 1, nullptr) : nullptr);
+      if (!destination) return {{}, 0, "Native thumbnail PNG encoding failed."};
+      CGImageDestinationAddImage(destination.get(), bitmap.get(), nullptr);
+      if (!CGImageDestinationFinalize(destination.get())) return {{}, 0, "Native thumbnail PNG encoding failed."};
+      const auto length = CFDataGetLength(encoded.get());
+      if (length <= 0 || length > 256 * 1024) return {{}, 0, "Native thumbnail exceeds its encoded limit."};
+      auto entry = std::make_shared<MetalRasterTex>();
+      entry->thumbnail.assign(CFDataGetBytePtr(encoded.get()), CFDataGetBytePtr(encoded.get()) + length);
+      std::vector<uint8_t>().swap(pixels);
+      budget->finishPreparation();
+      return {std::move(entry), 0, warning};
+    }
+
     MTLTextureDescriptor* descriptor =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                            width:NSUInteger(textureWidth)
@@ -790,6 +823,24 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     budget->finishPreparation();
     return {std::move(entry), textureBytes, warning};
   }
+}
+
+std::vector<uint8_t> coreTextThumbnailPng(const CompositorOverlayContent& overlay, int width, int height,
+                                          std::string& warning) {
+  if (width < 1 || height < 1 || width > 320 || height > 180) {
+    warning = "Invalid thumbnail dimensions.";
+    return {};
+  }
+  CoreTextOverlayRaster::Request request;
+  request.overlay = overlay;
+  request.width = width;
+  request.height = height;
+  request.strictResources = true;
+  request.thumbnail = true;
+  const auto result = CoreTextOverlayRaster::prepareRaster(request);
+  warning = result.warning;
+  // The entry (and its budget lease) is released when `result` goes out of scope.
+  return result.asset ? result.asset->thumbnail : std::vector<uint8_t>{};
 }
 
 }  // namespace corevideo::modules

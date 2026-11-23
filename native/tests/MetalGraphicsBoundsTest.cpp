@@ -33,6 +33,7 @@
 #include "compositor/CompositorFaultInjection.h"
 #include "graphics/GraphicsCachePressure.h"
 #include "graphics/GraphicsInstances.h"
+#include "graphics/GraphicsResourceBudget.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
 
@@ -648,6 +649,67 @@ TEST(MetalGraphicsBounds, AHeldNameLineSurvivesACacheTrimWhileItsNewSizePrepares
   EXPECT_FALSE(hasWarning(resized, "graphics-preparing"));
   EXPECT_GE(brightNameLine(resized.preview, 0, 0, 320, 81), 20);
   EXPECT_NE(heldPixels, region(resized.preview, 0, 0, 320, 81)) << "the new size never drew";
+}
+
+// Review Focus 5. Thumbnails requested while a graphic is on Program share
+// the 2-preparation process budget with it. Program's accepted pixels are
+// unchanged on every frame, and every curated thumbnail still completes ready.
+TEST(MetalGraphicsBounds, ThumbnailsDuringAirtimeLeaveProgramUntouched) {
+  MetalGraphicsRig rig;
+  RIG_OR_SKIP(rig);
+  ASSERT_TRUE(rig.command("graphics-instance-create", {{"scope", "global"}, {"templateId", "compact-solid"},
+      {"templateVersion", 1}, {"fields", Json::Object{{"name", "On air"}, {"title", "Engineer"}}}}));
+  ASSERT_TRUE(rig.command("graphics-instance-cue", {{"expectedRevision", 1}}));
+  ASSERT_TRUE(rig.command("graphics-instance-trigger", {{"expectedRevision", 1}, {"action", "show"}}));
+  const auto drawn = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (rig.row().getNumber("firstDrawSubmittedFrame") <= 0 && std::chrono::steady_clock::now() < drawn) {
+    rig.render(rig.plan());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_GT(rig.row().getNumber("firstDrawSubmittedFrame"), 0.);
+  const auto accepted = rig.render(rig.plan()).preview.bgra;
+  auto& budget = corevideo::graphics::GraphicsResourceBudget::process();
+  const auto before = budget.counters();
+  ASSERT_TRUE(rig.command("graphics-template-list", {{"includeThumbnails", true}}));
+  auto terminal = [&] {
+    const auto* templates = rig.graphics.snapshot().get("templates");
+    if (!templates || templates->asArray().empty()) return false;
+    for (const auto& row : templates->asArray()) {
+      const auto* thumb = row.get("thumbnail");
+      if (!thumb || thumb->getString("state") == "not-requested" || thumb->getString("state") == "pending") return false;
+    }
+    return true;
+  };
+  int frames = 0;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (!terminal() && std::chrono::steady_clock::now() < until) {
+    EXPECT_EQ(accepted, rig.render(rig.plan()).preview.bgra) << "frame " << frames << ": Program changed while thumbnails prepared";
+    ++frames;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(terminal()) << "thumbnails never completed during airtime";
+  EXPECT_GT(frames, 0) << "no frame rendered while thumbnails prepared";
+  for (const auto& row : rig.graphics.snapshot().get("templates")->asArray()) {
+    const auto* thumb = row.get("thumbnail");
+    EXPECT_EQ("ready", thumb->getString("state")) << row.getString("templateId") << ": " << thumb->getString("reason");
+    EXPECT_EQ("metal-native", thumb->getString("backend")) << row.getString("templateId");
+  }
+  // Each thumbnail returns its whole charge: the shared budget is back where
+  // it was. (A leaked thumbnail lease is ~230 KB of a 128 MiB budget, so it
+  // could never block the Program revision below; this is what catches it.)
+  const auto after = budget.counters();
+  EXPECT_EQ(before.gpuBytes, after.gpuBytes) << "a thumbnail kept its GPU charge";
+  EXPECT_EQ(before.cpuBytes, after.cpuBytes) << "a thumbnail kept its CPU charge";
+  EXPECT_EQ(before.activePreparations, after.activePreparations);
+  // A Program revision can still reserve the budget afterwards.
+  ASSERT_TRUE(rig.command("graphics-instance-update", {{"expectedRevision", 1}, {"target", "program"},
+      {"fields", Json::Object{{"name", "After thumbnails"}, {"title", "Engineer"}}}}));
+  const auto settle = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (rig.row().getString("preparation") != "ready" && std::chrono::steady_clock::now() < settle) {
+    rig.render(rig.plan());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ("ready", rig.row().getString("preparation"));
 }
 
 #endif  // COREVIDEO_WITH_METAL && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS

@@ -29,9 +29,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 class Core:
-    def __init__(self, path, env):
+    def __init__(self, path, env, stderr=subprocess.DEVNULL):
         self.proc = subprocess.Popen([path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, env=env)
+                                     stderr=stderr, text=True, env=env)
         self.sequence = 0
 
     def request(self, body, timeout=10.0):
@@ -98,6 +98,35 @@ def segoe_graphic(core_path, fonts_dir):
         core.close()
 
 
+def thumbnail(core_path, fonts_dir):
+    """compact-solid's library thumbnail row, and the core's log text."""
+    env = {k: v for k, v in os.environ.items() if k != "COREVIDEO_GRAPHICS_FONTS_DIR"}
+    if fonts_dir:
+        env["COREVIDEO_GRAPHICS_FONTS_DIR"] = fonts_dir
+    with tempfile.TemporaryFile(mode="w+") as log:
+        core = Core(core_path, env, stderr=log)
+        row = {}
+        try:
+            epoch = core.snapshot()["graphics"]["coreEpoch"]
+            # Body shape: GraphicsGateway.swift (graphics-template-list).
+            core.request({"type": "graphics-template-list",
+                          "graphics": {"schemaVersion": 1, "requestId": "thumbs-1", "clientId": "fonts-location",
+                                       "coreEpoch": epoch, "includeThumbnails": True}})
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                rows = core.snapshot().get("graphics", {}).get("templates", [])
+                found = [r for r in rows if r.get("templateId") == "compact-solid"]
+                state = (found[0].get("thumbnail") or {}).get("state") if found else None
+                if state not in (None, "not-requested", "pending"):
+                    row = found[0]["thumbnail"]
+                    break
+                time.sleep(0.05)
+        finally:
+            core.close()
+        log.seek(0)
+        return row, log.read()
+
+
 def main():
     build = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "native", "build-metal")
     built_core = os.path.join(build, "corevideo-native")
@@ -124,6 +153,18 @@ def main():
                 without.get("warning") or ""):
             failures.append("without the variable the copied core still found Selawik: "
                             "this test no longer reproduces the install layout")
+
+        thumb, _ = thumbnail(core, fonts)
+        print("thumbnail with the variable:", thumb.get("state"), "|", thumb.get("backend"), "|", thumb.get("reason"))
+        if thumb.get("state") != "ready" or thumb.get("backend") != "metal-native":
+            failures.append("with the variable, the compact-solid thumbnail is not ready on metal-native")
+        thumb, log = thumbnail(core, None)
+        print("thumbnail without it:", thumb.get("state"), "|", thumb.get("reason"))
+        if thumb.get("state") != "unavailable" or thumb.get("reason") != (
+                "Requested graphics font is unavailable; choose an installed font."):
+            failures.append("without the variable, the thumbnail is not unavailable with the font wording")
+        if "graphics fonts: none found at" not in log:
+            failures.append("without the variable, the core did not log where it looked for the fonts")
     for failure in failures:
         print("FAIL:", failure)
     print("PASS" if not failures else "FAILED")

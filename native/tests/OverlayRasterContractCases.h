@@ -155,25 +155,7 @@ inline std::string simpleManifest(const std::string& id, int width, int height, 
 // sha256 is kept equal to the intact bytes, so the template's declared digest
 // and its content hash are unchanged: it is "the same content" whose bytes no
 // longer decode.
-inline std::shared_ptr<const std::vector<uint8_t>> corruptPng() {
-  auto bytes = std::make_shared<std::vector<uint8_t>>(*graphicsTest::png());
-  const std::string idat = "IDAT";
-  auto found = std::search(bytes->begin(), bytes->end(), idat.begin(), idat.end());
-  if (found == bytes->end()) return bytes;
-  const size_t typeAt = size_t(found - bytes->begin());
-  const size_t length = (size_t((*bytes)[typeAt - 4]) << 24) | (size_t((*bytes)[typeAt - 3]) << 16) |
-                        (size_t((*bytes)[typeAt - 2]) << 8) | size_t((*bytes)[typeAt - 1]);
-  std::fill(bytes->begin() + std::ptrdiff_t(typeAt + 4), bytes->begin() + std::ptrdiff_t(typeAt + 4 + length), 0);
-  uint32_t crc = 0xffffffff;  // over type + data, as GraphicsAssetFixture.h writes it
-  for (size_t i = typeAt; i < typeAt + 4 + length; ++i) {
-    crc ^= (*bytes)[i];
-    for (int j = 0; j < 8; ++j) crc = (crc >> 1) ^ ((crc & 1) ? 0xedb88320u : 0);
-  }
-  crc ^= 0xffffffff;
-  const size_t crcAt = typeAt + 4 + length;
-  for (int k = 0; k < 4; ++k) (*bytes)[crcAt + size_t(k)] = uint8_t(crc >> (24 - 8 * k));
-  return bytes;
-}
+inline std::shared_ptr<const std::vector<uint8_t>> corruptPng() { return graphicsTest::pngWithUndecodablePixels(); }
 
 inline CompositorOverlayContent logoTemplate(bool corrupt, std::string* error = nullptr) {
   std::string assetError;

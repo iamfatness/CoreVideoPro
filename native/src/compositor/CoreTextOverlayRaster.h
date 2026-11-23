@@ -55,12 +55,16 @@ class CoreTextOverlayRaster {
     // Declared first so the texture releases before its budget charge.
     std::shared_ptr<graphics::GraphicsResourceBudget::Lease> budget;
     id<MTLTexture> texture = nil;
+    std::vector<uint8_t> thumbnail;  // a thumbnail request's PNG; no texture
   };
   struct Request {
     id<MTLDevice> device = nil;
     CompositorOverlayContent overlay;
     int width = 0, height = 0;
     bool strictResources = false;
+    // Library thumbnail (coreTextThumbnailPng): no device, no cache, no atlas;
+    // the result carries a straight-alpha PNG instead of a texture.
+    bool thumbnail = false;
   };
   struct Key {
     uintptr_t device = 0;
@@ -122,7 +126,9 @@ class CoreTextOverlayRaster {
   Cache::Counters cacheCounters() const { return cache_.counters(); }
 
  private:
-  Cache::Result prepareRaster(const Request& request);
+  // Member-free, so the library thumbnail path can run it without a raster.
+  static Cache::Result prepareRaster(const Request& request);
+  friend std::vector<uint8_t> coreTextThumbnailPng(const CompositorOverlayContent&, int, int, std::string&);
   static std::shared_ptr<const std::string> internedWarning(const char* text);
   void setWarning(std::shared_ptr<const std::string> warning);
 
