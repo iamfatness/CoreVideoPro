@@ -4143,7 +4143,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var missing = SceneCatalogPolicy.MissingCatalogScenes(_scenes);
         if (missing.Count == 0)
         {
-            CommandStatus = "All starter scenes are already present";
+            CommandStatus = SceneCatalogPolicy.RestoreStatus([]);
             return;
         }
 
@@ -4156,9 +4156,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .ToList();
         }
 
-        CommandStatus = missing.Count == 1
-            ? $"{missing[0].Scene.Name} restored"
-            : $"{missing.Count} starter scenes restored";
+        CommandStatus = SceneCatalogPolicy.RestoreStatus(missing.Select(entry => entry.Scene.Name).ToList());
         RefreshSceneItems();
         RefreshProductionReadouts();
         SaveProductionOutputPreferences();
