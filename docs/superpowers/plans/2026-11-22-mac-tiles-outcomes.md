@@ -131,3 +131,19 @@ The App Store began updating Xcode in place to 27.2 mid-session. From then on ev
 |---|---|
 | `currentPrefs` saves `tiles: nil` | red: save-and-relaunch |
 | the whole-object guard throws again | red: "a non-object tiles keeps every scene" |
+
+### Task 7 — the `tiles` payload, confirmed against the Windows builder
+
+- `contracts/tiles.fixtures.json`: the 5 required cases, `expected` written by hand from the C#.
+- **Windows confirmation, run on this Mac:** I compiled the real Windows sources (`TilesLayerPayloadBuilder`, `TilesMembershipPolicy`, `TilesLocalSourcePolicy`, `TilesIdentityPolicy`, `ScenePersistenceService`, `SceneRoutingService`, `MediaCoreCommandBuilder` via the MediaCore project, the new `TilesLayerWire`, and the new `TilesFixtureTests.cs` itself) into a scratch net9 console project. Shims cover only the XAML brush types in `ProductionModels.cs` and the four xUnit asserts. **All 5 cases pass.** Control: changing case 4's `borderThickness` to 31 fails with "expected 31, got 32". The formal gate is still `TilesFixtureTests` on the `native-shell-windows` CI job.
+- `native-shell/CoreVideoPro.WinUI/Services/TilesLayerWire.cs`: the flattening from `StudioViewModel.BuildTilesLayerWire`, moved verbatim; the view model now calls it.
+- Swift: `TilesMembershipPolicy.resolve`, `TilesLocalSourcePolicy`, `TilesIdentityPolicy.resolveLiveSourceId` (needed now because Windows' builder always passes a roster; the rest of identity is Task 13), and `TilesLayerPayload.build`. `nameEachTile` is always false (D3). `overrides` is always present.
+- Swift tests: the fixture twin (`checked == 5`, plus the invariant checks) and the `TilesLayerPayloadBuilderTests` / `TilesLocalSourcePolicyTests` facts ported by name. `tiles/` filter: 131/131.
+
+| Mutation (Task 7) | Result |
+|---|---|
+| drop the video-off filter | red: fixture cases 1 and 4 plus the `Build_SkipsParticipantsWithVideoOff` fact |
+| qualify an already-qualified id | red: `Build_PassesThroughAnAlreadyQualifiedMemberUnchanged`. Case 3 stays green because its `capture:` member arrives through the local-id path, which never qualifies |
+| skip the `init(persisted:)` thickness clamp | red: the Task 6 clamp test. Case 4 stays green because the payload's `FiniteClamp` clamps thickness to 32 again. Case 4's ratio 9→4 is clamped only at restore |
+| send `nameEachTile` from settings | red: the D3 check |
+| omit `overrides` when empty | red: key-set difference in every empty-override fixture case |

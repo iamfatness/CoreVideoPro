@@ -13499,30 +13499,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             scene, RoomVideoParticipants, routedSourceIds, RoomParticipantsForInputs, CurrentTilesMeetingId(),
             // #1071: in-show slots bound to a local source with video are eligible too.
             localVideoSourceIds: TilesLocalVideoSources().Select(source => source.Id).ToList());
-        if (payload is null)
-        {
-            return null;
-        }
-
-        return new MediaCoreTilesLayerWire(
-            payload.LayerId,
-            payload.Order,
-            payload.Members,
-            payload.Style.TileAspect,
-            payload.Style.CustomAspectRatio,
-            payload.Style.GutterPercent,
-            payload.Style.MarginPercent,
-            payload.Style.BackgroundColor,
-            payload.Style.BorderShape, payload.Style.BorderColor, payload.Style.BorderThickness,
-            payload.Style.CornerRadius, payload.Style.GlowColor, payload.Style.GlowSize,
-            payload.Style.GlowIntensity, payload.Style.GlowSoftness,
-            payload.Style.AnimateLayout, payload.Style.AnimationDurationMs, payload.Style.FillMode, payload.Style.BackgroundSourceId,
-            payload.Overrides?.ToDictionary(p => p.Key, p => new MediaCoreTilesOverrideWire(
-                p.Value.Rect is { } r ? new MediaCoreTilesRectWire(r.X, r.Y, r.Width, r.Height) : null,
-                p.Value.CropLeftPercent, p.Value.CropRightPercent, p.Value.Z)),
-            payload.Rect is { } wallRect ? new MediaCoreTilesRectWire(wallRect.X, wallRect.Y, wallRect.Width, wallRect.Height) : null,
-            payload.Opacity, payload.TransparentBackground,
-            NameEachTile: payload.Style.NameEachTile);
+        return TilesLayerWire.From(payload);
     }
 
     // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
