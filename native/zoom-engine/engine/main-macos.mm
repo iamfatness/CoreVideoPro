@@ -77,6 +77,9 @@
 #include "end-other-meeting.h"
 #include <set>
 #include "engine-writer.h"
+#include "i420-content-range-tracker.h"
+#include "i420-range-expand.h"
+#include "zoom-range-excursion-probe.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -971,7 +974,44 @@ struct VideoSubscription {
     ZoomSDKRenderer *renderer = nil;
     id delegate = nil;              // CVRenderer, retained for the renderer's life
     std::unordered_map<std::string, VideoTarget> targets;
+    // Per-frame limited-range normalization, the Windows engine's
+    // ParticipantSubscription state (engine-video.cpp:228-250). One tracker per
+    // subscription, like Windows: every fan-out target carries the same frame.
+    // Guarded by g_video_mtx (held in video_on_frame).
+    I420ContentRangeTracker range_tracker;
+    ZoomRangeExcursionProbe range_probe;
+    uint64_t limited_frames = 0;
 };
+
+// COREVIDEO_ZOOM_RANGE_CORRECTION=0 is the same env rollback as Windows
+// (engine-video.cpp:56-58): back to the SDK's isLimitedI420 flag alone.
+static bool zoom_range_correction_enabled()
+{
+    static const bool enabled = [] {
+        const char *v = std::getenv("COREVIDEO_ZOOM_RANGE_CORRECTION");
+        return !v || v[0] != '0' || v[1] != '\0';
+    }();
+    return enabled;
+}
+
+static bool zoom_range_diagnostics_enabled()
+{
+    static const bool enabled = [] {
+        const char *v = std::getenv("COREVIDEO_ZOOM_RANGE_DIAGNOSTICS");
+        return v && v[0] == '1' && v[1] == '\0';
+    }();
+    return enabled;
+}
+
+// Expand a just-copied SHM I420 payload (Y then U then V, tightly packed at the
+// even-cropped size) from limited to full range, in place, before publishing.
+static void expand_shm_i420_in_place(char *pixels, size_t y_len)
+{
+    auto *y = reinterpret_cast<uint8_t *>(pixels);
+    auto *u = y + y_len;
+    auto *v = u + y_len / 4;
+    i420_expand_limited_to_full(y, u, v, y, u, v, y_len);
+}
 
 static std::mutex g_video_mtx;
 static std::unordered_map<uint32_t, VideoSubscription> g_video;      // by participant
@@ -1142,7 +1182,35 @@ static void video_on_frame(uint32_t participant_id, ZoomSDKYUVRawDataI420 *data)
     auto sub = g_video.find(participant_id);
     if (sub == g_video.end()) return;
 
-    for (auto &entry : sub->second.targets) {
+    // Limited-range normalization (owner decision D1, mac Tiles Task 5): the
+    // SDK flag can stay limited while raw content alternates between full and
+    // studio swing, which pulsed the Windows Tiles soak's brightness
+    // (docs/archive/qa/tiles-live-soak-2026-09-07.md). Classify from content
+    // evidence exactly like engine-video.cpp:228-250 — on the SDK's raw Y plane,
+    // once per frame — and expand each target's copy in place before publish.
+    VideoSubscription &vsub = sub->second;
+    const bool sdkLimited = [data isLimitedI420];
+    const auto *rawY = reinterpret_cast<const uint8_t *>([data getYBuffer]);
+    bool limited = sdkLimited;
+    if (zoom_range_correction_enabled()) {
+        const auto decision = vsub.range_tracker.classify(rawY, y_len, sdkLimited);
+        limited = decision.limited;
+        if (decision.transition) {
+            EngineIpc::write(R"({"cmd":"debug","stage":"video_range_classified","participant_id":)" +
+                             std::to_string(participant_id) + ",\"sdkLimited\":" +
+                             (sdkLimited ? "true" : "false") + ",\"contentLimited\":" +
+                             (limited ? "true" : "false") + ",\"matchedCompression\":" +
+                             (decision.matchedCompression ? "true" : "false") +
+                             ",\"outside\":" + std::to_string(decision.outside) +
+                             ",\"sampled\":" + std::to_string(decision.sampled) + '}');
+        }
+    }
+    if (limited && (++vsub.limited_frames == 1 || vsub.limited_frames % 100 == 0))
+        EngineIpc::write(R"({"cmd":"debug","stage":"video_limited_range_expanded","count":)" +
+                         std::to_string(vsub.limited_frames) + "}");
+    bool probed = false;
+
+    for (auto &entry : vsub.targets) {
         const std::string &source_uuid = entry.first;
         VideoTarget &target = entry.second;
 
@@ -1181,6 +1249,26 @@ static void video_on_frame(uint32_t participant_id, ZoomSDKYUVRawDataI420 *data)
         hdr->y_len  = static_cast<uint32_t>(y_len);
 
         copy_i420_even(pixels, data, w, h, src_w);
+        if (limited) expand_shm_i420_in_place(pixels, y_len);
+        if (!probed && zoom_range_diagnostics_enabled()) {
+            probed = true;
+            if (auto excursion = vsub.range_probe.observe(
+                    rawY, reinterpret_cast<const uint8_t *>(pixels), y_len, sdkLimited, limited)) {
+                const auto sample = [](const ZoomRangeExcursionProbe::Sample &s) {
+                    return "{\"rawMean\":" + std::to_string(s.rawMean) +
+                           ",\"publishedMean\":" + std::to_string(s.publishedMean) +
+                           ",\"rawBelow16\":" + std::to_string(s.rawBelow16) +
+                           ",\"rawAbove235\":" + std::to_string(s.rawAbove235) +
+                           ",\"sampled\":" + std::to_string(s.sampled) +
+                           ",\"sdkLimited\":" + (s.sdkLimited ? "true" : "false") +
+                           ",\"effectiveLimited\":" + (s.effectiveLimited ? "true" : "false") + '}';
+                };
+                EngineIpc::write(R"({"cmd":"debug","stage":"video_range_excursion","participant_id":)" +
+                                 std::to_string(participant_id) + ",\"before\":" + sample(excursion->before) +
+                                 ",\"flash\":" + sample(excursion->flash) +
+                                 ",\"after\":" + sample(excursion->after) + '}');
+            }
+        }
         std::atomic_thread_fence(std::memory_order_release);
         hdr->sequence = seq + 1;
 
@@ -1472,6 +1560,13 @@ static void share_on_frame(ZoomSDKYUVRawDataI420 *data)
     // calls. A dropped share frame at 1-30 fps is repainted by the next one.
     std::unique_lock<std::mutex> lock(g_share_mtx, std::try_to_lock);
     if (!lock.owns_lock()) return;
+    // Share limited-range expansion, the Windows twin (engine-share.cpp:326):
+    // the SDK flag alone, no content tracker (Windows has none for share).
+    static uint64_t share_limited_frames = 0;  // guarded by g_share_mtx
+    const bool shareLimited = [data isLimitedI420];
+    if (shareLimited && (++share_limited_frames == 1 || share_limited_frames % 100 == 0))
+        EngineIpc::write(R"({"cmd":"debug","stage":"share_limited_range_expanded","count":)" +
+                         std::to_string(share_limited_frames) + "}");
     for (auto &entry : g_share_targets) {
         const std::string &source_uuid = entry.first;
         ShareTarget &target = entry.second;
@@ -1507,6 +1602,7 @@ static void share_on_frame(ZoomSDKYUVRawDataI420 *data)
         hdr->y_len  = static_cast<uint32_t>(y_len);
 
         copy_i420_even(pixels, data, w, h, src_w);
+        if (shareLimited) expand_shm_i420_in_place(pixels, y_len);
         std::atomic_thread_fence(std::memory_order_release);
         hdr->sequence = seq + 1;
 
