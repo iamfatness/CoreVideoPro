@@ -44,8 +44,18 @@ protocol SocialHTTP: Sendable {
 
 final class URLSessionSocialHTTP: NSObject, SocialHTTP, URLSessionTaskDelegate, @unchecked Sendable {
     static let bodyLimit = 1_048_576
+    /// One process-wide transport: a URLSession retains its delegate until it is
+    /// invalidated, so a per-connect instance would leak its session and sockets.
+    static let shared = URLSessionSocialHTTP()
 
-    private lazy var session: URLSession = {
+    private var session: URLSession!
+
+    override init() {
+        super.init()
+        session = Self.makeSession(delegate: self)   // eager: no lazy race under concurrent sends
+    }
+
+    private static func makeSession(delegate: URLSessionTaskDelegate) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieAcceptPolicy = .never
         config.httpShouldSetCookies = false
@@ -56,8 +66,8 @@ final class URLSessionSocialHTTP: NSObject, SocialHTTP, URLSessionTaskDelegate, 
             kCFNetworkProxiesHTTPEnable as String: false,
             "HTTPSEnable": false,
         ]
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }()
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    }
 
     /// The whole exchange, headers to last byte, inside `deadline` (Windows
     /// CancelAfter): URLRequest.timeoutInterval alone is an idle timeout.

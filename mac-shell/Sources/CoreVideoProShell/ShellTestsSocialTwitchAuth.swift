@@ -87,6 +87,9 @@ extension ShellTests {
         expectEqual(prompts.map(\.userCode), ["ABCDEFGH"], "one prompt")
         expect(!String(describing: stored as Any).contains("fixture-access-token"), "description has no token")
         expect(!String(reflecting: stored as Any).contains("fixture-access-token"), "debugDescription has no token")
+        var dumped = ""
+        dump(stored as Any, to: &dumped)
+        expect(!dumped.contains("fixture-access-token") && !dumped.contains("fixture-refresh-token"), "dump() shows no token")
         expectEqual(polls, 2, "two polls")
     }
 
@@ -108,12 +111,13 @@ extension ShellTests {
 
     @MainActor static func testTwitchDeviceDeadline() {
         let clock = TwitchClock()
-        var starts = 0
+        var starts = 0, polls = 0
         let http = FnHTTP { request in
             if request.url.path.hasSuffix("device") {
                 starts += 1
                 return (200, #"{"device_code":"fixture-device-code","user_code":"ABCDEFGH","verification_uri":"https://www.twitch.tv/activate","expires_in":9,"interval":5}"#)
             }
+            polls += 1
             return (400, #"{"message":"authorization_pending"}"#)
         }
         let auth = TwitchAuthorization(http: http, read: { nil }, save: { _ in expect(false, "stored expired credentials"); return true },
@@ -122,6 +126,7 @@ extension ShellTests {
         _ = awaitMain { do { _ = try await auth.authorize(clientId: twClient) { _ in } } catch { threw = true }; return true }
         expect(threw, "the deadline ends the grant")
         expectEqual(starts, 1, "the device grant is never repeated")
+        expectEqual(polls, 1, "polled at 5 s; at 10 s the 9 s deadline has passed and polling stops")
     }
 
     @MainActor static func testTwitchRefreshSerialized() {

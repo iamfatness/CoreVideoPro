@@ -26,7 +26,7 @@ enum TwitchFailure: Error, Equatable, CustomStringConvertible {
 }
 
 /// One user's Twitch sign-in. `description` never prints a token.
-struct TwitchCredentials: Codable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+struct TwitchCredentials: Codable, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     var clientId: String
     var accessToken: String
     var refreshToken: String
@@ -35,6 +35,8 @@ struct TwitchCredentials: Codable, Equatable, CustomStringConvertible, CustomDeb
     var login: String = ""
     var description: String { "Twitch credentials" }
     var debugDescription: String { "Twitch credentials" }
+    /// dump()/Mirror show identity only, never a token.
+    var customMirror: Mirror { Mirror(self, children: ["clientId": clientId, "userId": userId, "login": login]) }
 }
 
 /// The JSON helpers Twitch shares (TwitchJson).
@@ -203,7 +205,7 @@ final class TwitchAuthorization {
     }
 
     /// Production: the Keychain blob (SocialCredentials.twitch).
-    static func keychain(http: SocialHTTP = URLSessionSocialHTTP()) -> TwitchAuthorization {
+    static func keychain(http: SocialHTTP = URLSessionSocialHTTP.shared) -> TwitchAuthorization {
         TwitchAuthorization(http: http, read: {
             SocialCredentials.twitch.read().flatMap { try? Self.decoder.decode(TwitchCredentials.self, from: $0) }
         }, save: { credentials in

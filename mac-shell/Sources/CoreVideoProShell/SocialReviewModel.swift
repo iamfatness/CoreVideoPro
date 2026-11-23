@@ -34,7 +34,7 @@ struct SocialFeedRunners {
     /// Production: YouTube over URLSessionSocialHTTP (Task 15); Twitch joins in Tasks 16-17.
     static let live = SocialFeedRunners(
         youTube: { videoId, key, playout, report in
-            await YouTubeSocialFeed.run(videoId: videoId, key: key, playout: playout, http: URLSessionSocialHTTP(),
+            await YouTubeSocialFeed.run(videoId: videoId, key: key, playout: playout, http: URLSessionSocialHTTP.shared,
                                         sleep: { try? await Task.sleep(nanoseconds: $0) }, report: report)
         },
         twitch: unavailable.twitch)

@@ -16,6 +16,7 @@ extension ShellTests {
             ("social/youtube-redirect-is-not-followed", testYouTubeRedirectNotFollowed),
             ("social/youtube-oversized-body-fails-closed", testYouTubeOversizedBody),
             ("social/redaction-sentinel-youtube-key-through-a-feed", testYouTubeSentinelThroughFeed),
+            ("social/youtube-backoff-ladder-gives-up-and-resets", testYouTubeBackoffLadder),
         ]
     }
 
@@ -97,7 +98,8 @@ extension ShellTests {
     @MainActor static func testYouTubeMissingRemovalTarget() {
         let missing = #"{"pollingIntervalMillis":1000,"nextPageToken":"next","items":[{"id":"event","snippet":{"type":"messageDeletedEvent","liveChatId":"chat-id"}}]}"#
         let wrongChat = #"{"pollingIntervalMillis":1000,"nextPageToken":"next","items":[{"id":"m","snippet":{"type":"textMessageEvent","liveChatId":"other","authorChannelId":"a","textMessageDetails":{"messageText":"t"}},"authorDetails":{"displayName":"A"}}]}"#
-        for body in [missing, wrongChat] {
+        let nullRow = #"{"pollingIntervalMillis":1000,"nextPageToken":"next","items":[null]}"#
+        for body in [missing, wrongChat, nullRow] {
             let http = ScriptedHTTP([(200, body)])
             var caught: Error?
             _ = awaitMain {
@@ -233,5 +235,28 @@ extension ShellTests {
             expect(!text.contains(key), "\(file.lastPathComponent) must not contain the API key")
         }
         expect(http.requests.allSatisfy { !$0.url.absoluteString.contains(key) }, "no request URL carried the key")
+    }
+
+    /// 30, 60, 120 s, then give up with the fixed retry message; a good page in
+    /// between resets the ladder to 30.
+    @MainActor static func testYouTubeBackoffLadder() {
+        func run(_ responses: [(Int, String)]) -> (waits: [Double], reports: [String]) {
+            let http = ScriptedHTTP(responses)
+            let review = SocialPlayout(invoke: { _, _ in GraphicsOperationResult() }, observe: { nil }, sleep: { _ in }, now: { socialNow })
+            var waits: [Double] = [], reports: [String] = []
+            let feed = Task { @MainActor in
+                await YouTubeSocialFeed.run(videoId: "abcDEF123_4", key: ytKey, playout: review, http: http,
+                                            sleep: { ns in waits.append(Double(ns) / 1e9); if waits.count > 8 { withUnsafeCurrentTask { $0?.cancel() } } },
+                                            report: { reports.append($0) })
+            }
+            _ = awaitMain(5) { await feed.value; return true }
+            return (waits, reports)
+        }
+        let down = run([(503, ""), (503, ""), (503, ""), (503, "")])
+        expectEqual(down.waits, [30, 60, 120], "30, 60, 120 s backoff")
+        expectEqual(down.reports.last, "YouTube chat is temporarily unavailable.", "then gives up with the fixed text")
+        let page = #"{"pollingIntervalMillis":1000,"nextPageToken":"c","items":[]}"#
+        let reset = run([(503, ""), (200, ytLookup), (200, page), (503, ""), (503, ""), (503, ""), (503, "")])
+        expectEqual(Array(reset.waits.prefix(3)), [30, 15, 30], "a good page resets the ladder to 30")
     }
 }

@@ -69,7 +69,9 @@ enum YouTubeChatTransport {
               interval.doubleValue > 0, interval.doubleValue <= Double(Int32.max),
               let rows = page["items"] as? [Any], rows.count <= 200 else { throw SocialFailure.invalid }
         var events: [SocialFeedEvent] = []
-        for case let row as JSONObject in rows {
+        for item in rows {
+            // A non-object row fails closed (C#: its empty liveChatId differs).
+            guard let row = item as? JSONObject else { throw SocialFailure.invalid }
             let snippet = row["snippet"] as? JSONObject
             let kind = text(snippet, "type")
             guard text(snippet, "liveChatId") == chatId, !kind.isEmpty else { throw SocialFailure.invalid }
