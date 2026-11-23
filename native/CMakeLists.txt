@@ -1157,6 +1157,7 @@ if(BUILD_TESTING)
   # the ported pieces (tests/comms/test_util.h maps ZC_CHECK onto the shim).
   target_sources(corevideo-native-tests PRIVATE
     tests/CommsRelayTest.cpp tests/CommsCoreTest.cpp tests/CommsProtocolTest.cpp tests/MicGuardTest.cpp
+    tests/EngineCommsPolicyTest.cpp tests/MainQueueTalkbackSdkTest.cpp tests/EngineLineRouteTest.cpp
     tests/comms/ZCommsPortedTest.cpp tests/comms/test_talkback_channels.cpp tests/comms/test_talkback_eligibility.cpp
     tests/comms/test_room_plan.cpp tests/comms/test_reach.cpp tests/comms/test_duck_plan.cpp
     tests/comms/test_envelope.cpp tests/comms/test_limiter.cpp tests/comms/test_frame_accumulator.cpp
