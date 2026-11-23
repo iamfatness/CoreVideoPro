@@ -2198,6 +2198,8 @@ final class AppModel: ObservableObject {
     var slotWriteObserverForTesting: ((String) -> Void)?
     /// Observed row facts, one box per slot. NOT @Published (frame-fact rate).
     let sourceFacts = SourceFactsStore()
+    /// Comms (Zoom talkback): the tab's model, fed by zoom-comms-state facts.
+    let comms = CommsModel()
     /// S6: the core's source sheet (surface + cell identities). Written only on change; the
     /// surface id is stable and cells change only on reassignment.
     @Published private(set) var sourceSheet: SourceSheetState?
@@ -2380,6 +2382,10 @@ final class AppModel: ObservableObject {
             // Phase 2 Task 8: route to the editor that owns the instance (spec §5.5).
             let instance = event["instanceId"] as? String
             gradeEditors.values.first { $0.previewInstanceId == instance }?.observePreview(event)
+        case "zoom-comms-state":
+            // Comms: the core relays the engine's talkback report (or null
+            // when the report drops). A response with an id is never a fact.
+            if let fact = ZoomCommsProtocol.parseFact(event) { comms.apply(fact) }
         case "zoom-source-format":
             // One row's facts; no sync and no AppModel @Published write (spec §4.4).
             if let fact = ZoomFormatFact.parse(event: event) {
@@ -6168,7 +6174,12 @@ enum CoreLaunchEnvironment {
     static func extras(paths: ShellPaths.Paths, processEnvironment: [String: String],
                        zoomPublicAppKey: String?) -> [String: String] {
         var env: [String: String] = [:]
-        if let enginePath = paths.engineBinaryPath {
+        // A pre-set engine path wins (Windows run-studio.ps1 rule): it is how a
+        // developer points the shell at the fake engine on a machine that also
+        // has a real engine build.
+        if let preset = processEnvironment["COREVIDEO_ZOOM_ENGINE_PATH"], !preset.isEmpty {
+            env["COREVIDEO_ZOOM_ENGINE_PATH"] = preset
+        } else if let enginePath = paths.engineBinaryPath {
             env["COREVIDEO_ZOOM_ENGINE_PATH"] = enginePath
         }
         if let key = zoomPublicAppKey, !key.isEmpty {

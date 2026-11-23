@@ -19,7 +19,7 @@ namespace {
 class StubAudio : public CommsAudioPort {
  public:
   bool running = false, talk = false;
-  std::string mic;
+  std::string mic, error;
   void SetRunning(bool on) override { running = on; }
   void SetTalk(bool on) override { talk = on; }
   void SetMic(const std::string& d) override { mic = d; }
@@ -33,6 +33,7 @@ class StubAudio : public CommsAudioPort {
     s.device = "Desk Mic";
     s.devices = {"Desk Mic", "Headset"};
     if (running) s.peak_dbfs = -42.4;
+    s.error = error;
     return s;
   }
 };
@@ -397,4 +398,20 @@ TEST(CommsCore, PrivateIsTheRequestedMicModeAndTheStateReportsTheAppliedOne) {
   EXPECT_EQ(r.core.Apply(ParseCommsCommand(R"({"cmd":"comms_private","on":true})"), r.now), std::string());
   r.core.DetachBank();
   EXPECT_TRUE(r.core.private_requested());
+}
+
+// The mic block carries the audio worker's error verbatim, so a shell can show
+// WHY the meter is dark (macOS: the microphone permission, owner decision N1)
+// next to the picker instead of only as an ops line that scrolls away. An
+// empty error is null, never "".
+TEST(CommsCore, MicBlockCarriesTheAudioErrorVerbatim) {
+  Rig r;
+  r.bringUp();
+  EXPECT_TRUE(r.state().get("mic")->get("error")->isNull());
+  r.audio.error = "Microphone access is off for CoreVideo Pro. Turn it on in System Settings > Privacy & Security > Microphone.";
+  r.tick();
+  EXPECT_EQ(r.state().get("mic")->getString("error"), r.audio.error);
+  r.audio.error.clear();
+  r.tick();
+  EXPECT_TRUE(r.state().get("mic")->get("error")->isNull());
 }

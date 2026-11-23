@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using Xunit;
 
@@ -55,4 +56,38 @@ public sealed class ZoomCommsProtocolTests
     [Fact]
     public void CommsVerbsAreMutationsNotObservations() =>
         Assert.False(EngineHostWire.IsObservation(JsonSerializer.SerializeToElement(new { type = "comms-key" })));
+
+    /// <summary>contracts/comms/zoom-comms-state.fixtures.json is read by this test AND the Mac shell's
+    /// ShellTestsComms.swift with the same counts and strings: the drift guard between the parsers.</summary>
+    [Fact]
+    public void SharedFixtureParses()
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(ControlRepoPaths.Contract(Path.Combine("comms", "zoom-comms-state.fixtures.json"))));
+        var lines = doc.RootElement.GetProperty("facts").EnumerateArray()
+            .ToDictionary(f => f.GetProperty("name").GetString()!, f => f.GetProperty("line").GetString()!);
+        ZoomCommsUpdate Fact(string name)
+        {
+            Assert.True(ZoomCommsProtocol.TryParseStateLine(lines[name], out var update), name);
+            return update;
+        }
+
+        var desk = Fact("desk").State!;
+        Assert.Equal(7, desk.Channels.Count);
+        Assert.Equal("Ana Lucia Ferreira", desk.Channels[0].Label);
+        Assert.Equal(-18, desk.Mic.PeakDbfs);
+        Assert.Equal(2, desk.SendErrors);
+        Assert.Equal(new uint[] { 201, 202, 205 }, desk.Roster.Select(p => p.ParticipantId));
+        Assert.False(desk.Roster[2].Talkback);
+        Assert.Equal("21:40:15 audio flowing into CH 1", desk.Log[^1]);
+
+        var notHost = Fact("not-host").State!;
+        Assert.False(notHost.Available);
+        Assert.Equal("Make this account host or co-host to bring talkback up.", notHost.Reason);
+
+        Assert.Equal(16, Fact("probe-joined").State!.Channels.Count);
+        Assert.Contains(Fact("probe-keyed").State!.Channels, c => c.Keyed);
+        Assert.True(Fact("probe-private-on").State!.Private);
+        Assert.Null(Fact("dropped").State);
+        Assert.False(ZoomCommsProtocol.TryParseStateLine(lines["response-not-fact"], out _));
+    }
 }
