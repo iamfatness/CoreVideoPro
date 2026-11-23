@@ -1020,6 +1020,7 @@ if(BUILD_TESTING)
     tests/EngineIpcShmNameTest.cpp
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
+    tests/MetalGraphicsBoundsTest.cpp
     tests/GraphicsFontResolverTest.cpp
     tests/GraphicsTextMeasureTest.cpp
     tests/MetalSourceGradePixelTest.cpp
