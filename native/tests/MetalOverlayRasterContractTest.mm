@@ -28,6 +28,7 @@ struct MetalContractBackend {
 
   static uint64_t failedPreparations(Raster& raster) { return raster.cacheCounters().failed; }
   static uint64_t completedPreparations(Raster& raster) { return raster.cacheCounters().completed; }
+  static uint64_t refusedPreparations(Raster& raster) { return raster.cacheCounters().refused; }
 
   static std::vector<uint8_t> lastPixels(Raster& raster) {
     id<MTLTexture> texture = Raster::textureOfLease(raster.lease());

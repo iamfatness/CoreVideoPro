@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -27,7 +28,6 @@
 #include <vector>
 
 #include "graphics/GraphicsInstances.h"
-#include "graphics/GraphicsResourceBudget.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
 
@@ -399,33 +399,44 @@ TEST(MetalGraphicsBounds, CrawlLoopSwitchAdoptsAtTheBoundaryOnA1080pProgram) {
     return !installs.empty() && installs.back().getString("state") == "installed";
   }));
   // The full-resolution Program readback is a tap that fills on some frames
-  // only and trails the render. It is used only for the ink-in-clip check, on
-  // a static state: render until one arrives (bounded). Frame-to-frame
-  // equality uses the Program preview, as the D3D11 test does.
+  // only and publishes whatever its thread last copied, so one harvest can
+  // predate the state under test. It is used only for the ink-in-clip check,
+  // on a static state: harvest until two consecutive readbacks are identical
+  // (bounded at 5 s). Frame-to-frame equality uses the Program preview, as the
+  // D3D11 test does.
   auto full = [&] {
-    ProgramFrame frame = rig.render(plan());
-    for (int i = 0; i < 20; ++i) {
-      frame = rig.render(plan());
-      if (!frame.programFullBgra.bgra.empty()) break;
+    ProgramFrame latest;
+    std::vector<uint8_t> previous;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < until) {
+      auto frame = rig.render(plan());
+      if (frame.programFullBgra.bgra.empty()) continue;
+      const bool stable = frame.programFullBgra.bgra == previous;
+      previous = frame.programFullBgra.bgra;
+      latest = std::move(frame);
+      if (stable) break;
     }
-    return frame;
+    return latest;
   };
   const auto blank = full();
   ASSERT_EQ(size_t(1920) * 1080 * 4, blank.programFullBgra.bgra.size()) << "no full-resolution Program readback";
   if (blank.programFullBgra.bgra.size() != size_t(1920) * 1080 * 4) return;
   ASSERT_TRUE(rig.command("graphics-instance-create", {{"scope", "global"}, {"templateId", "metal-crawl"}, {"templateVersion", 1}}));
   ASSERT_TRUE(rig.command("graphics-instance-cue", {{"expectedRevision", 1}}));
-  ASSERT_TRUE(waitFor([&] { return rig.row().getString("cuePreparation") == "ready"; }));
+  ASSERT_TRUE(waitFor([&] { return rig.row().getString("cuePreparation") == "ready"; })) << "cue never prepared";
   rig.graphics.promoteCuedForTake();
   ASSERT_EQ(1., rig.row().getNumber("programRevision"));
   const auto initial = plan();
   ASSERT_TRUE(initial.layers.back().graphicsPreparedResource && initial.layers.back().graphicsPreparedResource->crawl);
   if (!initial.layers.back().graphicsPreparedResource || !initial.layers.back().graphicsPreparedResource->crawl) return;
   const double boundary = initial.layers.back().graphicsPreparedResource->crawl->passWidth;
+  // The update lands at tick 130, so the boundary must lie beyond it.
+  ASSERT_GT(boundary, 130.);
 
   // All crawl ink lies inside the manifest's clip group (x 40..140, y 10..74
-  // of the 320x96 bounds) placed by the layer rect, exactly as the D3D11 test
-  // computes it; and there is some ink.
+  // of the 320x96 bounds) placed by the layer rect, as the D3D11 test computes
+  // it, with a 1 px tolerance: the adapter's scissor rounds the same edges in
+  // float, so an integral edge can land one pixel out. And there is some ink.
   auto inkInsideClip = [&](const CompositorRenderPlan& value, const ProgramFrame& program) {
     const auto& rect = value.layers.back().rect;
     const double left = (rect.x + rect.width * 40. / 320.) * 1920.;
@@ -439,7 +450,7 @@ TEST(MetalGraphicsBounds, CrawlLoopSwitchAdoptsAtTheBoundaryOnA1080pProgram) {
       for (int x = 0; x < 1920; ++x) {
         const size_t at = (size_t(y) * 1920 + x) * 4;
         if (std::equal(pixels.begin() + at, pixels.begin() + at + 4, blank.programFullBgra.bgra.begin() + at)) continue;
-        if (x < std::floor(left) || x >= std::ceil(right) || y < std::floor(top) || y >= std::ceil(bottom)) {
+        if (x < std::floor(left) - 1 || x >= std::ceil(right) + 1 || y < std::floor(top) - 1 || y >= std::ceil(bottom) + 1) {
           std::printf("[crawl-boundary] ink outside the clip at %d,%d\n", x, y);
           return false;
         }
@@ -452,9 +463,10 @@ TEST(MetalGraphicsBounds, CrawlLoopSwitchAdoptsAtTheBoundaryOnA1080pProgram) {
   tick = 65;
   // The take adopts the cue revision; the 1080p Program raster then prepares
   // asynchronously. Sample once it has drawn (bounded; asserts a state).
-  ASSERT_TRUE(waitFor([&] { return rig.row().getNumber("firstDrawSubmittedFrame") > 0; }));
+  ASSERT_TRUE(waitFor([&] { return rig.row().getNumber("firstDrawSubmittedFrame") > 0; })) << "Program never drew";
   const auto first = rig.render(plan());
-  EXPECT_TRUE(inkInsideClip(plan(), full()));
+  const auto firstFull = full();
+  EXPECT_TRUE(inkInsideClip(plan(), firstFull));
   // The crawl moves with the tick within one revision. (The list change below
   // cannot show this: M and W differ wherever the crawl is drawn.)
   tick = 130;
@@ -463,7 +475,7 @@ TEST(MetalGraphicsBounds, CrawlLoopSwitchAdoptsAtTheBoundaryOnA1080pProgram) {
 
   ASSERT_TRUE(rig.command("graphics-instance-update", {{"expectedRevision", 1}, {"target", "program"},
       {"fields", Json::Object{{"crawl-items", "[\"WWWWWWW\"]"}}}}));
-  ASSERT_TRUE(waitFor([&] { return rig.row().getString("preparation") == "ready"; }));
+  ASSERT_TRUE(waitFor([&] { return rig.row().getString("preparation") == "ready"; })) << "update never prepared";
   ASSERT_EQ(1., rig.row().getNumber("programRevision"));
   const auto before = rig.render(plan());
   EXPECT_EQ(moved.preview.bgra, before.preview.bgra) << "the pending list aired before the boundary";
@@ -473,7 +485,9 @@ TEST(MetalGraphicsBounds, CrawlLoopSwitchAdoptsAtTheBoundaryOnA1080pProgram) {
   EXPECT_EQ(2., rig.row().getNumber("programRevision"));
   EXPECT_NE(first.preview.bgra, after.preview.bgra);
   EXPECT_EQ(before.frameNumber + 1, after.frameNumber);
-  EXPECT_TRUE(inkInsideClip(plan(), full()));
+  const auto afterFull = full();
+  EXPECT_NE(firstFull.programFullBgra.bgra, afterFull.programFullBgra.bgra) << "the readback never showed the new list";
+  EXPECT_TRUE(inkInsideClip(plan(), afterFull));
 }
 
 #endif  // COREVIDEO_WITH_METAL && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS

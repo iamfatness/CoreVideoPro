@@ -19,6 +19,7 @@
 //                                      // one render-loop call: beginFrame + rasterOverlayTexture; true = texture returned
 //   static uint64_t failedPreparations(Raster&);   // the raster cache's `failed` counter
 //   static uint64_t completedPreparations(Raster&); // the raster cache's `completed` counter
+//   static uint64_t refusedPreparations(Raster&);   // the raster cache's `refused` counter
 //   static std::vector<uint8_t> lastPixels(Raster&); // BGRA of the last call's texture, row-major (Metal-only cases)
 //   static constexpr graphics::GraphicsPreparedResource::Backend kind;
 //   static constexpr bool kCountsCacheFailures;     // false: assert state only (Windows)
@@ -398,6 +399,7 @@ template <class Backend> void contractBudgetWaitIsRetryableNotSticky() {
   typename Backend::Raster raster;
   const auto failedBefore = Backend::failedPreparations(raster);
   const auto completedBefore = Backend::completedPreparations(raster);
+  const auto refusedBefore = Backend::refusedPreparations(raster);
   // Let the worker run against the full budget at least once.
   for (int i = 0; i < 50; ++i) {
     const auto out = call<Backend>(raster, device, overlay, 320, 90, true);
@@ -408,6 +410,19 @@ template <class Backend> void contractBudgetWaitIsRetryableNotSticky() {
   // cannot see a wrongly published failure on its own: the refusal requests a
   // cache trim, which retires the unleased failed entry before the next call.
   if (Backend::kCountsCacheFailures) {
+    // Not vacuous on a slow machine: the worker must have run against the full
+    // budget (its result counted as refused, or wrongly as completed) before
+    // the counters are judged. Bounded 5 s.
+    const auto ran = [&] {
+      return Backend::refusedPreparations(raster) > refusedBefore ||
+             Backend::completedPreparations(raster) > completedBefore;
+    };
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!ran() && std::chrono::steady_clock::now() < until) {
+      call<Backend>(raster, device, overlay, 320, 90, true);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_TRUE(ran()) << "the worker never ran against the full budget";
     EXPECT_EQ(Backend::failedPreparations(raster), failedBefore);
     EXPECT_EQ(Backend::completedPreparations(raster), completedBefore) << "a budget wait was published as a result";
   }
@@ -516,13 +531,32 @@ template <class Backend> void contractCrawlAtTheItemLimitPreparesOrFailsWithAtla
 // Text cascade, with the substitution warning and real ink.
 template <class Backend> void contractStrictSubstitutedTextWithEmojiAndCjkPrepares() {
   CONTRACT_DEVICE_OR_RETURN(device);
+  auto overlayFor = [](const std::string& text, std::string* error) {
+    return templateOverlay(simpleManifest("contract-emoji-cjk", 400, 100,
+        "[{\"id\":\"t\",\"type\":\"text\",\"x\":10,\"y\":10,\"width\":380,\"height\":80,"
+        "\"text\":\"" + text + "\",\"font\":\"Segoe UI\",\"fontSize\":48,"
+        "\"color\":\"#FFFFFF\",\"maxLines\":1,\"overflow\":\"ellipsis\"}]"), {}, error);
+  };
+  // Rightmost ink column (alpha > 128) of a 400x100 BGRA raster, or -1.
+  auto rightmostInk = [](const std::vector<uint8_t>& pixels) {
+    int right = -1;
+    for (size_t i = 3; i < pixels.size(); i += 4)
+      if (pixels[i] > 128) right = std::max(right, int((i / 4) % 400));
+    return right;
+  };
   std::string error;
-  const auto overlay = templateOverlay(simpleManifest("contract-emoji-cjk", 400, 100,
-      "[{\"id\":\"t\",\"type\":\"text\",\"x\":10,\"y\":10,\"width\":380,\"height\":80,"
-      "\"text\":\"Caf\xC3\xA9 \xE6\x9D\xB1\xE4\xBA\xAC \xF0\x9F\x8E\xAC\",\"font\":\"Segoe UI\",\"fontSize\":48,"
-      "\"color\":\"#FFFFFF\",\"maxLines\":1,\"overflow\":\"ellipsis\"}]"), {}, &error);
+  // The Latin prefix alone, as the reference for where "Café" ink ends.
+  const auto prefix = overlayFor("Caf\xC3\xA9", &error);
+  ASSERT_TRUE(prefix.graphicsTemplate && prefix.graphicsTemplate->definition) << error;
+  const auto overlay = overlayFor("Caf\xC3\xA9 \xE6\x9D\xB1\xE4\xBA\xAC \xF0\x9F\x8E\xAC", &error);
   ASSERT_TRUE(overlay.graphicsTemplate && overlay.graphicsTemplate->definition) << error;
-  if (!overlay.graphicsTemplate || !overlay.graphicsTemplate->definition) return;
+  if (!overlay.graphicsTemplate || !overlay.graphicsTemplate->definition || !prefix.graphicsTemplate) return;
+  typename Backend::Raster prefixRaster;
+  const auto prefixOut = waitTerminal<Backend>(prefixRaster, device, prefix, 400, 100, true);
+  ASSERT_TRUE(prefixOut.texture);
+  if (!prefixOut.texture) return;
+  const int prefixRight = rightmostInk(Backend::lastPixels(prefixRaster));
+  ASSERT_GT(prefixRight, 0);
   typename Backend::Raster raster;
   const auto out = waitTerminal<Backend>(raster, device, overlay, 400, 100, true);
   EXPECT_EQ(out.state, "ready") << out.warning;
@@ -530,10 +564,12 @@ template <class Backend> void contractStrictSubstitutedTextWithEmojiAndCjkPrepar
   ASSERT_TRUE(out.texture);
   if (!out.texture) return;
   const auto pixels = Backend::lastPixels(raster);
-  size_t ink = 0;
+  // The CJK and emoji glyphs (Core Text cascade) are ink right of "Café ":
+  // a cascade that dropped them would leave nothing past the prefix.
+  size_t beyond = 0;
   for (size_t i = 3; i < pixels.size(); i += 4)
-    if (pixels[i] > 128) ++ink;
-  EXPECT_GT(ink, 200u) << "no glyph coverage";
+    if (pixels[i] > 128 && int((i / 4) % 400) > prefixRight + 8) ++beyond;
+  EXPECT_GT(beyond, 200u) << "no CJK/emoji coverage right of the Latin prefix (prefix ends at x=" << prefixRight << ")";
 }
 
 }  // namespace overlayContract
