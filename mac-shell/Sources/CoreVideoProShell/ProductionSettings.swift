@@ -10,6 +10,32 @@
 
 import Foundation
 
+/// The multiview overlay toggles, Windows defaults
+/// (W/Services/ProductionOutputPreferencesStore.cs:160-163): labels, tally and
+/// meters on, clock off.
+struct MultiviewOverlays: Codable, Equatable {
+    var showLabels = true
+    var showTally = true
+    var showMeters = true
+    var showClock = false
+}
+
+/// Windows MultiviewOverlayFormatting (W/Controls/MultiviewOverlayFormatting.cs:91-92).
+enum MultiviewOverlayFormatting {
+    /// The master L/R meter for a tile, or nil when it draws none: only the Program
+    /// tile (PGM role or program tally) carries it, and only with meters on.
+    static func programMeter(left: Double, right: Double, showMeters: Bool,
+                             isProgramTile: Bool) -> (Double, Double)? {
+        guard showMeters, isProgramTile else { return nil }
+        return (left, right)
+    }
+
+    /// Windows ShouldShowMeter's tile test.
+    static func isProgramTile(role: String, tally: String) -> Bool {
+        role == "pgm" || tally == "program"
+    }
+}
+
 enum ProductionSettingsPolicy {
     /// The canvas sizes the Settings picker offers (SettingsPane "Canvas size").
     static let canvasSizes: [(width: Int, height: Int)] = [
@@ -72,6 +98,7 @@ extension AppModel {
             recordingProfile = profile.sanitized(fallback: RecordingProfile())
         }
         if let encoder = prefs.streamEncoder { streamEncoder = encoder.sanitized() }
+        if let overlays = prefs.multiviewOverlays { multiviewOverlays = overlays }
         if let tiles = prefs.multiviewTileCount {
             let range = ProductionSettingsPolicy.multiviewTileRange
             multiviewTileCount = min(max(tiles, range.lowerBound), range.upperBound)
@@ -88,6 +115,7 @@ extension AppModel {
         prefs.recordPrefix = recordPrefix
         prefs.multiviewLayoutMode = multiviewLayoutMode
         prefs.multiviewTileCount = multiviewTileCount
+        prefs.multiviewOverlays = multiviewOverlays
         prefs.recordingProfile = recordingProfile
         prefs.streamEncoder = streamEncoder
     }
@@ -134,7 +162,8 @@ extension AppModel {
 
     func multiviewConfigCommand() -> JSONObject {
         CoreCommands.configureMultiviewer(layoutMode: multiviewLayoutMode,
-                                          tileCount: multiviewTileCount)
+                                          tileCount: multiviewTileCount,
+                                          overlays: multiviewOverlays)
     }
 
     /// What a fresh core generation must be told about production settings.

@@ -1198,6 +1198,19 @@ final class AppModel: ObservableObject {
         applyMultiviewConfig()
     }
 
+    /// Multiview overlays (Windows MultiviewShowLabels/Tally/Meters/Clock): restored
+    /// from prefs before the first configure-multiviewer, carried on every one.
+    @Published var multiviewOverlays = MultiviewOverlays()
+
+    /// One overlay flag: persists and sends ONE configure-multiviewer when it changes;
+    /// a repeat of the current value sends nothing.
+    func setMultiviewOverlay(_ keyPath: WritableKeyPath<MultiviewOverlays, Bool>, _ on: Bool) {
+        guard multiviewOverlays[keyPath: keyPath] != on else { return }
+        multiviewOverlays[keyPath: keyPath] = on
+        persistPrefsNow()
+        applyMultiviewConfig()
+    }
+
     /// Every core generation (first handshake AND a supervisor respawn) starts
     /// at its built-in 1920x1080@60 / grid defaults. Re-send the operator's
     /// production settings, or a respawned core silently renders the wrong

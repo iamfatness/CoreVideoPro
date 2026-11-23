@@ -67,9 +67,15 @@ enum CoreCommands {
          "saturation": saturation, "temperature": temperature]
     }
 
-    static func configureMultiviewer(layoutMode: String, tileCount: Int) -> JSONObject {
+    /// Windows MediaCoreCommandBuilder.BuildConfigureMultiviewerCommand: the layout and
+    /// the four overlay flags. The core only stores and echoes the flags; the shell
+    /// draws the overlays (MediaCore.cpp configure-multiviewer).
+    static func configureMultiviewer(layoutMode: String, tileCount: Int,
+                                     overlays: MultiviewOverlays) -> JSONObject {
         ["type": "configure-multiviewer",
-         "layoutMode": layoutMode, "tileCount": tileCount]
+         "layoutMode": layoutMode, "tileCount": tileCount,
+         "showLabels": overlays.showLabels, "showTally": overlays.showTally,
+         "showMeters": overlays.showMeters, "showClock": overlays.showClock]
     }
 
     /// The envelope every batched command travels in.

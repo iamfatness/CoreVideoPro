@@ -27,6 +27,7 @@ extension ShellTests {
         [
             ("control/action-vectors-shape", testActionVectorsShape),
             ("control/rc7-srt-vectors", testRC7SrtVectors),
+            ("control/rc7-multiview-actions", testRC7MultiviewActions),
         ]
     }
 
@@ -193,5 +194,47 @@ extension ShellTests {
                     "srt: storage failure")
         expectEqual(model.streamDestinations, baseline, "srt: a failed save applies nothing")
         expectEqual(model.srtPassphrase, "", "srt: passphrase unchanged after a failed save")
+    }
+
+    /// Task 3: the four multiview.show*.set actions replayed from section
+    /// multiview-overlays: each flips exactly its flag, the resulting command equals
+    /// Windows', a change sends ONE configure-multiviewer and a repeat sends none, and
+    /// the flag reaches prefs (a relaunch restores it). Mutations: write the flag
+    /// without persisting (relaunch assertion); send twice for false-then-false.
+    @MainActor
+    static func testRC7MultiviewActions() {
+        func overlays(_ o: [String: Any]) -> MultiviewOverlays {
+            MultiviewOverlays(showLabels: o["showLabels"] as? Bool ?? false, showTally: o["showTally"] as? Bool ?? false,
+                              showMeters: o["showMeters"] as? Bool ?? false, showClock: o["showClock"] as? Bool ?? false)
+        }
+        let vectors = loadActionVectors(section: "multiview-overlays")
+        expectEqual(vectors.count, 4, "four overlay fixtures")
+        for vector in vectors {
+            let label = "multiview/\(vector.name)"
+            let model = takeModel(FakeTakeCore())
+            model.multiviewLayoutMode = vector.given["layoutMode"] as? String ?? ""
+            model.multiviewTileCount = vector.given["tileCount"] as? Int ?? 0
+            let before = overlays(vector.given)
+            model.multiviewOverlays = before
+            var sent: [JSONObject] = []
+            model.coreCommandCaptureForTesting = { body in
+                sent += ((body["commands"] as? [JSONObject]) ?? [body]).filter { $0["type"] as? String == "configure-multiviewer" }
+            }
+            let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+            expectVectorReply(invoke(surface, vector.action, vector.args), vector, label)
+            let expected = vector.effects["command"] as? [String: Any] ?? [:]
+            let after = overlays(expected)
+            expectEqual(model.multiviewOverlays, after, "\(label): exactly the named flag moved")
+            expectEqual(sent.count, before == after ? 0 : 1, "\(label): one command per change, none for a repeat")
+            if let command = sent.last {
+                expect(NSDictionary(dictionary: command).isEqual(to: expected), "\(label): the sent command is Windows'")
+            }
+            let relaunched = AppModel()
+            relaunched.applyRestoredPrefs(model.currentPrefs())
+            expectEqual(relaunched.multiviewOverlays, after, "\(label): the flag persists across a relaunch")
+            // A repeat of the same value sends nothing.
+            _ = invoke(surface, vector.action, vector.args)
+            expectEqual(sent.count, before == after ? 0 : 1, "\(label): repeating the value sends nothing more")
+        }
     }
 }

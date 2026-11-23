@@ -1220,6 +1220,128 @@
           }
         }
       ]
+    },
+    "multiview-overlays": {
+      "source": "native-shell/CoreVideoPro.MediaCore/Services/MediaCoreCommandBuilder.cs BuildConfigureMultiviewerCommand",
+      "writer": "MCT",
+      "cases": [
+        {
+          "name": "all-default",
+          "action": "multiview.showLabels.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": true,
+            "showTally": true,
+            "showMeters": true,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": true,
+                "showTally": true,
+                "showMeters": true,
+                "showClock": false
+              }
+            }
+          }
+        },
+        {
+          "name": "all-off",
+          "action": "multiview.showTally.set",
+          "args": [
+            false
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": false,
+            "showTally": true,
+            "showMeters": false,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": false,
+                "showTally": false,
+                "showMeters": false,
+                "showClock": false
+              }
+            }
+          }
+        },
+        {
+          "name": "labels-off-only",
+          "action": "multiview.showLabels.set",
+          "args": [
+            false
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": true,
+            "showTally": true,
+            "showMeters": true,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": false,
+                "showTally": true,
+                "showMeters": true,
+                "showClock": false
+              }
+            }
+          }
+        },
+        {
+          "name": "clock-on-only",
+          "action": "multiview.showClock.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": true,
+            "showTally": true,
+            "showMeters": true,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": true,
+                "showTally": true,
+                "showMeters": true,
+                "showClock": true
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

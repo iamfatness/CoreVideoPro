@@ -168,6 +168,15 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMultiviewLayout(model, mode: string(0))
         case "multiview.tileCount.set":
             return setMultiviewTileCount(model, count: int(0))
+        // RC7: Windows StudioControlSurface.cs:679-690, always Success.
+        case "multiview.showLabels.set":
+            model.setMultiviewOverlay(\.showLabels, bool(0)); return .success
+        case "multiview.showTally.set":
+            model.setMultiviewOverlay(\.showTally, bool(0)); return .success
+        case "multiview.showMeters.set":
+            model.setMultiviewOverlay(\.showMeters, bool(0)); return .success
+        case "multiview.showClock.set":
+            model.setMultiviewOverlay(\.showClock, bool(0)); return .success
         case "audio.mastering.set":
             return setMastering(model, on: bool(0))
         case "audio.masterLimiter.set":
@@ -244,6 +253,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "media.rundown.load", "media.rundown.preview", "media.rundown.take",
         // Phase 4 (RC7)
         "transport.stream.srt.configure",
+        "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
     ]
 
     /// Windows RunTake: refuse when CanTake is false, else the one Take path.

@@ -205,7 +205,7 @@ extension ShellTests {
         expect(manifestResponse.hasPrefix("HTTP/1.1 200"), "GET /manifest with the module's headers is 200")
         let manifest = body(manifestResponse)
         let ids = Set((manifest["Actions"] as? [[String: Any]] ?? []).compactMap { $0["Id"] as? String })
-        expectEqual(ids.count, 43, "the Mac manifest lists its 43 supported actions (PascalCase; quick wins +audio.zoomMode.set, +autoassign; RC7 +srt.configure)")
+        expectEqual(ids.count, 47, "the Mac manifest lists its 47 supported actions (PascalCase; quick wins +audio.zoomMode.set, +autoassign; RC7 +srt.configure, +4 multiview.show*)")
         for action in companionPresetActions {
             expect(ids.contains(action), "preset action \(action) is in the Mac manifest (all seven, since the quick wins)")
         }

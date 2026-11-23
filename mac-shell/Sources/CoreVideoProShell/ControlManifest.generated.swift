@@ -537,22 +537,22 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "multiview.showLabels.set", title: "Multiview labels", description: "Toggle multiview labels.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.showTally.set", title: "Multiview tally", description: "Toggle multiview tally borders.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.showMeters.set", title: "Multiview meters", description: "Toggle multiview audio meters.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.showClock.set", title: "Multiview clock", description: "Toggle the multiview clock.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "automation.autoAssignInputs.set", title: "Auto-assign inputs", description: "Toggle auto-assigning roster participants to Show Inputs.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),

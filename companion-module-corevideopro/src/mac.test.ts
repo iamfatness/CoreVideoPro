@@ -26,7 +26,7 @@ describe('macOS control server (recorded fixture)', () => {
 	const manifest = normalizeManifest(fixture.manifest)
 
 	it('parses the Mac manifest with the module normalizer', () => {
-		expect(manifest.actions.length).toBe(43)
+		expect(manifest.actions.length).toBe(47)
 		expect(manifest.actions.every((a) => a.id && a.title)).toBe(true)
 		expect(manifest.root).toBe('/cvp')
 	})

@@ -684,6 +684,58 @@
         "Title" : "Multiview tiles"
       },
       {
+        "Description" : "Toggle multiview labels.",
+        "Id" : "multiview.showLabels.set",
+        "OscAddress" : "\/cvp\/multiview\/showLabels\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview labels"
+      },
+      {
+        "Description" : "Toggle multiview tally borders.",
+        "Id" : "multiview.showTally.set",
+        "OscAddress" : "\/cvp\/multiview\/showTally\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview tally"
+      },
+      {
+        "Description" : "Toggle multiview audio meters.",
+        "Id" : "multiview.showMeters.set",
+        "OscAddress" : "\/cvp\/multiview\/showMeters\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview meters"
+      },
+      {
+        "Description" : "Toggle the multiview clock.",
+        "Id" : "multiview.showClock.set",
+        "OscAddress" : "\/cvp\/multiview\/showClock\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview clock"
+      },
+      {
         "Description" : "Toggle auto-assigning roster participants to Show Inputs.",
         "Id" : "automation.autoAssignInputs.set",
         "OscAddress" : "\/cvp\/automation\/autoAssignInputs\/set",
