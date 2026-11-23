@@ -293,8 +293,8 @@ struct RootView: View {
         // Identifies THE main window for the quit prompt (not windows.first,
         // which can be a pop-out).
         .background(MainWindowReader())
-        .onAppear { model.syncTransportHotkeys() }
-        .onChange(of: model.selectedTab) { _ in model.syncTransportHotkeys() }
+        .onAppear { model.syncTransportHotkeys(); model.syncCommsKeys() }
+        .onChange(of: model.selectedTab) { _ in model.syncTransportHotkeys(); model.syncCommsKeys() }
     }
 }
 
