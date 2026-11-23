@@ -1065,6 +1065,7 @@ if(BUILD_TESTING)
     tests/NdiReceiveFramePolicyTest.cpp
     tests/NdiReceiveCaptureIntegrationTest.cpp
     tests/NdiSourceNameTest.cpp
+    tests/NdiRuntimeCandidatesTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/EncoderPolicyTest.cpp
     tests/IsoEncoderPlacementTest.cpp

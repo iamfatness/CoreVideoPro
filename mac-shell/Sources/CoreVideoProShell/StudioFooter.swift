@@ -89,10 +89,12 @@ enum StudioFooterReadout {
         return (l, right.map(meterLevel(dbfs:)) ?? l)
     }
 
-    // Outputs the Mac does not have yet. Verified 2026-11-15:
-    //  - NDI output: the macOS release core is configured without
-    //    COREVIDEO_WITH_NDI_OUTPUT (scripts/release-macos.sh) and the shell has
-    //    no NDI destination — the NDI sender path is Windows-only.
+    // Outputs the Mac does not have yet:
+    //  - NDI output: since Phase 4 Task 8 (2026-11-22) the macOS release core IS
+    //    built with COREVIDEO_WITH_NDI_OUTPUT (scripts/release-macos.sh) and finds
+    //    the operator's NDI runtime at run time (never bundled). The shell has no
+    //    NDI destination until Task 9 makes this tile live, so it still reads
+    //    unavailable here.
     static let ndiUnavailable =
         "NDI output isn't available on Mac yet \u{2014} it's coming in a later update."
 }

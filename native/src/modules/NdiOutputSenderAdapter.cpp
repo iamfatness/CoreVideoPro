@@ -1,6 +1,7 @@
 #include "modules/Interfaces.h"
 #include "modules/GraphicsKeyPixels.h"
 #include "modules/NdiPixelConvert.h"
+#include "modules/NdiRuntimeCandidates.h"
 #include "modules/NdiSourceName.h"
 
 #include <algorithm>
@@ -190,12 +191,11 @@ std::vector<std::string> ndiLibraryCandidates() {
   candidates.push_back("Processing.NDI.Lib.x86.dll");
   return candidates;
 #else
-  return {"libndi.so.5", "libndi.so.4", "libndi.so", "libndi.dylib"};
+  return corevideo::modules::ndiLibraryCandidates([](const char* name) -> const char* { return std::getenv(name); });
 #endif
 }
 
-LibraryHandle openNdiLibrary(RuntimeProbe& probe) {
-  const auto candidates = ndiLibraryCandidates();
+LibraryHandle openNdiLibrary(RuntimeProbe& probe, const std::vector<std::string>& candidates) {
   for (const auto& candidate : candidates) {
     if (LibraryHandle handle = loadLibrary(candidate)) {
       probe.candidates.push_back({candidate, "available", "library loaded"});
@@ -369,7 +369,11 @@ class NdiOutputSender final : public IOutputSender {
 
     if (!runtimeAvailable_ || !api_.complete()) {
       sender_.status = "warning";
+#if defined(_WIN32)
       sender_.warning = "NDI sender requires the libNDI runtime on this machine (" + runtimeDetail_ + ").";
+#else
+      sender_.warning = ndiRuntimeMissingWarning(runtimeDetail_);
+#endif
       sender_.destinationHealth = "warning";
       sender_.lastResultCode = "runtime-missing";
       sender_.lastError = sender_.warning;
@@ -706,13 +710,14 @@ class NdiOutputSender final : public IOutputSender {
   std::shared_ptr<const std::vector<uint8_t>> keyFrameHold_;
 };
 
-std::unique_ptr<IOutputSender> createNdiSender(NdiSenderRole role) {
+std::unique_ptr<IOutputSender> createNdiSender(NdiSenderRole role,
+                                               const std::vector<std::string>& candidates = ndiLibraryCandidates()) {
   // REQUIRES DEV MACHINE: a real NDI sender needs the libNDI runtime. We
   // runtime-probe the shared library (mirrors the RTMP FFmpeg-probe approach);
   // when it is absent we return a sender that reports a clear runtime-missing
   // warning rather than nullptr, so the operator sees why NDI is unavailable.
   RuntimeProbe probe;
-  LibraryHandle library = openNdiLibrary(probe);
+  LibraryHandle library = openNdiLibrary(probe, candidates);
   NdiApi api;
   if (library && !resolveNdiApi(library, api)) {
     probe.available = false;
@@ -730,6 +735,15 @@ std::unique_ptr<IOutputSender> createNdiOutputSender() {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
   return createNdiSender(NdiSenderRole::Program);
 #else
+  return nullptr;
+#endif
+}
+
+std::unique_ptr<IOutputSender> createNdiOutputSenderWithCandidatesForTest(std::vector<std::string> candidates) {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+  return createNdiSender(NdiSenderRole::Program, candidates);
+#else
+  (void)candidates;
   return nullptr;
 #endif
 }
