@@ -1058,6 +1058,7 @@ if(BUILD_TESTING)
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
     tests/MetalGraphicsBoundsTest.cpp
+    tests/MetalTilesPixelTest.cpp
     tests/GraphicsFontResolverTest.cpp
     tests/GraphicsTextMeasureTest.cpp
     tests/MetalSourceGradePixelTest.cpp
