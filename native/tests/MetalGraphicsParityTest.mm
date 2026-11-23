@@ -142,6 +142,8 @@ TEST(ParityPng, RoundTripKeepsPremultipliedSamplesVerbatim) {
 
 TEST(GraphicsRasterGolden, MacMatchesMacGoldens) {
   id<MTLDevice> device = metalOrSkip();
+  // A golden run with no device must not read as a pass.
+  ASSERT_TRUE(device != nil) << "no Metal device: goldens cannot be written or judged";
   if (!device) return;
   std::string error;
   const auto fixtures = loadParityIndex(kFixtures + "/index.json", error);
@@ -152,6 +154,8 @@ TEST(GraphicsRasterGolden, MacMatchesMacGoldens) {
     Json::Array rows;
     for (const auto& fixture : fixtures) {
       const auto rendered = renderFixture(device, fixture);
+      // Every fixture must prepare: a golden of a failure would pin the failure.
+      EXPECT_EQ("ready", rendered.state) << fixture.name << ": " << rendered.warning;
       Json::Object row{{"name", fixture.name}, {"state", rendered.state}, {"warning", rendered.warning},
                        {"layout", rendered.layout}};
       if (!rendered.image.bgraPremultiplied.empty()) {
@@ -182,11 +186,14 @@ TEST(GraphicsRasterGolden, MacMatchesMacGoldens) {
     EXPECT_TRUE(found != recorded.end()) << fixture.name << ": no golden (regenerate)";
     if (found == recorded.end()) continue;
     const auto rendered = renderFixture(device, fixture);
-    EXPECT_EQ(found->second.getString("state"), rendered.state) << fixture.name;
+    EXPECT_EQ("ready", found->second.getString("state")) << fixture.name << ": the golden pins a failure";
+    EXPECT_EQ("ready", rendered.state) << fixture.name << ": " << rendered.warning;
     EXPECT_EQ(found->second.getString("warning"), rendered.warning) << fixture.name;
     if (rendered.image.bgraPremultiplied.empty()) continue;
+    const auto goldenPath = kGoldens + "/" + fixture.name + ".png";
+    EXPECT_EQ(found->second.getString("sha256"), fileSha256(goldenPath)) << fixture.name << ": golden PNG changed outside a write run";
     ParityImage golden;
-    ASSERT_TRUE(readParityPng(kGoldens + "/" + fixture.name + ".png", golden, error)) << error;
+    ASSERT_TRUE(readParityPng(goldenPath, golden, error)) << error;
     const auto failures = judge(fixture.name, golden, *found->second.get("layout"), rendered.image, rendered.layout,
                                 rendered.textTolerance);
     for (const auto& f : failures) EXPECT_TRUE(false) << f;

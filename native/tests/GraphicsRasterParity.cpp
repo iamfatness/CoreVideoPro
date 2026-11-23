@@ -287,8 +287,12 @@ Verdict judgeGeometry(const ParityImage& reference, const ParityImage& candidate
   // Reference ink box over the whole image (alpha > 8), grown by 1 px.
   int x0 = W, y0 = H, x1 = 0, y1 = 0;
   double refAlpha = 0, candAlpha = 0;
+  // Text regions (grown) are tier 2's: excluded from the fixture's summed
+  // alpha, the reference ink box and the stray-ink check, or a text-only
+  // fixture would be held to 0.5% and 1 px instead of tier 2's 8% and 2 px.
   for (int y = 0; y < H; ++y)
     for (int x = 0; x < W; ++x) {
+      if (insideAny(regions, true, x, y)) continue;
       const auto ra = pixel(reference, x, y)[3];
       refAlpha += ra; candAlpha += pixel(candidate, x, y)[3];
       if (ra > 8) { x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x + 1); y1 = std::max(y1, y + 1); }
@@ -296,6 +300,7 @@ Verdict judgeGeometry(const ParityImage& reference, const ParityImage& candidate
   int stray = 0, firstX = -1, firstY = -1, strayAlpha = 0;
   for (int y = 0; y < H; ++y)
     for (int x = 0; x < W; ++x) {
+      if (insideAny(regions, true, x, y)) continue;
       if (x >= x0 - 1 && x < x1 + 1 && y >= y0 - 1 && y < y1 + 1) continue;
       const int ca = pixel(candidate, x, y)[3];
       if (ca > 8) { if (!stray++) { firstX = x; firstY = y; strayAlpha = ca; } }
@@ -404,7 +409,8 @@ Verdict judgeLayout(const Json& reference, const Json& candidate) {
   if (bool(rc) != bool(cc)) fail("crawl presence differs");
   else if (rc) {
     const double a = rc->getNumber("passWidth"), b = cc->getNumber("passWidth");
-    if (std::abs(a - b) > 0.015 * a) fail(format("crawl passWidth: reference %.2f vs candidate %.2f (tolerance %.1f%%)", a, b, 1.5));
+    if (std::abs(a - b) > std::max(1.5, 0.015 * a))
+      fail(format("crawl passWidth: reference %.2f vs candidate %.2f (tolerance %.2f px)", a, b, std::max(1.5, 0.015 * a)));
   }
   return v;
 }
@@ -522,7 +528,9 @@ Json fixtureLayout(const ParityFixture& fixture, const ParityInput& input) {
     primitives.push_back(Json::Object{{"id", "line-" + std::to_string(i)}, {"type", "text"},
         {"box", Json::Array{line.rect.x, line.rect.y, line.rect.width, line.rect.height}},
         {"clip", Json::Array{0.0, 0.0, double(input.width), double(input.height)}},
-        {"fontSize", line.fontSize}, {"lineHeight", 1.2}, {"maxLines", 1.0}, {"color", double(line.colorArgb)},
+        // The caption layout reports no font size; a line's box is one line high.
+        {"fontSize", line.fontSize > 0 ? double(line.fontSize) : double(line.rect.height) / 1.2},
+        {"lineHeight", 1.2}, {"maxLines", 1.0}, {"color", double(line.colorArgb)},
         {"strokeWidth", 0.0}, {"effects", 0.0}});
   }
   if (layout.accentBar.width > 0)

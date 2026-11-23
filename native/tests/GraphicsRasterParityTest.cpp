@@ -159,3 +159,87 @@ TEST(GraphicsRasterParity, IndexIsWellFormed) {
   for (const auto& definition : corevideo::graphics::GraphicsTemplate::curated())
     EXPECT_TRUE(curated.count(definition->id())) << "curated look missing from the index: " << definition->id();
 }
+
+// Review additions: the bounds the first set did not reach.
+
+TEST(GraphicsRasterParity, EdgeBandAllows48AndFails49) {
+  // A rect edge pixel (its reference neighbourhood spans the edge) off by 48 passes, 49 fails.
+  auto reference = blank(100, 80);
+  fill(reference, 20, 20, 60, 50, 40, 80, 120, 255);
+  auto ok = reference, bad = reference;
+  fill(ok, 59, 30, 60, 31, 40, 80, 120 - 48, 255);
+  fill(bad, 59, 30, 60, 31, 40, 80, 120 - 49, 255);
+  EXPECT_FALSE(mentions(judgeGeometry(reference, ok, {rectRegion()}), "edge band"));
+  EXPECT_TRUE(mentions(judgeGeometry(reference, bad, {rectRegion()}), "edge band"));
+}
+
+TEST(GraphicsRasterParity, FixtureSummedAlphaAllowsHalfAPercent) {
+  // A large rect at alpha 200 vs 199 (0.5%) passes; vs 198 (1%) fails, with
+  // every pixel interior-legal (off by 1-2) so only the summed alpha speaks.
+  auto reference = blank(100, 80), off05 = blank(100, 80), off1 = blank(100, 80);
+  fill(reference, 10, 10, 90, 70, 100, 100, 100, 200);
+  fill(off05, 10, 10, 90, 70, 100, 100, 100, 199);
+  fill(off1, 10, 10, 90, 70, 100, 100, 100, 198);
+  ParityRegion big = rectRegion();
+  big.x = 10; big.y = 10; big.width = 80; big.height = 60;
+  EXPECT_FALSE(mentions(judgeGeometry(reference, off05, {big}), "summed alpha"));
+  EXPECT_TRUE(mentions(judgeGeometry(reference, off1, {big}), "summed alpha"));
+}
+
+TEST(GraphicsRasterParity, TextPixelsAreNotHeldToTier1) {
+  // A text-only pair 5% apart in alpha: tier 2's 8% allows it, so tier 1
+  // (0.5%, interior 2/255) must not judge those pixels at all.
+  auto reference = blank(100, 80), candidate = blank(100, 80);
+  glyphs(reference, 0, 0, 255);
+  glyphs(candidate, 0, 0, uint8_t(255 * 0.95));
+  const std::vector<ParityRegion> regions{textRegion()};
+  EXPECT_TRUE(judgeGeometry(reference, candidate, regions).pass);
+  EXPECT_FALSE(mentions(judgeText(reference, candidate, regions, 1), "summed alpha"));
+}
+
+TEST(GraphicsRasterParity, CoverageMeasuresTextOnAnOpaquePlate) {
+  // White glyphs on an opaque dark plate: alpha is 255 everywhere, so only
+  // the colour projection can see the glyphs. Thinning them must fail summed
+  // alpha; the identical image must pass.
+  auto plate = [](int stems) {
+    auto image = blank(100, 80);
+    fill(image, 0, 0, 100, 80, 30, 20, 10, 255);
+    for (int stem = 0; stem < stems; ++stem) fill(image, 20 + stem * 12, 20, 24 + stem * 12, 52, 255, 255, 255, 255);
+    return image;
+  };
+  const auto four = plate(4), three = plate(3);
+  EXPECT_TRUE(judgeText(four, four, {textRegion()}, 1).pass);
+  EXPECT_TRUE(mentions(judgeText(four, three, {textRegion()}, 1), "summed alpha"));
+  EXPECT_GT(measureRegion(four, textRegion()).summedAlpha, 0.0) << "coverage saw nothing on the plate";
+}
+
+TEST(GraphicsRasterParity, LineBandsAndStructureAreJudged) {
+  ParityRegion two = textRegion();
+  two.height = 60; two.linePitch = 24; two.maxLines = 2;
+  auto oneLine = blank(100, 100), twoLines = blank(100, 100);
+  fill(oneLine, 20, 20, 64, 36, 255, 255, 255, 255);
+  fill(twoLines, 20, 20, 64, 36, 255, 255, 255, 255);
+  fill(twoLines, 20, 46, 64, 60, 255, 255, 255, 255);
+  EXPECT_TRUE(mentions(judgeText(twoLines, oneLine, {two}, 1), "line bands"));
+  // Same summed alpha, different structure: stems vs one block of equal area.
+  auto stems = blank(100, 80), block = blank(100, 80);
+  glyphs(stems, 0, 0);
+  fill(block, 20, 20, 52, 38, 255, 255, 255, 255);
+  EXPECT_LT(alphaSsim(stems, block, textRegion()), 0.9);
+  EXPECT_GT(alphaSsim(stems, stems, textRegion()), 0.999999);
+}
+
+TEST(GraphicsRasterParity, StructureFailsWhenOnlyTheGlyphShapeDiffers) {
+  // Same ink box (x 20..64, y 20..52), same bar and baseline, one line band,
+  // summed alpha within 8%: vertical stems against horizontal stripes. Only
+  // the SSIM check can tell them apart.
+  auto stems = blank(100, 80), stripes = blank(100, 80);
+  glyphs(stems, 0, 0);
+  fill(stripes, 20, 20, 22, 52, 255, 255, 255, 255);
+  fill(stripes, 62, 20, 64, 52, 255, 255, 255, 255);
+  fill(stripes, 20, 48, 64, 52, 255, 255, 255, 255);
+  for (int y = 20; y < 44; y += 6) fill(stripes, 22, y, 62, y + 2, 255, 255, 255, 255);
+  const auto v = judgeText(stems, stripes, {textRegion()}, 1);
+  EXPECT_TRUE(mentions(v, "SSIM")) << (v.failures.empty() ? "passed" : v.failures.front());
+  for (const auto& f : v.failures) EXPECT_TRUE(f.find("SSIM") != std::string::npos) << "fixture not isolated: " << f;
+}

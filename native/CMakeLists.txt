@@ -1268,12 +1268,16 @@ if(BUILD_TESTING)
     # Core Text output on the macOS they were generated on, so CI runners on
     # another macOS build run them advisory (`-LE "realtime|golden"`), while
     # the release ctest on the owner's Mac (plain `ctest`) blocks on them.
+    # Registered only where the goldens are compiled: TestMain fails a filter
+    # that matches nothing, so a stub Mac build must not list this entry.
     set(COREVIDEO_GOLDEN_TEST_FILTER "GraphicsRasterGolden.*")
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
       "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}:${COREVIDEO_GOLDEN_TEST_FILTER}")
-    add_test(NAME corevideo-native-tests-golden
-      COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests" "--gtest_filter=${COREVIDEO_GOLDEN_TEST_FILTER}")
-    set_tests_properties(corevideo-native-tests-golden PROPERTIES LABELS golden TIMEOUT 600)
+    if(COREVIDEO_WITH_METAL AND NOT COREVIDEO_STUB AND COREVIDEO_ENABLE_DEV_ADAPTERS)
+      add_test(NAME corevideo-native-tests-golden
+        COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests" "--gtest_filter=${COREVIDEO_GOLDEN_TEST_FILTER}")
+      set_tests_properties(corevideo-native-tests-golden PROPERTIES LABELS golden TIMEOUT 600)
+    endif()
     add_test(NAME corevideo-native-tests-realtime
       COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
         "--gtest_filter=${COREVIDEO_REALTIME_TEST_FILTER}")
