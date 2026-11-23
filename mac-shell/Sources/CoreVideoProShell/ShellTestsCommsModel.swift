@@ -410,3 +410,108 @@ extension ShellTests {
         expectSent(rec, [("comms-gain", #"{"db":19}"#)], "down from 20")
     }
 }
+
+// Review follow-ups (Tasks 6-7): C# literals, banker's rounding, the send
+// chain's ordering, and a release for a cell that left while held.
+extension ShellTests {
+    static var commsModelReviewCases: [(String, () -> Void)] {
+        [
+            ("comms/model-private-reasserted-csharp-literals", testCommsModelPrivateCSharpLiterals),
+            ("comms/model-meter-rounds-half-to-even", testCommsModelMeterHalfToEven),
+            ("comms/model-sends-are-serialised", testCommsModelSendsAreSerialised),
+            ("comms/model-release-reaches-a-cell-that-left", testCommsModelReleaseOrphan),
+            ("comms/protocol-huge-numbers-never-trap", testCommsProtocolHugeNumbers),
+        ]
+    }
+
+    /// CommsViewModelTests.PrivateIsReassertedWhenAReportDisagreesButNeverAtTheReportRate, verbatim.
+    @MainActor static func testCommsModelPrivateCSharpLiterals() {
+        var now: Int64 = 10_000
+        let (m, rec) = makeComms(inMeeting: false, clock: { now })
+        m.restorePrivatePreference(true)
+        m.applyMeeting(true, label: nil)
+        run { await m.drain() }
+        expect(rec.sent.isEmpty, "restoring sends nothing by itself")
+        m.apply(.some(commsState(twoPeople)))
+        run { await m.drain() }
+        expectSent(rec, [("comms-private", #"{"on":true}"#)], "first disagreeing report")
+        for _ in 0..<10 { now += 100; m.apply(.some(commsState(twoPeople))) }
+        run { await m.drain() }
+        expectEqual(rec.sent.count, 1, "1 s of disagreeing reports: still one send")
+        now += CommsModel.privateResendMs
+        m.apply(.some(commsState(twoPeople)))
+        run { await m.drain() }
+        expectEqual(rec.sent.count, 2, "after PrivateResendMs")
+        let agreed = twoPeople.replacingOccurrences(of: #""log":"#, with: #""private":true,"log":"#)
+        m.apply(.some(commsState(agreed)))
+        now += 10 * CommsModel.privateResendMs
+        m.apply(.some(commsState(agreed)))
+        run { await m.drain() }
+        expectEqual(rec.sent.count, 2, "agreed: quiet")
+        expect(m.privateReported, "reported")
+        expect(m.railText.hasSuffix("· private comms"), "rail")
+    }
+
+    @MainActor static func testCommsModelMeterHalfToEven() {
+        func lit(_ db: Int) -> Int {
+            let (m, _) = makeComms(twoPeople.replacingOccurrences(of: #""peakDbfs":-24"#, with: "\"peakDbfs\":\(db)"))
+            return m.litSegments
+        }
+        expectEqual(lit(-30), 4, "-30 dBFS = 4.5 -> 4 (C# Math.Round)")
+        expectEqual(lit(-6), 10, "-6 dBFS = 10.5 -> 10")
+        expectEqual(lit(-26), 6, "-26 dBFS = 5.5 -> 6")
+        expectEqual(lit(0), 12, "full scale")
+        expectEqual(lit(-60), 0, "below the floor")
+    }
+
+    /// A press and its release reach the core in order even when the first
+    /// send is still in flight; the error is the LAST send's verdict.
+    @MainActor static func testCommsModelSendsAreSerialised() {
+        var order: [String] = []
+        var gate: CheckedContinuation<Void, Never>?
+        var replies: [String?] = ["refused first", nil]
+        let m = CommsModel(send: { verb, payload in
+            let tag = "\(verb) \(sortedJSON(payload))"
+            if order.isEmpty { await withCheckedContinuation { gate = $0 } }
+            order.append(tag)
+            return replies.isEmpty ? nil : replies.removeFirst()
+        }, now: { 0 })
+        m.applyMeeting(true, label: nil)
+        m.apply(.some(commsState(twoPeople)))
+        run {
+            let press = Task { await m.press(slot: 0) }
+            let release = Task { await m.release(slot: 0) }
+            // Let both enqueue, then open the first send's gate.
+            for _ in 0..<50 where gate == nil { await Task.yield() }
+            gate?.resume()
+            await press.value; await release.value; await m.drain()
+        }
+        expectEqual(order, ["comms-key {\"leaseMs\":1500,\"on\":true,\"slot\":0}", "comms-key {\"on\":false,\"slot\":0}"],
+                    "press then release, never reordered")
+        expectEqual(m.error, nil, "the last send's verdict wins")
+    }
+
+    @MainActor static func testCommsModelReleaseOrphan() {
+        let (m, rec) = makeComms(twoPeople)
+        run { await m.press(slot: 1) }
+        // Ben leaves channel 1 while the key is down: the cell goes away.
+        m.apply(.some(commsState(desk(ch(0, "Ana", 1) + "," + ch(1) + "," + ch(2)))))
+        expect(!m.cells.contains { $0.slot == 1 }, "cell gone")
+        rec.clear()
+        run { await m.release(slot: 1) }
+        expectSent(rec, [("comms-key", #"{"on":false,"slot":1}"#)], "the release still goes out")
+        rec.clear()
+        run { await m.release(slot: 1) }
+        expect(rec.sent.isEmpty, "only once")
+    }
+
+    static func testCommsProtocolHugeNumbers() {
+        let s = ZoomCommsProtocol.parseState(["channels": [["slot": 1e30, "listeners": -1e30]],
+                                              "roster": [["participantId": 1e30, "channels": [1e30, -1e30, 2]]],
+                                              "stats": ["framesSent": Double.infinity]])
+        expectEqual(s.channels.first?.listeners, Int(Int64.min), "saturates, never traps")
+        expectEqual(s.roster.first?.channels.last, 2, "small values kept")
+        expectEqual(s.roster.first?.channels.count, 3, "huge values saturate")
+        expectEqual(s.framesSent, Int64.max, "infinity saturates")
+    }
+}

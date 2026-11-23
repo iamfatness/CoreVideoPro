@@ -95,7 +95,7 @@ enum ZoomCommsProtocol {
         let roster = (cm["roster"] as? [Any] ?? []).compactMap { $0 as? JSONObject }.map { r in
             CommsPerson(participantId: UInt32(clamping: max(0, long(r, "participantId"))), name: str(r, "name") ?? "",
                         talkback: bool(r, "talkback"), room: str(r, "room"),
-                        channels: (r["channels"] as? [Any] ?? []).compactMap { number($0) }.map { Int($0) })
+                        channels: (r["channels"] as? [Any] ?? []).compactMap { number($0) }.map { Int(saturating($0)) })
         }
         return CommsState(
             available: bool(cm, "available"), reason: str(cm, "reason"),
@@ -127,8 +127,15 @@ enum ZoomCommsProtocol {
     }
 
     private static func long(_ o: JSONObject?, _ key: String) -> Int64 {
-        guard let d = number(o?[key]), d.isFinite else { return 0 }
-        return Int64(clamping: Int64(exactly: d.rounded(.towardZero)) ?? (d < 0 ? Int64.min : Int64.max))
+        guard let d = number(o?[key]) else { return 0 }
+        return saturating(d)
+    }
+
+    /// Total Double -> Int64 (truncating, saturating; NaN = 0): a hostile or
+    /// malformed number must never trap the shell. C# casts never throw.
+    private static func saturating(_ d: Double) -> Int64 {
+        guard d.isFinite else { return d.isNaN ? 0 : (d < 0 ? Int64.min : Int64.max) }
+        return Int64(exactly: d.rounded(.towardZero)) ?? (d < 0 ? Int64.min : Int64.max)
     }
 
     private static func str(_ o: JSONObject?, _ key: String) -> String? { o?[key] as? String }

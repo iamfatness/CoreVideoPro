@@ -96,6 +96,10 @@ final class CommsModel: ObservableObject {
     private let now: () -> Int64
     private var privateSentAtMs = Int64.min / 2
     private var allHeld = false
+    /// Held slots whose cell left the desk while held. Windows still releases
+    /// through the orphaned cell instance on pointer-up; this keeps that
+    /// release (only release(slot:) reads it, as only the instance would).
+    private var orphanHeld: Set<Int> = []
     private var cellSig = ""
     private var peopleSig = ""
     private var micsSig = ""
@@ -175,13 +179,15 @@ final class CommsModel: ObservableObject {
     var micError: String? { state?.mic.error }
     var micDb: Double? { deskVisible ? state!.mic.peakDbfs : nil }
     var micLevelName: String {
-        if let db = micDb { return "Microphone level \(Int(db.rounded())) dBFS" }
+        if let db = micDb, db.isFinite, abs(db) < 1e6 { return "Microphone level \(Int(db.rounded())) dBFS" }
         return "Microphone level not measured"
     }
-    // 12 segments over -48..0 dBFS; unmeasured = dark (:497-501).
+    // 12 segments over -48..0 dBFS; unmeasured = dark (:497-501). C#
+    // Math.Round is round-half-to-even, and the engine's integer dBFS hits
+    // exact halves (-30 -> 4.5, -6 -> 10.5).
     var litSegments: Int {
-        guard let db = micDb else { return 0 }
-        return Int((min(max((db + 48) / 48, 0), 1) * Double(Self.meterSegments)).rounded(.toNearestOrAwayFromZero))
+        guard let db = micDb, db.isFinite else { return 0 }
+        return Int((min(max((db + 48) / 48, 0), 1) * Double(Self.meterSegments)).rounded(.toNearestOrEven))
     }
 
     private static func grouped(_ n: Int64) -> String {
@@ -324,6 +330,8 @@ final class CommsModel: ObservableObject {
             cellSig = sig
             cellStructureVersion += 1
             let held = Dictionary(cells.map { ($0.slot, $0.held) }, uniquingKeysWith: { a, _ in a })
+            let surviving = Set(rows.map(\.slot))
+            for c in cells where c.held && !surviving.contains(c.slot) { orphanHeld.insert(c.slot) }
             next = rows.map { CommsCell(slot: $0.slot, held: held[$0.slot] ?? false) }
         }
         var live = 0
@@ -422,8 +430,13 @@ final class CommsModel: ObservableObject {
     }
 
     func release(slot: Int) async {
-        guard let i = cells.firstIndex(where: { $0.slot == slot }), cells[i].held else { return }
-        cells[i].held = false
+        if orphanHeld.remove(slot) != nil {
+            // The press went to a cell that has since left the desk.
+        } else if let i = cells.firstIndex(where: { $0.slot == slot }), cells[i].held {
+            cells[i].held = false
+        } else {
+            return
+        }
         await sendAndWait("comms-key", ["slot": slot, "on": false])
     }
 
@@ -485,6 +498,7 @@ final class CommsModel: ObservableObject {
     }
 
     private func releaseAllLocal() {
+        orphanHeld.removeAll()
         for i in cells.indices where cells[i].held { cells[i].held = false }
         allHeld = false
     }
