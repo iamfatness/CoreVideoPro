@@ -24,6 +24,17 @@ extension ShellTests {
             ("a7-chain-slots-labels", testChainSlotsLabels),
             ("a7-chain-reasserted-on-new-core", testChainReassertedOnNewCore),
             ("a7-chain-prefs-compat", testChainPrefsCompat),
+            // Task 3: processing targets; bus and master chains on the wire.
+            ("a7-master-chain-on-every-default-send", testMasterChainOnEveryDefaultSend),
+            ("a7-chain-survives-doubling-guard", testChainSurvivesDoublingGuard),
+            ("a7-legacy-route-path-keeps-bus-chains", testLegacyRoutePathKeepsBusChains),
+            ("a7-bus-chain-change-pushes-matrix", testBusChainChangePushesMatrix),
+            ("a7-removed-bus-drops-chain-and-target", testRemovedBusDropsChainAndTarget),
+            ("a7-targets-order-and-strings", testTargetsOrderAndStrings),
+            ("a7-select-strip-selects-channel-target", testSelectStripSelectsChannelTarget),
+            ("a7-bus-eq-refused-with-reason", testBusEqRefusedWithReason),
+            ("a7-bus-chain-reasserted-on-new-core", testBusChainReassertedOnNewCore),
+            ("a7-primary-bus-label", testPrimaryBusLabel),
         ]
     }
 
@@ -337,5 +348,281 @@ extension ShellTests {
         model.setVstChannelSelection("101", nil)
         expectEqual(model.channelInserts["101"]?.chain, ["Compressor"], "None removes the VST")
         expect(model.currentPrefs().vstChannelSelections == nil, "nothing to save without a VST")
+    }
+
+    // ── Task 3: processing targets, bus and master chains ───────────────────
+    //
+    // Fixture invariant: Zoom guest strips "101" and "102" (per-guest ISO, no
+    // meeting mix), so the default sends are exactly
+    // AudioConsolePolicy.defaultSendBuses for each strip (2 x 5 = 10 sends, 2
+    // of them to master). No operator edits unless a test states one.
+
+    @MainActor
+    private static func targetModel() -> AppModel {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["101", "102"]
+        model.refreshStrips()
+        return model
+    }
+
+    private static func sends(_ command: JSONObject?) -> [JSONObject] {
+        command?["sends"] as? [JSONObject] ?? []
+    }
+
+    private static func chainOf(_ send: JSONObject) -> [String]? { send["busPluginInserts"] as? [String] }
+
+    @MainActor
+    private static func testMasterChainOnEveryDefaultSend() {
+        let model = targetModel()
+        expectEqual(model.strips.map(\.id), ["101", "102"], "fixture: two strips")
+        model.busInserts = ["master": ["Compressor", "Limiter"]]
+        let all = sends(model.routingBaseCommand())
+        expectEqual(all.count, 2 * AudioConsolePolicy.defaultSendBuses.count, "fixture: only the default sends")
+        let master = all.filter { $0["busId"] as? String == "master" }
+        expectEqual(master.count, 2, "one default master send per strip")
+        // Mutations: attach the chain only to operator edits, or before the
+        // defaults are synthesised -> red here (the defaults lack it).
+        for send in master {
+            expectEqual(chainOf(send), ["Compressor", "Limiter"],
+                        "default master send \(send["sourceId"] ?? "?") carries the master chain (SVM:9221-9229)")
+        }
+        for send in all where send["busId"] as? String != "master" {
+            expectEqual(chainOf(send), [], "a \(send["busId"] ?? "?") send carries that bus's (empty) chain")
+        }
+        // An operator edit on a default master send keeps the chain too.
+        let edited = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: ["101", "102"], captureAudioIds: [], mediaRouted: false,
+            operatorEdits: [AudioRouteKey(source: "101", bus: "master"): .init(enabled: true, gainDb: -6)],
+            busInserts: ["master": ["Compressor"]])
+        let editedSend = edited.first { $0["sourceId"] as? String == "101" && $0["busId"] as? String == "master" }
+        expectEqual(editedSend?["gainDb"] as? Double, -6, "precondition: the edit applied")
+        expectEqual(editedSend.flatMap(chainOf), ["Compressor"], "an edited master send carries the chain")
+    }
+
+    private static func testChainSurvivesDoublingGuard() {
+        // ProgramMix: zoom-mix gets the defaults; the master chain rides them.
+        let programMix = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: ["101", "102"], captureAudioIds: [], mediaRouted: false, operatorEdits: [:],
+            zoomAudioMode: .programMix, meetingAudio: true, busInserts: ["master": ["Compressor", "Limiter"]])
+        let mixToMaster = programMix.first {
+            $0["sourceId"] as? String == AudioConsolePolicy.meetingMixId && $0["busId"] as? String == "master"
+        }
+        expect(mixToMaster != nil, "precondition: zoom-mix -> master is a ProgramMix default")
+        expectEqual(mixToMaster.flatMap(chainOf), ["Compressor", "Limiter"], "the zoom-mix -> master send carries the chain")
+        expect(!programMix.contains { $0["sourceId"] as? String == "101" }, "precondition: stems get no defaults")
+        // PerGuestIso: the guard drops zoom-mix on the default buses; an operator's
+        // zoom-mix -> aux-1 survives it and carries the aux-1 chain, and nothing
+        // the guard removed comes back with a chain attached.
+        let iso = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: ["101"], captureAudioIds: [], mediaRouted: false,
+            operatorEdits: [AudioRouteKey(source: AudioConsolePolicy.meetingMixId, bus: "aux-1"): .init(enabled: true, gainDb: 0),
+                            AudioRouteKey(source: AudioConsolePolicy.meetingMixId, bus: "master"): .init(enabled: true, gainDb: 0)],
+            zoomAudioMode: .perGuestIso, meetingAudio: true,
+            busInserts: ["master": ["Compressor"], "aux-1": ["Limiter"]])
+        let mixSends = iso.filter { $0["sourceId"] as? String == AudioConsolePolicy.meetingMixId }
+        expectEqual(mixSends.map { $0["busId"] as? String ?? "" }, ["aux-1"], "the guard removed zoom-mix -> master")
+        expectEqual(mixSends.first.flatMap(chainOf), ["Limiter"], "the surviving send carries its bus chain")
+    }
+
+    @MainActor
+    private static func testLegacyRoutePathKeepsBusChains() {
+        let model = targetModel()
+        model.busInserts = ["master": ["Compressor", "Limiter"]]
+        // The core's echo hydrated the grid (applyRoutingSnapshot): both strips on
+        // master and pgm-l. A core with no authority epoch takes the legacy tail.
+        model.audioSends = ["101": ["master": 0, "pgm-l": 0], "102": ["master": -3]]
+        var requests: [JSONObject] = []
+        model.audioRoutingRequestForTesting = { body in
+            requests.append(body)
+            return ["snapshot": ["audioRoutingMatrix": ["sends": [JSONObject]()]] as JSONObject]
+        }
+        model.syncAudioRouting()
+        func matrix() -> JSONObject? {
+            requests.lazy.compactMap { ($0["commands"] as? [JSONObject])?.first }
+                .first { $0["type"] as? String == "sync-audio-routing-matrix" }
+        }
+        spin(until: { matrix() != nil }, limit: 3)
+        let legacy = sends(matrix())
+        expect(!legacy.isEmpty, "the legacy tail sent a matrix")
+        let master = legacy.filter { $0["busId"] as? String == "master" }
+        expectEqual(master.count, 2, "both master sends")
+        // Mutation: leave `[]` in the pushAudioRouting tail -> red.
+        for send in master {
+            expectEqual(chainOf(send), ["Compressor", "Limiter"], "legacy master send carries the master chain")
+        }
+        let pgm = legacy.first { $0["busId"] as? String == "pgm-l" }
+        expectEqual(pgm.flatMap(chainOf), [], "a bus without a chain sends []")
+    }
+
+    @MainActor
+    private static func testBusChainChangePushesMatrix() {
+        let model = targetModel()
+        var sent: [JSONObject] = []
+        model.routingBaseSendObserver = { sent.append($0) }
+        // Stated operator edit (plan deviation): aux-1 is not a default bus, so a
+        // chain on it reaches the wire only through a send to it. Route 101 there
+        // and let that push settle before the chain change.
+        model.selectOrRouteSend(source: "101", bus: "aux-1")
+        spin(until: { !sent.isEmpty }, limit: 2)
+        spin(until: { false }, limit: 0.3)
+        let before = sent.count
+        expect(before >= 1, "precondition: the route pushed")
+        model.selectProcessingTarget("bus:aux-1")
+        model.addProcessingInsert("Limiter")
+        spin(until: { sent.count > before }, limit: 2)
+        spin(until: { false }, limit: 0.3)
+        // Mutation: strip busPluginInserts from the memo copy -> red (memo equal, nothing sent).
+        expectEqual(sent.count, before + 1, "a bus-chain-only change pushes exactly one new matrix")
+        let aux = sends((sent.last?["commands"] as? [JSONObject])?.first)
+            .first { $0["sourceId"] as? String == "101" && $0["busId"] as? String == "aux-1" }
+        expectEqual(aux.flatMap(chainOf), ["Limiter"], "with the aux-1 chain on its send")
+    }
+
+    @MainActor
+    private static func testRemovedBusDropsChainAndTarget() {
+        let model = targetModel()
+        let bus = model.addCustomBus()
+        expectEqual(bus.id, "bus-01", "fixture: first custom bus")
+        model.selectOrRouteSend(source: "101", bus: "bus-01")
+        model.selectProcessingTarget("bus:bus-01")
+        expectEqual(model.selectedProcessingTargetId, "bus:bus-01", "precondition: the bus is the target")
+        model.addProcessingInsert("compressor")
+        expectEqual(model.busInserts["bus-01"], ["Compressor"], "precondition: the chain is on the bus")
+        expectEqual(sends(model.routingBaseCommand()).first { $0["busId"] as? String == "bus-01" }.flatMap(chainOf),
+                    ["Compressor"], "precondition: the chain rides the bus-01 send")
+        expect(model.removeBus("bus-01"), "the bus is removed")
+        // Mutations: keep the chain / keep the target -> red.
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "the target falls back to bus:master")
+        expect(model.busInserts["bus-01"] == nil, "the bus chain is dropped")
+        expect(!sends(model.routingBaseCommand()).contains { $0["busId"] as? String == "bus-01" },
+               "no send in the next matrix names bus-01")
+        expect(!model.processingTargets.contains { $0.id == "bus:bus-01" }, "and it is no longer a target")
+    }
+
+    @MainActor
+    private static func testTargetsOrderAndStrings() {
+        let model = targetModel()
+        // Bus order is AudioBusPolicy.fixedBuses (Windows BusHeaders), master
+        // hoisted first (SVM:11544). Plan deviation: the plan's elided list reads
+        // "iso-1,…,aux-2"; the real order puts mon and stream between iso-8 and aux-1.
+        let expected = ["channel:101", "channel:102", "bus:master", "bus:pgm-l", "bus:pgm-r"]
+            + (1...8).map { "bus:iso-\($0)" } + ["bus:mon", "bus:stream", "bus:aux-1", "bus:aux-2"]
+        // Mutation: master after the other buses -> red.
+        expectEqual(model.processingTargets.map(\.id), expected, "Windows RefreshAudioProcessingTargets order")
+        func target(_ id: String) -> AudioProcessingTarget? { model.processingTargets.first { $0.id == id } }
+        expectEqual(target("bus:aux-1")?.kind, "Aux bus", "aux kind (SVM ResolveBusProcessingKind)")
+        expectEqual(target("bus:aux-1")?.detail, "Aux send processing.", "aux detail (SVM ResolveBusProcessingDetail)")
+        expectEqual(target("bus:master")?.kind, "Master bus", "master kind")
+        expectEqual(target("bus:master")?.detail, "Final program mix processing before output.", "master detail")
+        expectEqual(target("bus:master")?.label, "MASTER", "a bus target's label is its header label")
+        expectEqual(target("bus:iso-3")?.kind, "ISO bus", "iso kind")
+        expectEqual(target("bus:iso-3")?.detail, "Isolated recording bus processing.", "iso detail")
+        expectEqual(target("bus:mon")?.detail, "Control-room monitor bus processing.", "mon detail")
+        expectEqual(target("bus:stream")?.detail, "Streaming output bus processing.", "stream detail")
+        expectEqual(target("bus:pgm-l")?.detail, "Left program bus processing.", "pgm-l detail")
+        expectEqual(target("bus:pgm-r")?.kind, "Bus", "pgm-r kind")
+        expectEqual(target("channel:101")?.kind, "Channel", "channel kind")
+        expectEqual(target("channel:101")?.detail, "Channel - MASTER", "channel detail names the primary bus")
+        expectEqual(target("bus:master")?.insertLabel, "No inserts", "an empty chain")
+        model.busInserts["master"] = ["Compressor", "Limiter"]
+        expectEqual(target("bus:master")?.insertLabel, "Compressor + Limiter", "the chain joined with \" + \"")
+        model.editInserts("101") { _ = $0.add("eq") }
+        expectEqual(target("channel:101")?.insertLabel, "Built-in EQ", "a channel's own chain")
+        model.addCustomBus()
+        expectEqual(target("bus:bus-01")?.kind, "Custom bus", "custom kind")
+        expectEqual(target("bus:bus-01")?.detail, "Custom bus processing.", "custom detail")
+        expectEqual(model.processingTargets.last?.id, "bus:bus-01", "a custom bus follows the fixed buses")
+        expectEqual(AudioProcessingTargetPolicy.defaultTargetId, "bus:master", "the default target (SVM:508)")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "a fresh model selects master")
+    }
+
+    @MainActor
+    private static func testSelectStripSelectsChannelTarget() {
+        let model = targetModel()
+        model.roster = [RosterParticipant(id: "102", name: "Ben", hasVideo: false, muted: false,
+                                          talking: false, assigned: false)]
+        model.selectAudioStrip("102")
+        expectEqual(model.selectedAudioStripId, "102", "the strip is selected")
+        expectEqual(model.selectedProcessingTargetId, "channel:102", "and so is its channel target (SVM:4688-4693)")
+        model.addProcessingInsert("compressor")
+        expectEqual(model.channelInserts["102"]?.chain, ["Compressor"], "the insert lands on strip 102's chain")
+        expect(model.channelInserts["101"]?.chain.isEmpty ?? true, "and not on 101's")
+        expectEqual(model.takeStatus, "Compressor added to Ben", "SVM AddAudioProcessingInsert status")
+        model.addProcessingInsert("Compressor")
+        expectEqual(model.takeStatus, "Compressor is already on Ben", "duplicate status")
+        expectEqual(model.channelInserts["102"]?.chain, ["Compressor"], "no duplicate")
+        model.removeProcessingInsert("compressor")
+        expectEqual(model.takeStatus, "Removed compressor from Ben", "SVM RemoveAudioProcessingInsert status")
+        model.addProcessingInsert("Limiter")
+        model.clearProcessingInserts()
+        expectEqual(model.takeStatus, "Insert chain cleared for Ben", "SVM ClearAudioProcessingInserts status")
+        expectEqual(model.channelInserts["102"]?.chain, [], "cleared")
+        // A strip that leaves the console while selected falls back to master.
+        model.zoomAudioSourceIds = ["101"]
+        model.refreshStrips()
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "a vanished strip's target falls back to bus:master")
+        expect(model.selectedAudioStripId == nil, "and its selection clears")
+    }
+
+    @MainActor
+    private static func testBusEqRefusedWithReason() {
+        let model = targetModel()
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "precondition: master is the target")
+        model.addProcessingInsert("Compressor")
+        expectEqual(model.takeStatus, "Compressor added to MASTER", "a compressor processes on a bus")
+        // Mutation: allow EQ on a bus target -> red.
+        model.addProcessingInsert("eq")
+        expectEqual(model.busInserts["master"], ["Compressor"], "the bus chain is unchanged")
+        expectEqual(model.takeStatus, "Built-in EQ does not process on a bus yet; add a compressor or limiter.",
+                    "the OD-1 reason")
+        expectEqual(AudioProcessingTargetPolicy.busRefusal("eq"),
+                    "Built-in EQ does not process on a bus yet; add a compressor or limiter.",
+                    "the same sentence for the SETUP button (Task 5)")
+        expect(AudioProcessingTargetPolicy.busRefusal("Limiter") == nil, "a limiter is allowed")
+        expect(AudioProcessingTargetPolicy.busRefusal("vst:Pro-L 2") == nil, "a VST is allowed on a bus")
+    }
+
+    @MainActor
+    private static func testBusChainReassertedOnNewCore() {
+        let model = targetModel()
+        model.addProcessingInsert("Compressor")
+        model.addProcessingInsert("Limiter")
+        model.markAudioConsoleDeliveredForTesting()
+        var batches: [[JSONObject]] = []
+        model.audioReassertObserver = { batches.append($0) }
+        model.onConnected()
+        model.stopTimersForTesting()
+        let routing = batches.first?.first { $0["type"] as? String == "sync-audio-routing-matrix" }
+        let master = sends(routing).filter { $0["busId"] as? String == "master" }
+        expectEqual(master.count, 2, "the respawn batch has both master sends")
+        for send in master {
+            expectEqual(chainOf(send), ["Compressor", "Limiter"], "a respawned core gets the master chain")
+        }
+        // The core's echo (CoreStateCapture busProcessing[]) reads back as a map.
+        let echo: JSONObject = ["busProcessing": [
+            ["busId": "master", "pluginInserts": ["Compressor", "Limiter"]],
+            ["busId": "aux-1", "pluginInserts": [String]()],
+        ]]
+        expectEqual(AppModel.busChainFromSnapshot(echo), ["master": ["Compressor", "Limiter"]],
+                    "busChainFromSnapshot reads busProcessing[] (empty chains dropped)")
+    }
+
+    @MainActor
+    private static func testPrimaryBusLabel() {
+        let model = targetModel()
+        // The core's echo hydrated the grid with the default sends.
+        for id in ["101", "102"] {
+            model.audioSends[id] = Dictionary(uniqueKeysWithValues: AudioConsolePolicy.defaultSendBuses.map { ($0, 0.0) })
+        }
+        expectEqual(model.primaryBusLabel("101"), "MASTER", "routed to master")
+        model.removeSend(source: "101", bus: "master")
+        expectEqual(model.primaryBusLabel("101"), "PGM L", "the first routed bus in header order")
+        for bus in ["pgm-l", "pgm-r", "mon", "stream"] { model.removeSend(source: "101", bus: bus) }
+        model.selectOrRouteSend(source: "101", bus: "aux-1")
+        expectEqual(model.primaryBusLabel("101"), "AUX 1", "master removed by an operator edit, aux-1 routed")
+        expectEqual(model.processingTargets.first { $0.id == "channel:101" }?.detail, "Channel - AUX 1",
+                    "the channel target's detail follows")
+        model.removeSend(source: "101", bus: "aux-1")
+        expectEqual(model.primaryBusLabel("101"), "MASTER", "nothing routed falls back to MASTER (SVM:11660)")
     }
 }

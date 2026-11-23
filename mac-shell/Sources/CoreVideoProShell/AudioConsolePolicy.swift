@@ -193,10 +193,20 @@ enum AudioConsolePolicy {
     /// operator enabled, exactly as Windows removes it. In ProgramMix zoom-mix gets
     /// the defaults (only while the meeting mix is subscribed: no strip, no route),
     /// stems get none, and an operator's own stem crosspoint survives.
+    ///
+    /// `busInserts` (A7): each bus's processing chain, keyed by bus id. It is
+    /// attached to EVERY send of that bus, AFTER the defaults, the operator's
+    /// edits and the doubling guard (Windows SVM:9221-9229: "Default/fallback
+    /// sends are synthesized after the matrix rows above. Attach each bus's
+    /// insert chain here so MASTER VST processing remains live even when a
+    /// source is using an implicit default route."). The core takes a bus's
+    /// chain from any send to it that carries one (MediaCore.cpp
+    /// applyOrderedBusInserts), so a bus with no send has no chain on the wire.
     static func baseRoutingSends(
         zoomAudioIds: [String], captureAudioIds: [String], mediaRouted: Bool,
         operatorEdits: [AudioRouteKey: AudioRouteControlProjection.Draft],
-        zoomAudioMode: ZoomAudioMode = .perGuestIso, meetingAudio: Bool = false
+        zoomAudioMode: ZoomAudioMode = .perGuestIso, meetingAudio: Bool = false,
+        busInserts: [String: [String]] = [:]
     ) -> [JSONObject] {
         var matrix: [AudioRouteKey: Double] = [:]
         let zoomDefaults: [String]
@@ -218,7 +228,7 @@ enum AudioConsolePolicy {
         }
         return matrix.keys.sorted().map { key in
             ["sourceId": key.source, "busId": key.bus, "gainDb": matrix[key] ?? 0,
-             "busPluginInserts": [] as [String]]
+             "busPluginInserts": busInserts[key.bus] ?? []]
         }
     }
 

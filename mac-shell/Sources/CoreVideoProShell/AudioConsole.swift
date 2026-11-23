@@ -29,10 +29,10 @@ struct AudioPane: View {
               ["SHOW", "ROUTING", "PLUG-INS", "SETUP"].contains(wanted) else { return "SHOW" }
         return wanted
     }
-    @State private var selectedStripId: String?
-
+    // The selection is model state (AppModel.selectedAudioStripId, A7 Task 3):
+    // the pop-out and the main window share it.
     var selected: AudioStrip? {
-        model.strips.first { $0.id == (selectedStripId ?? model.strips.first?.id) }
+        model.strips.first { $0.id == (model.selectedAudioStripId ?? model.strips.first?.id) }
     }
 
     var body: some View {
@@ -122,7 +122,7 @@ struct AudioPane: View {
             HStack(spacing: 6) {
                 ForEach(model.strips) { strip in
                     Button {
-                        selectedStripId = strip.id
+                        model.selectAudioStrip(strip.id)
                     } label: {
                         VStack(alignment: .leading, spacing: 0) {
                             Text(stripLabel(strip)).font(.grotesk(11, .medium))
