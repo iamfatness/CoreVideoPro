@@ -193,7 +193,7 @@ struct ProcessingWorkspace: View {
             }
             .frame(width: 150, alignment: .leading)
             cell("GATE", on: inserts.gateEnabled,
-                 toggle: { model.editInserts(stripId) { $0.gateEnabled.toggle() } }) {
+                 toggle: { model.editInserts(stripId) { $0.toggle(ChannelInserts.gateName) } }) {
                 CurveCanvas { size in
                     var path = Path()
                     let knee = (inserts.gateThresholdDb + 80) / 68 * size.width * 0.8
@@ -214,7 +214,7 @@ struct ProcessingWorkspace: View {
                 }
             }
             cell("COMP", on: inserts.compEnabled,
-                 toggle: { model.editInserts(stripId) { $0.compEnabled.toggle() } }) {
+                 toggle: { model.editInserts(stripId) { $0.toggle(ChannelInserts.compName) } }) {
                 CurveCanvas { size in
                     var path = Path()
                     let knee = (inserts.compThresholdDb + 40) / 34 * size.width
@@ -245,7 +245,7 @@ struct ProcessingWorkspace: View {
                 }
             }
             cell("EQ", on: inserts.eqEnabled,
-                 toggle: { model.editInserts(stripId) { $0.eqEnabled.toggle() } }) {
+                 toggle: { model.editInserts(stripId) { $0.toggle(ChannelInserts.eqName) } }) {
                 CurveCanvas { size in
                     var path = Path()
                     let bands = inserts.eqBandsDb

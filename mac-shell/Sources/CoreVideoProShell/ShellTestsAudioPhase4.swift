@@ -15,6 +15,15 @@ extension ShellTests {
             ("a7-curve-comp-windows-vectors", testCurveCompMatchesWindowsVectors),
             ("a7-curve-gate-windows-vectors", testCurveGateMatchesWindowsVectors),
             ("a7-curve-point-counts", testCurvePointCounts),
+            // Task 2: ordered channel insert chain, Limiter, slot model.
+            ("a7-chain-order-is-toggle-order", testChainOrderIsToggleOrder),
+            ("a7-chain-limiter-processes-with-ceiling", testChainLimiterProcessesWithCeiling),
+            ("a7-chain-duplicate-refused", testChainDuplicateRefused),
+            ("a7-chain-normalize-is-windows", testChainNormalizeIsWindows),
+            ("a7-chain-vst-gated-on-host", testChainVstGatedOnHost),
+            ("a7-chain-slots-labels", testChainSlotsLabels),
+            ("a7-chain-reasserted-on-new-core", testChainReassertedOnNewCore),
+            ("a7-chain-prefs-compat", testChainPrefsCompat),
         ]
     }
 
@@ -145,5 +154,188 @@ extension ShellTests {
         expectEqual(eq.first?.x, 0, "EQ first x")
         expectEqual(DspCurveMath.eqBandHz, [63, 125, 250, 500, 1000, 2000, 4000, 8000],
                     "EQ band centres (kEqBandHz)")
+    }
+
+    // ── Task 2: ordered channel insert chain ────────────────────────────────
+
+    /// A model with one Zoom guest strip "11" (plus the zoom-mix strip).
+    @MainActor
+    private static func chainModel() -> AppModel {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        model.meetingAudioSubscribed = true
+        model.refreshStrips()
+        return model
+    }
+
+    private static func wireChannel(_ command: JSONObject?, _ id: String) -> JSONObject? {
+        (command?["channels"] as? [JSONObject])?.first { $0["participantId"] as? String == id }
+    }
+
+    @MainActor
+    private static func testChainOrderIsToggleOrder() {
+        let model = chainModel()
+        model.editInserts("11") { $0.toggle(ChannelInserts.eqName) }
+        model.editInserts("11") { $0.toggle(ChannelInserts.gateName) }
+        model.editInserts("11") { $0.toggle(ChannelInserts.compName) }
+        // Mutation: today's fixed gate->EQ->comp `activeNames` order -> red.
+        expectEqual(wireChannel(model.audioMixCommand(), "11")?["pluginInserts"] as? [String],
+                    ["Built-in EQ", "Noise Gate", "Compressor"],
+                    "the wire carries the chain in the order the operator toggled it (Windows PluginInserts)")
+        let flags = model.channelInserts["11"] ?? ChannelInserts()
+        expect(flags.gateEnabled && flags.eqEnabled && flags.compEnabled, "the get-only flags follow the chain")
+        // Toggling again removes it (ToggleSelectedRackInsert); re-adding appends at the end.
+        model.editInserts("11") { $0.toggle("noise gate") }
+        expectEqual(model.channelInserts["11"]?.chain, ["Built-in EQ", "Compressor"],
+                    "toggle removes case-insensitively")
+        expect(model.channelInserts["11"]?.gateEnabled == false, "gate flag off once removed")
+        model.editInserts("11") { $0.toggle(ChannelInserts.gateName) }
+        expectEqual(wireChannel(model.audioMixCommand(), "11")?["pluginInserts"] as? [String],
+                    ["Built-in EQ", "Compressor", "Noise Gate"], "re-added gate goes last")
+        let settings = wireChannel(model.audioMixCommand(), "11")?["insertSettings"] as? JSONObject ?? [:]
+        expectEqual(Set(settings.keys), Set(["Built-in EQ", "Compressor", "Noise Gate"]),
+                    "settings for every built-in on the chain, keyed by its chain name")
+    }
+
+    @MainActor
+    private static func testChainLimiterProcessesWithCeiling() {
+        let model = chainModel()
+        expectEqual(ChannelInserts.limiterName, "Limiter", "core matches \"limiter\" (AudioDsp.h)")
+        expectEqual(ChannelInserts.builtInNames, ["Noise Gate", "Built-in EQ", "Compressor", "Limiter"],
+                    "Windows BuiltInInsertNames (SVM:2250)")
+        expectEqual(ChannelInserts().limiterCeilingDb, -1.0, "core default ceiling")
+        model.editInserts("11") {
+            $0.limiterCeilingDb = -3
+            _ = $0.add("Limiter")
+        }
+        let channel = wireChannel(model.audioMixCommand(), "11")
+        expectEqual(channel?["pluginInserts"] as? [String], ["Limiter"], "the Limiter name is on the wire")
+        let limiter = (channel?["insertSettings"] as? JSONObject)?["Limiter"] as? JSONObject
+        // Mutation: omit the limiter from settingsJson -> red.
+        expectEqual(limiter?["ceilingDb"] as? Double, -3, "insertSettings[Limiter][ceilingDb]")
+        model.editInserts("11") { $0.limiterCeilingDb = -20 }
+        let clamped = ((wireChannel(model.audioMixCommand(), "11")?["insertSettings"] as? JSONObject)?["Limiter"]
+                       as? JSONObject)?["ceilingDb"] as? Double
+        expectEqual(clamped, -12, "ceiling clamped to the core's -12...-0.1")
+        model.editInserts("11") { $0.limiterCeilingDb = 0 }
+        let top = ((wireChannel(model.audioMixCommand(), "11")?["insertSettings"] as? JSONObject)?["Limiter"]
+                   as? JSONObject)?["ceilingDb"] as? Double
+        expectEqual(top, -0.1, "ceiling clamped at -0.1")
+    }
+
+    private static func testChainDuplicateRefused() {
+        var inserts = ChannelInserts()
+        expectEqual(inserts.add("eq"), .added("Built-in EQ"), "first add normalises")
+        expectEqual(inserts.add("eq"), .duplicate("Built-in EQ"), "second add is refused (SVM AddSelectedAudioInsert)")
+        expectEqual(inserts.add("built-in eq"), .duplicate("Built-in EQ"), "normalised spelling is a duplicate")
+        expectEqual(inserts.chain.count, 1, "the chain holds one EQ")
+        // Mutation: case-sensitive compare -> red here. ("built-in eq" normalises to
+        // the canonical spelling, so only a name normalize() passes through can see it.)
+        expectEqual(inserts.add("Noise Gate"), .added("Noise Gate"), "gate added")
+        expectEqual(inserts.add("noise gate"), .duplicate("noise gate"), "duplicates compare case-insensitively")
+        expectEqual(inserts.chain, ["Built-in EQ", "Noise Gate"], "no duplicate entered the chain")
+        expect(inserts.remove("NOISE GATE"), "remove is case-insensitive")
+        expect(!inserts.remove("Noise Gate"), "removing an absent name reports false")
+        inserts.clear()
+        expectEqual(inserts.chain, [], "clear empties the chain")
+    }
+
+    private static func testChainNormalizeIsWindows() {
+        // SVM NormalizeAudioInsertName.
+        let table: [(String, String)] = [
+            ("eq", "Built-in EQ"), ("Built-In EQ", "Built-in EQ"), ("built-in eq", "Built-in EQ"),
+            ("compressor", "Compressor"), ("COMPRESSOR", "Compressor"),
+            ("vst", "VST3 Bridge Slot"), ("vst3", "VST3 Bridge Slot"), ("vst3 bridge", "VST3 Bridge Slot"),
+            ("  Reverb ", "Reverb"), ("Noise Gate", "Noise Gate"), ("limiter", "limiter"),
+        ]
+        for (raw, expected) in table {
+            expectEqual(InsertChainPolicy.normalize(raw), expected, "normalize(\"\(raw)\")")
+        }
+        // SVM IsBuiltInInsert / IsVstInsert.
+        expect(InsertChainPolicy.isBuiltIn("Noise Gate") && InsertChainPolicy.isBuiltIn("limiter"), "built-ins")
+        expect(!InsertChainPolicy.isBuiltIn("vst:Pro-EQ"), "a vst: name is never built-in")
+        expect(!InsertChainPolicy.isBuiltIn("Reverb"), "an unknown name is not built-in")
+        expect(InsertChainPolicy.isVst("VST:Pro-Q 3") && InsertChainPolicy.isVst("VST3 Bridge Slot"), "VST names")
+        expect(!InsertChainPolicy.isVst("Compressor"), "a built-in is not a VST")
+    }
+
+    @MainActor
+    private static func testChainVstGatedOnHost() {
+        let model = chainModel()
+        model.editInserts("11") { $0.chain = ["Compressor", "vst:Pro-Q 3"] }
+        expect(!model.vstInsertsLive, "precondition: no live host")
+        // Mutation: send the VST unconditionally -> red.
+        expectEqual(model.pluginInsertNames(for: "11"), ["Compressor"], "a dead host gets no VST insert")
+        expectEqual(wireChannel(model.audioMixCommand(), "11")?["pluginInserts"] as? [String], ["Compressor"],
+                    "and neither does the wire")
+        let slots = InsertChainPolicy.slots(chain: model.channelInserts["11"]?.chain ?? [], onBus: false,
+                                            vstLive: model.vstInsertsLive,
+                                            vstStatusLine: model.vstStatusLine, labelStyle: .channel)
+        expectEqual(slots.map(\.statusLabel), ["LIVE", "BYPASS"], "the VST slot is shown as bypassed")
+        expectEqual(slots.last?.tooltip, model.vstStatusLine, "with the host status line as the reason")
+        expectEqual(slots.last?.isBuiltIn, false, "a VST is not built-in")
+        model.vstHost.serveRunning = true
+        expectEqual(model.pluginInsertNames(for: "11"), ["Compressor", "vst:Pro-Q 3"],
+                    "a live host gets the VST in chain position")
+    }
+
+    private static func testChainSlotsLabels() {
+        let chain = ["Built-in EQ", "Compressor"]
+        let channel = InsertChainPolicy.slots(chain: chain, onBus: false, vstLive: false,
+                                              vstStatusLine: "x", labelStyle: .channel)
+        expectEqual(channel.map(\.slotLabel), ["1", "2"], "channel labels (SVM RefreshSelectedChannelInsertSlots)")
+        expectEqual(channel.map(\.statusLabel), ["LIVE", "LIVE"], "built-ins process on a channel")
+        expectEqual(channel.first?.tooltip, "Processing active.", "Windows built-in tooltip")
+        expectEqual(channel.map(\.id), chain, "slot identity is the chain name")
+        let target = InsertChainPolicy.slots(chain: chain, onBus: true, vstLive: false,
+                                             vstStatusLine: "x", labelStyle: .target)
+        expectEqual(target.map(\.slotLabel), ["01", "02"], "target labels (SVM RefreshSelectedAudioProcessingSlots)")
+        // Mutation: LIVE for every built-in -> red here (OD-1).
+        expectEqual(target.map(\.statusLabel), ["PASS", "LIVE"], "bus EQ passes through, bus compressor processes")
+        expectEqual(target.first?.tooltip,
+                    "Built-in EQ does not process on a bus; audio passes through unchanged.", "the PASS reason")
+        let busGate = InsertChainPolicy.slots(chain: ["Noise Gate", "Limiter"], onBus: true, vstLive: false,
+                                              vstStatusLine: "x", labelStyle: .target)
+        expectEqual(busGate.map(\.statusLabel), ["PASS", "LIVE"], "bus gate passes, bus limiter processes")
+        expectEqual(busGate.first?.tooltip,
+                    "Built-in Noise Gate does not process on a bus; audio passes through unchanged.", "gate reason")
+    }
+
+    @MainActor
+    private static func testChainReassertedOnNewCore() {
+        let model = chainModel()
+        model.editInserts("11") { $0.toggle(ChannelInserts.compName) }
+        model.editInserts("11") { $0.toggle(ChannelInserts.limiterName) }
+        model.editInserts("11") { $0.toggle(ChannelInserts.eqName) }
+        model.markAudioConsoleDeliveredForTesting()
+        var batches: [[JSONObject]] = []
+        model.audioReassertObserver = { batches.append($0) }
+        model.onConnected()
+        model.stopTimersForTesting()
+        let first = batches.first?.first
+        expectEqual(first?["type"] as? String, "sync-participant-audio-mix", "the mix leads the reassert batch")
+        expectEqual(wireChannel(first, "11")?["pluginInserts"] as? [String],
+                    ["Compressor", "Limiter", "Built-in EQ"], "a respawned core gets the chain in order")
+    }
+
+    @MainActor
+    private static func testChainPrefsCompat() {
+        var prefs = ShellPrefs()
+        prefs.vstChannelSelections = ["101": "vst:Test"]
+        let model = AppModel()
+        model.applyRestoredPrefs(prefs)
+        expectEqual(model.channelInserts["101"]?.chain, ["vst:Test"], "a saved VST selection restores into the chain")
+        expectEqual(model.currentPrefs().vstChannelSelections, ["101": "vst:Test"], "and saves back")
+        model.editInserts("101") { _ = $0.add("Compressor") }
+        expectEqual(model.channelInserts["101"]?.chain, ["vst:Test", "Compressor"], "built-ins append after it")
+        expectEqual(model.currentPrefs().vstChannelSelections, ["101": "vst:Test"],
+                    "only the VST is saved; built-in chains are not persisted (Windows)")
+        model.setVstChannelSelection("101", "vst:Other")
+        expectEqual(model.channelInserts["101"]?.chain, ["Compressor", "vst:Other"],
+                    "picking another plug-in replaces the VST in the chain")
+        expectEqual(model.currentPrefs().vstChannelSelections, ["101": "vst:Other"], "and is saved")
+        model.setVstChannelSelection("101", nil)
+        expectEqual(model.channelInserts["101"]?.chain, ["Compressor"], "None removes the VST")
+        expect(model.currentPrefs().vstChannelSelections == nil, "nothing to save without a VST")
     }
 }
