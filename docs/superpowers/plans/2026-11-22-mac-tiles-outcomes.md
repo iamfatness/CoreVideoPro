@@ -240,3 +240,27 @@ The reviewer found no behavioural divergence from the C#. Its findings were cove
 | cap audio | red: 4 fixture cases plus the camera-off and sticky facts, 6 failures |
 
 Shell, full suite: **8070 checks, 2 failed**, the known `.m4a` pair.
+
+### Task 11 — sticky audio latch, spine additions, re-push triggers
+
+- New `TilesAudioSourceLatch.swift`, a verbatim port of `TilesAudioSourceLatch.Observe`/`Clear`. `AppModel+Tiles` adds:
+  - `tilesLatchMeetingState`: nil until a Zoom snapshot with a non-empty `meetingState` arrives on this core generation; reset in `onConnected`.
+  - `busCaption`, the Windows `WithBusNotice`.
+- The spine build (`resolveSpineParts`) observes the latch **once per build, with the full in-room roster**. The payload gains `sourceParticipantIds`, `videoSubscriptionShortfall`, the Windows over-budget warning, `multiview.programNotice`/`previewNotice` (always present, `""` when clear) and the unsubscribed tile labels. `zoomAudioSourceIds` covers every source, sticky ones included.
+- Triggers: `setCapture(false)` clears the latch. `syncSpine` uses the timer seam and is re-pushed after every `pushScenes` and after a successful Take. `MultiviewTileChrome` shows `busCaption` for PGM/PVW.
+- `pushSpine` has its own test seam (`spineRequestForTesting`). Harnesses that count scene-sync bodies through `quitRequestForTesting` are not handed spine requests.
+- Tests:
+  - the 8 `TilesAudioSourceLatchTests` facts by name;
+  - `testCueingAWallRepushesTheSpineWithItsMembers` (1, 2 and 3 at `preview-tiles`, sources `[1,2,3]`, notices present);
+  - `testACameraOffWallMemberKeepsAudioWhileTheWallIsOnABus`;
+  - `testCaptureOffForgetsTheLatch`;
+  - `testACoreRespawnResendsBothWallsAndTheSpineAndKeepsTheLatch` (Review Focus 4);
+  - `testBusCaptionCarriesTheCoresNotice`.
+- `tiles/` filter: 247/247. Full suite: **8106 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 11) | Result |
+|---|---|
+| the latch observes the video-only present set | red: the camera-off member loses audio (2 failures) |
+| an unknown meeting state treated as not-in-meeting | red: `AnUnknownMeetingStateTickNeverWipesTheLatch` plus the respawn test (3 failures) |
+| no spine re-push after a scene push | red: the cue test (5 failures) |
+| the bus caption ignores the notice | red: the caption test |

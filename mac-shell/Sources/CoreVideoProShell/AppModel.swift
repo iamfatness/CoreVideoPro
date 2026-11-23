@@ -400,6 +400,10 @@ struct RosterParticipant: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
+    /// Sticky Tiles audio (Windows TilesAudioSourceLatch), observed once per spine build.
+    let tilesAudioLatch = TilesAudioSourceLatch()
+    /// True once a Zoom snapshot with a non-empty meetingState arrived on this core generation.
+    var tilesMeetingStateObserved = false
     @Published var meetingState = "idle" {
         didSet {
             latchZoomCameraCeilingIfJoined()   // Z1: a join reached the meeting
@@ -1834,6 +1838,7 @@ final class AppModel: ObservableObject {
     /// Every core generation (initial handshake AND respawn). Internal: the
     /// harness drives it to prove the console is re-asserted.
     func onConnected() {
+        tilesMeetingStateObserved = false   // a new core generation: the meeting state is unknown again
         // Comms: a new core generation has no held keys and no report yet
         // (every-core-generation rule). Private is re-sent only when the new
         // report disagrees, never blindly.
@@ -2135,6 +2140,7 @@ final class AppModel: ObservableObject {
         }
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
+        if let state = snapshot["meetingState"] as? String, !state.isEmpty { tilesMeetingStateObserved = true }
         if acceptRoster {
             let previous = meetingState
             meetingState = snapshot["meetingState"] as? String ?? meetingState
@@ -2556,7 +2562,10 @@ final class AppModel: ObservableObject {
 
     func setCapture(enabled: Bool) {
         captureEnabled = enabled
-        if !enabled { sourceFacts.mutate { $0.engineStopped() } }
+        if !enabled {
+            sourceFacts.mutate { $0.engineStopped() }
+            tilesAudioLatch.clear()   // Windows Engine off forgets every sticky member
+        }
         syncSpine()
         if !enabled {
             guard let bridge else { return }
@@ -3106,18 +3115,26 @@ final class AppModel: ObservableObject {
         spineSyncRequests += 1
         spineSyncTask?.cancel()
         spineSyncTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            await self?.timerSleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
             await self?.pushSpine()
         }
     }
 
+    /// Test seam for the spine push only (nil = the real bridge). Separate from
+    /// quitRequestForTesting so harnesses that count scene-sync bodies are not
+    /// handed spine requests they never asked for.
+    var spineRequestForTesting: ((JSONObject) async throws -> JSONObject)?
+
     private func pushSpine() async {
-        guard let bridge else { return }
+        let send: (JSONObject) async throws -> JSONObject
+        if let seam = spineRequestForTesting { send = seam }
+        else if let bridge { send = { try await bridge.request($0) } }
+        else { return }
         let requests = spinePushRequests()
         for request in requests {
             do {
-                _ = try await bridge.request(request)
+                _ = try await send(request)
             } catch {
                 if request["type"] as? String == "media-core-sync" {
                     // Not delivered: forget the memo so the debounced paths retry.
@@ -3151,7 +3168,8 @@ final class AppModel: ObservableObject {
                 "talking": participant.talking,
             ]
         }
-        let subscriptions = resolveSpineSubscriptions()
+        let parts = resolveSpineParts()
+        let subscriptions = parts.subscriptions
         refreshStrips()  // the console follows the audio source set just decided
         var audio: [JSONObject] = []
         let stripIds = Set(strips.map(\.id))
@@ -3170,7 +3188,9 @@ final class AppModel: ObservableObject {
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
-        let multiviewSources = Self.multiviewSourcePayloads(slots, mediaAssets: mediaAssets)
+        // The budget's labels ride the sources ("<name> · no video: subscription
+        // limit (10)"); the bus notices name a cued guest it left out.
+        let multiviewSources = parts.multiviewSources
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →
             // start_raw_media): without it every video subscription stays
@@ -3180,6 +3200,8 @@ final class AppModel: ObservableObject {
             "multiview": [
                 "canvasWidth": 1920, "canvasHeight": 1080,
                 "sources": multiviewSources,
+                "programNotice": parts.programNotice,   // always present: "" clears it
+                "previewNotice": parts.previewNotice,
             ],
             "readiness": [
                 "status": "ready", "platform": "darwin", "sdkVersion": "",
@@ -3187,8 +3209,11 @@ final class AppModel: ObservableObject {
             ],
             "participants": participants,
             "subscriptions": subscriptions,
+            // The core's speaker director follows the talker only among these (#478 R1).
+            "sourceParticipantIds": parts.sourceParticipantIds,
+            "videoSubscriptionShortfall": parts.shortfall,
             "blocked": false,
-            "warnings": [],
+            "warnings": parts.warnings,
             "summary": "mac shell spine sync",
         ]
         var requests: [JSONObject] = []
@@ -3205,13 +3230,26 @@ final class AppModel: ObservableObject {
     /// (`zoomAudioSourceIds` / `meetingAudioSubscribed`). Internal so the harness
     /// drives the real call site, not a hand-copied list.
     func resolveSpineSubscriptions() -> [JSONObject] {
-        let parts = ZoomSourceBudget.spineParts(spineSourceInput(), names: Dictionary(
+        resolveSpineParts().subscriptions
+    }
+
+    /// The source-set half of a spine build: observes the sticky Tiles latch ONCE
+    /// with the FULL in-room roster, then resolves subscriptions, source ids, the
+    /// shortfall, the warning, the bus notices and the multiview labels.
+    func resolveSpineParts() -> ZoomSourceBudget.SpineParts {
+        var input = spineSourceInput()
+        input.stickyAudio = tilesAudioLatch.observe(
+            inMeeting: tilesLatchMeetingState,
+            programSceneId: programSceneId, programTiles: input.programTiles,
+            previewSceneId: previewSceneId, previewTiles: input.previewTiles,
+            present: Set(roster.map(\.id)))
+        let parts = ZoomSourceBudget.spineParts(input, names: Dictionary(
             roster.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }))
         zoomAudioSourceIds = parts.subscriptions
             .filter { $0["kind"] as? String == "participant-audio" }
             .compactMap { $0["participantId"] as? String }
         meetingAudioSubscribed = !roster.isEmpty
-        return parts.subscriptions
+        return parts
     }
 
     /// The source-set input for the current show (Windows ZoomSourceSetPolicy.Input):
@@ -3937,6 +3975,7 @@ final class AppModel: ObservableObject {
                 "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": batch,
             ])
             takeStatus = "Program updated"
+            syncSpine()   // the buses swapped: the source set follows
             return .success
         } catch {
             let untouched = programSceneId == taken && previewSceneId == previousProgram
@@ -4200,6 +4239,9 @@ final class AppModel: ObservableObject {
         } catch {
             pushWarning("scene sync failed: \(error.localizedDescription)")
         }
+        // A scene or bus change changes the source set (a wall's members, a
+        // cued route): re-push the spine. Windows rebuilds it every 500 ms.
+        syncSpine()
     }
 
     // ── auto-direct (the MagicScene policy ladder, reduced) ──────────────────

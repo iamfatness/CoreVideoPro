@@ -58,4 +58,21 @@ extension AppModel {
         studioCommandStatus = Self.tilesLayersRefusal
         return true
     }
+
+    /// The latch's meeting state: nil until a Zoom snapshot carrying a non-empty
+    /// `meetingState` arrived on THIS core generation, else whether it is
+    /// "in_meeting" (Windows reads `_bridge.LastSnapshot?.MeetingState`, null
+    /// for a synthesized snapshot).
+    var tilesLatchMeetingState: Bool? {
+        tilesMeetingStateObserved ? meetingState == "in_meeting" : nil
+    }
+
+    /// Windows `MultiviewOverlayFormatting.WithBusNotice`: "PROGRAM"/"PREVIEW",
+    /// plus " · <text after the first ' · '>" when the core appended a notice.
+    nonisolated static func busCaption(role: String, label: String) -> String {
+        let caption = role == "pgm" ? "PROGRAM" : role == "pvw" ? "PREVIEW" : label
+        let separator = " \u{00B7} "
+        guard role == "pgm" || role == "pvw", let range = label.range(of: separator) else { return caption }
+        return caption + separator + label[range.upperBound...]
+    }
 }

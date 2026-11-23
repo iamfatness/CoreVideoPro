@@ -36,6 +36,13 @@ extension ShellTests {
             // Task 10: the source set with Tiles tiers, from Windows-generated fixtures.
             ("tiles/spine-fixtures", testEverySpineFixtureMatchesTheSwiftSourceSet),
             ("tiles/spine-windows-facts", testTheSourceSetPortsTheWindowsSpineFacts),
+            // Task 11: sticky audio latch, spine additions, re-push triggers.
+            ("tiles/latch-windows-facts", testTheTilesAudioLatchPortsTheWindowsFacts),
+            ("tiles/cue-repushes-spine", testCueingAWallRepushesTheSpineWithItsMembers),
+            ("tiles/camera-off-keeps-audio", testACameraOffWallMemberKeepsAudioWhileTheWallIsOnABus),
+            ("tiles/capture-off-forgets-latch", testCaptureOffForgetsTheLatch),
+            ("tiles/respawn-resends-walls-spine-latch", testACoreRespawnResendsBothWallsAndTheSpineAndKeepsTheLatch),
+            ("tiles/bus-caption", testBusCaptionCarriesTheCoresNotice),
         ]
     }
 
@@ -808,5 +815,206 @@ extension ShellTests {
         // The Mac multiview names a Zoom tile `participant-video`: it counts like Windows' `zoom`.
         var m = I(); m.participants = people(["a"]); m.multiview = [["kind": "participant-video", "participantId": "a", "slot": 0]]
         expectEqual(video(ZoomSourceBudget.resolve(m)), ["a:multiview"], "Mac multiview kind maps to the Windows zoom kind")
+    }
+
+    // ── Task 11 ──────────────────────────────────────────────────────────────
+
+    private static func wallObject(_ members: [String]) -> JSONObject { ["members": members.map { "zoom:" + $0 }] }
+
+    static func testTheTilesAudioLatchPortsTheWindowsFacts() {
+        let t = "TilesAudioSourceLatchTests"
+        let everyone: Set<String> = ["a", "b", "comms", "c"]
+        var latch = TilesAudioSourceLatch()
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["a", "b"]),
+                                  previewSceneId: nil, previewTiles: nil, present: everyone), ["a", "b"], "\(t).TheLatchClears…: latched")
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["b"]),
+                                  previewSceneId: nil, previewTiles: nil, present: everyone), ["a", "b"], "\(t).TheLatchClears…: a dropped member stays")
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject([]),
+                                  previewSceneId: nil, previewTiles: nil, present: ["a"]), ["a"], "\(t).TheLatchClears…: leaving the meeting ends it")
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "other", programTiles: wallObject(["c"]),
+                                  previewSceneId: nil, previewTiles: nil, present: everyone), ["c"], "\(t).TheLatchClears…: a scene off both buses is forgotten")
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "routes", programTiles: nil,
+                                  previewSceneId: nil, previewTiles: nil, present: everyone), [],
+                    "\(t).TheLatchClearsWhenTheSceneLeavesBothBusesOrTheGuestLeavesTheMeeting")
+
+        latch = TilesAudioSourceLatch()
+        let mxy: Set<String> = ["m", "x", "y"]
+        _ = latch.observe(inMeeting: true, programSceneId: "A", programTiles: wallObject(["x"]), previewSceneId: "B",
+                          previewTiles: wallObject(["m", "y"]), present: mxy)
+        expect(latch.observe(inMeeting: true, programSceneId: "A", programTiles: wallObject(["x"]), previewSceneId: "B",
+                             previewTiles: wallObject(["y"]), present: mxy).contains("m"), "\(t).ATakeThatSwaps…: m latched on Preview")
+        expect(latch.observe(inMeeting: true, programSceneId: "B", programTiles: wallObject(["y"]), previewSceneId: "A",
+                             previewTiles: wallObject(["x"]), present: mxy).contains("m"),
+               "\(t).ATakeThatSwapsTheBusesKeepsACameraOffPanelistAudibleAsTheirGalleryGoesToAir")
+
+        latch = TilesAudioSourceLatch()
+        _ = latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["a"]), previewSceneId: nil, previewTiles: nil, present: everyone)
+        expectEqual(latch.observe(inMeeting: false, programSceneId: "gallery", programTiles: wallObject([]), previewSceneId: nil, previewTiles: nil, present: everyone),
+                    [], "\(t).LeavingTheMeetingOrEngineOffForgetsEverySoAReusedIdIsNotAudible: known not-in-meeting")
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject([]), previewSceneId: nil, previewTiles: nil, present: everyone),
+                    [], "\(t).LeavingTheMeeting…: stays forgotten")
+        _ = latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["b"]), previewSceneId: nil, previewTiles: nil, present: everyone)
+        latch.clear()
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject([]), previewSceneId: nil, previewTiles: nil, present: everyone),
+                    [], "\(t).LeavingTheMeeting…: Engine off (clear) forgets")
+
+        latch = TilesAudioSourceLatch()
+        let sticky = latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["a"]), previewSceneId: nil, previewTiles: nil, present: everyone)
+        expect(!sticky.contains("comms"), "\(t).ANeverOnCameraParticipantIsNeverLatchedSoNeverAudible")
+        var input = ZoomSourceBudget.Input(); input.participants = [("a", true), ("comms", false)]
+        input.programTiles = wallObject(["a"]); input.stickyAudio = sticky
+        expect(!ZoomSourceBudget.audioIds(ZoomSourceBudget.resolve(input)).contains("comms"), "\(t).ANeverOnCamera…: not audible")
+
+        latch = TilesAudioSourceLatch()
+        _ = latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["a", "b"]), previewSceneId: nil, previewTiles: nil, present: everyone)
+        expect(!latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["b"]), previewSceneId: nil, previewTiles: nil,
+                              present: ["b", "comms", "c"]).contains("a"),
+               "\(t).AVideoOnlyPresentSetForgetsACameraOffPanelist_ProductionMustNotObserveThatWay (the trap)")
+
+        latch = TilesAudioSourceLatch()
+        _ = latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["a", "b"]), previewSceneId: nil, previewTiles: nil, present: everyone)
+        expectEqual(latch.observe(inMeeting: nil, programSceneId: "gallery", programTiles: wallObject(["b"]), previewSceneId: nil, previewTiles: nil, present: everyone),
+                    ["a", "b"], "\(t).AnUnknownMeetingStateTickNeverWipesTheLatch: unknown keeps")
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: wallObject(["b"]), previewSceneId: nil, previewTiles: nil, present: everyone),
+                    ["a", "b"], "\(t).AnUnknownMeetingState…: in meeting keeps")
+        expectEqual(latch.observe(inMeeting: false, programSceneId: "gallery", programTiles: wallObject(["b"]), previewSceneId: nil, previewTiles: nil, present: everyone),
+                    [], "\(t).AnUnknownMeetingStateTickNeverWipesTheLatch: known false clears")
+
+        latch = TilesAudioSourceLatch()
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "pgm", programTiles: wallObject(["a"]), previewSceneId: "pvw",
+                                  previewTiles: wallObject(["b"]), present: everyone), ["a", "b"], "\(t).EachSceneOnABusKeepsItsOwnLatch")
+        expectEqual(latch.observe(inMeeting: true, programSceneId: "pgm", programTiles: wallObject([]), previewSceneId: "pvw2",
+                                  previewTiles: wallObject(["c"]), present: everyone), ["a", "c"], "\(t).EachSceneOnABusKeepsItsOwnLatch: second tick")
+
+        // APanelistOnTheProgramWallWhoTurnsTheirCameraOffLosesVideoButKeepsAudio
+        latch = TilesAudioSourceLatch()
+        func spine(aOn: Bool, wall: [String]) -> ZoomSourceBudget.SpineParts {
+            var i = ZoomSourceBudget.Input(); i.participants = [("a", aOn), ("b", true)]; i.programTiles = wallObject(wall)
+            i.stickyAudio = latch.observe(inMeeting: true, programSceneId: "gallery", programTiles: i.programTiles,
+                                          previewSceneId: nil, previewTiles: nil, present: everyone)
+            return ZoomSourceBudget.spineParts(i, names: [:])
+        }
+        func ids(_ p: ZoomSourceBudget.SpineParts, _ kind: String) -> [String] {
+            p.subscriptions.filter { $0["kind"] as? String == kind }.compactMap { $0["participantId"] as? String }
+        }
+        let before = spine(aOn: true, wall: ["a", "b"]), after = spine(aOn: false, wall: ["b"])
+        expect(ids(before, "participant-video").contains("a") && ids(before, "participant-audio").contains("a"), "\(t).APanelist…: before")
+        expect(!ids(after, "participant-video").contains("a") && ids(after, "participant-audio").contains("a"),
+               "\(t).APanelistOnTheProgramWallWhoTurnsTheirCameraOffLosesVideoButKeepsAudio")
+    }
+
+    /// A model with a spine seam, the harness timer, and a meeting known to be on.
+    @MainActor
+    private static func spineModel(_ core: FakeTakeCore) -> (AppModel, ManualTimers, () -> [JSONObject]) {
+        let model = takeModel(core)
+        let timers = ManualTimers()
+        model.timerSleepForTesting = { await timers.sleep($0) }
+        let spines = SpineBox()
+        model.spineRequestForTesting = { body in
+            if body["type"] as? String == "zoom-media-spine-sync" { spines.append(body) }
+            return ["ok": true]
+        }
+        model.applyZoomForTesting(["meetingState": "in_meeting", "participants": [JSONObject]()])
+        return (model, timers, { spines.values })
+    }
+
+    final class SpineBox: @unchecked Sendable {
+        private let lock = NSLock(); private var _values: [JSONObject] = []
+        var values: [JSONObject] { lock.lock(); defer { lock.unlock() }; return _values }
+        func append(_ v: JSONObject) { lock.lock(); _values.append(v); lock.unlock() }
+    }
+
+    @MainActor
+    private static func lastSpine(_ timers: ManualTimers, _ spines: () -> [JSONObject], after count: Int) -> JSONObject {
+        spin(until: { timers.fireAll(); return spines().count > count }, limit: 3)
+        spin(until: { timers.fireAll(); return false }, limit: 0.3)   // let the last re-push land
+        return spines().last?["spinePayload"] as? JSONObject ?? [:]
+    }
+
+    private static func subs(_ payload: JSONObject, _ kind: String) -> [JSONObject] {
+        (payload["subscriptions"] as? [JSONObject] ?? []).filter { $0["kind"] as? String == kind }
+    }
+
+    @MainActor static func testCueingAWallRepushesTheSpineWithItsMembers() {
+        let w = "Task 11: a cue re-pushes the spine"
+        let core = FakeTakeCore()
+        let (model, timers, spines) = spineModel(core)
+        model.roster = [guest("1"), guest("2"), guest("3")]
+        for i in model.slots.indices { model.slots[i].inShow = false }
+        model.scenes.append(SceneDef(id: "wall", name: "Wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        let before = spines().count
+        model.selectPreviewScene("wall")
+        let payload = lastSpine(timers, spines, after: before)
+        let video = subs(payload, "participant-video")
+        expectEqual(video.compactMap { $0["participantId"] as? String }, ["1", "2", "3"], "\(w): wall members get video")
+        expect(video.allSatisfy { $0["purpose"] as? String == "preview-tiles" }, "\(w): purpose preview-tiles")
+        expectEqual(payload["sourceParticipantIds"] as? [String], ["1", "2", "3"], "\(w): the director's source set")
+        let multiview = payload["multiview"] as? JSONObject
+        expectEqual(multiview?["previewNotice"] as? String, "", "\(w): notices always present, empty when clear")
+        expectEqual(multiview?["programNotice"] as? String, "", "\(w): programNotice present")
+    }
+
+    @MainActor static func testACameraOffWallMemberKeepsAudioWhileTheWallIsOnABus() {
+        let w = "Task 11: sticky Tiles audio"
+        let core = FakeTakeCore()
+        let (model, timers, spines) = spineModel(core)
+        model.roster = [guest("1"), guest("2"), guest("3")]
+        for i in model.slots.indices { model.slots[i].inShow = false }
+        model.scenes.append(SceneDef(id: "wall", name: "Wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.programSceneId = "wall"
+        _ = model.spinePushRequests()   // the latch observes 2 as a member
+        model.roster = [guest("1"), guest("2", video: false), guest("3")]
+        let payload = model.spinePushRequests().last?["spinePayload"] as? JSONObject ?? [:]
+        expect(!subs(payload, "participant-video").contains { $0["participantId"] as? String == "2" }, "\(w): 2 has no video")
+        expect(subs(payload, "participant-audio").contains { $0["participantId"] as? String == "2" }, "\(w): 2 keeps audio")
+        expect(model.zoomAudioSourceIds.contains("2"), "\(w): the console's audio set includes the sticky member")
+        // Program moves off the wall onto a non-wall scene; Preview is not the wall either.
+        model.programSceneId = "s2"; model.previewSceneId = "s1"
+        let off = model.spinePushRequests().last?["spinePayload"] as? JSONObject ?? [:]
+        expect(!subs(off, "participant-audio").contains { $0["participantId"] as? String == "2" }, "\(w): off both buses, 2 has no audio")
+        _ = timers; _ = spines
+    }
+
+    @MainActor static func testCaptureOffForgetsTheLatch() {
+        let w = "Task 11: Engine off forgets the latch (StudioViewModel.cs:10707)"
+        let core = FakeTakeCore()
+        let (model, _, _) = spineModel(core)
+        model.roster = [guest("1"), guest("2")]
+        model.scenes.append(SceneDef(id: "wall", name: "Wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.programSceneId = "wall"
+        _ = model.spinePushRequests()
+        model.setCapture(enabled: false)
+        model.roster = [guest("1"), guest("2", video: false)]
+        let payload = model.spinePushRequests().last?["spinePayload"] as? JSONObject ?? [:]
+        expect(!subs(payload, "participant-audio").contains { $0["participantId"] as? String == "2" }, "\(w): the camera-off member is no longer latched")
+    }
+
+    @MainActor static func testACoreRespawnResendsBothWallsAndTheSpineAndKeepsTheLatch() {
+        let w = "Review Focus 4: core respawn with the wall on Program"
+        let core = FakeTakeCore()
+        let (model, timers, spines) = spineModel(core)
+        model.roster = [guest("1"), guest("2")]
+        model.scenes.append(SceneDef(id: "wall", name: "Wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.scenes.append(SceneDef(id: "wall2", name: "Wall 2", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.programSceneId = "wall"; model.previewSceneId = "wall2"
+        _ = model.spinePushRequests()            // latch holds 1 and 2
+        model.roster = [guest("1"), guest("2", video: false)]
+        let bodies = core.bodies.count, spineCount = spines().count
+        model.onConnected()
+        expect(model.tilesLatchMeetingState == nil, "\(w): a new generation's meeting state is unknown")
+        let payload = lastSpine(timers, spines, after: spineCount)
+        expect(subs(payload, "participant-audio").contains { $0["participantId"] as? String == "2" },
+               "\(w): an unknown-state tick keeps the latch: 2 is still audible")
+        let commands = flushSceneSync(core, timers, after: bodies)
+        expect(command(commands, "load-scene-graph")["tiles"] != nil && command(commands, "set-preview-scene")["tiles"] != nil,
+               "\(w): both walls re-sent")
+    }
+
+    static func testBusCaptionCarriesTheCoresNotice() {
+        let w = "MultiviewOverlayFormatting.WithBusNotice"
+        expectEqual(AppModel.busCaption(role: "pgm", label: "Program · no video: Ann (subscription limit 10)"),
+                    "PROGRAM · no video: Ann (subscription limit 10)", "\(w): Program notice")
+        expectEqual(AppModel.busCaption(role: "pvw", label: "Preview"), "PREVIEW", "\(w): no notice")
+        expectEqual(AppModel.busCaption(role: "pvw", label: ""), "PREVIEW", "\(w): empty label")
     }
 }
