@@ -1,0 +1,1107 @@
+{
+  "area": "names-editor",
+  "description": "Names-list editor: GraphicsBuilder.ParseNamesList (with existing ids and variable columns), NamesListText (\\n line endings, plan D12) and NewRowId.",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "parse-plain-name-title",
+      "operation": "parse",
+      "input": {
+        "text": "Ada Lovelace, Mathematician\nBo Diddley,\nCy Twombly",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada-lovelace",
+            "name": "Ada Lovelace",
+            "title": "Mathematician",
+            "cells": {}
+          },
+          {
+            "id": "bo-diddley",
+            "name": "Bo Diddley",
+            "title": "",
+            "cells": {}
+          },
+          {
+            "id": "cy-twombly",
+            "name": "Cy Twombly",
+            "title": "",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-tab-and-semicolon",
+      "operation": "parse",
+      "input": {
+        "text": "Ada\tMathematician\nBo;Guitar\nCy , Painter ",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Mathematician",
+            "cells": {}
+          },
+          {
+            "id": "bo",
+            "name": "Bo",
+            "title": "Guitar",
+            "cells": {}
+          },
+          {
+            "id": "cy",
+            "name": "Cy",
+            "title": "Painter",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-quoted-first-cell-with-comma",
+      "operation": "parse",
+      "input": {
+        "text": "\"Lovelace, Ada\", Analyst\n\"Diddley, Bo\"\n\"Say \"\"Hi\"\"\" , \"Greeter\"",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "lovelace-ada",
+            "name": "Lovelace, Ada",
+            "title": "Analyst",
+            "cells": {}
+          },
+          {
+            "id": "diddley-bo",
+            "name": "Diddley, Bo",
+            "title": "",
+            "cells": {}
+          },
+          {
+            "id": "say-hi",
+            "name": "Say \"Hi\"",
+            "title": "Greeter",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-two-column-header-skipped",
+      "operation": "parse",
+      "input": {
+        "text": "Name, Title\nAda, Host",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-header-with-variables",
+      "operation": "parse",
+      "input": {
+        "text": "name,title,location,Text-Size,bad id,location\nAda,Host,\"London, UK\",72,x,Paris\nBo,,,,,\n\"Cy\",\"\",\"\",9,,",
+        "existing": null,
+        "variableIds": [
+          "location",
+          "text-size"
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {
+              "location": "London, UK",
+              "text-size": "72"
+            }
+          },
+          {
+            "id": "bo",
+            "name": "Bo",
+            "title": "",
+            "cells": {}
+          },
+          {
+            "id": "cy",
+            "name": "Cy",
+            "title": "",
+            "cells": {
+              "location": "",
+              "text-size": "9"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-header-with-variables-null-ids",
+      "operation": "parse",
+      "input": {
+        "text": "name,title,location,Text-Size,bad id\nAda,Host,London,72,x",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {
+              "location": "London",
+              "text-size": "72"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-header-only",
+      "operation": "parse",
+      "input": {
+        "text": "name,title,location\n",
+        "existing": null,
+        "variableIds": [
+          "location"
+        ]
+      },
+      "expected": {
+        "variants": []
+      }
+    },
+    {
+      "id": "parse-header-row-unbalanced-quote-skipped",
+      "operation": "parse",
+      "input": {
+        "text": "name,title,location\n\"Ada,Host,London\nBo,Guest,Rome",
+        "existing": null,
+        "variableIds": [
+          "location"
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "bo",
+            "name": "Bo",
+            "title": "Guest",
+            "cells": {
+              "location": "Rome"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-header-mode-quoted-cell-trims-inside-quotes",
+      "operation": "parse",
+      "input": {
+        "text": "name,title,location\n  \" Ada \" , \" Host \",\"  spaced  \"",
+        "existing": null,
+        "variableIds": [
+          "location"
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {
+              "location": "spaced"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-blank-lines-and-crlf",
+      "operation": "parse",
+      "input": {
+        "text": "\r\nAda, Host\r\n\r\n   \r\nBo, Guest\r\n",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {}
+          },
+          {
+            "id": "bo",
+            "name": "Bo",
+            "title": "Guest",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-seventy-lines-capped-at-64",
+      "operation": "parse",
+      "input": {
+        "text": "Guest 1, Role 1\nGuest 2, Role 2\nGuest 3, Role 3\nGuest 4, Role 4\nGuest 5, Role 5\nGuest 6, Role 6\nGuest 7, Role 7\nGuest 8, Role 8\nGuest 9, Role 9\nGuest 10, Role 10\nGuest 11, Role 11\nGuest 12, Role 12\nGuest 13, Role 13\nGuest 14, Role 14\nGuest 15, Role 15\nGuest 16, Role 16\nGuest 17, Role 17\nGuest 18, Role 18\nGuest 19, Role 19\nGuest 20, Role 20\nGuest 21, Role 21\nGuest 22, Role 22\nGuest 23, Role 23\nGuest 24, Role 24\nGuest 25, Role 25\nGuest 26, Role 26\nGuest 27, Role 27\nGuest 28, Role 28\nGuest 29, Role 29\nGuest 30, Role 30\nGuest 31, Role 31\nGuest 32, Role 32\nGuest 33, Role 33\nGuest 34, Role 34\nGuest 35, Role 35\nGuest 36, Role 36\nGuest 37, Role 37\nGuest 38, Role 38\nGuest 39, Role 39\nGuest 40, Role 40\nGuest 41, Role 41\nGuest 42, Role 42\nGuest 43, Role 43\nGuest 44, Role 44\nGuest 45, Role 45\nGuest 46, Role 46\nGuest 47, Role 47\nGuest 48, Role 48\nGuest 49, Role 49\nGuest 50, Role 50\nGuest 51, Role 51\nGuest 52, Role 52\nGuest 53, Role 53\nGuest 54, Role 54\nGuest 55, Role 55\nGuest 56, Role 56\nGuest 57, Role 57\nGuest 58, Role 58\nGuest 59, Role 59\nGuest 60, Role 60\nGuest 61, Role 61\nGuest 62, Role 62\nGuest 63, Role 63\nGuest 64, Role 64\nGuest 65, Role 65\nGuest 66, Role 66\nGuest 67, Role 67\nGuest 68, Role 68\nGuest 69, Role 69\nGuest 70, Role 70",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "guest-1",
+            "name": "Guest 1",
+            "title": "Role 1",
+            "cells": {}
+          },
+          {
+            "id": "guest-2",
+            "name": "Guest 2",
+            "title": "Role 2",
+            "cells": {}
+          },
+          {
+            "id": "guest-3",
+            "name": "Guest 3",
+            "title": "Role 3",
+            "cells": {}
+          },
+          {
+            "id": "guest-4",
+            "name": "Guest 4",
+            "title": "Role 4",
+            "cells": {}
+          },
+          {
+            "id": "guest-5",
+            "name": "Guest 5",
+            "title": "Role 5",
+            "cells": {}
+          },
+          {
+            "id": "guest-6",
+            "name": "Guest 6",
+            "title": "Role 6",
+            "cells": {}
+          },
+          {
+            "id": "guest-7",
+            "name": "Guest 7",
+            "title": "Role 7",
+            "cells": {}
+          },
+          {
+            "id": "guest-8",
+            "name": "Guest 8",
+            "title": "Role 8",
+            "cells": {}
+          },
+          {
+            "id": "guest-9",
+            "name": "Guest 9",
+            "title": "Role 9",
+            "cells": {}
+          },
+          {
+            "id": "guest-10",
+            "name": "Guest 10",
+            "title": "Role 10",
+            "cells": {}
+          },
+          {
+            "id": "guest-11",
+            "name": "Guest 11",
+            "title": "Role 11",
+            "cells": {}
+          },
+          {
+            "id": "guest-12",
+            "name": "Guest 12",
+            "title": "Role 12",
+            "cells": {}
+          },
+          {
+            "id": "guest-13",
+            "name": "Guest 13",
+            "title": "Role 13",
+            "cells": {}
+          },
+          {
+            "id": "guest-14",
+            "name": "Guest 14",
+            "title": "Role 14",
+            "cells": {}
+          },
+          {
+            "id": "guest-15",
+            "name": "Guest 15",
+            "title": "Role 15",
+            "cells": {}
+          },
+          {
+            "id": "guest-16",
+            "name": "Guest 16",
+            "title": "Role 16",
+            "cells": {}
+          },
+          {
+            "id": "guest-17",
+            "name": "Guest 17",
+            "title": "Role 17",
+            "cells": {}
+          },
+          {
+            "id": "guest-18",
+            "name": "Guest 18",
+            "title": "Role 18",
+            "cells": {}
+          },
+          {
+            "id": "guest-19",
+            "name": "Guest 19",
+            "title": "Role 19",
+            "cells": {}
+          },
+          {
+            "id": "guest-20",
+            "name": "Guest 20",
+            "title": "Role 20",
+            "cells": {}
+          },
+          {
+            "id": "guest-21",
+            "name": "Guest 21",
+            "title": "Role 21",
+            "cells": {}
+          },
+          {
+            "id": "guest-22",
+            "name": "Guest 22",
+            "title": "Role 22",
+            "cells": {}
+          },
+          {
+            "id": "guest-23",
+            "name": "Guest 23",
+            "title": "Role 23",
+            "cells": {}
+          },
+          {
+            "id": "guest-24",
+            "name": "Guest 24",
+            "title": "Role 24",
+            "cells": {}
+          },
+          {
+            "id": "guest-25",
+            "name": "Guest 25",
+            "title": "Role 25",
+            "cells": {}
+          },
+          {
+            "id": "guest-26",
+            "name": "Guest 26",
+            "title": "Role 26",
+            "cells": {}
+          },
+          {
+            "id": "guest-27",
+            "name": "Guest 27",
+            "title": "Role 27",
+            "cells": {}
+          },
+          {
+            "id": "guest-28",
+            "name": "Guest 28",
+            "title": "Role 28",
+            "cells": {}
+          },
+          {
+            "id": "guest-29",
+            "name": "Guest 29",
+            "title": "Role 29",
+            "cells": {}
+          },
+          {
+            "id": "guest-30",
+            "name": "Guest 30",
+            "title": "Role 30",
+            "cells": {}
+          },
+          {
+            "id": "guest-31",
+            "name": "Guest 31",
+            "title": "Role 31",
+            "cells": {}
+          },
+          {
+            "id": "guest-32",
+            "name": "Guest 32",
+            "title": "Role 32",
+            "cells": {}
+          },
+          {
+            "id": "guest-33",
+            "name": "Guest 33",
+            "title": "Role 33",
+            "cells": {}
+          },
+          {
+            "id": "guest-34",
+            "name": "Guest 34",
+            "title": "Role 34",
+            "cells": {}
+          },
+          {
+            "id": "guest-35",
+            "name": "Guest 35",
+            "title": "Role 35",
+            "cells": {}
+          },
+          {
+            "id": "guest-36",
+            "name": "Guest 36",
+            "title": "Role 36",
+            "cells": {}
+          },
+          {
+            "id": "guest-37",
+            "name": "Guest 37",
+            "title": "Role 37",
+            "cells": {}
+          },
+          {
+            "id": "guest-38",
+            "name": "Guest 38",
+            "title": "Role 38",
+            "cells": {}
+          },
+          {
+            "id": "guest-39",
+            "name": "Guest 39",
+            "title": "Role 39",
+            "cells": {}
+          },
+          {
+            "id": "guest-40",
+            "name": "Guest 40",
+            "title": "Role 40",
+            "cells": {}
+          },
+          {
+            "id": "guest-41",
+            "name": "Guest 41",
+            "title": "Role 41",
+            "cells": {}
+          },
+          {
+            "id": "guest-42",
+            "name": "Guest 42",
+            "title": "Role 42",
+            "cells": {}
+          },
+          {
+            "id": "guest-43",
+            "name": "Guest 43",
+            "title": "Role 43",
+            "cells": {}
+          },
+          {
+            "id": "guest-44",
+            "name": "Guest 44",
+            "title": "Role 44",
+            "cells": {}
+          },
+          {
+            "id": "guest-45",
+            "name": "Guest 45",
+            "title": "Role 45",
+            "cells": {}
+          },
+          {
+            "id": "guest-46",
+            "name": "Guest 46",
+            "title": "Role 46",
+            "cells": {}
+          },
+          {
+            "id": "guest-47",
+            "name": "Guest 47",
+            "title": "Role 47",
+            "cells": {}
+          },
+          {
+            "id": "guest-48",
+            "name": "Guest 48",
+            "title": "Role 48",
+            "cells": {}
+          },
+          {
+            "id": "guest-49",
+            "name": "Guest 49",
+            "title": "Role 49",
+            "cells": {}
+          },
+          {
+            "id": "guest-50",
+            "name": "Guest 50",
+            "title": "Role 50",
+            "cells": {}
+          },
+          {
+            "id": "guest-51",
+            "name": "Guest 51",
+            "title": "Role 51",
+            "cells": {}
+          },
+          {
+            "id": "guest-52",
+            "name": "Guest 52",
+            "title": "Role 52",
+            "cells": {}
+          },
+          {
+            "id": "guest-53",
+            "name": "Guest 53",
+            "title": "Role 53",
+            "cells": {}
+          },
+          {
+            "id": "guest-54",
+            "name": "Guest 54",
+            "title": "Role 54",
+            "cells": {}
+          },
+          {
+            "id": "guest-55",
+            "name": "Guest 55",
+            "title": "Role 55",
+            "cells": {}
+          },
+          {
+            "id": "guest-56",
+            "name": "Guest 56",
+            "title": "Role 56",
+            "cells": {}
+          },
+          {
+            "id": "guest-57",
+            "name": "Guest 57",
+            "title": "Role 57",
+            "cells": {}
+          },
+          {
+            "id": "guest-58",
+            "name": "Guest 58",
+            "title": "Role 58",
+            "cells": {}
+          },
+          {
+            "id": "guest-59",
+            "name": "Guest 59",
+            "title": "Role 59",
+            "cells": {}
+          },
+          {
+            "id": "guest-60",
+            "name": "Guest 60",
+            "title": "Role 60",
+            "cells": {}
+          },
+          {
+            "id": "guest-61",
+            "name": "Guest 61",
+            "title": "Role 61",
+            "cells": {}
+          },
+          {
+            "id": "guest-62",
+            "name": "Guest 62",
+            "title": "Role 62",
+            "cells": {}
+          },
+          {
+            "id": "guest-63",
+            "name": "Guest 63",
+            "title": "Role 63",
+            "cells": {}
+          },
+          {
+            "id": "guest-64",
+            "name": "Guest 64",
+            "title": "Role 64",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-long-name-and-title",
+      "operation": "parse",
+      "input": {
+        "text": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn, tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+            "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+            "title": "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-long-cell",
+      "operation": "parse",
+      "input": {
+        "text": "name,title,location\nAda,Host,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "existing": null,
+        "variableIds": [
+          "location"
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {
+              "location": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-duplicate-names",
+      "operation": "parse",
+      "input": {
+        "text": "Ada\nAda\nAda, Again",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "",
+            "cells": {}
+          },
+          {
+            "id": "ada-2",
+            "name": "Ada",
+            "title": "",
+            "cells": {}
+          },
+          {
+            "id": "ada-3",
+            "name": "Ada",
+            "title": "Again",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-existing-ids-kept-reordered-and-edited",
+      "operation": "parse",
+      "input": {
+        "text": "Bo, Bass\nAda Lovelace, Countess\nDee, New\nCy",
+        "existing": [
+          {
+            "id": "ada-lovelace",
+            "name": "Ada Lovelace",
+            "title": "Mathematician",
+            "cells": {}
+          },
+          {
+            "id": "bo",
+            "name": "Bo",
+            "title": "Guitar",
+            "cells": {}
+          },
+          {
+            "id": "cy-2",
+            "name": "Cy",
+            "title": "",
+            "cells": {}
+          }
+        ],
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "bo",
+            "name": "Bo",
+            "title": "Bass",
+            "cells": {}
+          },
+          {
+            "id": "ada-lovelace",
+            "name": "Ada Lovelace",
+            "title": "Countess",
+            "cells": {}
+          },
+          {
+            "id": "dee",
+            "name": "Dee",
+            "title": "New",
+            "cells": {}
+          },
+          {
+            "id": "cy-2",
+            "name": "Cy",
+            "title": "",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-non-ascii-name",
+      "operation": "parse",
+      "input": {
+        "text": "Zoë Ç, Café",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "zo",
+            "name": "Zoë Ç",
+            "title": "Café",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-digits-only-name",
+      "operation": "parse",
+      "input": {
+        "text": "2024, Year",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "graphic",
+            "name": "2024",
+            "title": "Year",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-header-mode-tab-before-quote-is-unquoted-cell",
+      "operation": "parse",
+      "input": {
+        "text": "name,title,location\n\t\"Ada\",Host,\"x\"\n\"Bo\",\t\"Guest\",y",
+        "existing": null,
+        "variableIds": [
+          "location"
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {
+              "location": "x"
+            }
+          },
+          {
+            "id": "bo",
+            "name": "Bo",
+            "title": "\"Guest\"",
+            "cells": {
+              "location": "y"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-decomposed-accent-at-the-128-unit-cut",
+      "operation": "parse",
+      "input": {
+        "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaé, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbé",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae",
+            "title": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbe",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-dotted-capital-i-and-kelvin-sign",
+      "operation": "parse",
+      "input": {
+        "text": "İvan, Host\nKelvin, Guest",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "van",
+            "name": "İvan",
+            "title": "Host",
+            "cells": {}
+          },
+          {
+            "id": "kelvin",
+            "name": "Kelvin",
+            "title": "Guest",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-empty-name-skipped",
+      "operation": "parse",
+      "input": {
+        "text": ", Title only\n\"\", Also empty\nAda",
+        "existing": null,
+        "variableIds": null
+      },
+      "expected": {
+        "variants": [
+          {
+            "id": "ada",
+            "name": "Ada",
+            "title": "",
+            "cells": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "text-no-cells",
+      "operation": "text",
+      "input": {
+        "variants": [
+          {
+            "id": "a",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {}
+          },
+          {
+            "id": "b",
+            "name": "Bo",
+            "title": "",
+            "cells": {}
+          },
+          {
+            "id": "c",
+            "name": "Lovelace, Ada",
+            "title": "Says \"hi\"",
+            "cells": {}
+          },
+          {
+            "id": "d",
+            "name": "Tab\there",
+            "title": "semi;colon",
+            "cells": {}
+          }
+        ]
+      },
+      "expected": {
+        "text": "Ada, Host\nBo\n\"Lovelace, Ada\", \"Says \"\"hi\"\"\"\n\"Tab\there\", \"semi;colon\""
+      }
+    },
+    {
+      "id": "text-with-cells",
+      "operation": "text",
+      "input": {
+        "variants": [
+          {
+            "id": "a",
+            "name": "Ada",
+            "title": "Host",
+            "cells": {
+              "location": "London, UK",
+              "text-size": "72"
+            }
+          },
+          {
+            "id": "b",
+            "name": "Bo",
+            "title": "",
+            "cells": {
+              "text-size": "9"
+            }
+          },
+          {
+            "id": "c",
+            "name": "Cy",
+            "title": "Painter",
+            "cells": {}
+          }
+        ]
+      },
+      "expected": {
+        "text": "name,title,location,text-size\nAda,Host,\"London, UK\",\"72\"\nBo,,,\"9\"\nCy,Painter,,"
+      }
+    },
+    {
+      "id": "text-empty",
+      "operation": "text",
+      "input": {
+        "variants": []
+      },
+      "expected": {
+        "text": ""
+      }
+    },
+    {
+      "id": "new-row-id-simple",
+      "operation": "newRowId",
+      "input": {
+        "name": "Ada Lovelace",
+        "taken": []
+      },
+      "expected": {
+        "id": "ada-lovelace"
+      }
+    },
+    {
+      "id": "new-row-id-taken",
+      "operation": "newRowId",
+      "input": {
+        "name": "Ada",
+        "taken": [
+          "ada",
+          "ada-2"
+        ]
+      },
+      "expected": {
+        "id": "ada-3"
+      }
+    },
+    {
+      "id": "new-row-id-non-ascii",
+      "operation": "newRowId",
+      "input": {
+        "name": "Zoë Ç",
+        "taken": []
+      },
+      "expected": {
+        "id": "zo"
+      }
+    },
+    {
+      "id": "new-row-id-digits-only",
+      "operation": "newRowId",
+      "input": {
+        "name": "2024",
+        "taken": []
+      },
+      "expected": {
+        "id": "graphic"
+      }
+    },
+    {
+      "id": "new-row-id-leading-digits",
+      "operation": "newRowId",
+      "input": {
+        "name": "3 Body Problem",
+        "taken": []
+      },
+      "expected": {
+        "id": "body-problem"
+      }
+    },
+    {
+      "id": "new-row-id-long",
+      "operation": "newRowId",
+      "input": {
+        "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "taken": []
+      },
+      "expected": {
+        "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-yyyyyyyyy"
+      }
+    },
+    {
+      "id": "new-row-id-punctuation-only",
+      "operation": "newRowId",
+      "input": {
+        "name": "!!!",
+        "taken": [
+          "graphic"
+        ]
+      },
+      "expected": {
+        "id": "graphic-2"
+      }
+    },
+    {
+      "id": "new-row-id-dotted-capital-i",
+      "operation": "newRowId",
+      "input": {
+        "name": "İvan",
+        "taken": []
+      },
+      "expected": {
+        "id": "van"
+      }
+    },
+    {
+      "id": "new-row-id-kelvin-sign",
+      "operation": "newRowId",
+      "input": {
+        "name": "Kelvin",
+        "taken": []
+      },
+      "expected": {
+        "id": "kelvin"
+      }
+    }
+  ]
+}
