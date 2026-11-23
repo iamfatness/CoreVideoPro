@@ -1983,7 +1983,8 @@ final class AppModel: ObservableObject {
         // core is unhappy).
         if !snapshot.isEmpty {
             lastSnapshot = snapshot
-            controlSnapshotBox.publish(snapshot, at: Date())
+            // GET /snapshot never serves a social card's chat (author, message).
+            controlSnapshotBox.publish(SocialRedaction.scrub(snapshot: snapshot), at: Date())
             observeAudioObservation(snapshot)
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }

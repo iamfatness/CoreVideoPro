@@ -14,6 +14,8 @@ extension ShellTests {
             ("social/model-expiry-tick-retires-an-expired-card", testSocialExpiryTick),
             ("social/youtube-key-in-keychain-not-prefs", testSocialYouTubeKeyInKeychain),
             ("social/redaction-sentinel", testSocialRedactionSentinel),
+            ("social/control-snapshot-carries-no-chat", testSocialControlSnapshotCarriesNoChat),
+            ("social/stale-disconnect-does-not-overwrite-a-newer-connect", testSocialStaleDisconnect),
         ]
     }
 
@@ -122,7 +124,7 @@ extension ShellTests {
         m.decide(item.key, approve: true)
         expectEqual(m.status, "That version has changed. Select the current message and review it.", "decided twice")
         run { await m.showChanged(to: "show-b") }
-        expectEqual(m.status, "The show changed. Social review stopped.", "show change copy")
+        expectEqual(m.status, "Disconnected. Review decisions cleared.", "show change: Windows' ordinary disconnect status")
         expect(!m.isConnected && m.items.isEmpty, "show change disconnects and clears")
     }
 
@@ -176,8 +178,12 @@ extension ShellTests {
         review.decide(item.key, approve: true)
         run { await review.show(item.key) }
         // The core snapshot as it looked while the card was on air.
+        // The core's real row shape: the payload rides fields, cueFields and programFields.
+        let payload: JSONObject = ["author": author, "message": message]
         let onAir: [JSONObject] = f.state.instances.map { ["instanceId": $0.instanceId, "templateId": "youtube-chat-card",
-                                                          "fields": ["author": author, "message": message], "label": author] }
+                                                          "revision": 1, "programRevision": 1, "visibility": "visible",
+                                                          "fields": payload, "cueFields": payload, "programFields": payload,
+                                                          "label": author, "warning": message] }
         model.applySnapshotForTesting(["graphics": ["schemaVersion": 1, "coreEpoch": "epoch", "instances": onAir] as JSONObject])
         run { await review.withdraw(item.key) }
         model.pushWarning("social: " + review.status)
@@ -200,5 +206,51 @@ extension ShellTests {
         }
         expect(scanned >= 3, "the bundle has files to scan (\(scanned))")
         expect(!result.includedFiles.isEmpty, "the core snapshot was written")
+    }
+
+    /// GET /snapshot serves the published box: no social payload in it.
+    @MainActor static func testSocialControlSnapshotCarriesNoChat() {
+        let model = AppModel()
+        let payload: JSONObject = ["author": "SENTINEL_AUTHOR_7f3a", "message": "SENTINEL_MSG_91c2"]
+        model.applySnapshotForTesting(["graphics": ["schemaVersion": 1, "coreEpoch": "e", "instances": [
+            ["instanceId": "social-review-1", "templateId": "twitch-chat-card", "revision": 2, "programRevision": 2,
+             "visibility": "visible", "fields": payload, "cueFields": payload, "programFields": payload],
+            ["instanceId": "playlist-title", "fields": ["name": "Keep me"]],
+        ] as [JSONObject]] as JSONObject])
+        guard let (published, _) = model.controlSnapshotBox.read(),
+              let data = try? JSONSerialization.data(withJSONObject: published) else { expect(false, "published"); return }
+        let text = String(decoding: data, as: UTF8.self)
+        expect(!text.contains("SENTINEL_AUTHOR_7f3a") && !text.contains("SENTINEL_MSG_91c2"), "no chat in the control snapshot")
+        expect(text.contains("Keep me"), "other graphics are untouched")
+        let social = ((published["graphics"] as? JSONObject)?["instances"] as? [JSONObject])?.first
+        expectEqual(social?["programRevision"] as? Int, 2, "state survives (the strip still reads on-air)")
+        expectEqual(model.lastSnapshot.isEmpty, false, "the shell's own copy is intact for its read models")
+    }
+
+    /// A disconnect still suspended when a new connect begins must not reset
+    /// the new connection's running flag or status.
+    @MainActor static func testSocialStaleDisconnect() {
+        let f = SocialFixture()
+        let m = reviewModel(f)
+        var gates: [CheckedContinuation<Void, Never>] = []
+        m.feeds.youTube = { _, _, _, report in
+            report("Connected to YouTube live chat.")
+            await withCheckedContinuation { gates.append($0) }
+        }
+        _ = SocialCredentials.youTubeKey.writeString("AIzaTESTKEY1234567890ab")
+        defer { SocialCredentials.youTubeKey.delete() }
+        run { await m.connectYouTube(videoId: "abcdefghijk", key: "") }
+        spin(until: { gates.count == 1 }, limit: 1)
+        let stale = Task { @MainActor in await m.disconnect() }   // suspends awaiting feed 1
+        spin(until: { false }, limit: 0.1)
+        let fresh = Task { @MainActor in await m.connectYouTube(videoId: "abcdefghijk", key: "") }
+        spin(until: { gates.count == 2 }, limit: 1)               // feed 2 is running
+        gates[0].resume()                                         // feed 1 ends: the stale disconnect resumes
+        _ = awaitMain(3) { await stale.value; await fresh.value; return true }
+        spin(until: { false }, limit: 0.2)
+        expect(m.running, "the newer connection is still running")
+        expectEqual(m.status, "abcdefghijk · Connected to YouTube live chat.", "and its status stands")
+        if gates.count > 1 { gates[1].resume() }
+        run { await m.disconnect() }
     }
 }

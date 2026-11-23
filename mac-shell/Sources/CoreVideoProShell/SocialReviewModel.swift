@@ -126,7 +126,10 @@ final class SocialReviewModel: ObservableObject {
             setStatus("Enter the 11-character video ID of a public YouTube livestream.")
             return
         }
+        let requestedShow = showId
         await disconnect()
+        // Windows: a show change while connecting cancels the connect.
+        guard requestedShow == showId else { return }
         let store = SocialCredentials.youTubeKey
         let resolved: String?
         if key.isEmpty {
@@ -157,8 +160,9 @@ final class SocialReviewModel: ObservableObject {
             setStatus("Enter a Twitch channel name and a public app Client ID, or reuse the saved sign-in.")
             return
         }
+        let requestedShow = showId
         await disconnect()
-        guard !closed else { return }
+        guard !closed, requestedShow == showId else { return }
         provider = "Twitch"
         self.channel = channel.lowercased()
         twitchClientId = clientId
@@ -198,6 +202,7 @@ final class SocialReviewModel: ObservableObject {
 
     func disconnect() async {
         generation += 1
+        let mine = generation
         devicePrompt = nil
         testSource = nil
         let previous = feed
@@ -205,20 +210,26 @@ final class SocialReviewModel: ObservableObject {
         previous?.cancel()
         await playout.disconnect()
         await previous?.value
+        // A connect that started while this disconnect was suspended owns the
+        // state now: do not overwrite its running flag or status.
+        guard mine == generation else { return }
         running = false
         setStatus("Disconnected. Review decisions cleared.")
     }
 
     func clearLocalData() async {
         await disconnect()
+        let deleted: Bool
         if provider == "Twitch" {
-            SocialCredentials.twitch.delete()
+            deleted = SocialCredentials.twitch.delete()
             channel = ""; twitchClientId = ""
         } else {
-            SocialCredentials.youTubeKey.delete()
+            deleted = SocialCredentials.youTubeKey.delete()
             videoId = ""
         }
-        setStatus("Local " + provider + " credentials and review data cleared.")
+        // Windows reports a failed clear through its dialog's catch.
+        setStatus(deleted ? "Local " + provider + " credentials and review data cleared."
+                          : "Social review could not complete that action. Check the connection and retry.")
     }
 
     func decide(_ key: SocialItemKey, approve: Bool) {
@@ -244,8 +255,9 @@ final class SocialReviewModel: ObservableObject {
     func showChanged(to next: String) async {
         guard !closed, next != showId else { return }
         showId = next
+        // Windows leaves the ordinary disconnect status ("The show changed…" is
+        // only its exception path).
         await disconnect()
-        setStatus("The show changed. Social review stopped.")
     }
 
     /// A new core generation: the old core's card and preparation are gone;
@@ -333,21 +345,35 @@ struct SocialSheetRules: Equatable {
 /// Keeps social review out of diagnostics: no chat payload, author, API key or
 /// token reaches a support bundle (slice-6 spec :15).
 enum SocialRedaction {
-    /// The core snapshot with every social-review- instance's fields and label
-    /// replaced. Everything else is untouched.
+    /// A social instance keeps only these non-textual keys. An allow-list,
+    /// not a deny-list: the core publishes the payload under fields, cueFields
+    /// AND programFields (GraphicsInstances.cpp), and a future key must not leak.
+    static let socialInstanceKeys: Set<String> = [
+        "instanceId", "templateId", "templateVersion", "scope", "sceneId", "revision", "programRevision", "cueRevision",
+        "cuePending", "cuePreparation", "preparation", "visibility", "cued", "showPending", "firstDrawSubmittedFrame",
+        "currentlyComposed",
+    ]
+
+    /// The core snapshot with every social-review- instance reduced to its
+    /// non-textual keys. Everything else is untouched; a snapshot with no
+    /// social instance is returned as is.
     static func scrub(snapshot: JSONObject) -> JSONObject {
         guard var graphics = snapshot["graphics"] as? JSONObject,
-              let instances = graphics["instances"] as? [JSONObject] else { return snapshot }
+              let instances = graphics["instances"] as? [JSONObject],
+              instances.contains(where: isSocial) else { return snapshot }
         graphics["instances"] = instances.map { instance -> JSONObject in
-            guard (instance["instanceId"] as? String)?.hasPrefix(SocialPlayout.instancePrefix) == true else { return instance }
-            var copy = instance
-            copy["fields"] = ["redacted": true]
-            if copy["label"] != nil { copy["label"] = "social review" }
+            guard isSocial(instance) else { return instance }
+            var copy = instance.filter { socialInstanceKeys.contains($0.key) }
+            copy["redacted"] = "social review"
             return copy
         }
         var out = snapshot
         out["graphics"] = graphics
         return out
+    }
+
+    private static func isSocial(_ instance: JSONObject) -> Bool {
+        (instance["instanceId"] as? String)?.hasPrefix(SocialPlayout.instancePrefix) == true
     }
 
     /// Stored social secrets, handed to the bundle writer as literals to scrub
