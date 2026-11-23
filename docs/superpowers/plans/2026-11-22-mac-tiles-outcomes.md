@@ -183,3 +183,13 @@ The reviewer found no behavioural divergence from the C#. Its findings were cove
 | the logo bug rides Tiles scenes (no early `[]` in `buildRoutes`) | red: "a wall on a preset layout sends no routes". On a `dynamic-gallery` layout the mutant is equivalent, because `layoutRects` has no entry for that word. That is why the test also puts a wall on a preset layout |
 | drop `tiles` from the Preview command | red: three failures (the members check, the respawn test, and the Preview tiles checks) |
 | `syncScenes` back on `Task.sleep` | red: "no scene sync is sent before the harness fires the debounce". It does not hang |
+
+### Task 8 review round 1 (independent review of `09328716`)
+
+- **HIGH (fixed): the wall was not re-sent when the roster changed.** A wall's members are the camera-on roster, but a roster change only re-pushed the spine. Now a roster change, either a camera flipping or someone joining or leaving, re-sends the scene graph whenever a wall is on either bus. The slot-law path already did this through `recomputeFromSlots`. Test: `testARosterChangeResendsAWallOnABus`. The roster arrives first, so the slot law seats both guests; then only a camera flips. Mutation: drop the new re-send and it goes red. A first version used a newcomer, so the slot law re-sent the wall and the mutant survived.
+- **MEDIUM (fixed): Volt rundown could resolve a clip route on a wall.** On a preset-layout wall it would point Preview at the wall and then fail. On a wall with leftover layers it would "apply" a clip that never decodes. `voltCandidateLayers` now offers no route on a wall. Mutation: drop the guard and it goes red.
+- **MEDIUM (fixed): `newScene` could collide with a scene made in the same second.** It now uses the same uniqueness loop as the Tiles starter.
+- **MEDIUM (checked, no change):** moving `syncScenes` onto the timer seam does not disturb the media tests that count `timers.pending`. The full suite is green apart from the two known `.m4a` checks.
+- **LOW (fixed):** the `ensureLayers` guard is now pinned on a preset-layout wall. On a `dynamic-gallery` layout that mutant is equivalent.
+- **LOW (not changed):** `updateLayer`, `removeLayer`, `moveLayer` and `resetLayers` set no refusal on a wall. They cannot reach the wire, because `buildRoutes` is the single choke point.
+- Shell, full suite: **8053 checks, 2 failed**, the known `.m4a` AAC-priming pair.

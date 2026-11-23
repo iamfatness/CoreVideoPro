@@ -31,6 +31,8 @@ extension ShellTests {
             ("tiles/layer-edits-refused", testLayerEditsOnATilesSceneAreRefusedAndSendNoRoutes),
             ("tiles/respawn-resends-wall", testACoreRespawnResendsTheWallOnBothBuses),
             ("tiles/non-tiles-scene-no-key", testANonTilesSceneCarriesNoTilesKey),
+            ("tiles/roster-change-resends-wall", testARosterChangeResendsAWallOnABus),
+            ("tiles/no-layers-or-clips-on-a-wall", testAWallOnAPresetLayoutGetsNoLayersAndNoVoltClip),
         ]
     }
 
@@ -626,5 +628,42 @@ extension ShellTests {
         expect(!commands.isEmpty, "\(w): a sync landed")
         expect(command(commands, "load-scene-graph")["tiles"] == nil, "\(w): Program graph has no tiles key")
         expect(command(commands, "set-preview-scene")["tiles"] == nil, "\(w): Preview has no tiles key")
+    }
+
+    @MainActor static func testARosterChangeResendsAWallOnABus() {
+        let w = "Task 8 review: a wall's members follow the roster"
+        let core = FakeTakeCore()
+        let (model, timers) = tilesSyncModel(core)
+        // First the meeting roster arrives (the slot law seats 7 and 5 and
+        // syncs scenes itself)...
+        model.applyZoomForTesting(["meetingState": "in_meeting", "participants": [
+            ["userId": "7", "displayName": "Guest 7", "videoOn": true],
+            ["userId": "5", "displayName": "Guest 5", "videoOn": true],
+        ]])
+        _ = flushSceneSync(core, timers)
+        let sent = core.bodies.count
+        // ...then only a camera turns off: no slot changes, so only the wall
+        // re-send rule can carry the new membership to the core.
+        model.applyZoomForTesting(["meetingState": "in_meeting", "participants": [
+            ["userId": "7", "displayName": "Guest 7", "videoOn": true],
+            ["userId": "5", "displayName": "Guest 5", "videoOn": false],
+        ]])
+        let commands = flushSceneSync(core, timers, after: sent)
+        expectEqual((command(commands, "set-preview-scene")["tiles"] as? JSONObject)?["members"] as? [String],
+                    ["zoom:7"], "\(w): a camera turning off re-sends the Preview wall")
+        expectEqual((command(commands, "load-scene-graph")["tiles"] as? JSONObject)?["members"] as? [String],
+                    ["zoom:7"], "\(w): and the Program wall")
+    }
+
+    @MainActor static func testAWallOnAPresetLayoutGetsNoLayersAndNoVoltClip() {
+        let w = "Task 8 review: a wall is a wall by its settings"
+        let model = sceneEditModel()
+        model.scenes.append(SceneDef(id: "t-preset", name: "Wall", layout: "single", tiles: TilesSettings()))
+        model.ensureLayers(for: "t-preset")
+        expect(model.scenes.first { $0.id == "t-preset" }?.layers.isEmpty ?? false, "\(w): ensureLayers seeds nothing on a wall")
+        expect(model.voltClipLayerId(scene: "t-preset", route: "") == nil, "\(w): a wall offers no Volt clip route")
+        model.newScene(layout: "single")
+        model.newScene(layout: "single")
+        expectEqual(Set(model.scenes.map(\.id)).count, model.scenes.count, "\(w): new scenes never share an id")
     }
 }

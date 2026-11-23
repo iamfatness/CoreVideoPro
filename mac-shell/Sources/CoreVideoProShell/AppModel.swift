@@ -2183,6 +2183,11 @@ final class AppModel: ObservableObject {
             let presentAfter = Set(roster.map(\.id))
             if (cameraOnAfter != cameraOnBefore || presentAfter != presentBefore) && !lawChanged {
                 syncSpine()
+                // A wall's members ARE the camera-on roster: re-send the scene
+                // graph when a wall is on either bus (Windows rebuilds the tiles
+                // wire with every production sync). recomputeFromSlots already
+                // syncs scenes when the slot law changed.
+                if isTilesScene(programSceneId) || isTilesScene(previewSceneId) { syncScenes() }
             }
         }
     }
@@ -3702,7 +3707,8 @@ final class AppModel: ObservableObject {
     }
 
     func newScene(layout: String) {
-        let newId = "scene-\(Int(Date().timeIntervalSince1970))"
+        var newId = "scene-\(Int(Date().timeIntervalSince1970))"
+        while scenes.contains(where: { $0.id == newId }) { newId += "-n" }   // two new scenes in one second
         var suffix = railScenes.count + 1
         var name = "Scene \(suffix)"
         while scenes.contains(where: { $0.name == name }) {
