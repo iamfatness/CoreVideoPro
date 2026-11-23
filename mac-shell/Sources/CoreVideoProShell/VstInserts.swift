@@ -236,24 +236,32 @@ extension AppModel {
         return "vst:\(plugin.name)"
     }
 
-    // Channel insert list actually sent to the core. The VST selection is only
-    // appended when the host can really run it — pushing a "vst:" insert at a
-    // dead host would be an insert that silently does nothing in the audio path.
+    // Channel insert list actually sent to the core: the strip's chain in its
+    // order (Windows PluginInserts), with VST names dropped unless the host can
+    // really run them — pushing a "vst:" insert at a dead host would be an
+    // insert that silently does nothing in the audio path.
     func pluginInsertNames(for stripId: String) -> [String] {
-        var names = (channelInserts[stripId] ?? ChannelInserts()).activeNames
-        if vstInsertsLive, let selection = vstChannelSelection[stripId], !selection.isEmpty {
-            names.append(selection)
-        }
-        return names
+        let chain = (channelInserts[stripId] ?? ChannelInserts()).chain
+        return vstInsertsLive ? chain : chain.filter { !InsertChainPolicy.isVst($0) }
     }
 
-    func setVstChannelSelection(_ stripId: String, _ insertName: String?) {
-        if let insertName, !insertName.isEmpty {
-            vstChannelSelection[stripId] = insertName
-        } else {
-            vstChannelSelection.removeValue(forKey: stripId)
+    // stripId -> the LAST VST name in that strip's chain. The VST picker and
+    // the ShellPrefs `vstChannelSelections` compatibility both read this view.
+    var vstChannelSelection: [String: String] {
+        channelInserts.reduce(into: [:]) { result, entry in
+            if let vst = entry.value.chain.last(where: InsertChainPolicy.isVst) {
+                result[entry.key] = vst
+            }
         }
-        scheduleMixSync()
+    }
+
+    // The single-plug-in picker: replaces any VST already on the chain with
+    // the new one (appended at the end), or removes it for nil ("None").
+    func setVstChannelSelection(_ stripId: String, _ insertName: String?) {
+        editInserts(stripId) { inserts in
+            inserts.chain.removeAll(where: InsertChainPolicy.isVst)
+            if let insertName, !insertName.isEmpty { inserts.chain.append(insertName) }
+        }
     }
 
     // ── commands ─────────────────────────────────────────────────────────────

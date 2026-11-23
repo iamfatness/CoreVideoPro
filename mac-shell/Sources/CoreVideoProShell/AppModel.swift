@@ -193,20 +193,27 @@ struct ShowInputSlot: Identifiable, Equatable {
     var dropoutPolicy = ""
 }
 
-// Per-channel built-in inserts. Names and keys are the CORE's contract
-// (AudioDsp.h applyChannelInserts): inserts match by lowercase SUBSTRING —
-// "gate"/"noise", "eq"/"voice", "compressor", "limiter" — and each reads its
-// own keys, clamped core-side to the ranges mirrored below. An unknown key is
-// silently ignored, so these names/keys must stay exact.
+// Per-channel insert chain. Names and keys are the CORE's contract
+// (AudioDsp.h applyChannelInsertChain): the chain runs IN LIST ORDER, each name
+// matches by lowercase SUBSTRING ("gate"/"noise", "high-pass", "eq"/"voice",
+// "compressor", "limiter") and reads its own keys from insertSettings[<exact
+// chain name>], clamped core-side to the ranges mirrored below. An unknown key
+// is silently ignored, so these names/keys must stay exact.
+//
+// A7 (Task 2): `chain` is the Windows `PluginInserts` list, in the order the
+// operator built it (SVM ToggleSelectedRackInsert / AddSelectedAudioInsert).
+// The three enable flags are now views of it. A VST name ("vst:<plugin>")
+// lives in the chain too; AppModel.pluginInsertNames drops it while the host
+// is not live.
 struct ChannelInserts: Equatable {
-    var gateEnabled = false
+    var chain: [String] = []
+
     var gateThresholdDb = -48.0   // [-80, -12]
     var gateRangeDb = -60.0       // [-80, -6]
     var gateAttackMs = 5.0        // [0.5, 50]
     var gateHoldMs = 50.0         // [0, 500]
     var gateReleaseMs = 120.0     // [20, 500]
 
-    var compEnabled = false
     var compThresholdDb = -18.0   // [-40, -6]
     var compRatio = 4.0           // [1, 20]
     var compAttackMs = 10.0       // [0.1, 100]
@@ -214,46 +221,93 @@ struct ChannelInserts: Equatable {
     var compKneeDb = 6.0          // [0, 24]
     var compMakeupDb = 0.0        // [0, 24]
 
-    var eqEnabled = false
     var eqHighpassHz = 90.0       // [20, 400]
     var eqBandsDb = [Double](repeating: 0, count: 8)  // band1Db…band8Db, [-12, 12]
 
-    // The Windows shell's built-in insert names (StudioViewModel
-    // BuiltInInsertNames) — they satisfy the core's substring matcher.
+    var limiterCeilingDb = -1.0   // [-12, -0.1], clamped on the wire (AudioDsp.h limiter branch)
+
+    // The Windows shell's built-in insert names (SVM:2250 BuiltInInsertNames:
+    // ["Noise Gate", "Built-in EQ", "Compressor", "Limiter"]). They satisfy the
+    // core's substring matcher.
     static let gateName = "Noise Gate"
     static let eqName = "Built-in EQ"
     static let compName = "Compressor"
+    static let limiterName = "Limiter"
+    static let builtInNames = [gateName, eqName, compName, limiterName]
 
-    var activeNames: [String] {
-        var names: [String] = []
-        if gateEnabled { names.append(Self.gateName) }
-        if eqEnabled { names.append(Self.eqName) }
-        if compEnabled { names.append(Self.compName) }
-        return names
+    func contains(_ name: String) -> Bool {
+        chain.contains { InsertChainPolicy.sameName($0, name) }
     }
 
+    var gateEnabled: Bool { contains(Self.gateName) }
+    var eqEnabled: Bool { contains(Self.eqName) }
+    var compEnabled: Bool { contains(Self.compName) }
+    var limiterEnabled: Bool { contains(Self.limiterName) }
+
+    /// SVM ToggleSelectedRackInsert: remove it if present (case-insensitive),
+    /// else append it at the END of the chain.
+    mutating func toggle(_ name: String) {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let index = chain.firstIndex(where: { InsertChainPolicy.sameName($0, name) }) {
+            chain.remove(at: index)
+        } else {
+            chain.append(name)
+        }
+    }
+
+    /// SVM AddSelectedAudioInsert: normalise, refuse a case-insensitive
+    /// duplicate, else append.
+    @discardableResult
+    mutating func add(_ raw: String) -> InsertChainPolicy.AddOutcome {
+        let normalized = InsertChainPolicy.normalize(raw)
+        if contains(normalized) { return .duplicate(normalized) }
+        chain.append(normalized)
+        return .added(normalized)
+    }
+
+    /// Removes every case-insensitive match (SVM RemoveAudioProcessingInsert's
+    /// RemoveAll). False when nothing matched.
+    @discardableResult
+    mutating func remove(_ name: String) -> Bool {
+        let before = chain.count
+        chain.removeAll { InsertChainPolicy.sameName($0, name) }
+        return chain.count != before
+    }
+
+    /// SVM ClearSelectedAudioInserts.
+    mutating func clear() { chain.removeAll() }
+
+    /// Settings for EVERY built-in on the chain, keyed by its exact chain name
+    /// (the core looks them up by that name). Kind follows the core matcher.
     var settingsJson: JSONObject {
         var settings: JSONObject = [:]
-        if gateEnabled {
-            settings[Self.gateName] = [
-                "thresholdDb": gateThresholdDb, "rangeDb": gateRangeDb,
-                "attackMs": gateAttackMs, "holdMs": gateHoldMs,
-                "releaseMs": gateReleaseMs,
-            ]
-        }
-        if eqEnabled {
-            var eq: JSONObject = ["highpassHz": eqHighpassHz]
-            for (index, gain) in eqBandsDb.enumerated() {
-                eq["band\(index + 1)Db"] = gain
+        for name in chain {
+            switch InsertChainPolicy.coreKind(name) {
+            case .gate:
+                settings[name] = [
+                    "thresholdDb": gateThresholdDb, "rangeDb": gateRangeDb,
+                    "attackMs": gateAttackMs, "holdMs": gateHoldMs,
+                    "releaseMs": gateReleaseMs,
+                ]
+            case .highpass:
+                settings[name] = ["highpassHz": eqHighpassHz]
+            case .eq:
+                var eq: JSONObject = ["highpassHz": eqHighpassHz]
+                for (index, gain) in eqBandsDb.enumerated() {
+                    eq["band\(index + 1)Db"] = gain
+                }
+                settings[name] = eq
+            case .compressor:
+                settings[name] = [
+                    "thresholdDb": compThresholdDb, "ratio": compRatio,
+                    "attackMs": compAttackMs, "releaseMs": compReleaseMs,
+                    "kneeDb": compKneeDb, "makeupDb": compMakeupDb,
+                ]
+            case .limiter:
+                settings[name] = ["ceilingDb": max(-12.0, min(-0.1, limiterCeilingDb))]
+            case nil:
+                break
             }
-            settings[Self.eqName] = eq
-        }
-        if compEnabled {
-            settings[Self.compName] = [
-                "thresholdDb": compThresholdDb, "ratio": compRatio,
-                "attackMs": compAttackMs, "releaseMs": compReleaseMs,
-                "kneeDb": compKneeDb, "makeupDb": compMakeupDb,
-            ]
         }
         return settings
     }
@@ -461,7 +515,6 @@ final class AppModel: ObservableObject {
     // properties cannot be declared in an extension, so only the state is here).
     @Published var vstHost = VstHostState()
     @Published var vstPlugins: [VstPlugin] = []
-    @Published var vstChannelSelection: [String: String] = [:]  // stripId -> "vst:<name>"
     @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
     let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
     // #870: the core's audioObservation envelope + when the shell received it.
@@ -896,6 +949,7 @@ final class AppModel: ObservableObject {
             PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
                           name: SlotNamePolicy.persisted($0), inShow: $0.inShow)
         }
+        // A7: the last VST name in each chain (Windows persists no built-in chain).
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.autoAssignInputs = autoAssignInputsEnabled
         prefs.zoomAudioMode = zoomAudioMode.persisted
@@ -993,7 +1047,12 @@ final class AppModel: ObservableObject {
             gradeSaturation = prefs.colorGrade[2]
             gradeTemperature = prefs.colorGrade[3]
         }
-        vstChannelSelection = prefs.vstChannelSelections ?? [:]
+        // A7: a saved VST selection is APPENDED to that strip's chain.
+        for (stripId, selection) in prefs.vstChannelSelections ?? [:] where !selection.isEmpty {
+            var inserts = channelInserts[stripId] ?? ChannelInserts()
+            if !inserts.contains(selection) { inserts.chain.append(selection) }
+            channelInserts[stripId] = inserts
+        }
         restoreMastering(from: prefs)
         joinMeetingId = prefs.joinMeetingId
         displayName = prefs.displayName
