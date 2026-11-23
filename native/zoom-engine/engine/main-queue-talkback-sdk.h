@@ -15,11 +15,19 @@
 // glue already calls those on the main queue, and hopping them would reorder
 // them against the bank's own bookkeeping.
 //
-// Lifetime: a posted send captures the shared State, never `this`, so a send
-// still in the queue when the decorator is parked or destroyed is safe. After
-// Shutdown() no send is ever forwarded (queued ones are dropped and counted),
-// which is what end_meeting needs before it detaches the bank: a frame from
-// the old meeting must not reach a controller the next meeting reuses.
+// Lifetime: a posted send captures the shared State, never `this`, and the
+// destructor calls Shutdown(), so a send still in the queue when the
+// decorator goes away is dropped rather than forwarded to an `inner` that may
+// be gone. After Shutdown() no QUEUED send is ever forwarded (dropped and
+// counted): the posted block and Shutdown() both run on the main queue, so
+// that is exact. Shutdown() is NOT a barrier for a Direct-mode send already
+// inside the SDK on the pacer thread; the barrier there is the very next step
+// of end_meeting, CommsCore::DetachBank -> CommsBankSink::Attach(nullptr),
+// which returns only after any Send in flight has finished (comms_core.h).
+// Holding a lock of our own across the SDK call instead would deadlock the
+// main queue if the SDK's send turns out to hop to main itself, which is the
+// unknown the live spike measures. One decorator per meeting: Shutdown() is a
+// one-way latch.
 #pragma once
 
 #include <algorithm>
@@ -69,6 +77,9 @@ class MainQueueTalkbackSdk : public zc::TalkbackSdk {
     state_->inner = inner;
     state_->nowUs = std::move(nowUs);
   }
+
+  ~MainQueueTalkbackSdk() override { Shutdown(); }
+  MainQueueTalkbackSdk(MainQueueTalkbackSdk&&) = default;
 
   SendMode mode() const { return mode_; }
 
@@ -146,6 +157,7 @@ class MainQueueTalkbackSdk : public zc::TalkbackSdk {
   }
 
   void Shutdown() {
+    if (!state_) return;  // moved-from
     std::lock_guard<std::mutex> lk(state_->m);
     state_->shutdown = true;
   }

@@ -128,6 +128,51 @@ TEST(MainQueueTalkbackSdk, HopStatsMeasureThePostToRunDelay) {
   EXPECT_EQ(sdk.TakeHopStats().count, 0u) << "TakeHopStats resets the window";
 }
 
+TEST(MainQueueTalkbackSdk, P99IsTheNinetyNinthPercentileOfTheWindow) {
+  Rig r;
+  auto sdk = r.make(engine_comms::SendMode::MainQueue);
+  const int16_t pcm[] = {1};
+  for (int us = 1; us <= 100; ++us) {  // hops of 1..100 us
+    r.now = 0;
+    sdk.SendAudio("ch", pcm, 1);
+    r.now = us;
+    r.run();
+  }
+  const auto s = sdk.TakeHopStats();
+  EXPECT_EQ(s.count, 100u);
+  EXPECT_EQ(s.maxUs, 100);
+  EXPECT_EQ(s.p99Us, 99);
+}
+
+TEST(MainQueueTalkbackSdk, TheWindowKeepsTheNewest512HopsAndCountsThemAll) {
+  Rig r;
+  auto sdk = r.make(engine_comms::SendMode::MainQueue);
+  const int16_t pcm[] = {1};
+  // 600 slow hops (1000 us) then 512 fast ones (10 us): the slow ones must
+  // have left the p99 window, while count and max still cover all of them.
+  for (int i = 0; i < 600 + 512; ++i) {
+    r.now = 0;
+    sdk.SendAudio("ch", pcm, 1);
+    r.now = i < 600 ? 1000 : 10;
+    r.run();
+  }
+  const auto s = sdk.TakeHopStats();
+  EXPECT_EQ(s.count, 1112u);
+  EXPECT_EQ(s.maxUs, 1000);
+  EXPECT_EQ(s.p99Us, 10);
+}
+
+TEST(MainQueueTalkbackSdk, DestroyingTheDecoratorDropsItsQueuedSends) {
+  Rig r;
+  {
+    auto sdk = r.make(engine_comms::SendMode::MainQueue);
+    const int16_t pcm[] = {1};
+    sdk.SendAudio("ch", pcm, 1);
+  }
+  r.run();
+  EXPECT_TRUE(r.inner.sends.empty());
+}
+
 TEST(MainQueueTalkbackSdk, SendModeFromEnv) {
   using engine_comms::SendMode;
   EXPECT_EQ(engine_comms::sendModeFromEnv("main"), SendMode::MainQueue);
