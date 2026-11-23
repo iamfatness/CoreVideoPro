@@ -11,12 +11,18 @@ import SwiftUI
 enum GradeSnapshotHarness {
     static func render(model: AppModel, dir: String) {
         guard let mode = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRADE"] else { return }
+        // The window as an operator grades in it: preview available, scopes on (no core, so the
+        // picture and scope image are their dark wells; the layout is what is under test).
+        model.gradePreviewSupported = true
         guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam-1") else { return }
         editor.lut = "warm-film"; editor.exposure = 4; editor.saturation = -6
+        editor.scopesEnabled = true
         if mode == "staged-advanced" { stageAdvanced(editor) }
         let pane = SourceGradeEditorPane(editor: editor) {}
             .environmentObject(model)
-        write(pane, width: 520, to: dir + "/grade-editor-\(mode).png")
+        for (label, size) in [("default", SourceGradeEditorPane.defaultSize), ("minimum", SourceGradeEditorPane.minimumSize)] {
+            write(pane, size: size, to: dir + "/grade-editor-\(mode)-\(label).png")
+        }
         let inspector = VStack(alignment: .leading, spacing: 14) {
             SourceInspectorGradeSlot(context: model.sourceGradeContext(slotId: 3))
             Divider()
@@ -39,6 +45,25 @@ enum GradeSnapshotHarness {
         document.operations.append(curves)
         if let json = try? document.canonicalJSON() { _ = editor.paste(json) }
         editor.selectedAdjustmentId = curves.id
+    }
+
+    /// A fixed window-sized render: the editor fills its window rather than growing to fit.
+    private static func write<V: View>(_ view: V, size: CGSize, to path: String) {
+        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height)
+            .background(Studio.background).environment(\.colorScheme, .dark))
+        let window = NSWindow(contentRect: NSRect(origin: CGPoint(x: -10_000, y: -10_000), size: size),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        host.display()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        if let png = bitmap.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+            print("grade snapshot \(path) size=\(Int(size.width))x\(Int(size.height))")
+        }
     }
 
     private static func write<V: View>(_ view: V, width: CGFloat, to path: String) {

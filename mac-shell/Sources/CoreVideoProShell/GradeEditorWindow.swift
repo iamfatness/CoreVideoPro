@@ -21,7 +21,9 @@ struct SourceGradeEditorWindow: View {
     var body: some View {
         Group {
             if let editor {
-                ScrollView { SourceGradeEditorPane(editor: editor) { dismiss() } }   // the advanced panel is tall
+                // Two columns like ColorGradeEditorWindow.xaml: only the controls column scrolls,
+                // so the picture and the scopes stay in view while a control is adjusted.
+                SourceGradeEditorPane(editor: editor) { dismiss() }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(refusal ?? "").font(.grotesk(12)).foregroundStyle(Studio.amber)
@@ -47,12 +49,36 @@ struct SourceGradeEditorWindow: View {
     }
 }
 
+/// The editor's two columns (ColorGradeEditorWindow.xaml:6-7): the monitor on the left takes
+/// the free width and never scrolls; the 360 pt controls column on the right scrolls on its own,
+/// with the window's actions pinned under it.
 struct SourceGradeEditorPane: View {
     @ObservedObject var editor: GradeEditorModel
     var close: () -> Void
+    static let controlsWidth: CGFloat = 360               // CGE:7 ColumnDefinition Width="360"
+    static let defaultSize = CGSize(width: 1280, height: 820)
+    static let minimumSize = CGSize(width: 1000, height: 700)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .top, spacing: 16) {
+            GradeMonitorColumn(editor: editor)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            GradeControlsColumn(editor: editor, close: close)
+                .frame(width: Self.controlsWidth)
+                .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// Left column (CGE:8-40): header and ROI tools, the private preview filling the free height,
+/// then the scope strip pinned under it whenever Scopes is on, then the editor's status line.
+struct GradeMonitorColumn: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text(editor.headerTitle).font(.grotesk(15, .semibold))
             Text(editor.previewStatus).font(.grotesk(11))
                 .foregroundStyle(editor.previewSupported ? Studio.secondary : Studio.amber)
@@ -60,10 +86,85 @@ struct SourceGradeEditorPane: View {
             if editor.previewSupported {
                 ScopeRoiToolbar(editor: editor)
                 GradePreviewMonitor(editor: editor)
-                Toggle("Compare original (monitor only)", isOn: $editor.compareOriginal)     // CGE:47
-                    .font(.grotesk(12))
-                    .accessibilityLabel("Compare original for \(editor.sourceName), monitor only")
+                    .frame(minHeight: GradePreviewMonitor.minimumHeight, maxHeight: .infinity)
+                HStack(spacing: 16) {
+                    Toggle("Compare original (monitor only)", isOn: $editor.compareOriginal)     // CGE:47
+                        .font(.grotesk(12))
+                        .accessibilityLabel("Compare original for \(editor.sourceName), monitor only")
+                    // The strip below is this column's, so its switch sits here too (CGE:88).
+                    Toggle("Scopes", isOn: $editor.scopesEnabled).font(.grotesk(12)).accessibilityLabel("Scopes")
+                    Spacer(minLength: 0)
+                }
+                if editor.scopesEnabled {
+                    GradeScopeStrip(editor: editor)
+                }
+            } else {
+                Spacer(minLength: 0)
             }
+            Text(editor.status).font(.grotesk(11)).foregroundStyle(Studio.secondary)   // CGE:39 summary
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Right column (CGE:42-110): the controls in their own scroll view, the actions pinned below.
+struct GradeControlsColumn: View {
+    @ObservedObject var editor: GradeEditorModel
+    var close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView {
+                GradeControls(editor: editor)
+                    .padding(.trailing, 10)                // room for the scroller
+            }
+            GradeActions(editor: editor, close: close)
+        }
+    }
+}
+
+/// The window's actions, outside the scroll view so they never scroll away (CGE:108-110).
+struct GradeActions: View {
+    @ObservedObject var editor: GradeEditorModel
+    var close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if editor.advancedExpanded {
+                HStack(spacing: 6) {
+                    Button("Undo") { editor.undo() }.keyboardShortcut("z", modifiers: .command)
+                        .disabled(!editor.history.canUndo).accessibilityLabel("Undo grade edit")
+                    Button("Redo") { editor.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
+                        .disabled(!editor.history.canRedo).accessibilityLabel("Redo grade edit")
+                    Button("Reset advanced") { editor.resetAdvanced() }.accessibilityLabel("Reset the advanced grade")
+                }
+                .buttonStyle(GhostButtonStyle())
+            }
+            HStack(spacing: 8) {
+                Button("Apply Live") { Task { await editor.applyLive() } }
+                    .buttonStyle(GhostButtonStyle()).disabled(editor.isApplying)
+                Button("Apply and Done") { Task { _ = await editor.applyAndDone() } }
+                    .buttonStyle(GhostButtonStyle()).disabled(editor.isApplying)
+            }
+            HStack(spacing: 8) {
+                Button("Close / discard draft") { close() }
+                    .buttonStyle(GhostButtonStyle())
+                Spacer()
+                Button("Reset") { editor.reset() }
+                    .buttonStyle(GhostButtonStyle()).disabled(editor.isApplying)
+            }
+            Text(GradeEditorModel.resetNotice).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// The scrolling controls: the basic look and axes, then the advanced panel when expanded.
+struct GradeControls: View {
+    @ObservedObject var editor: GradeEditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
             MonoLabel("BUILT-IN LOOK")
             Picker("", selection: Binding(get: { editor.lut }, set: { editor.lut = $0; editor.edited() })) {
                 ForEach(SourceColorGrade.looks, id: \.self) { Text($0).tag($0) }
@@ -86,23 +187,7 @@ struct SourceGradeEditorPane: View {
             if editor.advancedExpanded {
                 AdvancedGradePanel(editor: editor)
             }
-            HStack(spacing: 8) {
-                Button("Apply Live") { Task { await editor.applyLive() } }
-                    .buttonStyle(GhostButtonStyle()).disabled(editor.isApplying)
-                Button("Apply and Done") { Task { _ = await editor.applyAndDone() } }
-                    .buttonStyle(GhostButtonStyle()).disabled(editor.isApplying)
-                Button("Close / discard draft") { close() }
-                    .buttonStyle(GhostButtonStyle())
-                Spacer()
-                Button("Reset") { editor.reset() }
-                    .buttonStyle(GhostButtonStyle()).disabled(editor.isApplying)
-            }
-            Text(GradeEditorModel.resetNotice).font(.grotesk(10)).foregroundStyle(Studio.secondary)
-            Text(editor.status).font(.grotesk(11)).foregroundStyle(Studio.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -233,17 +318,10 @@ struct AdvancedGradePanel: View {
                     Text("3D LUT · \(selected.displayName)").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 }
             }
+            // Undo / Redo / Reset advanced are pinned under the scroll view (GradeActions).
             if editor.previewSupported {
-                GradeScopeControls(editor: editor)
+                GradeScopeSettings(editor: editor)
             }
-            HStack(spacing: 6) {
-                Button("Undo") { editor.undo() }.keyboardShortcut("z", modifiers: .command)
-                    .disabled(!editor.history.canUndo).accessibilityLabel("Undo grade edit")
-                Button("Redo") { editor.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!editor.history.canRedo).accessibilityLabel("Redo grade edit")
-                Button("Reset") { editor.resetAdvanced() }.accessibilityLabel("Reset the advanced grade")
-            }
-            .buttonStyle(GhostButtonStyle())
             HStack(spacing: 6) {
                 Button("Copy grade") {
                     NSPasteboard.general.clearContents()
@@ -317,8 +395,12 @@ struct AdvancedGradePanel: View {
 }
 
 /// The private native preview (G5): the editor's IOSurface, shown with the existing presenter.
+/// It takes whatever height the monitor column leaves (CGE:21 Row Height="*"); the presenter
+/// aspect-fits the picture and the ROI overlay maps through the same fit
+/// (`ScopeRoiGeometry.fitImage` over its own bounds), so the guide stays on the picture at any size.
 struct GradePreviewMonitor: View {
     @ObservedObject var editor: GradeEditorModel
+    static let minimumHeight: CGFloat = 180
 
     var body: some View {
         ZStack {
@@ -328,47 +410,64 @@ struct GradePreviewMonitor: View {
             }
             ScopeRoiOverlay(editor: editor)                 // G7: editor-only region guide
         }
-        .frame(height: 270)
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
         .accessibilityLabel("Private grade preview of \(editor.sourceName)")
     }
 }
 
-/// Scopes (G6): the toggles and modes (CGE:88-89,102-103) and, when on, the scope image with the
-/// three captions the shell draws itself (spec §5.6) and the Windows scope line.
-struct GradeScopeControls: View {
+/// Scopes (G6), the monitor-column half (CGE:28-37): the region line, the three captions the
+/// shell draws itself (spec §5.6), the scope image at Windows' fixed 300 pt height, the Windows
+/// scope line and the Expand-scope picker. Pinned under the preview, so it never scrolls away.
+struct GradeScopeStrip: View {
+    @ObservedObject var editor: GradeEditorModel
+    static let imageHeight: CGFloat = 300                 // CGE:35 ScopeHost Height="300"
+    static let minimumImageHeight: CGFloat = 170
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(editor.scopeRegionLabel).font(.grotesk(11, .semibold)).foregroundStyle(Studio.textPrimary)
+                .accessibilityLabel("Scope region: \(editor.scopeRegionLabel)")
+            HStack(spacing: 0) {
+                ForEach(GradeEditorModel.scopeCaptions, id: \.self) {
+                    Text($0).font(.plexMono(9)).foregroundStyle(Studio.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            ZStack {
+                Rectangle().fill(Color(red: 3 / 255, green: 3 / 255, blue: 3 / 255))
+                if editor.scopeSurfaceId != 0 { SurfaceView(surfaceId: editor.scopeSurfaceId) }
+            }
+            .frame(maxWidth: .infinity)
+            // Windows' 300 pt when the window has the room; it gives way down to `minimumImageHeight`
+            // before the picture is squeezed below its own minimum, so a small window still shows both.
+            .frame(minHeight: Self.minimumImageHeight, maxHeight: Self.imageHeight)
+            .accessibilityLabel("Histogram, waveform and vectorscope")
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(editor.scopeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                GradeScopeSettings.picker("Expand scope", GradeEditorModel.scopeViews, $editor.scopeView)
+                    .frame(maxWidth: 220)
+            }
+        }
+    }
+}
+
+/// Scopes (G6), the controls-column half (CGE:88-103): what the scopes analyse and how they draw.
+/// The Scopes switch itself sits with the strip it shows (GradeMonitorColumn).
+struct GradeScopeSettings: View {
     @ObservedObject var editor: GradeEditorModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle("Scopes", isOn: $editor.scopesEnabled).font(.grotesk(12)).accessibilityLabel("Scopes")
             Toggle("Analyze original", isOn: $editor.scopesOriginal).font(.grotesk(12))
                 .accessibilityLabel("Analyze the original source")
-            picker("Histogram", GradeEditorModel.histogramModes, $editor.histogramMode)
-            picker("Waveform", GradeEditorModel.waveformModes, $editor.waveformMode)
-            picker("Expand scope", GradeEditorModel.scopeViews, $editor.scopeView)
             ScopeRoiPrecision(editor: editor)
-            if editor.scopesEnabled {
-                Text(editor.scopeRegionLabel).font(.grotesk(11, .semibold)).foregroundStyle(Studio.textPrimary)
-                    .accessibilityLabel("Scope region: \(editor.scopeRegionLabel)")
-                HStack(spacing: 0) {
-                    ForEach(GradeEditorModel.scopeCaptions, id: \.self) {
-                        Text($0).font(.plexMono(9)).foregroundStyle(Studio.secondary).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                ZStack {
-                    Rectangle().fill(Color(red: 3 / 255, green: 3 / 255, blue: 3 / 255))
-                    if editor.scopeSurfaceId != 0 { SurfaceView(surfaceId: editor.scopeSurfaceId) }
-                }
-                .aspectRatio(3, contentMode: .fit)
-                .accessibilityLabel("Histogram, waveform and vectorscope")
-                Text(editor.scopeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Self.picker("Histogram", GradeEditorModel.histogramModes, $editor.histogramMode)
+            Self.picker("Waveform", GradeEditorModel.waveformModes, $editor.waveformMode)
         }
     }
 
-    private func picker(_ label: String, _ options: [String], _ value: Binding<Int>) -> some View {
+    static func picker(_ label: String, _ options: [String], _ value: Binding<Int>) -> some View {
         Picker(label, selection: value) {
             ForEach(options.indices, id: \.self) { Text(options[$0]).tag($0) }
         }
