@@ -6,6 +6,8 @@
 //   COREVIDEO_SHELL_GRAPHICS_SELECT=<selection key>  (default "guest")
 //   COREVIDEO_SHELL_GRAPHICS_SIZES=1360x860,1600x900  (default: the Mac minimum 1360x860,
 //   1600x900 and 1920x1080)
+//   COREVIDEO_SHELL_GRAPHICS_SURFACE=design  renders the Design surface, plus the Create data table
+//   sheet over scores.csv as its own PNG
 
 import AppKit
 import SwiftUI
@@ -22,6 +24,8 @@ enum GraphicsLayoutSnapshot {
         var show = ShellTests.loadGraphicsNode("documents/windows-show.json")
         let names = ShellTests.loadGraphicsNode("documents/windows-names-clock.json")
         show["playlist"] = (show["playlist"] as? [JSONObject] ?? []) + (names["playlist"] as? [JSONObject] ?? [])
+        // The Windows data show's designs, so the Design pane's YOUR DESIGNS bar has chips.
+        show["designs"] = ShellTests.loadGraphicsNode("documents/windows-data.json")["designs"]
         if let data = try? JSONSerialization.data(withJSONObject: show) { FileManager.default.createFile(atPath: path, contents: data) }
         setenv("COREVIDEO_GRAPHICS_DOCUMENT_PATH", path, 1)
         return path
@@ -67,6 +71,8 @@ enum GraphicsLayoutSnapshot {
     static func runAndExit(dir: String) -> Never {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         _ = stageDocument()
+        let design = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SURFACE"] == "design"
+        if design { GraphicsSurface.initial = .design }
         let model = AppModel()
         seed(model)
         let sizes = (ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SIZES"] ?? "1360x860,1600x900,1920x1080")
@@ -74,7 +80,22 @@ enum GraphicsLayoutSnapshot {
                 let parts = spec.split(separator: "x").compactMap { Double($0) }
                 return parts.count == 2 ? CGSize(width: parts[0], height: parts[1]) : nil
             }
-        let tag = (ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SELECT"] ?? "guest")
+        if design, let data = try? GraphicsLocalData.read(url: ShellTests.repoRoot.appendingPathComponent("contracts/graphics-shell/data/scores.csv"), key: nil) {
+            let picked = GraphicsPickedData(fileName: "scores", data: data, crawl: false)
+            let view = GraphicsDataTableSheet(graphics: model.graphics, picked: picked, sheet: .constant(GraphicsDataSheetState(isPresented: true)))
+            let host = NSHostingView(rootView: view.environment(\.colorScheme, .dark))
+            host.frame = NSRect(origin: .zero, size: host.fittingSize)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded(); host.display()
+            if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let url = URL(fileURLWithPath: dir).appendingPathComponent("graphics-data-table-sheet.png")
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: url)
+                print("graphics snapshot \(url.path) ok")
+            }
+        }
+        let tag = (design ? "design-" : "") + (ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SELECT"] ?? "guest")
             .replacingOccurrences(of: "|", with: "_").replacingOccurrences(of: ":", with: "-")
         for size in sizes {
             let url = URL(fileURLWithPath: dir).appendingPathComponent("graphics-\(tag)-\(Int(size.width))x\(Int(size.height)).png")
