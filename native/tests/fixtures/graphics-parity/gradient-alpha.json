@@ -1,0 +1,57 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-gradient",
+ "templateVersion": 1,
+ "name": "p-gradient",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 800,
+  "height": 200
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "h",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 800,
+   "height": 100,
+   "fill": {
+    "stops": [
+     "#2050A0FF",
+     "#2050A000"
+    ],
+    "direction": "horizontal"
+   }
+  },
+  {
+   "id": "v",
+   "type": "rect",
+   "x": 0,
+   "y": 100,
+   "width": 800,
+   "height": 100,
+   "fill": {
+    "stops": [
+     "#FFFFFF20",
+     "#C04020E0"
+    ],
+    "direction": "vertical"
+   }
+  }
+ ]
+}

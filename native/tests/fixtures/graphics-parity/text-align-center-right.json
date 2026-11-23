@@ -1,0 +1,54 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-align",
+ "templateVersion": 1,
+ "name": "p-align",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 200
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "c",
+   "type": "text",
+   "x": 10,
+   "y": 10,
+   "width": 880,
+   "height": 80,
+   "text": "Centred title",
+   "font": "Georgia",
+   "fontSize": 56,
+   "color": "#FFFFFF",
+   "align": "center"
+  },
+  {
+   "id": "r",
+   "type": "text",
+   "x": 10,
+   "y": 110,
+   "width": 880,
+   "height": 80,
+   "text": "Right aligned",
+   "font": "Arial",
+   "fontSize": 48,
+   "color": "#FFFFFF",
+   "align": "right",
+   "fontWeight": 700
+  }
+ ]
+}

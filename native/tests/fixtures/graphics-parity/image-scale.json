@@ -1,0 +1,54 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-image-scale",
+ "templateVersion": 1,
+ "name": "p-image-scale",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 600,
+  "height": 200
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "up",
+   "type": "image",
+   "x": 0,
+   "y": 0,
+   "width": 300,
+   "height": 200,
+   "asset": "checker",
+   "fit": "contain"
+  },
+  {
+   "id": "down",
+   "type": "image",
+   "x": 320,
+   "y": 60,
+   "width": 40,
+   "height": 40,
+   "asset": "checker",
+   "fit": "contain"
+  }
+ ],
+ "assets": [
+  {
+   "id": "checker",
+   "file": "assets/c1714ad65ab59786d59375c4e144a47e7e8bccab9c75fcedd70a2b7d3882edf9.png",
+   "sha256": "c1714ad65ab59786d59375c4e144a47e7e8bccab9c75fcedd70a2b7d3882edf9"
+  }
+ ]
+}

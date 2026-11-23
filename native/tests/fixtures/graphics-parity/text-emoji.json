@@ -1,0 +1,39 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-emoji",
+ "templateVersion": 1,
+ "name": "p-emoji",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 700,
+  "height": 120
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "t",
+   "type": "text",
+   "x": 10,
+   "y": 10,
+   "width": 680,
+   "height": 100,
+   "text": "Live 🎬 Studio ✨",
+   "font": "Arial",
+   "fontSize": 56,
+   "color": "#FFFFFF"
+  }
+ ]
+}

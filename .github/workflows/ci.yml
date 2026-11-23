@@ -327,8 +327,12 @@ jobs:
       # cannot hold the cadence they assert. scripts/release-macos.sh runs them: it
       # runs the FULL ctest (realtime included) on the release core build and stops
       # the release on any failure.
-      - name: Full native tests (Metal configuration, excluding realtime)
-        run: ctest --test-dir native/build-metal --output-on-failure -LE realtime
+      # `golden`: the Mac graphics raster goldens (G4) pin Core Text output on the
+      # macOS they were generated on. A runner on another macOS build would fail
+      # them for a font-rendering update, not a regression, so they are advisory
+      # here and blocking in scripts/release-macos.sh's full ctest on the owner's Mac.
+      - name: Full native tests (Metal configuration, excluding realtime and golden)
+        run: ctest --test-dir native/build-metal --output-on-failure -LE "realtime|golden"
       # #933: a segfault on the paravirtual runner left no stack. Keep the macOS
       # crash reports for the test binary so the next occurrence is attributable
       # (test code vs AVFoundation/VideoToolbox vs runner) instead of a bare exit 139.

@@ -1,0 +1,41 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-small",
+ "templateVersion": 1,
+ "name": "p-small",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 600,
+  "height": 80
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "t",
+   "type": "text",
+   "x": 8,
+   "y": 8,
+   "width": 584,
+   "height": 64,
+   "text": "Small 14 px text, stems near 3.7 px at 1080p scaling",
+   "font": "Arial",
+   "fontSize": 14,
+   "color": "#FFFFFF",
+   "maxLines": 2,
+   "overflow": "wrap-then-ellipsis"
+  }
+ ]
+}

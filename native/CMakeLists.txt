@@ -926,6 +926,7 @@ if(BUILD_TESTING)
     tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsRasterParity.cpp tests/GraphicsRasterParityTest.cpp
     tests/GraphicsMotionTest.cpp
     tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsEditorShapesTest.cpp
@@ -1116,6 +1117,11 @@ if(BUILD_TESTING)
     # Overlay raster contract (spec 7.1): the shared OverlayRasterContractCases.h on Metal.
     target_sources(corevideo-native-tests PRIVATE tests/MetalOverlayRasterContractTest.mm)
     set_source_files_properties(tests/MetalOverlayRasterContractTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # Graphics raster parity (spec 7.3, G4): the verbatim-sample PNG container,
+    # Mac goldens and the judgement against the Windows reference.
+    target_sources(corevideo-native-tests PRIVATE tests/GraphicsParityImageApple.mm tests/MetalGraphicsParityTest.mm)
+    set_source_files_properties(tests/GraphicsParityImageApple.mm tests/MetalGraphicsParityTest.mm
+      PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     # Zero-copy IOSurface media frames into the Metal compositor (N4).
     target_sources(corevideo-native-tests PRIVATE tests/MetalZeroCopyTest.mm)
     set_source_files_properties(tests/MetalZeroCopyTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -1257,8 +1263,16 @@ if(BUILD_TESTING)
       ":AvfProgramTail.IsoVideoStalledBeforeStopIsHeldToItsAudioEnd"
       ":MetalCompositor.VcamTapDeliversEveryRenderedFrame")
     string(CONCAT COREVIDEO_REALTIME_TEST_FILTER ${COREVIDEO_REALTIME_TEST_FILTER})
+    # Mac raster goldens (G4) are their own ctest, LABELS golden: they pin
+    # Core Text output on the macOS they were generated on, so CI runners on
+    # another macOS build run them advisory (`-LE "realtime|golden"`), while
+    # the release ctest on the owner's Mac (plain `ctest`) blocks on them.
+    set(COREVIDEO_GOLDEN_TEST_FILTER "GraphicsRasterGolden.*")
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
-      "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}")
+      "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}:${COREVIDEO_GOLDEN_TEST_FILTER}")
+    add_test(NAME corevideo-native-tests-golden
+      COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests" "--gtest_filter=${COREVIDEO_GOLDEN_TEST_FILTER}")
+    set_tests_properties(corevideo-native-tests-golden PROPERTIES LABELS golden TIMEOUT 600)
     add_test(NAME corevideo-native-tests-realtime
       COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
         "--gtest_filter=${COREVIDEO_REALTIME_TEST_FILTER}")

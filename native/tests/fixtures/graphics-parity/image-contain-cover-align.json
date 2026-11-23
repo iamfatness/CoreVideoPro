@@ -1,0 +1,74 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-image-fit",
+ "templateVersion": 1,
+ "name": "p-image-fit",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 200
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "a",
+   "type": "image",
+   "x": 0,
+   "y": 0,
+   "width": 280,
+   "height": 200,
+   "asset": "card",
+   "fit": "contain",
+   "align": "left",
+   "verticalAlign": "top"
+  },
+  {
+   "id": "b",
+   "type": "image",
+   "x": 300,
+   "y": 0,
+   "width": 280,
+   "height": 200,
+   "asset": "card",
+   "fit": "cover",
+   "align": "center"
+  },
+  {
+   "id": "c",
+   "type": "image",
+   "x": 600,
+   "y": 0,
+   "width": 300,
+   "height": 200,
+   "asset": "icc",
+   "fit": "contain",
+   "align": "right",
+   "verticalAlign": "bottom"
+  }
+ ],
+ "assets": [
+  {
+   "id": "card",
+   "file": "assets/8a04e45511afb3896c71018b65b86b4fbe5e76f1de0b3cad9f3560d471e43a2d.png",
+   "sha256": "8a04e45511afb3896c71018b65b86b4fbe5e76f1de0b3cad9f3560d471e43a2d"
+  },
+  {
+   "id": "icc",
+   "file": "assets/faf46be26f3a2504803967b54aa710419dff42fbd1869b5d19bcc7eb9c622ef1.png",
+   "sha256": "faf46be26f3a2504803967b54aa710419dff42fbd1869b5d19bcc7eb9c622ef1"
+  }
+ ]
+}

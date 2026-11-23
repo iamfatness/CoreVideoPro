@@ -1,0 +1,169 @@
+{
+ "schemaVersion": 1,
+ "comment": "Graphics raster parity INPUTS only (G4 Task 6). Expected values come from real output: Mac goldens (native/tests/golden/metal-graphics) and the Windows reference (contracts/graphics-raster-reference.json).",
+ "fixtures": [
+  {
+   "name": "lower-third-corporate",
+   "source": "curated:corporate-lower-third",
+   "fields": {
+    "name": "Ada Otieno",
+    "title": "Head of Engineering"
+   },
+   "brand": {},
+   "textTolerance": 2
+  },
+  {
+   "name": "text-wrap-ellipsis-3-lines",
+   "source": "manifest:text-wrap-ellipsis-3-lines.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "text-fit-min-size",
+   "source": "manifest:text-fit-min-size.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "text-align-center-right",
+   "source": "manifest:text-align-center-right.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "text-outline-shadow-blur",
+   "source": "manifest:text-outline-shadow-blur.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "shapes-inset-strokes",
+   "source": "manifest:shapes-inset-strokes.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "gradient-alpha",
+   "source": "manifest:gradient-alpha.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "image-contain-cover-align",
+   "source": "manifest:image-contain-cover-align.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "image-scale",
+   "source": "manifest:image-scale.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "table-12x8",
+   "source": "manifest:table-12x8.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "crawl-atlas-two-items",
+   "source": "manifest:crawl-atlas-two-items.json",
+   "fields": {},
+   "brand": {},
+   "atlas": true
+  },
+  {
+   "name": "text-advance-crawl",
+   "source": "manifest:text-advance-crawl.json",
+   "fields": {},
+   "brand": {},
+   "atlas": true
+  },
+  {
+   "name": "layered-motion-mid-entrance",
+   "source": "manifest:../graphics-motion/bar-first.json",
+   "fields": {},
+   "brand": "motion",
+   "atlas": true
+  },
+  {
+   "name": "segoe-substitution",
+   "source": "manifest:segoe-substitution.json",
+   "fields": {},
+   "brand": {},
+   "textTolerance": 2
+  },
+  {
+   "name": "text-small-14px",
+   "source": "manifest:text-small-14px.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "text-emoji",
+   "source": "manifest:text-emoji.json",
+   "fields": {},
+   "brand": {}
+  },
+  {
+   "name": "curated-logo-accent",
+   "source": "curated:logo-accent",
+   "fields": {},
+   "brand": {},
+   "textTolerance": 2
+  },
+  {
+   "name": "curated-transparent-name",
+   "source": "curated:transparent-name",
+   "fields": {},
+   "brand": {},
+   "textTolerance": 2
+  },
+  {
+   "name": "curated-centered-title",
+   "source": "curated:centered-title",
+   "fields": {},
+   "brand": {},
+   "textTolerance": 2
+  },
+  {
+   "name": "curated-corner-logo",
+   "source": "curated:corner-logo",
+   "fields": {},
+   "brand": {},
+   "textTolerance": 2
+  },
+  {
+   "name": "curated-clock-panel",
+   "source": "curated:clock-panel",
+   "fields": {},
+   "brand": {},
+   "textTolerance": 2
+  },
+  {
+   "name": "legacy-lower-third-appearance",
+   "source": "legacy:lower-third",
+   "fields": {
+    "name": "Ada Otieno",
+    "title": "Head of Engineering"
+   },
+   "brand": {},
+   "width": 1152,
+   "height": 162,
+   "textTolerance": 2
+  },
+  {
+   "name": "legacy-caption",
+   "source": "legacy:caption",
+   "fields": {
+    "text": "Captions wrap across the band as people speak.",
+    "speaker": "Ada"
+   },
+   "brand": {},
+   "width": 1600,
+   "height": 180,
+   "textTolerance": 2
+  }
+ ]
+}

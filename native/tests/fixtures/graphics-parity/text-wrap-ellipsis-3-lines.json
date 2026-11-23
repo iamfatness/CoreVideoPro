@@ -1,0 +1,42 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-wrap",
+ "templateVersion": 1,
+ "name": "p-wrap",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 200
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "t",
+   "type": "text",
+   "x": 10,
+   "y": 10,
+   "width": 880,
+   "height": 180,
+   "text": "Parity text wraps across lines and ends in an ellipsis when the third line still cannot hold the remaining words of this sentence",
+   "font": "Arial",
+   "fontSize": 44,
+   "color": "#FFFFFF",
+   "maxLines": 3,
+   "overflow": "wrap-then-ellipsis",
+   "lineHeight": 1.2
+  }
+ ]
+}
