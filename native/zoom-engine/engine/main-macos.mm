@@ -1004,7 +1004,9 @@ static bool zoom_range_diagnostics_enabled()
     return enabled;
 }
 
-// valid_i420_frame's 8192x8192 ceiling: the largest frame either path accepts.
+// valid_i420_frame's 8192x8192 ceiling: the largest frame either path accepts
+// (the SHM is sized per frame by *_ensure_shm, so this is a sanity bound, not
+// the SHM capacity). The per-thread scratch keeps its high-water size.
 static constexpr size_t kMaxPreparedYLen = static_cast<size_t>(8192) * 8192;
 
 static std::mutex g_video_mtx;
@@ -1547,27 +1549,34 @@ static void share_on_frame(ZoomSDKYUVRawDataI420 *data)
     // Windows engine, so an operator sees the share attributed to a person.
     const uint32_t share_user_id = g_active_share_user.load(std::memory_order_acquire);
 
-    // Share limited-range expansion, the Windows twin (engine-share.cpp:326):
-    // the SDK flag alone, no content tracker (Windows has none for share).
-    // Expanded once into a per-thread scratch frame before the lock and before
-    // any sequence goes odd; each target only memcpys it.
-    const bool shareLimited = [data isLimitedI420];
-    const uint8_t *sharePrepared = nullptr;
-    if (shareLimited) {
-        thread_local I420EvenFrame shareScratch;
-        sharePrepared = shareScratch.prepare(
-            reinterpret_cast<const uint8_t *>([data getYBuffer]),
-            reinterpret_cast<const uint8_t *>([data getUBuffer]),
-            reinterpret_cast<const uint8_t *>([data getVBuffer]), w, h, src_w,
-            /*limited=*/true, kMaxPreparedYLen);
-        if (!sharePrepared) return;
-    }
-    const size_t share_frame_bytes = y_len + 2 * (y_len / 4);
     // try_lock for the same reason as video_on_frame: never block an SDK
     // callback thread on a mutex the main thread holds across SDK teardown
     // calls. A dropped share frame at 1-30 fps is repainted by the next one.
     std::unique_lock<std::mutex> lock(g_share_mtx, std::try_to_lock);
     if (!lock.owns_lock()) return;
+    // Nothing subscribed: drop before any pack or expand (a limited 4K share
+    // frame is ~12 MB of work for no reader; N1 review round 2).
+    if (g_share_targets.empty()) return;
+
+    // Share limited-range expansion, the Windows twin (engine-share.cpp:326):
+    // the SDK flag alone, no content tracker (Windows has none for share).
+    // Expanded once into a per-thread scratch frame with g_share_mtx RELEASED
+    // (the same seam as video_on_frame), before any sequence goes odd; each
+    // target then only memcpys it. Targets are re-read after the re-take.
+    const bool shareLimited = [data isLimitedI420];
+    const uint8_t *sharePrepared = nullptr;
+    if (shareLimited) {
+        thread_local I420EvenFrame shareScratch;
+        sharePrepared = i420_prepare_with_lock_released(lock, [&] {
+            return shareScratch.prepare(
+                reinterpret_cast<const uint8_t *>([data getYBuffer]),
+                reinterpret_cast<const uint8_t *>([data getUBuffer]),
+                reinterpret_cast<const uint8_t *>([data getVBuffer]), w, h, src_w,
+                /*limited=*/true, kMaxPreparedYLen);
+        });
+        if (!sharePrepared) return;
+    }
+    const size_t share_frame_bytes = y_len + 2 * (y_len / 4);
     static uint64_t share_limited_frames = 0;  // guarded by g_share_mtx
     if (shareLimited && (++share_limited_frames == 1 || share_limited_frames % 100 == 0))
         EngineIpc::write(R"({"cmd":"debug","stage":"share_limited_range_expanded","count":)" +

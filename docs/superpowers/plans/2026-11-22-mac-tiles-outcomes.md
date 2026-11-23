@@ -93,6 +93,14 @@ Verification (2026-11-22, rebased onto `origin/main` `3529d568`; `native/build-m
 | helper never unlocks | red (both lock tests) |
 | scissor y flipped (`scissor.y = targetHeight - bottom`) | red: `ATileClippedToTheWallRectDrawsNothingOutsideIt` (`:215`) |
 
+### N1 review round 2 (independent review of `cd03236c`)
+
+- **MEDIUM (fixed): share path expanded before it knew anyone would read the frame.** `share_on_frame` packed and expanded a limited frame (up to ~12 MB at 4K) before `try_lock(g_share_mtx)` and before checking for targets. It now takes the lock, returns if there are no targets, and expands through the same `i420_prepare_with_lock_released` seam as video.
+- **Test gap (fixed): the call sites were unpinned.** `main-macos.mm` links the Zoom SDK and is not in the test binary, so calling `scratch.prepare` directly under the lock would have passed every test. New source-level law test `I420EvenFrame.EveryEngineScratchPrepareRunsInsideTheLockReleasingSeam`: every scratch prepare in the engine sits inside the seam's lambda, and there are exactly two (video and share). Mutation: add a direct `shareScratch.prepare(...)` before the seam. Red.
+- **LOW (fixed):** comments. `kMaxPreparedYLen` is a sanity bound, not the SHM capacity. A contended re-take drops an already-expanded frame, and that is accepted.
+- **LOW (not changed):** glow clipping is proven on the top edge only. The `thread_local` scratch keeps its high-water size, bounded by the largest real frame (4K share ≈ 12 MB per callback thread).
+- Engine rebuilds (`native/build-engine`). `I420EvenFrame.*` 7/7.
+
 ## Environment event (2026-11-22 ~19:25)
 
 The App Store began updating Xcode in place to 27.2 mid-session. From then on every `/usr/bin` shim (`c++`, `git`, `swift`, `xcrun`, `python3`) failed with "You have not agreed to the Xcode license agreements", and `Xcode.app`'s `MacOSX26.5.sdk` path disappeared. Workaround used: `DEVELOPER_DIR=/Library/Developer/CommandLineTools` with `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk` (compiles and links C++, ObjC++ and Metal); Homebrew `python3`. Builds made before the update used the Xcode 26.5 SDK.

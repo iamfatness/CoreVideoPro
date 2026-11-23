@@ -51,7 +51,9 @@ inline void i420_pack_even(uint8_t *dst, const uint8_t *sy, const uint8_t *su, c
 // Runs `prepare` (the pack + expand) with `lock` RELEASED, so another feed's
 // try_lock on the same mutex succeeds for the whole expansion, then re-takes
 // the lock with try_lock (an SDK callback thread must never block on it; see
-// video_on_frame). Returns prepare's result with the lock owned again, or
+// video_on_frame). A contended re-take drops the already-expanded frame; the
+// caller's range bookkeeping has counted it, which is accepted (the next frame
+// repaints it). Returns prepare's result with the lock owned again, or
 // nullptr — lock NOT owned — when prepare refused the frame or the lock could
 // not be re-taken; the caller drops the frame either way. After a non-null
 // return the caller must re-find any state it referenced under the old hold.
@@ -70,7 +72,7 @@ class I420EvenFrame {
 public:
     // Packs (and, when `limited`, expands to full range) the frame into the
     // scratch buffer. Returns the packed planes — y_len + 2 * y_len/4 bytes,
-    // see size() — or nullptr when y_len exceeds max_y_len (the SHM capacity),
+    // see size() — or nullptr when y_len exceeds max_y_len (a sanity bound),
     // checked before any allocation. The source planes are never written.
     const uint8_t *prepare(const uint8_t *sy, const uint8_t *su, const uint8_t *sv,
                            uint32_t w, uint32_t h, uint32_t src_w, bool limited,

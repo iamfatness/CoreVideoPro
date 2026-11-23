@@ -6,7 +6,11 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -127,4 +131,31 @@ TEST(I420EvenFrame, AContendedRetakeOrARefusedFrameDropsTheFrameWithoutTheLock) 
   EXPECT_EQ(i420_prepare_with_lock_released(refused, [&]() -> const uint8_t* { ++prepares; return nullptr; }), nullptr);
   EXPECT_EQ(prepares, 1);
   EXPECT_FALSE(refused.owned) << "a refused frame must not re-take the lock";
+}
+
+// main-macos.mm links the Zoom SDK and is not compiled into the tests, so the
+// lock placement at its call sites is pinned at the source level (the
+// TheDualCaptureSlotStufferStaysDead shape): every scratch prepare in the engine
+// runs inside i420_prepare_with_lock_released, i.e. with the lock released.
+// A regression that calls `scratch.prepare(...)` directly under the lock fails here.
+TEST(I420EvenFrame, EveryEngineScratchPrepareRunsInsideTheLockReleasingSeam) {
+  std::ifstream in(std::filesystem::path(COREVIDEO_REPO_ROOT) / "native/zoom-engine/engine/main-macos.mm");
+  ASSERT_TRUE(in) << "main-macos.mm not found";
+  std::ostringstream buf;
+  buf << in.rdbuf();
+  const std::string src = buf.str();
+  const std::string seam = "i420_prepare_with_lock_released(";
+  size_t prepares = 0;
+  // "cratch.prepare(" matches both `scratch.prepare(` and `shareScratch.prepare(`.
+  const std::string call = "cratch.prepare(";
+  for (size_t at = src.find(call); at != std::string::npos; at = src.find(call, at + 1)) {
+    ++prepares;
+    const size_t open = src.rfind(seam, at);
+    ASSERT_NE(open, std::string::npos) << "a scratch prepare at offset " << at << " is outside the seam";
+    // Inside the seam's lambda: the first "});" after the seam opens is also
+    // the first after the prepare (no closed seam call in between).
+    EXPECT_EQ(src.find("});", open), src.find("});", at))
+        << "a scratch prepare at offset " << at << " is not inside the lock-releasing seam";
+  }
+  EXPECT_EQ(prepares, 2u) << "expected the video and the share prepare";
 }
