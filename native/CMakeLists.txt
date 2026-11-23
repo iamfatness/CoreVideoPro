@@ -1017,6 +1017,7 @@ if(BUILD_TESTING)
     tests/SourceGradeIdentityTest.cpp
     tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
+    tests/D3D11GraphicsReferenceTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp
     tests/EngineCommandTest.cpp
