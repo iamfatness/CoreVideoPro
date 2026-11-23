@@ -119,3 +119,15 @@ The App Store began updating Xcode in place to 27.2 mid-session. From then on ev
 | `wallOrder = try c.decode(...)` (one key non-optional) | red: partial-object test (every scene lost) + clamp fixture |
 | `restoredTiles` drops the legacy `dynamic-gallery` default | red: legacy-layout test |
 | shallow copy of settings in `duplicateScene` | n/a: value types, the test is confirmatory (documented in its comment) |
+
+### Task 6 review round 1 (independent review of `e4cce344`)
+
+- **MEDIUM (fixed): a `tiles` value that is not an object dropped every scene.** The decoder's unguarded `container(keyedBy:)` threw, the synthesized `PersistedScene` failed, and `ShellPrefs` fell back to `scenes = []`. Now a non-object keeps the defaults.
+- **MEDIUM (fixed): nested values were all-or-nothing.** `TilesRect` and `TilesMemberOverride` now decode key by key (a partial `wallRect` keeps the keys it has; an override missing its crop keys survives). A non-object override is dropped on its own. A bad element in a string list is dropped on its own, and in `manualSlots` it becomes a hole so slot positions are kept.
+- **Test gaps (fixed):** the other clamp ends and all three list caps; the save path through `AppModel.currentPrefs()` → JSON → `applyRestoredPrefs`; `duplicateScene` with non-default settings.
+- Parity questions checked against the C# and unchanged on purpose: `backgroundColor` is not normalized on restore, override values are not clamped, and `manualSlots` are not blank-filtered. All three match `FromPersisted` exactly.
+
+| Mutation | Result |
+|---|---|
+| `currentPrefs` saves `tiles: nil` | red: save-and-relaunch |
+| the whole-object guard throws again | red: "a non-object tiles keeps every scene" |

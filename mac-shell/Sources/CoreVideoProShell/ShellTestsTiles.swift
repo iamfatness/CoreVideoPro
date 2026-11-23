@@ -17,6 +17,9 @@ extension ShellTests {
             ("tiles/legacy-layout-default", testALegacyDynamicGalleryLayoutWithoutTilesGetsDefaultSettings),
             ("tiles/duplicate-copies-value", testDuplicatingATilesSceneCopiesItsSettingsNotAReference),
             ("tiles/hex-normalizer", testTilesHexMatchesTheWindowsNormalizer),
+            ("tiles/clamp-other-ends-and-caps", testPersistedTilesClampTheOtherEndsAndCapTheLists),
+            ("tiles/bad-values-cost-only-themselves", testABadTilesValueCostsOnlyItself),
+            ("tiles/save-and-relaunch-through-the-model", testTilesSurviveASaveAndRelaunchThroughTheModel),
         ]
     }
 
@@ -130,14 +133,17 @@ extension ShellTests {
     @MainActor static func testDuplicatingATilesSceneCopiesItsSettingsNotAReference() {
         let w = "duplicateScene copies tiles by value"
         let model = AppModel()
-        model.scenes.append(SceneDef(id: "wall", name: "Wall", layout: "dynamic-gallery", tiles: TilesSettings()))
+        var edited = TilesSettings()
+        edited.maxTiles = 9   // non-default, so a copy built from TilesSettings() is caught
+        edited.glowColor = "#8AE0CA"
+        model.scenes.append(SceneDef(id: "wall", name: "Wall", layout: "dynamic-gallery", tiles: edited))
         model.duplicateScene("wall")
         guard let copyIndex = model.scenes.firstIndex(where: { $0.id.hasPrefix("wall-copy-") }) else {
             expect(false, "\(w): a copy exists"); return
         }
-        expectEqual(model.scenes[copyIndex].tiles, TilesSettings(), "\(w): the copy carries the settings")
+        expectEqual(model.scenes[copyIndex].tiles, edited, "\(w): the copy carries the edited settings")
         model.scenes[copyIndex].tiles?.maxTiles = 3
-        expectEqual(model.scenes.first { $0.id == "wall" }?.tiles?.maxTiles, 16, "\(w): the original keeps 16")
+        expectEqual(model.scenes.first { $0.id == "wall" }?.tiles?.maxTiles, 9, "\(w): the original keeps 9")
     }
 
     static func testTilesHexMatchesTheWindowsNormalizer() {
@@ -151,5 +157,94 @@ extension ShellTests {
         let p = TilesHex.parse("8ae0ca")
         expect(p.map { $0.r == 138 && $0.g == 224 && $0.b == 202 } ?? false, "\(w): 8ae0ca parses")
         expectEqual(TilesHex.format(r: 138, g: 224, b: 202), "#8AE0CA", "\(w): format upper")
+    }
+
+    static func testPersistedTilesClampTheOtherEndsAndCapTheLists() {
+        let w = "ScenePersistenceService.FromPersisted (other bounds)"
+        let manyOverrides = (0..<70).map { "\"zoom:\($0)\": {\"cropLeftPercent\": 1}" }.joined(separator: ",")
+        let manySlots = (0..<70).map { "\"zoom-name:G\($0)\"" }.joined(separator: ",")
+        let manyIds = (0..<1100).map { "\"zoom-name:X\($0)\"" }.joined(separator: ",")
+        guard let low = decodePersistedTiles("""
+            {"maxTiles": 0, "gutterPercent": -1, "marginPercent": -1, "wallOpacity": 2,
+             "glowIntensity": -1, "glowSoftness": 101, "customAspectRatio": 0.1, "cornerRadius": 101,
+             "glowSize": -1, "animationDurationMs": 3000, "overrides": {\(manyOverrides)},
+             "manualSlots": [\(manySlots)], "excludedSourceIds": [\(manyIds)], "omittedSourceIds": [\(manyIds)],
+             "membershipMode": " Routed "}
+            """), let high = decodePersistedTiles("""
+            {"gutterPercent": 11, "marginPercent": 21, "wallOpacity": -1, "glowIntensity": 101, "glowSoftness": -1}
+            """) else {
+            expect(false, "\(w): fixtures decode"); return
+        }
+        let s = TilesSettings(persisted: low)
+        expectEqual(s.maxTiles, 1, "\(w): maxTiles low bound 1")
+        expectEqual(s.gutterPercent, 0.0, "\(w): gutter low 0")
+        expectEqual(s.marginPercent, 0.0, "\(w): margin low 0")
+        expectEqual(s.wallOpacity, 1.0, "\(w): opacity high 1")
+        expectEqual(s.glowIntensity, 0.0, "\(w): intensity low 0")
+        expectEqual(s.glowSoftness, 100.0, "\(w): softness high 100")
+        expectEqual(s.customAspectRatio, 0.25, "\(w): ratio low 0.25")
+        expectEqual(s.cornerRadius, 100.0, "\(w): radius high 100")
+        expectEqual(s.glowSize, 0.0, "\(w): glow low 0")
+        expectEqual(s.animationDurationMs, 2000, "\(w): duration high 2000")
+        expectEqual(s.overrides.count, 64, "\(w): overrides capped at 64")
+        expectEqual(s.manualSlots.count, 64, "\(w): manual slots capped at 64")
+        expectEqual(s.excludedSourceIds.count, 1024, "\(w): excluded capped at 1024")
+        expectEqual(s.omittedSourceIds.count, 1024, "\(w): omitted capped at 1024")
+        expectEqual(s.membershipMode, "routed", "\(w): mode trimmed and lowercased")
+        let h = TilesSettings(persisted: high)
+        expectEqual(h.gutterPercent, 10.0, "\(w): gutter high 10")
+        expectEqual(h.marginPercent, 20.0, "\(w): margin high 20")
+        expectEqual(h.wallOpacity, 0.0, "\(w): opacity low 0")
+        expectEqual(h.glowIntensity, 100.0, "\(w): intensity high 100")
+        expectEqual(h.glowSoftness, 0.0, "\(w): softness low 0")
+    }
+
+    @MainActor static func testABadTilesValueCostsOnlyItself() {
+        let w = "Review Focus 1 (bad values inside and around the tiles object)"
+        // A `tiles` that is not an object must not fail the scene: ShellPrefs drops
+        // every scene when one fails.
+        let json = """
+            {"scenes": [
+               {"id": "wall", "name": "Wall", "layout": "dynamic-gallery", "backgroundAssetId": "", "layers": [], "tiles": "oops"},
+               {"id": "duo", "name": "Duo", "layout": "two-up", "backgroundAssetId": "", "layers": []}]}
+            """
+        let prefs = try? JSONDecoder().decode(ShellPrefs.self, from: Data(json.utf8))
+        expectEqual(prefs?.scenes.map(\.id) ?? [], ["wall", "duo"], "\(w): a non-object tiles keeps every scene")
+        guard let p = decodePersistedTiles("""
+            {"wallRect": {"x": 0.5}, "maxTiles": "nine", "glowSize": 12,
+             "overrides": {"zoom:7": {"rect": {"x": 0.5, "y": 0, "width": 0.5, "height": 1}},
+                           "zoom:5": {"z": 3}, "zoom:9": "bad", "zoom:4": {"rect": "bad", "cropLeftPercent": 5}},
+             "manualSlots": ["zoom-name:Ann", 7, null, "capture:cam-a"],
+             "excludedSourceIds": ["a", 1, "b"]}
+            """) else {
+            expect(false, "\(w): the object decodes"); return
+        }
+        expectEqual(p.wallRect, TilesRect(x: 0.5, y: 0, width: 1, height: 1), "\(w): a partial wallRect keeps its key")
+        expectEqual(p.maxTiles, 16, "\(w): a wrong-typed key takes its default")
+        expectEqual(p.glowSize, 12.0, "\(w): its neighbours survive")
+        expectEqual(p.overrides["zoom:7"], TilesMemberOverride(rect: TilesRect(x: 0.5, y: 0, width: 0.5, height: 1)),
+                    "\(w): an override without crop keys survives")
+        expectEqual(p.overrides["zoom:5"], TilesMemberOverride(z: 3), "\(w): a z-only override survives")
+        expect(p.overrides["zoom:9"] == nil, "\(w): a non-object override is dropped alone")
+        expectEqual(p.overrides["zoom:4"], TilesMemberOverride(cropLeftPercent: 5), "\(w): a bad override rect is no rect")
+        expectEqual(p.manualSlots, ["zoom-name:Ann", nil, nil, "capture:cam-a"], "\(w): a bad slot is a hole, positions kept")
+        expectEqual(p.excludedSourceIds, ["a", "b"], "\(w): a bad id is dropped alone")
+    }
+
+    @MainActor static func testTilesSurviveASaveAndRelaunchThroughTheModel() {
+        let w = "AppModel.currentPrefs -> file -> applyRestoredPrefs"
+        let model = AppModel()
+        var edited = TilesSettings()
+        edited.maxTiles = 7
+        edited.borderShape = "rounded"
+        edited.manualSlots = ["zoom-pid:abc", nil]
+        model.scenes.append(SceneDef(id: "wall", name: "Wall", layout: "dynamic-gallery", tiles: edited))
+        guard let data = try? JSONEncoder().encode(model.currentPrefs()),
+              let restored = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
+            expect(false, "\(w): prefs encode and decode"); return
+        }
+        let relaunched = AppModel()
+        relaunched.applyRestoredPrefs(restored)
+        expectEqual(relaunched.scenes.first { $0.id == "wall" }?.tiles, edited, "\(w): the edited settings come back")
     }
 }

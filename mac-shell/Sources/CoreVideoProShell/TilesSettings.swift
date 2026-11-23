@@ -8,6 +8,20 @@ import Foundation
 
 struct TilesRect: Codable, Equatable {
     var x = 0.0, y = 0.0, width = 1.0, height = 1.0
+
+    init(x: Double = 0, y: Double = 0, width: Double = 1, height: Double = 1) {
+        self.x = x; self.y = y; self.width = width; self.height = height
+    }
+
+    /// A missing or wrong-typed key keeps its default instead of failing the
+    /// rect. A value that is not an object still throws, so the caller's
+    /// fallback applies (the default wall rect, or no override rect).
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        x = TilesDecode.value(c, .x, x); y = TilesDecode.value(c, .y, y)
+        width = TilesDecode.value(c, .width, width); height = TilesDecode.value(c, .height, height)
+    }
 }
 
 struct TilesMemberOverride: Codable, Equatable {
@@ -15,6 +29,62 @@ struct TilesMemberOverride: Codable, Equatable {
     var cropLeftPercent = 0.0
     var cropRightPercent = 0.0
     var z: Int?
+
+    init(rect: TilesRect? = nil, cropLeftPercent: Double = 0, cropRightPercent: Double = 0, z: Int? = nil) {
+        self.rect = rect; self.cropLeftPercent = cropLeftPercent; self.cropRightPercent = cropRightPercent; self.z = z
+    }
+
+    init(from decoder: Decoder) throws {
+        self.init()
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        rect = TilesDecode.value(c, .rect, nil as TilesRect?)
+        cropLeftPercent = TilesDecode.value(c, .cropLeftPercent, cropLeftPercent)
+        cropRightPercent = TilesDecode.value(c, .cropRightPercent, cropRightPercent)
+        z = TilesDecode.value(c, .z, nil as Int?)
+    }
+}
+
+/// Lossy decoding helpers for the persisted Tiles object: one bad value never
+/// costs its neighbours (Review Focus 1, N1/S1 review round 1).
+enum TilesDecode {
+    static func value<K: CodingKey, T: Decodable>(_ c: KeyedDecodingContainer<K>, _ key: K, _ fallback: T) -> T {
+        ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+    }
+
+    /// Decodes anything and keeps only a String (nil for null or another type).
+    struct LossyString: Decodable {
+        let value: String?
+        init(from decoder: Decoder) throws {
+            value = try? decoder.singleValueContainer().decode(String.self)
+        }
+    }
+
+    /// Element by element: a non-string element is dropped from a string list,
+    /// and becomes a hole (nil) in `manualSlots`, keeping slot positions.
+    static func strings<K: CodingKey>(_ c: KeyedDecodingContainer<K>, _ key: K) -> [String]? {
+        ((try? c.decodeIfPresent([LossyString].self, forKey: key)) ?? nil)?.compactMap(\.value)
+    }
+
+    static func optionalStrings<K: CodingKey>(_ c: KeyedDecodingContainer<K>, _ key: K) -> [String?]? {
+        ((try? c.decodeIfPresent([LossyString].self, forKey: key)) ?? nil)?.map(\.value)
+    }
+
+    struct AnyKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    /// Override values decode tolerantly (never throw), so a bad entry costs
+    /// only itself: one that is not an object is dropped.
+    struct LossyOverride: Decodable {
+        let value: TilesMemberOverride?
+        init(from decoder: Decoder) throws {
+            value = (try? decoder.container(keyedBy: AnyKey.self)) == nil
+                ? nil : try? TilesMemberOverride(from: decoder)
+        }
+    }
 }
 
 /// The working (clamped) settings a Tiles scene carries. A value type: copying a
@@ -168,7 +238,7 @@ struct PersistedTilesSettings: Codable, Equatable {
 
     init() {}
 
-    private enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey {
         case wallRect, wallOrder, wallOpacity, wallVisible, wallLocked, transparentBackground
         case backgroundColor, backgroundSourceId, overrides, autoFill, membershipMode, manualSlots
         case excludedSourceIds, omittedSourceIds, boundMeetingId, maxTiles, tileAspect, customAspectRatio
@@ -177,10 +247,12 @@ struct PersistedTilesSettings: Codable, Equatable {
     }
 
     init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
-            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
-        }
+        self.init()
+        // A `tiles` value that is not an object at all keeps every default rather
+        // than throwing: a throw would fail the scene, and ShellPrefs drops ALL
+        // scenes when any one fails to decode.
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T { TilesDecode.value(c, key, fallback) }
         let d = PersistedTilesSettings()
         wallRect = value(.wallRect, d.wallRect)
         wallOrder = value(.wallOrder, d.wallOrder)
@@ -190,12 +262,13 @@ struct PersistedTilesSettings: Codable, Equatable {
         transparentBackground = value(.transparentBackground, d.transparentBackground)
         backgroundColor = value(.backgroundColor, d.backgroundColor)
         backgroundSourceId = value(.backgroundSourceId, d.backgroundSourceId)
-        overrides = value(.overrides, d.overrides)
+        overrides = ((try? c.decodeIfPresent([String: TilesDecode.LossyOverride].self, forKey: .overrides)) ?? nil)?
+            .compactMapValues(\.value) ?? d.overrides
         autoFill = value(.autoFill, d.autoFill)
         membershipMode = (try? c.decodeIfPresent(String.self, forKey: .membershipMode)) ?? nil
-        manualSlots = value(.manualSlots, d.manualSlots)
-        excludedSourceIds = value(.excludedSourceIds, d.excludedSourceIds)
-        omittedSourceIds = value(.omittedSourceIds, d.omittedSourceIds)
+        manualSlots = TilesDecode.optionalStrings(c, .manualSlots) ?? d.manualSlots
+        excludedSourceIds = TilesDecode.strings(c, .excludedSourceIds) ?? d.excludedSourceIds
+        omittedSourceIds = TilesDecode.strings(c, .omittedSourceIds) ?? d.omittedSourceIds
         boundMeetingId = (try? c.decodeIfPresent(String.self, forKey: .boundMeetingId)) ?? nil
         maxTiles = value(.maxTiles, d.maxTiles)
         tileAspect = value(.tileAspect, d.tileAspect)
