@@ -1395,8 +1395,8 @@ try {
   assertTrue("background colour (shipping default spacing)", bgOkD, bgDetailsD.join("; "));
 
   console.log("");
-  console.log("[validate-tiles] SKIP glow (T2 — not built yet, no glow layer exists to sample)");
-  console.log("[validate-tiles] SKIP at-rest byte-identical (T1 has no animation toggle; nothing to freeze and compare)");
+  console.log("[validate-tiles] SKIP glow — NOT judged by this oracle (it configures no glow); border/radius/glow pixels are proven by the unit pixel tests TilesDecoration.D3DPixels… (D3D) and MetalTilesPixels.* (Metal)");
+  console.log("[validate-tiles] SKIP at-rest byte-identical — NOT judged by this oracle (animateLayout stays off here; nothing to freeze and compare)");
   console.log("");
   console.log(`Result        : ${results.join(", ")}`);
   if (failures.length === 0) {

@@ -825,6 +825,12 @@ def main():
             print("FAIL  --tiles needs --load N (the wall's members are the N synthetic feeds)")
             core.kill()
             return 1
+        if args.media:
+            # A Tiles scene carries routes [] (the media clip route would ride a
+            # wall scene, which the core warns about and interleaves).
+            print("FAIL  --tiles and --media cannot be combined: a Tiles scene sends no routes")
+            core.kill()
+            return 1
         tiles_members = [f"zoom:{101 + i}" for i in range(args.load)]
         tiles_style = args.tiles_style if args.tiles_style != "plain" else None
         for command in configure:
@@ -1011,8 +1017,12 @@ def main():
             failures.append(verdict)
         else:
             node = snapshot.get("tiles") or {}
+            black = node.get("blackCount") or 0
             print(f"TILES {len(node.get('members') or [])} members drawn, heldCount 0, "
-                  f"blackCount {node.get('blackCount')}")
+                  f"blackCount {black}")
+            if black:
+                failures.append(f"tiles: blackCount={black} (a member is drawn black: stalled "
+                                f"under the black dropout policy)")
     if preview_editors:
         ready = [e for e in core.events if e.get("type") == "grade-preview" and e.get("status") == "ready"
                  and (e.get("texture") or {}).get("iosurfaceId")]

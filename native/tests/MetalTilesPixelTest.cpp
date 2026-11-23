@@ -199,7 +199,9 @@ TEST(MetalTilesPixels, ATileClippedToTheWallRectDrawsNothingOutsideIt) {
   CompositorRenderPlanLayer tile;
   tile.layerId = "tile:test"; tile.sourceId = "zoom:test"; tile.participantId = "test";
   tile.kind = "participant-video"; tile.rect = {0.1f, 0.1f, 0.8f, 0.8f}; tile.order = 2;
-  tile.hasClipRect = true; tile.clipRect = {0.25f, 0.25f, 0.5f, 0.5f};
+  // Asymmetric clip (N1 review): a symmetric one cannot see a y-flip or an
+  // x/y swap of the scissor. Clip spans x 64..224, y 18..90 of 320x180.
+  tile.hasClipRect = true; tile.clipRect = {0.2f, 0.1f, 0.5f, 0.4f};
   tile.tilesDecoration.enabled = true; tile.tilesDecoration.glowSize = 16;
   tile.tilesDecoration.glowIntensity = 1; tile.tilesDecoration.glowColor = "#00FF00";
   auto glow = tile; glow.kind = "tiles-glow"; glow.layerId = "glow"; glow.participantId.clear();
@@ -208,11 +210,15 @@ TEST(MetalTilesPixels, ATileClippedToTheWallRectDrawsNothingOutsideIt) {
   const auto rendered = compositor->render(plan, {solidBgra("test", 255, 255, 255, 1)});
   ASSERT_EQ(rendered.preview.width, 320);
   const auto& img = rendered.preview.bgra;
+  const auto at = [&](int x, int y, int c) { return img[(static_cast<size_t>(y) * 320 + x) * 4 + c]; };
   // Inside the clip the white tile shows (proves the tile drew at all).
-  EXPECT_GT(img[(90 * 320 + 160) * 4 + 1], 245);
-  for (const int x : {64, 256}) {  // 0.2 and 0.8 of 320, y = 0.5
+  EXPECT_GT(at(144, 54, 1), 245);
+  // Left, right, above (the glow band over the tile's top edge) and below the
+  // clip: background only, glow included.
+  const int outside[][2] = {{48, 54}, {256, 54}, {144, 9}, {144, 108}};
+  for (const auto& p : outside) {
     for (int c = 0; c < 3; ++c)
-      EXPECT_LE(img[(90 * 320 + x) * 4 + c], 2) << "x=" << x << " c=" << c;
+      EXPECT_LE(at(p[0], p[1], c), 2) << "x=" << p[0] << " y=" << p[1] << " c=" << c;
   }
 }
 

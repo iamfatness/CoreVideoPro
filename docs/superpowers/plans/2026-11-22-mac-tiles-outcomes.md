@@ -69,6 +69,30 @@ Every line of the plan's "Verified starting state" was re-read at `163c4a3f`. Li
 - Proof so far: (a) shared-header tests green (`I420ContentRangeTracker.*` 4/4, `I420RangeExpand*` 4/4, `ZoomRangeExcursion*` 4/4); (b) the engine builds and bundles (`native/build-engine`, CLT toolchain + CLT `MacOSX26.5.sdk`, see Environment event; `scripts/make-macos-engine-bundle.sh --build-dir native/build-engine --link-sdk` OK). (c) The live count of `video_range_classified` lines and the pulse detector are **A1 step 3** — not run.
 - PR #1226 (`mac-zoom-hd-video`) touches `main-macos.mm:236-252` (`onZoomSDKAuthReturn`) only; this task's hunks are `:78-80` (includes), `:949-987` (struct + helpers), `:1157-1185`, `:1224-1243` (video path), `:1535-1541`, `:1577` (share path). No overlap.
 
+### N1 review round 1 (independent review of `163c4a3f..cd5d6ffd`)
+
+Verdict: no correctness bug; parity claims hold. Findings and what was done:
+
+- **MEDIUM — engine range expansion placement (fixed).** Task 5 expanded each target's SHM copy in place *after* the copy, while the target's sequence was odd (a several-fold wider seqlock write window for limited frames), under the global `g_video_mtx` that all feeds `try_lock` (other feeds silently drop frames for the duration), and once per fan-out target. Now, mirroring Windows' `I420RangeNormalizer`: classify once under the lock (sampled, cheap); for a limited frame, release `g_video_mtx`, pack + expand **once** into a per-thread scratch frame (`I420EvenFrame`, new shared header `zoom-engine/shared/i420-even-frame.h`, reallocated only when the frame grows), re-take the lock with `try_lock` and re-find the subscription, then each target only `memcpy`s the prepared frame inside its window. Share frames expand once before `g_share_mtx` is taken. A full-range frame keeps the old direct copy (`copy_i420_even`, now a wrapper over the shared `i420_pack_even`). Test seam: `native/tests/I420EvenFrameTest.cpp` (crop with source stride, expand-once, full-range unchanged, scratch reuse + oversize refusal). The `--load 8 --tiles` drill at A1 is the real gate.
+- **LOW 1 (fixed).** `ATileClippedToTheWallRectDrawsNothingOutsideIt` used a symmetric clip probed on the centre row, blind to a y-flip or x/y swap of the scissor. Now clip `{0.2,0.1,0.5,0.4}`, probed inside, left, right, above (the glow band over the tile's top edge) and below.
+- **LOW 2 (fixed).** `mac-show-drill.py` refuses `--tiles --media` explicitly.
+- **LOW 3 (fixed).** `validate-tiles.mjs` SKIP lines no longer say glow is "not built yet"; they say the oracle does not judge glow/at-rest and name the unit pixel tests that do.
+- **LOW 4 (fixed).** `tiles_verdict` path now also FAILS on `blackCount > 0`.
+- **LOW 5 (follow-up, not changed).** `MetalGradePreview.mm:138` carries its own clean-shader fallback outside the new `compileMetalCompositorLibrary` seam.
+
+**Lock placement is now a tested seam.** The release / prepare / `try_lock` step is `i420_prepare_with_lock_released` in `i420-even-frame.h`, which `video_on_frame` calls. `I420EvenFrame.TheExpansionRunsWithTheVideoMutexReleasedAndRetakesIt` holds a real `std::mutex` the way the engine does and, from inside the prepare step, has a second thread `try_lock` it (exactly what another feed's callback does): it must succeed, and the lock must be owned again afterwards. `AContendedRetakeOrARefusedFrameDropsTheFrameWithoutTheLock` covers both drop paths.
+
+Verification (2026-11-22, rebased onto `origin/main` `3529d568`; `native/build-metal` reconfigured fresh with `DEVELOPER_DIR=/Library/Developer/CommandLineTools`, `SDKROOT`/`CMAKE_OSX_SYSROOT` = CLT `MacOSX26.5.sdk`):
+
+- `I420EvenFrame.*` 6/6, `MetalTilesPixels.*` 5/5, range tracker / expand tests green. Metal `ctest -LE realtime`: 100% passed.
+- Engine (`native/build-engine`, same CLT toolchain it was configured with) rebuilds with the new `main-macos.mm`.
+
+| Mutation | Result |
+|---|---|
+| helper runs `prepare()` before `lock.unlock()` (expansion under the lock) | red: "another feed's try_lock failed during the expansion" |
+| helper never unlocks | red (both lock tests) |
+| scissor y flipped (`scissor.y = targetHeight - bottom`) | red: `ATileClippedToTheWallRectDrawsNothingOutsideIt` (`:215`) |
+
 ## Environment event (2026-11-22 ~19:25)
 
 The App Store began updating Xcode in place to 27.2 mid-session. From then on every `/usr/bin` shim (`c++`, `git`, `swift`, `xcrun`, `python3`) failed with "You have not agreed to the Xcode license agreements", and `Xcode.app`'s `MacOSX26.5.sdk` path disappeared. Workaround used: `DEVELOPER_DIR=/Library/Developer/CommandLineTools` with `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk` (compiles and links C++, ObjC++ and Metal); Homebrew `python3`. Builds made before the update used the Xcode 26.5 SDK.
