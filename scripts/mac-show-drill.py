@@ -472,7 +472,7 @@ class GraphicsDrill:
         self.crawl_created_at = None
         self.last = {}
 
-    def request(self, kind, instance=None, **payload):
+    def request(self, kind, instance=None, retry_on=False, **payload):
         self.sequence += 1
         payload.update({"schemaVersion": 1, "requestId": f"drill-{self.sequence}", "clientId": "show-drill",
                         "coreEpoch": self.epoch})
@@ -481,13 +481,40 @@ class GraphicsDrill:
         reply = self.core.request({"type": kind, "graphics": payload}, step=kind) or {}
         snapshot = reply.get("snapshot", {})
         result = (snapshot.get("graphics") or {}).get("lastResult") or {}
-        if not reply:
-            self.failures.append(f"{kind} {instance or ''}: request timed out")
-        elif not result.get("accepted"):
-            self.failures.append(f"{kind} {instance or ''}: refused ({result.get('reason')})")
         if snapshot:
-            self.observe(snapshot)
+            self.observe(snapshot, poll=False)
+        if not reply:
+            self.fail(f"{kind} {instance or ''}: request timed out")
+            return {}
+        if result.get("requestId") != payload["requestId"]:
+            # lastResult belongs to an earlier request: this one never reached apply().
+            self.fail(f"{kind} {instance or ''}: no result for {payload['requestId']} (last was {result.get('requestId')})")
+            return {}
+        if not result.get("accepted") and not retry_on:
+            self.fail(f"{kind} {instance or ''}: refused ({result.get('reason')})")
         return result
+
+    def fail(self, message):
+        if message not in self.failures:
+            self.failures.append(message)
+
+    def request_until(self, kind, instance=None, retry=("clock-controller-busy", "required-field-empty"),
+                      payload=None, seconds=5.0):
+        """For setup steps the core admits asynchronously: retry the named refusals, bounded."""
+        deadline = time.time() + seconds
+        while True:
+            body = dict(payload() if callable(payload) else (payload or {}))
+            result = self.request(kind, instance, retry_on=True, **body)
+            if result.get("accepted") or result.get("reason") not in retry or time.time() >= deadline:
+                if result and not result.get("accepted"):
+                    self.fail(f"{kind} {instance or ''}: refused ({result.get('reason')})")
+                return result
+            self.poll()
+            time.sleep(0.05)
+
+    def poll(self):
+        reply = self.core.sync([], 0, step="graphics-poll") or {}
+        self.observe(reply.get("snapshot", {}), poll=False)
 
     def row(self, instance):
         for row in (self.last.get("graphics") or {}).get("instances", []):
@@ -500,7 +527,12 @@ class GraphicsDrill:
 
     def setup(self):
         self.request("graphics-template-install", manifest=json.dumps(CRAWL_MANIFEST))
-        self.crawl_created_at = time.time()
+        # Install only queues: wait (bounded) until drill-crawl is in the catalog.
+        deadline = time.time() + 5
+        while time.time() < deadline and not any(
+                r.get("templateId") == "drill-crawl" for r in (self.last.get("graphics") or {}).get("templates", [])):
+            self.poll()
+            time.sleep(0.05)
         for instance, template, fields in (
                 ("drill-lt", "transparent-name", {"name": "DRILL GUEST", "title": "CoreVideo show drill"}),
                 ("drill-clock", "clock-panel", None),
@@ -508,17 +540,21 @@ class GraphicsDrill:
             body = {"scope": "global", "templateId": template, "templateVersion": 1}
             if fields:
                 body["fields"] = fields
+            if instance == "drill-crawl":
+                self.crawl_created_at = time.time()
             self.request("graphics-instance-create", instance, **body)
             if instance == "drill-clock":
-                self.request("graphics-clock-control", instance, action="configure",
-                             configuration=clock_configuration(),
-                             expectedClockRevision=int(self.row(instance).get("clockConfigurationRevision", 0)),
-                             expectedRevision=self.revision(instance))
-                self.request("graphics-clock-control", instance, action="start",
-                             expectedRevision=self.revision(instance))
-            self.request("graphics-instance-cue", instance, expectedRevision=self.revision(instance) or 1)
-            self.request("graphics-instance-trigger", instance, expectedRevision=self.revision(instance) or 1,
-                         action="show")
+                self.request_until("graphics-clock-control", instance, payload=lambda: {
+                    "action": "configure", "configuration": clock_configuration(),
+                    "expectedClockRevision": int(self.row("drill-clock").get("clockConfigurationRevision", 0)),
+                    "expectedRevision": self.revision("drill-clock")})
+                self.request_until("graphics-clock-control", instance, payload=lambda: {
+                    "action": "start", "expectedRevision": self.revision("drill-clock")})
+            # A clock's fields are ready only after its first worker sample.
+            self.request_until("graphics-instance-cue", instance,
+                               payload=lambda i=instance: {"expectedRevision": self.revision(i) or 1})
+            self.request_until("graphics-instance-trigger", instance,
+                               payload=lambda i=instance: {"expectedRevision": self.revision(i) or 1, "action": "show"})
 
     def traffic(self, second, first_tick_of_second):
         """Called on each non-recue poll tick; acts once per second."""
@@ -541,20 +577,21 @@ class GraphicsDrill:
             self.request("graphics-instance-update", "drill-crawl", expectedRevision=self.revision("drill-crawl"),
                          target="program", fields={"crawl-items": items})
 
-    def observe(self, snapshot):
-        """Sampled at each 2 Hz poll: the drill sees snapshots, not every frame."""
+    def observe(self, snapshot, poll=True):
+        """Every snapshot the drill sees (2 Hz polls plus command replies): snapshots, not frames."""
         if not snapshot.get("graphics"):
             return
         self.last = snapshot
-        self.samples += 1
+        if poll:
+            self.samples += 1
         graphics = snapshot["graphics"]
         for row in graphics.get("instances", []):
             instance = row.get("instanceId")
-            if row.get("firstDrawSubmittedFrame", 0) > 0:
+            if (row.get("firstDrawSubmittedFrame") or 0) > 0:
                 self.drawn.add(instance)
             for field in ("preparation", "cuePreparation"):
                 if row.get(field) == "failed":
-                    self.failures.append(f"{instance}: {field} failed ({row.get('warning') or row.get('cueWarning')})")
+                    self.fail(f"{instance}: {field} failed ({row.get('warning') or row.get('cueWarning')})")
             if instance == "drill-crawl" and self.crawl_cold_ms is None and row.get("cuePreparation") == "ready":
                 self.crawl_cold_ms = (time.time() - self.crawl_created_at) * 1000
             sent = self.sent.get(instance)
@@ -564,13 +601,13 @@ class GraphicsDrill:
                 self.sent.pop(instance, None)
         warnings = (snapshot.get("programFrame") or {}).get("warnings") or []
         if "graphics-preparation-failed" in warnings:
-            self.failures.append("programFrame.warnings carried graphics-preparation-failed")
+            self.fail("programFrame.warnings carried graphics-preparation-failed")
         budget = graphics.get("resourceBudgetAtStatePublication") or {}
         if budget:
-            self.high_water = max(self.high_water, int(budget.get("residentHighWater", 0)))
-            self.limit = int(budget.get("residentLimit", 0))
-            if budget.get("residentHighWater", 0) > budget.get("residentLimit", 0):
-                self.failures.append(f"resident high water {budget.get('residentHighWater')} > limit {budget.get('residentLimit')}")
+            self.high_water = max(self.high_water, int(budget.get("residentHighWater") or 0))
+            self.limit = int(budget.get("residentLimit") or 0)
+            if (budget.get("residentHighWater") or 0) > (budget.get("residentLimit") or 0):
+                self.fail(f"resident high water {budget.get('residentHighWater')} > limit {budget.get('residentLimit')}")
 
     def finish(self):
         """Remove every instance, then prove a new graphic still reaches Program (the limit is not wedged)."""
@@ -610,8 +647,13 @@ class GraphicsDrill:
         if self.crawl_cold_ms is not None:
             print(f"GRAPHICS crawl first cold preparation: {self.crawl_cold_ms:.0f}ms (poll granularity)")
         budget = (self.last.get("graphics") or {}).get("resourceBudgetAtStatePublication") or {}
+        if not self.limit:
+            self.fail("no resourceBudgetAtStatePublication was ever observed: the resident-limit gate saw nothing")
+        elif self.high_water < 1:
+            self.fail("resident high water stayed 0: no graphic was ever resident")
         print(f"GRAPHICS resident high water {self.high_water} of {self.limit}; final budget "
-              f"{json.dumps({k: budget.get(k) for k in ('residentResources', 'residentHighWater', 'residentLimit')})}")
+              f"{json.dumps({k: budget.get(k) for k in ('residentResources', 'residentHighWater', 'residentLimit', 'refused')})}"
+              " (removed revisions stay resident until cache pressure: plan correction 5)")
         return self.failures
 
 
@@ -768,7 +810,7 @@ def main():
             return 1
         graphics = GraphicsDrill(core, os.environ.get("COREVIDEO_DRILL_STALE_EPOCH") or epoch)
         graphics.setup()
-        print(f"GRAPHICS three instances cued and shown (coreEpoch {epoch})")
+        print(f"GRAPHICS three instances cued and shown (coreEpoch {graphics.epoch})")
 
     if args.source_grades:
         # Per-source grading (grading plan 2026-11-16, Task 7): the same requests the Mac
@@ -819,13 +861,16 @@ def main():
     #    2Hz snapshot syncs plus scene re-cues, while the render loop is live.
     start = time.time()
     tick = 0
+    graphics_second = -1
     media_first = media_last = None
     media_first_at = media_last_at = 0.0
     while time.time() - start < args.seconds:
         tick += 1
         elapsed = int((time.time() - start) * 1000) + 1000
         if graphics:
-            graphics.traffic(tick // 2, tick % 2 == 0)
+            second = int(time.time() - start)
+            graphics.traffic(second, second != graphics_second)
+            graphics_second = second
         if tick % 5 == 0:
             # Re-cue preview (the solo-scene path) — the traffic that flooded.
             solo = "mv-solo-a" if tick % 10 == 0 else "mv-solo-b"
@@ -858,10 +903,6 @@ def main():
             media_last, media_last_at = response.get("snapshot", {}), time.time()
         time.sleep(0.5)
 
-    if graphics:
-        graphics.finish()
-        failures.extend(f"--graphics-cue: {f}" for f in graphics.report())
-
     # 3. Record a short session and confirm the artifact is real.
     folder = os.path.join(REPO, "artifacts", "show-drill")
     os.makedirs(folder, exist_ok=True)
@@ -874,7 +915,18 @@ def main():
          "isoSourceIds": [], "isoParticipantIds": []},
         {"type": "start-recording-session", "sessionId": "drill"},
     ], 60000)
-    time.sleep(6)
+    if graphics:
+        # Graphics stay on air with traffic through the recorded window, so the
+        # recorded-rate and render-window gates measure Program WITH graphics.
+        recording_until = time.time() + 6
+        while time.time() < recording_until:
+            second = int(time.time() - start)
+            graphics.traffic(second, second != graphics_second)
+            graphics_second = second
+            graphics.poll()
+            time.sleep(0.5)
+    else:
+        time.sleep(6)
     # Stop the SESSION first so the writer flushes its moov box, then let the
     # file settle before probing. Killing the core (below) is a hard kill: an
     # unfinalised mp4 has no moov atom and is unplayable, no matter how many
@@ -885,6 +937,14 @@ def main():
     step("encoder-stop", [{"type": "stop-encoder-session",
                            "reason": "drill complete"}], 67000)
     time.sleep(2.5)
+    # The last [render] window the gates read below was rendered with the
+    # graphics still on air; only now clear Program and prove the limit is not wedged.
+    last_render_with_graphics = next(
+        (l for l in reversed(core.stderr) if l.startswith("[render] ") and "dropped=" in l), "")
+    if graphics:
+        graphics.finish()
+        failures.extend(f"--graphics-cue: {f}" for f in graphics.report())
+        print(f"GRAPHICS last render window with graphics on air: {last_render_with_graphics or '(none)'}")
 
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
@@ -1164,7 +1224,9 @@ def main():
     if args.load:
         windows = [l for l in rate_lines if "lockWait=" in l]
         if windows:
-            last = windows[-1]
+            # With --graphics-cue, judge the window rendered while the graphics
+            # were on air, not the one after finish() cleared Program.
+            last = last_render_with_graphics if (graphics and last_render_with_graphics) else windows[-1]
             fps = float(last.split("] ")[1].split("fps")[0])
             render_ms = float(last.split("render=")[1].split("ms")[0])
             dropped = int(last.split("dropped=")[1].split(" ")[0]) if "dropped=" in last else -1
