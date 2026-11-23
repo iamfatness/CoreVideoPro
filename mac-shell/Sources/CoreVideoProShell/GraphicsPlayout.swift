@@ -388,6 +388,23 @@ final class GraphicsPlayout {
         return await body()
     }
 
+    /// Countdown transport (ClockAsync, GraphicsPlayoutService.cs:420-427): start | pause | resume | reset
+    /// on the row's instance. Never shows or hides the graphic; refused when the row has no instance yet.
+    func clock(_ entry: GraphicsPlaylistEntry, action: String) async -> GraphicsOperationResult {
+        await run {
+            guard ["start", "pause", "resume", "reset"].contains(action) else {
+                return self.refuse("Clock action must be start, pause, resume or reset.")
+            }
+            let id = entry.instanceId
+            guard let instance = self.observe()?.instance(id) else {
+                return self.refuse("That row is not on Preview or Program yet. Cue or Show it first.")
+            }
+            var result = try await self.send("graphics.clock.control", ["instanceId": id, "expectedRevision": max(1, instance.revision), "action": action])
+            if result.accepted { result.instanceId = id; result.reason = "Clock " + action + "." }
+            return result
+        }
+    }
+
     /// ConfigureClock (:256-266): apply the row's clock when it differs from what the
     /// core already has. Non-fatal: a template without a clock refuses and the graphic still plays.
     func configureClock(_ row: GraphicsRow, _ instance: GraphicsInstance) async throws {

@@ -75,6 +75,9 @@ struct ShellApp: App {
         if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_FOOTER_SNAPSHOT"] {
             MainActor.assumeIsolated { FooterSnapshotHarness.runAndExit(dir: dir) }
         }
+        if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SNAPSHOT"] {
+            MainActor.assumeIsolated { GraphicsLayoutSnapshot.runAndExit(dir: dir) }
+        }
         if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT"] {
             MainActor.assumeIsolated { TabSnapshotHarness.runAndExit(dir: dir) }
         }
@@ -1291,8 +1294,12 @@ struct TabPage: View {
     // Width per tab comes from TabPageLayout (a flat 720 pt cap clipped the
     // Sources rows and the Routing grid).
     var body: some View {
-        ScrollView {
-            TabPageContent(tab: model.selectedTab)
+        if TabPageLayout.fillsHeight(model.selectedTab) {
+            TabPageContent(tab: model.selectedTab).frame(maxHeight: .infinity, alignment: .top)
+        } else {
+            ScrollView {
+                TabPageContent(tab: model.selectedTab)
+            }
         }
     }
 }

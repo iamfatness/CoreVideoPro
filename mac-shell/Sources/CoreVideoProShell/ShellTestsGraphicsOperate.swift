@@ -24,6 +24,34 @@ final class ScriptedGraphicsCore {
         node = ["schemaVersion": 1, "coreEpoch": epoch, "instances": instances, "operations": [] as [Any]]
     }
 
+    /// Replays a transcript the C# exporter recorded from the real GraphicsPlayoutService (plan
+    /// "Conformance machinery"): command k must equal steps[k].command (minus requestId / clientId /
+    /// schemaVersion / coreEpoch) and is answered with steps[k].nodeAfter. Mismatches and extra
+    /// commands are collected in `replayFaults`.
+    convenience init(replaying steps: [JSONObject], initialNode: JSONObject) {
+        self.init()
+        node = initialNode
+        node["operations"] = node["operations"] ?? [] as [Any]
+        var index = 0
+        react = { [unowned self] command, node in
+            guard index < steps.count else { self.replayFaults.append("extra command \(command)"); return (false, "unexpected") }
+            let step = steps[index]; index += 1
+            let want = step["command"] as? JSONObject ?? [:]
+            let got: JSONObject = ["type": command["type"] ?? "", "graphics": Self.normalized(command["graphics"] as? JSONObject ?? [:])]
+            if !(got as NSDictionary).isEqual(to: want) { self.replayFaults.append("step \(index - 1): sent \(got), recorded \(want)") }
+            let operations = node["operations"]
+            node = step["nodeAfter"] as? JSONObject ?? node
+            node["operations"] = operations ?? [] as [Any]
+            return (true, "accepted")
+        }
+    }
+
+    var replayFaults: [String] = []
+
+    static func normalized(_ graphics: JSONObject) -> JSONObject {
+        graphics.filter { !["requestId", "clientId", "schemaVersion", "coreEpoch"].contains($0.key) }
+    }
+
     /// Command types in order ("graphics-instance-trigger:hide:<instance>").
     var transcript: [String] {
         commands.map { command in

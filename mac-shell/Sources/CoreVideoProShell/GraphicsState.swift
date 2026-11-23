@@ -47,6 +47,8 @@ struct GraphicsTemplateField: Equatable {
     var minimum: Double?
     var maximum: Double?
     var choices: [Any] = []
+    /// metadata.label when it is a string (the editor's friendly name; GraphicsRowFields.LabelOf).
+    var label: String?
     static func == (a: GraphicsTemplateField, b: GraphicsTemplateField) -> Bool { a.id == b.id && a.type == b.type }
 }
 
@@ -80,6 +82,14 @@ struct GraphicsSource: Equatable {
     var videoOn = false
 }
 
+/// NativeGraphicsClock: what the core says a clock instance shows right now.
+struct GraphicsInstanceClock: Equatable {
+    var text = ""
+    var state = ""
+    var finishAction = ""
+    var remainingSeconds = 0.0
+}
+
 struct GraphicsInstance {
     var instanceId = ""
     var label = ""
@@ -110,6 +120,8 @@ struct GraphicsInstance {
     var fieldName: String { GraphicsJSON.string(fields["name"]) }
     var animations: JSONObject?
     var clockConfigurationRevision: Int64 = 0
+    /// The instance's live clock (NativeGraphicsClock), nil when its template has none.
+    var clock: GraphicsInstanceClock?
     var clockRequestedConfiguration: JSONObject?
 
     /// On Program: an accepted Program revision that is not hidden or building
@@ -196,7 +208,22 @@ struct GraphicsState {
         i.animations = json["animations"] as? JSONObject
         i.clockConfigurationRevision = GraphicsJSON.int(json["clockConfigurationRevision"])
         i.clockRequestedConfiguration = json["clockRequestedConfiguration"] as? JSONObject
+        i.clock = (json["clock"] as? JSONObject).map {
+            GraphicsInstanceClock(text: GraphicsJSON.string($0["text"]), state: GraphicsJSON.string($0["state"]),
+                                  finishAction: GraphicsJSON.string($0["finishAction"]),
+                                  remainingSeconds: ($0["remainingSeconds"] as? NSNumber)?.doubleValue ?? 0)
+        }
         return i
+    }
+
+    /// A manifest's `fields` array (the core's template list and a saved pin's definition alike).
+    static func fields(_ json: Any?) -> [GraphicsTemplateField] {
+        (json as? [JSONObject] ?? []).map {
+            GraphicsTemplateField(id: GraphicsJSON.string($0["id"]), type: GraphicsJSON.string($0["type"]), defaultValue: $0["default"],
+                                  required: GraphicsJSON.bool($0["required"]), maxLength: ($0["maxLength"] as? NSNumber)?.intValue,
+                                  minimum: ($0["minimum"] as? NSNumber)?.doubleValue, maximum: ($0["maximum"] as? NSNumber)?.doubleValue,
+                                  choices: $0["choices"] as? [Any] ?? [], label: ($0["metadata"] as? JSONObject)?["label"] as? String)
+        }
     }
 
     private static func template(_ json: JSONObject) -> GraphicsTemplate {
@@ -209,12 +236,7 @@ struct GraphicsState {
         t.manifestHash = GraphicsJSON.string(json["manifestHash"])
         t.packageRoot = GraphicsJSON.string(json["packageRoot"])
         t.definition = json["definition"] as? JSONObject
-        t.fields = (json["fields"] as? [JSONObject] ?? []).map {
-            GraphicsTemplateField(id: GraphicsJSON.string($0["id"]), type: GraphicsJSON.string($0["type"]), defaultValue: $0["default"],
-                                  required: GraphicsJSON.bool($0["required"]), maxLength: ($0["maxLength"] as? NSNumber)?.intValue,
-                                  minimum: ($0["minimum"] as? NSNumber)?.doubleValue, maximum: ($0["maximum"] as? NSNumber)?.doubleValue,
-                                  choices: $0["choices"] as? [Any] ?? [])
-        }
+        t.fields = fields(json["fields"])
         t.defaultPlacement = json["defaultPlacement"] as? JSONObject
         t.animations = json["animations"] as? JSONObject
         return t

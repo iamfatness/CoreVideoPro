@@ -1,6 +1,6 @@
 // GraphicsOperatePane — the Graphics tab when native graphics is available
-// (spec 5.4): Operate | Design. Operate is the status line, the On Air strip
-// and (playlist slice) the rows; Design holds "Existing overlay controls"
+// (spec 5.4): Operate | Design with the status line beside the switch, the On
+// Air strip, then Operate's two columns (G4-G7 Task 1); Design holds "Existing overlay controls"
 // (today's pane, unchanged) and the Designer note. When graphics is not
 // available the tab is today's pane plus one line saying why.
 //
@@ -20,46 +20,88 @@ struct GraphicsTabPane: View {
 
     var body: some View {
         if graphics.available {
+            // Windows OverlaysPage (:22-48): row 0 = Operate|Design + the status line beside it,
+            // row 1 = the On Air strip, row 2 = the surface, filling the rest of the page.
             VStack(alignment: .leading, spacing: 10) {
-                Picker("", selection: $surface) {
-                    ForEach(GraphicsSurface.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                HStack(spacing: 12) {
+                    Picker("", selection: $surface) {
+                        ForEach(GraphicsSurface.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                    GraphicsStatusLine(graphics: graphics)
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                GraphicsOnAirStrip(graphics: graphics)
                 switch surface {
                 case .operate: GraphicsOperatePane(graphics: graphics)
-                case .design: GraphicsDesignPane()
+                case .design: ScrollView { GraphicsDesignPane() }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(GraphicsModel.needsNewerCoreText)
-                    .font(.grotesk(12, .medium)).foregroundStyle(Studio.amber)
-                OverlaysPane()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(GraphicsModel.needsNewerCoreText)
+                        .font(.grotesk(12, .medium)).foregroundStyle(Studio.amber)
+                    OverlaysPane()
+                }
             }
         }
     }
 }
 
+/// The playout status, one line, truncating (Windows binds GraphicsPlayoutStatus beside the switch).
+struct GraphicsStatusLine: View {
+    @ObservedObject var graphics: GraphicsModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if graphics.busy { ProgressView().controlSize(.small) }
+            Text(graphics.busy && graphics.status.isEmpty ? "Working…" : graphics.status)
+                .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Operate: the playlist column and the fixed-width inspector column beside it (Windows
+/// GraphicsPlayoutControl :46-93), each scrolling on its own.
 struct GraphicsOperatePane: View {
     @ObservedObject var graphics: GraphicsModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if !graphics.status.isEmpty || graphics.busy {
-                    HStack(spacing: 8) {
-                        if graphics.busy { ProgressView().controlSize(.small) }
-                        Text(graphics.busy && graphics.status.isEmpty ? "Working…" : graphics.status)
-                            .font(.grotesk(12)).foregroundStyle(Studio.secondary)
-                            .lineLimit(2).truncationMode(.tail)
+        GeometryReader { proxy in
+            HStack(alignment: .top, spacing: GraphicsOperateLayout.columnSpacing) {
+                ForEach(Array(GraphicsOperateLayout.columns(width: proxy.size.width).enumerated()), id: \.offset) { _, column in
+                    switch column {
+                    case .list: GraphicsPlaylistPane(graphics: graphics).reportsColumnFrame("list")
+                    case .inspector(let width): GraphicsInspectorPanel(graphics: graphics, width: width).reportsColumnFrame("inspector")
                     }
                 }
-                GraphicsOnAirStrip(graphics: graphics)
-                GraphicsPlaylistPane(graphics: graphics)
-                Spacer(minLength: 0)
             }
-            .padding(.vertical, 4)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .coordinateSpace(name: GraphicsColumnFrames.space)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Where each Operate column landed, in the pane's coordinates (published as a preference; the layout
+/// test reads it to prove the inspector renders BESIDE the list at real sizes).
+enum GraphicsColumnFrames {
+    static let space = "graphics-operate"
+    struct Key: PreferenceKey {
+        static var defaultValue: [String: CGRect] = [:]
+        static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue()) { $1 } }
+    }
+}
+
+extension View {
+    func reportsColumnFrame(_ name: String) -> some View {
+        background(GeometryReader { proxy in
+            Color.clear.preference(key: GraphicsColumnFrames.Key.self, value: [name: proxy.frame(in: .named(GraphicsColumnFrames.space))])
+        })
     }
 }
 
