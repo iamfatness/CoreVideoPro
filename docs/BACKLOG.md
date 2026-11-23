@@ -29,6 +29,7 @@ The prior window is complete: beta `beta-2026-11-06-74495ad` is public; #867 and
 |---|---|
 | [#1197](https://github.com/iamfatness/CoreVideoPro/issues/1197) | A new Solo scene becomes unsaved during queued editor initialization before any rename. Reproduced separately; does not displace #1199. |
 | [#1201](https://github.com/iamfatness/CoreVideoPro/issues/1201) | Stage Volt rundown clips in the Windows media bin, cue them on Preview, and take the confirmed clip to Program. |
+| [#1227](https://github.com/iamfatness/CoreVideoPro/issues/1227) | Show Edge NDI nodes, guests and feed health in Pro Sources. [Spec](superpowers/specs/2026-11-22-edge-operator-view-design.md) and [implementation plan](superpowers/plans/2026-11-22-edge-operator-view.md). |
 
 ## Active replenishing eight-hour window — November 6, 07:36–15:36 Eastern
 
