@@ -16,6 +16,8 @@ extension ShellTests {
             ("comms/quit-sends-release-all-before-core-stop", testCommsQuitReleaseFirst),
             ("comms/confirm-quit-sends-release-all-before-output-stops", testCommsConfirmQuitReleaseFirst),
             ("comms/quit-release-is-bounded-when-the-core-hangs", testCommsQuitReleaseBounded),
+            ("comms/keys-drive-the-model-end-to-end", testCommsKeysDriveTheModel),
+            ("comms/trigger-releases-a-cell-that-left-while-held", testCommsTriggerReleasesOrphan),
         ]
     }
 
@@ -179,5 +181,52 @@ extension ShellTests {
         spin(until: { !replies.isEmpty }, limit: 3)
         expectEqual(replies, [true], "a hung core cannot hold the quit")
         expect(Date().timeIntervalSince(t0) < 1.5, "bounded near 350 ms")
+    }
+
+    /// handleCommsKey -> CommsModel -> the core, with the exact payloads.
+    @MainActor static func testCommsKeysDriveTheModel() {
+        let (m, core) = commsModelWithCore()
+        m.applyZoomForTesting(["meetingState": "in_meeting"])
+        m.comms.apply(.some(commsState(desk(ch(0, "Ana", 1) + "," + ch(1, "Ben", 1)))))
+        m.selectedTab = .comms
+        func key(_ kind: CommsKeyEvent.Kind, down: Bool, isRepeat: Bool = false) -> Bool {
+            m.handleCommsKey(CommsKeyEvent(kind: kind, down: down, isRepeat: isRepeat, isCommsTab: m.selectedTab == .comms,
+                                           deskVisible: m.comms.deskVisible))
+        }
+        expect(key(.digit(2), down: true), "digit consumed")
+        expect(key(.digit(2), down: true, isRepeat: true), "repeat consumed (never reaches a focused button)")
+        expect(key(.space, down: true), "space consumed")
+        expect(key(.space, down: false), "space up consumed")
+        expect(key(.digit(2), down: false), "digit up consumed")
+        expect(!key(.other, down: true), "other keys pass through")
+        run { await m.comms.drain() }
+        spin(until: { core.sent.count >= 4 }, limit: 1)
+        run { await m.comms.drain() }
+        expectEqual(core.sent.map { "\($0.verb) \($0.payload)" }, [
+            #"comms-key {"leaseMs":1500,"on":true,"slot":1}"#,
+            #"comms-key {"all":true,"leaseMs":1500,"on":true}"#,
+            #"comms-key {"all":true,"on":false}"#,
+            #"comms-key {"on":false,"slot":1}"#,
+        ], "digit 2 keys Ben; Space is ALL CALL; each up releases")
+        core.clear()
+        // A key down, then the desk hides (report dropped), then the key comes up.
+        _ = key(.digit(1), down: true)
+        spin(until: { !core.sent.isEmpty }, limit: 1)
+        m.comms.apply(.some(nil))
+        expect(!key(.digit(3), down: true), "desk hidden: new presses pass through")
+        expect(key(.digit(1), down: false), "the recorded down still gets its up")
+        run { await m.comms.drain() }
+        expect(!m.comms.anyHeld, "nothing left held")
+    }
+
+    /// A held cell leaves the desk, then a release trigger fires before key-up:
+    /// the release still goes out (not left to the lease).
+    @MainActor static func testCommsTriggerReleasesOrphan() {
+        let (m, core) = heldOnComms()
+        m.comms.apply(.some(commsState(desk(ch(0) + "," + ch(1, "Ben", 1)))))   // Ana's cell leaves while held
+        expect(m.comms.anyHeld, "the orphaned hold still counts")
+        m.selectedTab = .audio
+        settle(m)
+        expectEqual(core.sent.map { "\($0.verb) \($0.payload)" }, [#"comms-key {"on":false,"slot":0}"#], "released")
     }
 }
