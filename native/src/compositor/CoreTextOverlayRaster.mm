@@ -156,6 +156,29 @@ ImageInput openPackagedImage(const graphics::GraphicsAsset& asset) {
   return {std::move(source), uint64_t(width) * height * 12};
 }
 
+// Decodes the image NOW and returns it backed by its decoded bytes, or null
+// when the pixels do not decode. ImageIO defers the decode: for a corrupt
+// stream (a bad zlib/IDAT payload) CGImageSourceCreateImageAtIndex still
+// returns an image, which then draws nothing, so a broken asset would prepare
+// "ready" and air a blank. Copying the provider's bytes forces the decode and
+// surfaces the failure on the worker, as WIC's CreateBitmapFromWicBitmap does
+// on Windows. The copy is the decoded allowance the budget already charges.
+CfRef<CGImageRef> decodeImageNow(CGImageSourceRef source) {
+  if (!source) return {};
+  CfRef<CGImageRef> lazy(CGImageSourceCreateImageAtIndex(source, 0, nullptr));
+  if (!lazy) return {};
+  CGDataProviderRef provider = CGImageGetDataProvider(lazy.get());
+  CfRef<CFDataRef> pixels(provider ? CGDataProviderCopyData(provider) : nullptr);
+  const size_t rowBytes = CGImageGetBytesPerRow(lazy.get()), height = CGImageGetHeight(lazy.get());
+  if (!pixels || rowBytes == 0 || size_t(CFDataGetLength(pixels.get())) < rowBytes * height) return {};
+  CfRef<CGDataProviderRef> decoded(CGDataProviderCreateWithCFData(pixels.get()));
+  if (!decoded) return {};
+  return CfRef<CGImageRef>(CGImageCreate(CGImageGetWidth(lazy.get()), height, CGImageGetBitsPerComponent(lazy.get()),
+      CGImageGetBitsPerPixel(lazy.get()), rowBytes, CGImageGetColorSpace(lazy.get()), CGImageGetBitmapInfo(lazy.get()),
+      decoded.get(), CGImageGetDecode(lazy.get()), CGImageGetShouldInterpolate(lazy.get()),
+      CGImageGetRenderingIntent(lazy.get())));
+}
+
 
 // ── Template raster (G2): the Core Graphics port of CompositorOverlayRaster's
 // drawTemplate / drawTextEffects. Coordinates are template units in a TOP-DOWN
@@ -313,7 +336,7 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
         if (bitmap == bitmaps.end()) {
           const auto source = images.find(p.image->id);
           if (source != images.end() && source->second.source) {
-            CfRef<CGImageRef> decoded(CGImageSourceCreateImageAtIndex(source->second.source.get(), 0, nullptr));
+            CfRef<CGImageRef> decoded(decodeImageNow(source->second.source.get()));
             if (decoded) {
               CfRef<CGImageRef> retagged(
                   CGColorSpaceGetModel(CGImageGetColorSpace(decoded.get())) == kCGColorSpaceModelRGB
@@ -712,7 +735,7 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
       CGContextFillRect(cg, bottomUp(layout.accentBar, heightPx));
     }
     if (layout.hasImage) {
-      CfRef<CGImageRef> decoded(image.source ? CGImageSourceCreateImageAtIndex(image.source.get(), 0, nullptr) : nullptr);
+      CfRef<CGImageRef> decoded(decodeImageNow(image.source.get()));
       if (!decoded) {
         warning += " Logo unavailable; image omitted.";
         complete = false;
