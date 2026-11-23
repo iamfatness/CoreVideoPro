@@ -149,6 +149,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return await setCaptureOnline(model, sourceId: string(0), online: bool(1))
         case "transport.stream.rtmp.configure":
             return model.configureRtmpForControl(args.map(\.value))
+        case "transport.stream.srt.configure":
+            return model.configureSrtForControl(args.map(\.value))
         case "transport.transition.set":
             return setTransition(model, mode: string(0))
         case "transport.engine.toggle":
@@ -240,6 +242,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "audio.zoomMode.set", "automation.autoAssignInputs.set",
         // Phase 2 (RC6)
         "media.rundown.load", "media.rundown.preview", "media.rundown.take",
+        // Phase 4 (RC7)
+        "transport.stream.srt.configure",
     ]
 
     /// Windows RunTake: refuse when CanTake is false, else the one Take path.

@@ -154,6 +154,54 @@
         "Title" : "Configure RTMP destination"
       },
       {
+        "Description" : "Save SRT settings without starting streaming. Refused while streaming or transitioning; omitted passphrase retains it, empty clears it.",
+        "Id" : "transport.stream.srt.configure",
+        "OscAddress" : "\/cvp\/transport\/stream\/srt\/configure",
+        "Params" : [
+          {
+            "Name" : "enabled",
+            "Required" : true,
+            "Type" : "bool"
+          },
+          {
+            "Name" : "mode",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "host",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "port",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "latencyMs",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "streamId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "keyLength",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "passphrase",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Configure SRT destination"
+      },
+      {
         "Description" : "Toggle the capture engine on\/off.",
         "Id" : "transport.engine.toggle",
         "OscAddress" : "\/cvp\/transport\/engine\/toggle",

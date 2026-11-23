@@ -111,6 +111,19 @@ enum ControlCatalog {
             }
             return .failure(ControlBindError(message: "Unknown action '\(id)'."))
         }
+        return bindParams(action, raw)
+    }
+
+    /// Windows `ControlActionRegistry.TryBind`: the schema check alone, for any id in
+    /// the shared manifest whatever its macOS availability (a handler that re-binds
+    /// its own args, as Windows StreamDestinationControl does).
+    static func bindSchema(_ id: String, _ raw: [Any?]) -> Result<[Any?], ControlBindError> {
+        guard let entry = byId[id] else { return .failure(ControlBindError(message: "Unknown action '\(id)'.")) }
+        return bindParams(entry.action, raw)
+    }
+
+    private static func bindParams(_ action: ControlAction, _ raw: [Any?]) -> Result<[Any?], ControlBindError> {
+        let id = action.id
         var bound: [Any?] = []
         for (index, param) in action.params.enumerated() {
             let value = index < raw.count ? raw[index] : nil

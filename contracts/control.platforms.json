@@ -23,7 +23,7 @@
     {"id": "transport.stream.toggle", "mac": "supported"},
     {"id": "transport.stream.set", "mac": "supported"},
     {"id": "transport.stream.rtmp.configure", "mac": "supported"},
-    {"id": "transport.stream.srt.configure", "mac": "blocked", "blockedOn": "OUT"},
+    {"id": "transport.stream.srt.configure", "mac": "supported"},
     {"id": "transport.ndi.toggle", "mac": "blocked", "blockedOn": "OUT"},
     {"id": "transport.ndi.set", "mac": "blocked", "blockedOn": "OUT"},
     {"id": "transport.ndi.graphicsKey.set", "mac": "notApplicable", "reason": "NDI graphics key output is out of scope for macOS 1.0"},

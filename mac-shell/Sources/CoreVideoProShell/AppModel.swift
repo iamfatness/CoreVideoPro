@@ -676,6 +676,15 @@ final class AppModel: ObservableObject {
     /// Keychain account). Tests replace it so the harness never writes the
     /// operator's Keychain.
     var streamSecretSaver: (String, String) -> Void = { StreamKeychain.save($0, account: $1) }
+    /// Where a remotely configured SRT destination is saved BEFORE it is applied:
+    /// the prefs (with the new config) and the Keychain passphrase; false = not
+    /// saved. Prefs are nil until the operator's file has been restored. Tests
+    /// replace it so the harness never writes the operator's Keychain.
+    var srtDestinationSaver: (ShellPrefs?, String) -> Bool = { prefs, passphrase in
+        StreamKeychain.save(passphrase, account: StreamKeychain.srtPassphraseAccount)
+        prefs?.save()
+        return true
+    }
     /// Per-source grades (grading plan Task 5): the only sender of set-source-grade.
     /// Harness-only: the saved-grade file the NEXT AppModel() uses (nil → SourceGradeFile.path),
     /// so one harness case's debounced save can never land in another case.
@@ -2932,6 +2941,28 @@ final class AppModel: ObservableObject {
         streamKey = decision.key
         streamUrl = decision.url
         persistPrefsNow()
+        return .success
+    }
+
+    /// transport.stream.srt.configure (Windows StreamDestinationControl.Configure, SRT):
+    /// validate everything (SrtDestinationControlPolicy), SAVE (Keychain passphrase +
+    /// prefs) before anything in memory changes, then apply; never starts streaming.
+    func configureSrtForControl(_ args: [Any?]) -> ControlInvokeResult {
+        let decision: SrtDestinationControlPolicy.Decision
+        switch SrtDestinationControlPolicy.configure(args: args, busy: streamDestinationsLocked,
+                                                     current: streamDestinations, currentPassphrase: srtPassphrase) {
+        case .failure(let refusal): return .fail(refusal.message)
+        case .success(let value): decision = value
+        }
+        var prefs = currentPrefs()
+        prefs.streamDestinations = decision.config
+        // Never write prefs before the operator's file is restored (persistPrefsNow's rule).
+        guard srtDestinationSaver(prefsRestored ? prefs : nil, decision.passphrase) else {
+            return .fail("Destination settings were not saved. Previous settings remain active; retry after resolving preference storage.")
+        }
+        streamDestinations = decision.config
+        srtPassphrase = decision.passphrase
+        if prefsRestored { lastSavedPrefs = prefs }
         return .success
     }
 

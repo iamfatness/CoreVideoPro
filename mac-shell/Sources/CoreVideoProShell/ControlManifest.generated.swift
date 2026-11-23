@@ -77,7 +77,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "keyLength", type: .string, required: true, description: nil),
                 ControlParam(name: "passphrase", type: .string, required: false, description: nil),
             ]),
-            availability: .blocked(workstream: "OUT", label: "SRT and NDI output")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "transport.ndi.toggle", title: "NDI toggle", description: "Toggle NDI output. Independent of streaming; refused (and left off) when the NDI settings are invalid.", params: []),
             availability: .blocked(workstream: "OUT", label: "SRT and NDI output")),

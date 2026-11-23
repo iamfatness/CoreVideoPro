@@ -26,6 +26,7 @@ extension ShellTests {
     static var controlRC7Cases: [(String, () -> Void)] {
         [
             ("control/action-vectors-shape", testActionVectorsShape),
+            ("control/rc7-srt-vectors", testRC7SrtVectors),
         ]
     }
 
@@ -114,5 +115,83 @@ extension ShellTests {
         for required in ["scene-routes"] {
             expect(sections[required] != nil, "section \(required) is present")
         }
+    }
+
+    /// Task 2: every srt-configure vector against a real AppModel. `saved` is the
+    /// save seam being called; `applied` is the model holding the new config after
+    /// the call; `steps` is their order (the model must still hold the baseline
+    /// when the save runs). Mutations: validate before the busy check (busy case:
+    /// mode refusal instead of busy); treat an omitted passphrase as empty (kept
+    /// case); apply before save (steps); interpolate the mode into the refusal
+    /// (secret-leak assertion).
+    @MainActor
+    static func testRC7SrtVectors() {
+        let vectors = loadActionVectors(section: "srt-configure")
+        expect(vectors.count >= 19, "the srt-configure section carries the plan's cases (\(vectors.count))")
+        // Fixture invariant: the baseline differs from every saved config in host and
+        // port, so "applied" and "steps" can tell old from new.
+        var baseline = StreamDestinationsConfig()
+        baseline.srtHost = "baseline.example"
+        baseline.srtPort = "7000"
+        baseline.hlsPlaylistUrl = "https://hls.example/keep.m3u8"   // a non-SRT field is kept
+        for vector in vectors {
+            let label = "srt/\(vector.name)"
+            let model = takeModel(FakeTakeCore())
+            let stored = vector.given["storedPassphrase"] as? String ?? ""
+            model.streamDestinations = baseline
+            model.srtPassphrase = stored
+            if vector.given["busy"] as? Bool == true { model.streamingDesired = true }
+            var steps: [String] = []
+            var savedPrefs: ShellPrefs?
+            var savedPassphrase: String?
+            model.srtDestinationSaver = { prefs, passphrase in
+                steps.append(model.streamDestinations == baseline && model.srtPassphrase == stored ? "save" : "save-after-apply")
+                savedPrefs = prefs
+                savedPassphrase = passphrase
+                return true
+            }
+            let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+            let result = invoke(surface, vector.action, vector.args)
+            expectVectorReply(result, vector, label)
+            for secret in ["invalid-mode-test-secret", "test-passphrase-sentinel"] {
+                expect(!(result?.error ?? "").contains(secret), "\(label): the reply never echoes '\(secret)'")
+            }
+            let applied = model.streamDestinations != baseline || model.srtPassphrase != stored
+            if applied { steps.append("apply") }
+            let effects = vector.effects
+            expectEqual(!steps.isEmpty, effects["saved"] as? Bool ?? false, "\(label): saved")
+            expectEqual(applied, effects["applied"] as? Bool ?? false, "\(label): applied")
+            expectEqual(steps, effects["steps"] as? [String] ?? [], "\(label): save runs before apply")
+            expect(!model.streamingDesired || vector.given["busy"] as? Bool == true, "\(label): never starts streaming")
+            guard effects["saved"] as? Bool == true else {
+                expectEqual(model.streamDestinations, baseline, "\(label): a refusal changes nothing")
+                expectEqual(model.srtPassphrase, stored, "\(label): passphrase untouched")
+                continue
+            }
+            let config = model.streamDestinations
+            expectEqual(config.srtEnabled, effects["enabled"] as? Bool ?? !config.srtEnabled, "\(label): enabled")
+            for (key, value) in [("mode", config.srtMode), ("host", config.srtHost), ("port", config.srtPort),
+                                 ("latencyMs", config.srtLatencyMs), ("streamId", config.srtStreamId),
+                                 ("keyLength", config.srtKeyLength)] {
+                expectEqual(value, effects[key] as? String ?? "<absent>", "\(label): \(key)")
+            }
+            let passphrase = model.srtPassphrase
+            let kind = passphrase.isEmpty ? "cleared" : (!stored.isEmpty && passphrase == stored ? "kept" : "set")
+            expectEqual(kind, effects["passphrase"] as? String ?? "<absent>", "\(label): passphrase")
+            expectEqual(savedPassphrase, passphrase, "\(label): the saved passphrase is the applied one")
+            if let savedPrefs { expectEqual(savedPrefs.streamDestinations, config, "\(label): the saved prefs carry the applied config") }
+            expectEqual(config.hlsPlaylistUrl, baseline.hlsPlaylistUrl, "\(label): non-SRT fields are kept")
+        }
+        // Storage failure: Windows' sentence (StreamDestinationControl.cs:56), nothing applied.
+        let model = takeModel(FakeTakeCore())
+        model.streamDestinations = baseline
+        model.srtDestinationSaver = { _, _ in false }
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        let valid = vectors.first { $0.name == "valid-caller-with-passphrase" }?.args ?? []
+        expectEqual(invoke(surface, "transport.stream.srt.configure", valid),
+                    .fail("Destination settings were not saved. Previous settings remain active; retry after resolving preference storage."),
+                    "srt: storage failure")
+        expectEqual(model.streamDestinations, baseline, "srt: a failed save applies nothing")
+        expectEqual(model.srtPassphrase, "", "srt: passphrase unchanged after a failed save")
     }
 }
