@@ -133,3 +133,120 @@ enum InsertChainPolicy {
         }
     }
 }
+
+// ── A7 Task 3: processing targets ───────────────────────────────────────────
+//
+// Windows' SETUP "Processing target" picker (SVM RefreshAudioProcessingTargets,
+// SVM:11506-11603): one target per channel strip ("channel:<id>"), then
+// "bus:master", then every other bus in header order. A channel target edits
+// that strip's own chain (ChannelInserts.chain); a bus target edits a
+// session-only chain that rides EVERY send to that bus
+// (AudioConsolePolicy.baseRoutingSends, SVM:9221-9229).
+
+/// One entry of the processing-target picker (Windows AudioProcessingTargetOption).
+struct AudioProcessingTarget: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let kind: String
+    let detail: String
+    let insertLabel: String
+}
+
+enum AudioProcessingTargetPolicy {
+    /// SVM:508 `_selectedAudioProcessingTargetId = "bus:master"`.
+    static let defaultTargetId = "bus:master"
+
+    /// SVM FormatChannelProcessingTargetId.
+    static func channelId(_ stripId: String) -> String { "channel:\(stripId)" }
+
+    /// SVM FormatBusProcessingTargetId.
+    static func busId(_ busId: String) -> String { "bus:\(busId)" }
+
+    /// The strip or bus a target id names (SVM TryParseChannelProcessingTargetId:
+    /// a case-insensitive "channel:" prefix and a non-empty id). An id that is
+    /// neither yields (nil, nil).
+    static func parse(_ id: String) -> (channel: String?, bus: String?) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = trimmed.lowercased()
+        if lowered.hasPrefix("channel:") {
+            let rest = String(trimmed.dropFirst("channel:".count))
+            return (rest.isEmpty ? nil : rest, nil)
+        }
+        if lowered.hasPrefix("bus:") {
+            let rest = String(trimmed.dropFirst("bus:".count))
+            return (nil, rest.isEmpty ? nil : rest)
+        }
+        return (nil, nil)
+    }
+
+    /// SVM ResolveBusProcessingKind (SVM:11614-11637), verbatim.
+    static func kind(busId: String) -> String {
+        let lowered = busId.lowercased()
+        if lowered == "master" { return "Master bus" }
+        if lowered.hasPrefix("aux-") { return "Aux bus" }
+        if lowered.hasPrefix("iso-") { return "ISO bus" }
+        if lowered.hasPrefix("bus-") { return "Custom bus" }
+        return "Bus"
+    }
+
+    /// SVM ResolveBusProcessingDetail (SVM:11639-11649), verbatim. The fixed
+    /// names compare ordinally, the prefixes case-insensitively, as on Windows.
+    static func detail(busId: String) -> String {
+        switch busId {
+        case "master": return "Final program mix processing before output."
+        case "stream": return "Streaming output bus processing."
+        case "mon": return "Control-room monitor bus processing."
+        case "pgm-l": return "Left program bus processing."
+        case "pgm-r": return "Right program bus processing."
+        default:
+            if busId.lowercased().hasPrefix("aux-") { return "Aux send processing." }
+            if busId.lowercased().hasPrefix("iso-") { return "Isolated recording bus processing." }
+            return "Custom bus processing."
+        }
+    }
+
+    /// SVM FormatInsertLabel (SVM:11611-11612).
+    static func insertLabel(_ chain: [String]) -> String {
+        chain.isEmpty ? "No inserts" : chain.joined(separator: " + ")
+    }
+
+    /// OD-1: the shared core's bus chain (AudioDsp.h applyBusInsertChain) runs
+    /// only the compressor and the limiter; a gate, high-pass or EQ on a bus
+    /// passes audio through unchanged (on Windows too, where the slot still
+    /// reads LIVE). The Mac refuses such an add with this reason, and the SETUP
+    /// button is dimmed with the same text. nil = the name may go on a bus.
+    static func busRefusal(_ raw: String) -> String? {
+        let name = InsertChainPolicy.normalize(raw)
+        switch InsertChainPolicy.coreKind(name) {
+        case .gate?, .highpass?, .eq?:
+            return "\(name) does not process on a bus yet; add a compressor or limiter."
+        default:
+            return nil
+        }
+    }
+
+    /// The picker's targets, in Windows order: channels in strip order, then
+    /// bus:master (always present, SVM:11541-11552), then every other bus in
+    /// `buses` order (AudioBusPolicy order: the Windows BusHeaders).
+    /// The channel detail is "Channel - <primary bus label>": Windows prefixes
+    /// a role ("<Role> channel - ", "Native PCM channel - ", SVM:11521/11536);
+    /// the Mac strip has no role label, so the plan takes the bare form.
+    static func targets(strips: [(id: String, label: String, primaryBus: String)], buses: [AudioBus],
+                        channelChains: [String: [String]], busChains: [String: [String]]) -> [AudioProcessingTarget] {
+        var targets = strips.map { strip in
+            AudioProcessingTarget(id: channelId(strip.id), label: strip.label, kind: "Channel",
+                                  detail: "Channel - \(strip.primaryBus)",
+                                  insertLabel: insertLabel(channelChains[strip.id] ?? []))
+        }
+        func busTarget(_ id: String, _ label: String) -> AudioProcessingTarget {
+            AudioProcessingTarget(id: busId(id), label: label, kind: kind(busId: id), detail: detail(busId: id),
+                                  insertLabel: insertLabel(busChains[id] ?? []))
+        }
+        let master = buses.first { $0.id.caseInsensitiveCompare("master") == .orderedSame }
+        targets.append(busTarget("master", master?.label ?? "MASTER"))
+        for bus in buses where bus.id.caseInsensitiveCompare("master") != .orderedSame {
+            targets.append(busTarget(bus.id, bus.label))
+        }
+        return targets
+    }
+}
