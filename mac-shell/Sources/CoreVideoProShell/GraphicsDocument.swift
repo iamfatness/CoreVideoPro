@@ -10,9 +10,10 @@
 //   * Validation covers the top level, the playlist rows (a port of
 //     GraphicsPlaylistRow.IsValid, MC/Models/GraphicsPlaylist.cs:62-74) and the
 //     template pins. Unported sections are bounded (count, unique ids) but not
-//     re-validated: Windows wrote them. A row's dataBinding is checked only for
-//     where it may appear (a title row without variants); its contents belong
-//     to the data slice.
+//     re-validated: Windows wrote them. A row's dataBinding is validated in
+//     full (GraphicsDataBinding.Valid) and may appear only on a title row
+//     without variants; the dataSources and designs sections the Mac writes
+//     (G4-G7 Task 7) are validated as Windows validates them.
 //   * Load/save semantics match the C# exactly: missing file = new document,
 //     invalid primary -> last complete .bak, schema newer than 3 = read-only with
 //     the original untouched, v1/v2 load as 3 and the first save keeps one
@@ -114,7 +115,8 @@ struct GraphicsRow: Equatable, Identifiable {
         }
         // dataBinding: only a title row without variants may carry one (contents: the data slice).
         if let binding = r["dataBinding"], !(binding is NSNull) {
-            guard binding is JSONObject, kind == title, variants.isEmpty else { return false }
+            guard let object = binding as? JSONObject, GraphicsDataBinding(json: object)?.isValid == true,
+                  kind == title, variants.isEmpty else { return false }
         }
         return true
     }
@@ -278,6 +280,32 @@ struct GraphicsDocument: @unchecked Sendable {
 
     func row(_ id: String) -> GraphicsRow? { playlist.first { $0.id == id } }
 
+    /// The show's datasets (GraphicsDataSource). Setting replaces only this section; an entry whose
+    /// value is unchanged keeps the JSON it was read with (Windows' "+00:00" dates stay as written).
+    var dataSources: [GraphicsDataSourceRecord] {
+        get { (json["dataSources"] as? [JSONObject] ?? []).compactMap(GraphicsDataSourceRecord.init(json:)) }
+        set {
+            let existing = json["dataSources"] as? [JSONObject] ?? []
+            json["dataSources"] = newValue.map { record in
+                existing.first { GraphicsDataSourceRecord(json: $0) == record } ?? record.json
+            }
+        }
+    }
+
+    mutating func upsertDataSource(_ record: GraphicsDataSourceRecord) {
+        var sources = dataSources
+        if let index = sources.firstIndex(where: { $0.id == record.id }) { sources[index] = record } else { sources.append(record) }
+        dataSources = sources
+    }
+
+    /// Saved designs (GraphicsDesign), verbatim objects.
+    var designs: [JSONObject] {
+        get { json["designs"] as? [JSONObject] ?? [] }
+        set { json["designs"] = newValue }
+    }
+
+    mutating func appendDesign(_ design: JSONObject) { designs = designs + [design] }
+
     /// GraphicsWorkspaceLibrary.ReferencedTemplates: every template version a playlist row, a
     /// row's image, a saved cue's draft (and its image) or the studio lower-third cue names, in
     /// document order without repeats. Cues and the lower third are read verbatim (D3).
@@ -349,13 +377,23 @@ struct GraphicsDocument: @unchecked Sendable {
         guard feeds.count <= 32, feeds.allSatisfy({ $0 is JSONObject }), Set(ids(feeds, "id")).count == feeds.count
         else { throw fail("Invalid saved graphics feed definitions.") }
         let sources = try list("dataSources")
-        guard sources.count <= 32, sources.allSatisfy({ $0 is JSONObject }), Set(ids(sources, "id")).count == sources.count
+        let pushFeeds = Set(feeds.compactMap { item -> String? in
+            guard let feed = item as? JSONObject, feed["format"] as? String == "wss" else { return nil }
+            return feed["id"] as? String
+        })
+        guard sources.count <= 32,
+              sources.allSatisfy({ item in
+                  guard let object = item as? JSONObject, let record = GraphicsDataSourceRecord(json: object), record.isValid else { return false }
+                  return (record.feedSequence != nil) == pushFeeds.contains(record.id)
+              }),
+              Set(ids(sources, "id")).count == sources.count
         else { throw fail("Invalid graphics datasets.") }
         let columns = try list("sourceColumns")
         guard columns.count <= 30, columns.allSatisfy({ $0 is JSONObject }), Set(ids(columns, "id")).count == columns.count
         else { throw fail("Invalid graphics Sources columns.") }
         let designs = try list("designs")
-        guard designs.count <= 32, designs.allSatisfy({ $0 is JSONObject }), Set(ids(designs, "designId")).count == designs.count,
+        guard designs.count <= 32, designs.allSatisfy({ ($0 as? JSONObject).map(GraphicsDesignIds.validDesign) == true }),
+              Set(ids(designs, "designId")).count == designs.count,
               Set(ids(designs, "templateId")).count == designs.count
         else { throw fail("Invalid saved graphics designs.") }
         // Template pins: the Mac reads these, so they are validated in full.
@@ -560,5 +598,64 @@ extension GraphicsJSON {
             i += 1
         }
         return true
+    }
+}
+
+// ── datasets (GraphicsDataSource, MC/Services/GraphicsWorkspaceLibrary.Data.cs:5-12) ──
+
+struct GraphicsDataSourceRecord: Equatable {
+    static let maxFeedSequence: Int64 = 9_007_199_254_740_991
+    var id: String
+    var name: String
+    var revision: Int64
+    var receivedAt: Date
+    var data: GraphicsLocalData
+    var feedSequence: Int64?
+
+    init(id: String, name: String, revision: Int64, receivedAt: Date, data: GraphicsLocalData, feedSequence: Int64? = nil) {
+        self.id = id; self.name = name; self.revision = revision; self.receivedAt = receivedAt; self.data = data; self.feedSequence = feedSequence
+    }
+
+    var isValid: Bool {
+        (feedSequence == nil || (1...Self.maxFeedSequence).contains(feedSequence!)) && GraphicsRow.validId(id) &&
+            (1...128).contains(name.utf16.count) && revision > 0 && receivedAt != Self.defaultDate && data.isValid
+    }
+
+    /// DateTimeOffset default (0001-01-01T00:00:00+00:00), which Valid() refuses.
+    static let defaultDate = Date(timeIntervalSince1970: -62_135_596_800)
+
+    var json: JSONObject {
+        var out: JSONObject = ["id": id, "name": name, "revision": revision, "receivedAt": Self.iso8601(receivedAt), "data": data.json]
+        if let feedSequence { out["feedSequence"] = feedSequence }   // JsonIgnore(WhenWritingNull)
+        return out
+    }
+
+    init?(json: JSONObject) {
+        guard let id = json["id"] as? String, let name = json["name"] as? String,
+              let revision = (json["revision"] as? NSNumber)?.int64Value, let at = (json["receivedAt"] as? String).flatMap(Self.parseISO8601),
+              let dataJSON = json["data"] as? JSONObject, let data = GraphicsLocalData(json: dataJSON) else { return nil }
+        let sequence = json["feedSequence"]
+        if let sequence, !(sequence is NSNull), !(sequence is NSNumber) { return nil }
+        self.init(id: id, name: name, revision: revision, receivedAt: at, data: data, feedSequence: (sequence as? NSNumber)?.int64Value)
+    }
+
+    /// ISO 8601 with milliseconds and a zone, which System.Text.Json reads as a DateTimeOffset.
+    static func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.string(from: date)
+    }
+
+    /// System.Text.Json's DateTimeOffset text (up to 7 fractional digits, "Z" or "+hh:mm").
+    static func parseISO8601(_ text: String) -> Date? {
+        var trimmed = text
+        if let dot = text.firstIndex(of: "."), let zone = text[dot...].firstIndex(where: { $0 == "Z" || $0 == "+" || $0 == "-" }) {
+            let fraction = text[text.index(after: dot)..<zone]
+            trimmed = String(text[..<dot]) + "." + String(fraction.prefix(3)).padding(toLength: 3, withPad: "0", startingAt: 0) + String(text[zone...])
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = trimmed.contains(".") ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+        return formatter.date(from: trimmed)
     }
 }

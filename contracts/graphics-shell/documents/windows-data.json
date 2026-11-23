@@ -1,0 +1,925 @@
+{
+  "schemaVersion": 3,
+  "showId": "default",
+  "authority": "legacy",
+  "cues": [],
+  "templates": [],
+  "studioLowerThird": null,
+  "stylePresets": {},
+  "templateStyles": {},
+  "brand": null,
+  "sourceOverrides": null,
+  "automationRules": [],
+  "playlist": [
+    {
+      "id": "leaderboard",
+      "kind": "title",
+      "name": "Leaderboard",
+      "hotkey": "F1",
+      "playOutAfterMs": 0,
+      "templateId": "design-leaderboard-a1b2c3",
+      "templateVersion": 1,
+      "fields": {
+        "table-row-1": "[\u00221\u0022,\u0022Cats\u0022,\u00221e3\u0022]",
+        "table-row-2": "[\u00222\u0022,\u0022Bees\u0022,\u002212\u0022]",
+        "table-row-3": "[\u00223\u0022,\u0022Zebras\u0022,\u002212\u0022]",
+        "table-row-4": "[\u00224\u0022,\u0022Ants\u0022,\u00229\u0022]",
+        "table-row-5": "[\u00225\u0022,\u0022Dingoes\u0022,\u00227\u0022]"
+      },
+      "style": {
+        "version": 1,
+        "preset": "compact-solid",
+        "anchor": "lower-left",
+        "fontFamily": "Segoe UI",
+        "nameSize": 42,
+        "titleSize": 28,
+        "nameColor": "#F4F7FA",
+        "titleColor": "#44C1A1",
+        "backgroundColor": "#0C1118",
+        "accentColor": "#44C1A1",
+        "backgroundOpacity": 0.9,
+        "padding": 20,
+        "width": 0.6,
+        "cornerRadius": 8,
+        "safeOffsetX": 0.05,
+        "safeOffsetY": 0.06,
+        "showLogo": true,
+        "logoScale": 1,
+        "isValid": true
+      },
+      "imagePath": null,
+      "image": null,
+      "followSources": false,
+      "dataBinding": {
+        "sourceId": "scores",
+        "keyColumn": "team",
+        "columns": [
+          "team",
+          "points"
+        ],
+        "sortColumn": "points",
+        "limit": 5,
+        "revision": 1,
+        "crawl": null,
+        "liveFollow": false,
+        "remote": false
+      },
+      "sourceMappings": {},
+      "showClock": false,
+      "motion": null,
+      "variants": [],
+      "placement": null,
+      "clock": null
+    },
+    {
+      "id": "headlines",
+      "kind": "title",
+      "name": "Headlines",
+      "hotkey": "F2",
+      "playOutAfterMs": 0,
+      "templateId": "design-headlines-d4e5f6",
+      "templateVersion": 1,
+      "fields": {
+        "crawl-items": "[\u0022Headline 1\u0022,\u0022Headline 2\u0022,\u0022Headline 3\u0022,\u0022Headline 4\u0022,\u0022Headline 6\u0022,\u0022Headline 7\u0022,\u0022Headline 8\u0022,\u0022Headline 10\u0022,\u0022Headline 11\u0022,\u0022Headline 12\u0022,\u0022Headline 13\u0022,\u0022Headline 14\u0022,\u0022Headline 15\u0022,\u0022Headline 16\u0022,\u0022Headline 17\u0022,\u0022Headline 18\u0022,\u0022Headline 19\u0022,\u0022Headline 20\u0022,\u0022Headline 21\u0022,\u0022Headline 22\u0022,\u0022Headline 23\u0022,\u0022Headline 24\u0022,\u0022Headline 25\u0022,\u0022Headline 26\u0022,\u0022Headline 27\u0022,\u0022Headline 28\u0022,\u0022Headline 29\u0022,\u0022Headline 30\u0022,\u0022Headline 31\u0022,\u0022Headline 32\u0022,\u0022Headline 33\u0022,\u0022Headline 34\u0022,\u0022Headline 35\u0022,\u0022Headline 36\u0022,\u0022Headline 37\u0022,\u0022Headline 38\u0022,\u0022Headline 39\u0022,\u0022Headline 40\u0022,\u0022Headline 41\u0022,\u0022Headline 42\u0022,\u0022Headline 43\u0022,\u0022Headline 44\u0022,\u0022Headline 45\u0022,\u0022Headline 46\u0022,\u0022Headline 47\u0022,\u0022Headline 48\u0022,\u0022Headline 49\u0022,\u0022Headline 50\u0022,\u0022Headline 51\u0022,\u0022Headline 52\u0022,\u0022Headline 53\u0022,\u0022Headline 54\u0022,\u0022Headline 55\u0022,\u0022Headline 56\u0022,\u0022Headline 57\u0022,\u0022Headline 58\u0022,\u0022Headline 59\u0022,\u0022Headline 60\u0022,\u0022Headline 61\u0022,\u0022Headline 62\u0022,\u0022Headline 63\u0022,\u0022Headline 64\u0022,\u0022Headline 65\u0022,\u0022Headline 66\u0022]",
+        "crawl-revision": "1"
+      },
+      "style": {
+        "version": 1,
+        "preset": "compact-solid",
+        "anchor": "lower-left",
+        "fontFamily": "Segoe UI",
+        "nameSize": 42,
+        "titleSize": 28,
+        "nameColor": "#F4F7FA",
+        "titleColor": "#44C1A1",
+        "backgroundColor": "#0C1118",
+        "accentColor": "#44C1A1",
+        "backgroundOpacity": 0.9,
+        "padding": 20,
+        "width": 0.6,
+        "cornerRadius": 8,
+        "safeOffsetX": 0.05,
+        "safeOffsetY": 0.06,
+        "showLogo": true,
+        "logoScale": 1,
+        "isValid": true
+      },
+      "imagePath": null,
+      "image": null,
+      "followSources": false,
+      "dataBinding": {
+        "sourceId": "headlines",
+        "keyColumn": null,
+        "columns": [
+          "item"
+        ],
+        "sortColumn": null,
+        "limit": 64,
+        "revision": 1,
+        "crawl": {
+          "speed": 120,
+          "gap": 48,
+          "direction": "left",
+          "mode": "loop"
+        },
+        "liveFollow": true,
+        "remote": false
+      },
+      "sourceMappings": {},
+      "showClock": false,
+      "motion": null,
+      "variants": [],
+      "placement": null,
+      "clock": null
+    }
+  ],
+  "shotLayouts": [],
+  "designs": [
+    {
+      "designId": "design-leaderboard-a1b2c3",
+      "name": "Leaderboard",
+      "family": "title",
+      "templateId": "design-leaderboard-a1b2c3",
+      "templateVersion": 1,
+      "definition": {
+        "schemaVersion": 1,
+        "templateId": "design-leaderboard-a1b2c3",
+        "templateVersion": 1,
+        "name": "Leaderboard",
+        "family": "title",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "bounds": {
+          "width": 1440,
+          "height": 336
+        },
+        "brandTokens": [
+          "brand.primary",
+          "brand.onPrimary",
+          "brand.accent",
+          "brand.fontBody"
+        ],
+        "fields": [
+          {
+            "id": "table-row-1",
+            "type": "string",
+            "maxLength": 4096,
+            "default": "[\u00221\u0022,\u0022Cats\u0022,\u00221e3\u0022]"
+          },
+          {
+            "id": "table-row-2",
+            "type": "string",
+            "maxLength": 4096,
+            "default": "[\u00222\u0022,\u0022Bees\u0022,\u002212\u0022]"
+          },
+          {
+            "id": "table-row-3",
+            "type": "string",
+            "maxLength": 4096,
+            "default": "[\u00223\u0022,\u0022Zebras\u0022,\u002212\u0022]"
+          },
+          {
+            "id": "table-row-4",
+            "type": "string",
+            "maxLength": 4096,
+            "default": "[\u00224\u0022,\u0022Ants\u0022,\u00229\u0022]"
+          },
+          {
+            "id": "table-row-5",
+            "type": "string",
+            "maxLength": 4096,
+            "default": "[\u00225\u0022,\u0022Dingoes\u0022,\u00227\u0022]"
+          }
+        ],
+        "layers": [
+          {
+            "id": "data-table",
+            "type": "table",
+            "x": 0,
+            "y": 0,
+            "width": 1440,
+            "height": 336,
+            "rowHeight": 56,
+            "fontSize": 29,
+            "font": {
+              "token": "brand.fontBody"
+            },
+            "color": {
+              "token": "brand.onPrimary"
+            },
+            "headerFill": {
+              "token": "brand.primary"
+            },
+            "rowFill": "#18232D",
+            "alternateFill": "#243440",
+            "columns": [
+              {
+                "heading": "Rank",
+                "weight": 0.4,
+                "align": "right"
+              },
+              {
+                "heading": "team",
+                "weight": 1,
+                "align": "left"
+              },
+              {
+                "heading": "points",
+                "weight": 1,
+                "align": "right"
+              }
+            ],
+            "rows": [
+              {
+                "field": "table-row-1"
+              },
+              {
+                "field": "table-row-2"
+              },
+              {
+                "field": "table-row-3"
+              },
+              {
+                "field": "table-row-4"
+              },
+              {
+                "field": "table-row-5"
+              }
+            ],
+            "metadata": {
+              "label": "Data table"
+            }
+          }
+        ],
+        "animations": {
+          "in": {
+            "type": "fade",
+            "durationMs": 250,
+            "easing": "ease-out"
+          },
+          "out": {
+            "type": "fade",
+            "durationMs": 200,
+            "easing": "ease-in"
+          }
+        },
+        "defaultPlacement": {
+          "anchor": "center",
+          "x": 0,
+          "y": 0,
+          "scale": 1
+        },
+        "metadata": {
+          "dataBinding": {
+            "sourceId": "scores",
+            "keyColumn": "team",
+            "columns": [
+              "team",
+              "points"
+            ],
+            "sortColumn": "points",
+            "limit": 5,
+            "revision": 1,
+            "crawl": null,
+            "liveFollow": false,
+            "remote": false
+          }
+        }
+      },
+      "assets": [],
+      "updatedAt": "2026-11-22T12:00:00+00:00",
+      "packageRoot": null
+    },
+    {
+      "designId": "design-headlines-d4e5f6",
+      "name": "Headlines",
+      "family": "title",
+      "templateId": "design-headlines-d4e5f6",
+      "templateVersion": 1,
+      "definition": {
+        "schemaVersion": 1,
+        "templateId": "design-headlines-d4e5f6",
+        "templateVersion": 1,
+        "name": "Headlines",
+        "family": "title",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "bounds": {
+          "width": 1440,
+          "height": 64
+        },
+        "brandTokens": [
+          "brand.primary",
+          "brand.onPrimary",
+          "brand.accent",
+          "brand.fontBody"
+        ],
+        "fields": [
+          {
+            "id": "crawl-items",
+            "type": "string",
+            "maxLength": 4096,
+            "default": "[\u0022Headline 1\u0022,\u0022Headline 2\u0022,\u0022Headline 3\u0022,\u0022Headline 4\u0022,\u0022Headline 6\u0022,\u0022Headline 7\u0022,\u0022Headline 8\u0022,\u0022Headline 10\u0022,\u0022Headline 11\u0022,\u0022Headline 12\u0022,\u0022Headline 13\u0022,\u0022Headline 14\u0022,\u0022Headline 15\u0022,\u0022Headline 16\u0022,\u0022Headline 17\u0022,\u0022Headline 18\u0022,\u0022Headline 19\u0022,\u0022Headline 20\u0022,\u0022Headline 21\u0022,\u0022Headline 22\u0022,\u0022Headline 23\u0022,\u0022Headline 24\u0022,\u0022Headline 25\u0022,\u0022Headline 26\u0022,\u0022Headline 27\u0022,\u0022Headline 28\u0022,\u0022Headline 29\u0022,\u0022Headline 30\u0022,\u0022Headline 31\u0022,\u0022Headline 32\u0022,\u0022Headline 33\u0022,\u0022Headline 34\u0022,\u0022Headline 35\u0022,\u0022Headline 36\u0022,\u0022Headline 37\u0022,\u0022Headline 38\u0022,\u0022Headline 39\u0022,\u0022Headline 40\u0022,\u0022Headline 41\u0022,\u0022Headline 42\u0022,\u0022Headline 43\u0022,\u0022Headline 44\u0022,\u0022Headline 45\u0022,\u0022Headline 46\u0022,\u0022Headline 47\u0022,\u0022Headline 48\u0022,\u0022Headline 49\u0022,\u0022Headline 50\u0022,\u0022Headline 51\u0022,\u0022Headline 52\u0022,\u0022Headline 53\u0022,\u0022Headline 54\u0022,\u0022Headline 55\u0022,\u0022Headline 56\u0022,\u0022Headline 57\u0022,\u0022Headline 58\u0022,\u0022Headline 59\u0022,\u0022Headline 60\u0022,\u0022Headline 61\u0022,\u0022Headline 62\u0022,\u0022Headline 63\u0022,\u0022Headline 64\u0022,\u0022Headline 65\u0022,\u0022Headline 66\u0022]"
+          },
+          {
+            "id": "crawl-revision",
+            "type": "string",
+            "maxLength": 4096,
+            "default": "1"
+          }
+        ],
+        "layers": [
+          {
+            "id": "data-crawl",
+            "type": "crawl",
+            "x": 0,
+            "y": 0,
+            "width": 1440,
+            "height": 64,
+            "fontSize": 34,
+            "font": {
+              "token": "brand.fontBody"
+            },
+            "color": {
+              "token": "brand.onPrimary"
+            },
+            "items": {
+              "field": "crawl-items"
+            },
+            "speed": 120,
+            "gap": 48,
+            "direction": "left",
+            "mode": "loop",
+            "metadata": {
+              "label": "Data crawl"
+            }
+          }
+        ],
+        "animations": {
+          "in": {
+            "type": "fade",
+            "durationMs": 250,
+            "easing": "ease-out"
+          },
+          "out": {
+            "type": "fade",
+            "durationMs": 200,
+            "easing": "ease-in"
+          }
+        },
+        "defaultPlacement": {
+          "anchor": "center",
+          "x": 0,
+          "y": 0,
+          "scale": 1
+        },
+        "metadata": {
+          "dataBinding": {
+            "sourceId": "headlines",
+            "keyColumn": null,
+            "columns": [
+              "item"
+            ],
+            "sortColumn": null,
+            "limit": 64,
+            "revision": 1,
+            "crawl": {
+              "speed": 120,
+              "gap": 48,
+              "direction": "left",
+              "mode": "loop"
+            },
+            "liveFollow": true,
+            "remote": false
+          }
+        }
+      },
+      "assets": [],
+      "updatedAt": "2026-11-22T12:00:00+00:00",
+      "packageRoot": null
+    }
+  ],
+  "dataSources": [
+    {
+      "id": "scores",
+      "name": "scores",
+      "revision": 2,
+      "receivedAt": "2026-11-22T12:00:00+00:00",
+      "data": {
+        "columns": [
+          {
+            "id": "team",
+            "kind": "text"
+          },
+          {
+            "id": "points",
+            "kind": "number"
+          },
+          {
+            "id": "qualified",
+            "kind": "boolean"
+          },
+          {
+            "id": "city",
+            "kind": "text"
+          }
+        ],
+        "rows": [
+          {
+            "key": "Zebras",
+            "cells": [
+              "Zebras",
+              "12",
+              "True",
+              "Paris"
+            ]
+          },
+          {
+            "key": "Ants",
+            "cells": [
+              "Ants",
+              "9",
+              "false",
+              "Lyon, FR"
+            ]
+          },
+          {
+            "key": "Bees",
+            "cells": [
+              "Bees",
+              "12",
+              "",
+              "Say \u0022hi\u0022"
+            ]
+          },
+          {
+            "key": "Cats",
+            "cells": [
+              "Cats",
+              "1e3",
+              "TRUE",
+              "Rome"
+            ]
+          },
+          {
+            "key": "Dingoes",
+            "cells": [
+              "Dingoes",
+              "7",
+              "False",
+              "Multi\nline"
+            ]
+          },
+          {
+            "key": "\u00C9lans",
+            "cells": [
+              "\u00C9lans",
+              "3.50",
+              "",
+              "Z\u00FCrich"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "headlines",
+      "name": "crawl",
+      "revision": 1,
+      "receivedAt": "2026-11-22T12:00:00+00:00",
+      "data": {
+        "columns": [
+          {
+            "id": "item",
+            "kind": "text"
+          }
+        ],
+        "rows": [
+          {
+            "key": "0001",
+            "cells": [
+              "Headline 1"
+            ]
+          },
+          {
+            "key": "0002",
+            "cells": [
+              "Headline 2"
+            ]
+          },
+          {
+            "key": "0003",
+            "cells": [
+              "Headline 3"
+            ]
+          },
+          {
+            "key": "0004",
+            "cells": [
+              "Headline 4"
+            ]
+          },
+          {
+            "key": "0005",
+            "cells": [
+              "Headline 6"
+            ]
+          },
+          {
+            "key": "0006",
+            "cells": [
+              "Headline 7"
+            ]
+          },
+          {
+            "key": "0007",
+            "cells": [
+              "Headline 8"
+            ]
+          },
+          {
+            "key": "0008",
+            "cells": [
+              ""
+            ]
+          },
+          {
+            "key": "0009",
+            "cells": [
+              "Headline 10"
+            ]
+          },
+          {
+            "key": "0010",
+            "cells": [
+              "Headline 11"
+            ]
+          },
+          {
+            "key": "0011",
+            "cells": [
+              "Headline 12"
+            ]
+          },
+          {
+            "key": "0012",
+            "cells": [
+              "Headline 13"
+            ]
+          },
+          {
+            "key": "0013",
+            "cells": [
+              "Headline 14"
+            ]
+          },
+          {
+            "key": "0014",
+            "cells": [
+              "Headline 15"
+            ]
+          },
+          {
+            "key": "0015",
+            "cells": [
+              "Headline 16"
+            ]
+          },
+          {
+            "key": "0016",
+            "cells": [
+              "Headline 17"
+            ]
+          },
+          {
+            "key": "0017",
+            "cells": [
+              "Headline 18"
+            ]
+          },
+          {
+            "key": "0018",
+            "cells": [
+              "Headline 19"
+            ]
+          },
+          {
+            "key": "0019",
+            "cells": [
+              "Headline 20"
+            ]
+          },
+          {
+            "key": "0020",
+            "cells": [
+              "Headline 21"
+            ]
+          },
+          {
+            "key": "0021",
+            "cells": [
+              "Headline 22"
+            ]
+          },
+          {
+            "key": "0022",
+            "cells": [
+              "Headline 23"
+            ]
+          },
+          {
+            "key": "0023",
+            "cells": [
+              "Headline 24"
+            ]
+          },
+          {
+            "key": "0024",
+            "cells": [
+              "Headline 25"
+            ]
+          },
+          {
+            "key": "0025",
+            "cells": [
+              "Headline 26"
+            ]
+          },
+          {
+            "key": "0026",
+            "cells": [
+              "Headline 27"
+            ]
+          },
+          {
+            "key": "0027",
+            "cells": [
+              "Headline 28"
+            ]
+          },
+          {
+            "key": "0028",
+            "cells": [
+              "Headline 29"
+            ]
+          },
+          {
+            "key": "0029",
+            "cells": [
+              "Headline 30"
+            ]
+          },
+          {
+            "key": "0030",
+            "cells": [
+              "Headline 31"
+            ]
+          },
+          {
+            "key": "0031",
+            "cells": [
+              "Headline 32"
+            ]
+          },
+          {
+            "key": "0032",
+            "cells": [
+              "Headline 33"
+            ]
+          },
+          {
+            "key": "0033",
+            "cells": [
+              "Headline 34"
+            ]
+          },
+          {
+            "key": "0034",
+            "cells": [
+              "Headline 35"
+            ]
+          },
+          {
+            "key": "0035",
+            "cells": [
+              "Headline 36"
+            ]
+          },
+          {
+            "key": "0036",
+            "cells": [
+              "Headline 37"
+            ]
+          },
+          {
+            "key": "0037",
+            "cells": [
+              "Headline 38"
+            ]
+          },
+          {
+            "key": "0038",
+            "cells": [
+              "Headline 39"
+            ]
+          },
+          {
+            "key": "0039",
+            "cells": [
+              "Headline 40"
+            ]
+          },
+          {
+            "key": "0040",
+            "cells": [
+              "Headline 41"
+            ]
+          },
+          {
+            "key": "0041",
+            "cells": [
+              "Headline 42"
+            ]
+          },
+          {
+            "key": "0042",
+            "cells": [
+              "Headline 43"
+            ]
+          },
+          {
+            "key": "0043",
+            "cells": [
+              "Headline 44"
+            ]
+          },
+          {
+            "key": "0044",
+            "cells": [
+              "Headline 45"
+            ]
+          },
+          {
+            "key": "0045",
+            "cells": [
+              "Headline 46"
+            ]
+          },
+          {
+            "key": "0046",
+            "cells": [
+              "Headline 47"
+            ]
+          },
+          {
+            "key": "0047",
+            "cells": [
+              "Headline 48"
+            ]
+          },
+          {
+            "key": "0048",
+            "cells": [
+              "Headline 49"
+            ]
+          },
+          {
+            "key": "0049",
+            "cells": [
+              "Headline 50"
+            ]
+          },
+          {
+            "key": "0050",
+            "cells": [
+              "Headline 51"
+            ]
+          },
+          {
+            "key": "0051",
+            "cells": [
+              "Headline 52"
+            ]
+          },
+          {
+            "key": "0052",
+            "cells": [
+              "Headline 53"
+            ]
+          },
+          {
+            "key": "0053",
+            "cells": [
+              "Headline 54"
+            ]
+          },
+          {
+            "key": "0054",
+            "cells": [
+              "Headline 55"
+            ]
+          },
+          {
+            "key": "0055",
+            "cells": [
+              "Headline 56"
+            ]
+          },
+          {
+            "key": "0056",
+            "cells": [
+              "Headline 57"
+            ]
+          },
+          {
+            "key": "0057",
+            "cells": [
+              "Headline 58"
+            ]
+          },
+          {
+            "key": "0058",
+            "cells": [
+              "Headline 59"
+            ]
+          },
+          {
+            "key": "0059",
+            "cells": [
+              "Headline 60"
+            ]
+          },
+          {
+            "key": "0060",
+            "cells": [
+              "Headline 61"
+            ]
+          },
+          {
+            "key": "0061",
+            "cells": [
+              "Headline 62"
+            ]
+          },
+          {
+            "key": "0062",
+            "cells": [
+              "Headline 63"
+            ]
+          },
+          {
+            "key": "0063",
+            "cells": [
+              "Headline 64"
+            ]
+          },
+          {
+            "key": "0064",
+            "cells": [
+              "Headline 65"
+            ]
+          },
+          {
+            "key": "0065",
+            "cells": [
+              "Headline 66"
+            ]
+          },
+          {
+            "key": "0066",
+            "cells": [
+              "Headline 67"
+            ]
+          },
+          {
+            "key": "0067",
+            "cells": [
+              "Headline 68"
+            ]
+          },
+          {
+            "key": "0068",
+            "cells": [
+              "Headline 69"
+            ]
+          },
+          {
+            "key": "0069",
+            "cells": [
+              "Headline 70"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "feeds": [],
+  "sourceColumns": [],
+  "futureSection": {
+    "keep": true
+  }
+}

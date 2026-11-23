@@ -1,0 +1,687 @@
+{
+  "authority" : "legacy",
+  "automationRules" : [
+
+  ],
+  "brand" : null,
+  "cues" : [
+    {
+      "clockConfiguration" : null,
+      "draft" : {
+        "animations" : {
+          "in" : {
+            "direction" : "left",
+            "durationMs" : 250,
+            "easing" : "ease-out",
+            "type" : "fade"
+          },
+          "layers" : "own",
+          "out" : {
+            "direction" : "left",
+            "durationMs" : 200,
+            "easing" : "ease-in",
+            "type" : "fade"
+          }
+        },
+        "fields" : {
+          "heading" : "In conversation",
+          "subtitle" : "Stories worth sharing",
+          "text-size" : 64
+        },
+        "image" : null,
+        "placement" : {
+          "anchor" : "center",
+          "scale" : 1,
+          "x" : 0,
+          "y" : 0
+        },
+        "scratch" : null,
+        "style" : {
+          "accentColor" : "#44C1A1",
+          "anchor" : "lower-left",
+          "backgroundColor" : "#172433",
+          "backgroundOpacity" : 0.90000000000000002,
+          "cornerRadius" : 8,
+          "fontFamily" : "Segoe UI",
+          "isValid" : true,
+          "logoScale" : 1,
+          "nameColor" : "#FFFFFF",
+          "nameSize" : 42,
+          "padding" : 20,
+          "preset" : "compact-solid",
+          "safeOffsetX" : 0.050000000000000003,
+          "safeOffsetY" : 0.059999999999999998,
+          "showLogo" : true,
+          "titleColor" : "#E1E9F2",
+          "titleSize" : 28,
+          "version" : 1,
+          "width" : 0.59999999999999998
+        },
+        "templateId" : "centered-title",
+        "templateVersion" : 1
+      },
+      "id" : "welcome",
+      "name" : "Welcome",
+      "sceneId" : "",
+      "scope" : "global",
+      "sourceId" : ""
+    }
+  ],
+  "dataSources" : [
+    {
+      "data" : {
+        "columns" : [
+          {
+            "id" : "team",
+            "kind" : "text"
+          },
+          {
+            "id" : "points",
+            "kind" : "number"
+          },
+          {
+            "id" : "qualified",
+            "kind" : "boolean"
+          },
+          {
+            "id" : "city",
+            "kind" : "text"
+          }
+        ],
+        "rows" : [
+          {
+            "cells" : [
+              "Zebras",
+              "12",
+              "True",
+              "Paris"
+            ],
+            "key" : "Zebras"
+          },
+          {
+            "cells" : [
+              "Ants",
+              "9",
+              "false",
+              "Lyon, FR"
+            ],
+            "key" : "Ants"
+          },
+          {
+            "cells" : [
+              "Bees",
+              "12",
+              "",
+              "Say \"hi\""
+            ],
+            "key" : "Bees"
+          },
+          {
+            "cells" : [
+              "Cats",
+              "1e3",
+              "TRUE",
+              "Rome"
+            ],
+            "key" : "Cats"
+          },
+          {
+            "cells" : [
+              "Dingoes",
+              "7",
+              "False",
+              "Multi\nline"
+            ],
+            "key" : "Dingoes"
+          },
+          {
+            "cells" : [
+              "Élans",
+              "3.50",
+              "",
+              "Zürich"
+            ],
+            "key" : "Élans"
+          }
+        ]
+      },
+      "id" : "mac-scores",
+      "name" : "scores",
+      "receivedAt" : "2026-11-28T12:00:00.000Z",
+      "revision" : 1
+    }
+  ],
+  "designs" : [
+    {
+      "assets" : [
+
+      ],
+      "definition" : {
+        "animations" : {
+          "in" : {
+            "durationMs" : 250,
+            "easing" : "ease-out",
+            "type" : "fade"
+          },
+          "out" : {
+            "durationMs" : 200,
+            "easing" : "ease-in",
+            "type" : "fade"
+          }
+        },
+        "bounds" : {
+          "height" : 336,
+          "width" : 1440
+        },
+        "brandTokens" : [
+          "brand.primary",
+          "brand.onPrimary",
+          "brand.accent",
+          "brand.fontBody"
+        ],
+        "canvas" : {
+          "height" : 1080,
+          "width" : 1920
+        },
+        "defaultPlacement" : {
+          "anchor" : "center",
+          "scale" : 1,
+          "x" : 0,
+          "y" : 0
+        },
+        "family" : "title",
+        "fields" : [
+          {
+            "default" : "[\"1\",\"Cats\",\"1e3\"]",
+            "id" : "table-row-1",
+            "maxLength" : 4096,
+            "type" : "string"
+          },
+          {
+            "default" : "[\"2\",\"Bees\",\"12\"]",
+            "id" : "table-row-2",
+            "maxLength" : 4096,
+            "type" : "string"
+          },
+          {
+            "default" : "[\"3\",\"Zebras\",\"12\"]",
+            "id" : "table-row-3",
+            "maxLength" : 4096,
+            "type" : "string"
+          },
+          {
+            "default" : "[\"4\",\"Ants\",\"9\"]",
+            "id" : "table-row-4",
+            "maxLength" : 4096,
+            "type" : "string"
+          },
+          {
+            "default" : "[\"5\",\"Dingoes\",\"7\"]",
+            "id" : "table-row-5",
+            "maxLength" : 4096,
+            "type" : "string"
+          }
+        ],
+        "layers" : [
+          {
+            "alternateFill" : "#243440",
+            "color" : {
+              "token" : "brand.onPrimary"
+            },
+            "columns" : [
+              {
+                "align" : "right",
+                "heading" : "Rank",
+                "weight" : 0.40000000000000002
+              },
+              {
+                "align" : "left",
+                "heading" : "team",
+                "weight" : 1
+              },
+              {
+                "align" : "right",
+                "heading" : "points",
+                "weight" : 1
+              }
+            ],
+            "font" : {
+              "token" : "brand.fontBody"
+            },
+            "fontSize" : 29,
+            "headerFill" : {
+              "token" : "brand.primary"
+            },
+            "height" : 336,
+            "id" : "data-table",
+            "metadata" : {
+              "label" : "Data table"
+            },
+            "rowFill" : "#18232D",
+            "rowHeight" : 56,
+            "rows" : [
+              {
+                "field" : "table-row-1"
+              },
+              {
+                "field" : "table-row-2"
+              },
+              {
+                "field" : "table-row-3"
+              },
+              {
+                "field" : "table-row-4"
+              },
+              {
+                "field" : "table-row-5"
+              }
+            ],
+            "type" : "table",
+            "width" : 1440,
+            "x" : 0,
+            "y" : 0
+          }
+        ],
+        "metadata" : {
+          "dataBinding" : {
+            "columns" : [
+              "team",
+              "points"
+            ],
+            "crawl" : null,
+            "keyColumn" : "team",
+            "limit" : 5,
+            "liveFollow" : false,
+            "remote" : false,
+            "revision" : 1,
+            "sortColumn" : "points",
+            "sourceId" : "mac-scores"
+          }
+        },
+        "name" : "Mac scores",
+        "schemaVersion" : 1,
+        "templateId" : "design-mac-scores-0a1b2c",
+        "templateVersion" : 1
+      },
+      "designId" : "design-mac-scores-0a1b2c",
+      "family" : "title",
+      "name" : "Mac scores",
+      "templateId" : "design-mac-scores-0a1b2c",
+      "templateVersion" : 1,
+      "updatedAt" : "2026-11-28T12:00:00.000Z"
+    }
+  ],
+  "feeds" : [
+
+  ],
+  "futureSection" : {
+    "keep" : true,
+    "nested" : [
+      1,
+      2
+    ]
+  },
+  "playlist" : [
+    {
+      "clock" : null,
+      "dataBinding" : null,
+      "fields" : {
+        "name" : "Alex Rivera",
+        "title" : "Host · Interview"
+      },
+      "followSources" : true,
+      "hotkey" : "F1",
+      "id" : "guest",
+      "image" : null,
+      "imagePath" : null,
+      "kind" : "guest",
+      "motion" : null,
+      "name" : "Guest name",
+      "placement" : null,
+      "playOutAfterMs" : 8000,
+      "showClock" : false,
+      "sourceMappings" : {
+
+      },
+      "style" : {
+        "accentColor" : "#44C1A1",
+        "anchor" : "lower-left",
+        "backgroundColor" : "#172433",
+        "backgroundOpacity" : 0,
+        "cornerRadius" : 0,
+        "fontFamily" : "Segoe UI",
+        "isValid" : true,
+        "logoScale" : 1,
+        "nameColor" : "#FFFFFF",
+        "nameSize" : 40,
+        "padding" : 20,
+        "preset" : "minimal-accent",
+        "safeOffsetX" : 0.050000000000000003,
+        "safeOffsetY" : 0.059999999999999998,
+        "showLogo" : true,
+        "titleColor" : "#E1E9F2",
+        "titleSize" : 26,
+        "version" : 1,
+        "width" : 0.59999999999999998
+      },
+      "templateId" : "minimal-accent",
+      "templateVersion" : 1,
+      "variants" : [
+
+      ]
+    },
+    {
+      "clock" : null,
+      "dataBinding" : null,
+      "fields" : {
+        "heading" : "In conversation",
+        "subtitle" : "Stories worth sharing",
+        "text-size" : 64
+      },
+      "followSources" : false,
+      "hotkey" : "F2",
+      "id" : "title",
+      "image" : null,
+      "imagePath" : null,
+      "kind" : "title",
+      "motion" : null,
+      "name" : "Show title",
+      "placement" : null,
+      "playOutAfterMs" : 0,
+      "showClock" : false,
+      "sourceMappings" : {
+
+      },
+      "style" : {
+        "accentColor" : "#44C1A1",
+        "anchor" : "lower-left",
+        "backgroundColor" : "#172433",
+        "backgroundOpacity" : 0.90000000000000002,
+        "cornerRadius" : 8,
+        "fontFamily" : "Segoe UI",
+        "isValid" : true,
+        "logoScale" : 1,
+        "nameColor" : "#FFFFFF",
+        "nameSize" : 42,
+        "padding" : 20,
+        "preset" : "compact-solid",
+        "safeOffsetX" : 0.050000000000000003,
+        "safeOffsetY" : 0.059999999999999998,
+        "showLogo" : true,
+        "titleColor" : "#E1E9F2",
+        "titleSize" : 28,
+        "version" : 1,
+        "width" : 0.59999999999999998
+      },
+      "templateId" : "centered-title",
+      "templateVersion" : 1,
+      "variants" : [
+
+      ]
+    },
+    {
+      "clock" : null,
+      "dataBinding" : null,
+      "fields" : {
+        "logo" : "logo",
+        "show-logo" : true
+      },
+      "followSources" : false,
+      "hotkey" : "F3",
+      "id" : "logo",
+      "image" : null,
+      "imagePath" : null,
+      "kind" : "logo",
+      "motion" : null,
+      "name" : "Logo",
+      "placement" : null,
+      "playOutAfterMs" : 0,
+      "showClock" : false,
+      "sourceMappings" : {
+
+      },
+      "style" : {
+        "accentColor" : "#44C1A1",
+        "anchor" : "lower-left",
+        "backgroundColor" : "#172433",
+        "backgroundOpacity" : 0.90000000000000002,
+        "cornerRadius" : 8,
+        "fontFamily" : "Segoe UI",
+        "isValid" : true,
+        "logoScale" : 1,
+        "nameColor" : "#FFFFFF",
+        "nameSize" : 42,
+        "padding" : 20,
+        "preset" : "compact-solid",
+        "safeOffsetX" : 0.050000000000000003,
+        "safeOffsetY" : 0.059999999999999998,
+        "showLogo" : true,
+        "titleColor" : "#E1E9F2",
+        "titleSize" : 28,
+        "version" : 1,
+        "width" : 0.59999999999999998
+      },
+      "templateId" : "corner-logo",
+      "templateVersion" : 1,
+      "variants" : [
+
+      ]
+    },
+    {
+      "clock" : null,
+      "dataBinding" : null,
+      "fields" : {
+        "label" : "LIVE",
+        "text-size" : 56,
+        "time" : "12:34:56"
+      },
+      "followSources" : false,
+      "hotkey" : "F4",
+      "id" : "live-bug",
+      "image" : null,
+      "imagePath" : null,
+      "kind" : "liveBug",
+      "motion" : null,
+      "name" : "LIVE bug",
+      "placement" : null,
+      "playOutAfterMs" : 0,
+      "showClock" : true,
+      "sourceMappings" : {
+
+      },
+      "style" : {
+        "accentColor" : "#44C1A1",
+        "anchor" : "lower-left",
+        "backgroundColor" : "#172433",
+        "backgroundOpacity" : 0.90000000000000002,
+        "cornerRadius" : 8,
+        "fontFamily" : "Segoe UI",
+        "isValid" : true,
+        "logoScale" : 1,
+        "nameColor" : "#FFFFFF",
+        "nameSize" : 42,
+        "padding" : 20,
+        "preset" : "compact-solid",
+        "safeOffsetX" : 0.050000000000000003,
+        "safeOffsetY" : 0.059999999999999998,
+        "showLogo" : true,
+        "titleColor" : "#E1E9F2",
+        "titleSize" : 28,
+        "version" : 1,
+        "width" : 0.59999999999999998
+      },
+      "templateId" : "clock-panel",
+      "templateVersion" : 1,
+      "variants" : [
+
+      ]
+    },
+    {
+      "clock" : null,
+      "dataBinding" : null,
+      "fields" : {
+
+      },
+      "followSources" : false,
+      "hotkey" : "F5",
+      "id" : "sponsor",
+      "image" : null,
+      "imagePath" : null,
+      "kind" : "sponsor",
+      "motion" : null,
+      "name" : "Sponsor card",
+      "placement" : null,
+      "playOutAfterMs" : 15000,
+      "showClock" : false,
+      "sourceMappings" : {
+
+      },
+      "style" : {
+        "accentColor" : "#44C1A1",
+        "anchor" : "lower-left",
+        "backgroundColor" : "#0C1118",
+        "backgroundOpacity" : 0,
+        "cornerRadius" : 0,
+        "fontFamily" : "Segoe UI",
+        "isValid" : true,
+        "logoScale" : 1,
+        "nameColor" : "#F4F7FA",
+        "nameSize" : 40,
+        "padding" : 20,
+        "preset" : "minimal-accent",
+        "safeOffsetX" : 0.050000000000000003,
+        "safeOffsetY" : 0.059999999999999998,
+        "showLogo" : true,
+        "titleColor" : "#44C1A1",
+        "titleSize" : 26,
+        "version" : 1,
+        "width" : 0.59999999999999998
+      },
+      "templateId" : "",
+      "templateVersion" : 0,
+      "variants" : [
+
+      ]
+    },
+    {
+      "dataBinding" : {
+        "columns" : [
+          "team",
+          "points"
+        ],
+        "crawl" : null,
+        "keyColumn" : "team",
+        "limit" : 5,
+        "liveFollow" : false,
+        "remote" : false,
+        "revision" : 1,
+        "sortColumn" : "points",
+        "sourceId" : "mac-scores"
+      },
+      "fields" : {
+        "table-row-1" : "[\"1\",\"Cats\",\"1e3\"]",
+        "table-row-2" : "[\"2\",\"Bees\",\"12\"]",
+        "table-row-3" : "[\"3\",\"Zebras\",\"12\"]",
+        "table-row-4" : "[\"4\",\"Ants\",\"9\"]",
+        "table-row-5" : "[\"5\",\"Dingoes\",\"7\"]"
+      },
+      "followSources" : false,
+      "hotkey" : "",
+      "id" : "mac-scores",
+      "kind" : "title",
+      "name" : "Mac scores",
+      "playOutAfterMs" : 0,
+      "showClock" : false,
+      "templateId" : "design-mac-scores-0a1b2c",
+      "templateVersion" : 1
+    }
+  ],
+  "schemaVersion" : 3,
+  "shotLayouts" : [
+    {
+      "hotkey" : "Shift+F1",
+      "id" : "open",
+      "name" : "Open",
+      "playOutOthers" : false,
+      "rowIds" : [
+        "title",
+        "logo"
+      ],
+      "rowSettings" : {
+
+      },
+      "sceneId" : "intro"
+    },
+    {
+      "hotkey" : "Shift+F2",
+      "id" : "two-up",
+      "name" : "Two-up",
+      "playOutOthers" : false,
+      "rowIds" : [
+        "guest"
+      ],
+      "rowSettings" : {
+
+      },
+      "sceneId" : "interview"
+    },
+    {
+      "hotkey" : "Shift+F3",
+      "id" : "panel",
+      "name" : "Panel",
+      "playOutOthers" : false,
+      "rowIds" : [
+        "guest",
+        "logo"
+      ],
+      "rowSettings" : {
+
+      },
+      "sceneId" : "panel"
+    },
+    {
+      "hotkey" : "Shift+F11",
+      "id" : "clean",
+      "name" : "Clean",
+      "playOutOthers" : true,
+      "rowIds" : [
+
+      ],
+      "rowSettings" : {
+
+      },
+      "sceneId" : ""
+    }
+  ],
+  "showId" : "default",
+  "sourceColumns" : [
+    {
+      "id" : "pronouns",
+      "label" : "Pronouns",
+      "slotValues" : {
+        "1" : "they/them"
+      }
+    }
+  ],
+  "sourceOverrides" : null,
+  "studioLowerThird" : null,
+  "stylePresets" : {
+
+  },
+  "templates" : [
+    {
+      "definition" : {
+        "runtime" : "declarative",
+        "templateId" : "centered-title",
+        "templateVersion" : 1
+      },
+      "manifestHash" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "packageRoot" : "",
+      "templateId" : "centered-title",
+      "templateVersion" : 1
+    }
+  ],
+  "templateStyles" : {
+
+  }
+}
