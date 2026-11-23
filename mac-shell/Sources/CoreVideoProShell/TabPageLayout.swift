@@ -27,10 +27,12 @@ enum TabPageLayout {
         }
     }
 
-    /// A page that owns its own scrolling and fills the window's height (Windows hosts the
-    /// Graphics page in a fixed-height Border: its playlist and inspector scroll on their own,
-    /// StudioWorkspace.xaml:725-728). Every other tab scrolls as one page.
-    static func fillsHeight(_ tab: StudioTab) -> Bool { tab == .overlays }
+    /// A page that owns its own scrolling and fills the window's height, so TabPage gives it
+    /// no outer ScrollView. Graphics: Windows hosts it in a fixed-height Border, its playlist
+    /// and inspector scroll on their own (StudioWorkspace.xaml:725-728). Comms: it pins its
+    /// strip and ops strip like Windows' five-row grid (CommsPage.xaml:51-58), and inside an
+    /// outer scroll they would scroll away. Every other tab scrolls as one page.
+    static func fillsHeight(_ tab: StudioTab) -> Bool { tab == .overlays || tab == .comms }
 
     /// The width a tab's page actually gets in a window this wide.
     static func pageWidth(for tab: StudioTab, window: CGFloat) -> CGFloat {
@@ -56,14 +58,15 @@ struct TabPageContent: View {
                 case .routing: RoutingPane()
                 case .overlays: GraphicsTabPane(graphics: model.graphics)
                 case .audio: AudioPane()
-                case .comms: CommsPage(model: model.comms)
+                case .comms: CommsPage(model: model.comms, onLeave: { model.leaveZoom() })
                 case .media: MediaPane()
                 case .automation: AutomationPane()
                 case .settings: SettingsPane()
                 case .diagnose: DiagnosePane()
                 }
             }
-            .frame(maxWidth: TabPageLayout.maxWidth(for: tab))
+            .frame(maxWidth: TabPageLayout.maxWidth(for: tab),
+                   maxHeight: tab == .comms ? .infinity : nil)
             Spacer(minLength: 0)
         }
         .padding(TabPageLayout.gutter)
@@ -90,6 +93,7 @@ enum TabSnapshotHarness {
         ]
         ShowInputWriteScope.run("snapshot-seed") { seedSlots(model) }
         seedMedia(model)
+        seedComms(model)
         model.applyZoomForTesting([
             "meetingState": "in_meeting", "rosterEpoch": "1:1:seed", "rosterRevision": NSNumber(value: 1),
             "participants": [
@@ -153,6 +157,43 @@ enum TabSnapshotHarness {
         model.toggleSlotIso(1)
     }
 
+    /// The Comms tab (gate on only): COREVIDEO_SHELL_COMMS_SEED names a fact in
+    /// contracts/comms/zoom-comms-state.fixtures.json, or not-in-meeting /
+    /// waiting; COREVIDEO_SHELL_COMMS_SEED_UI=edit|settings opens a drawer.
+    static func seedComms(_ model: AppModel) {
+        let env = ProcessInfo.processInfo.environment
+        guard CommsGate.enabled, let seed = env["COREVIDEO_SHELL_COMMS_SEED"] else { return }
+        model.joinMeetingId = "https://zoom.us/j/1234567890"   // the rail's meeting label
+        let comms = model.comms
+        switch seed {
+        case "not-in-meeting":
+            comms.applyMeeting(false, label: nil)
+            return
+        case "waiting":
+            comms.applyMeeting(true, label: "Meeting 123 456 7890")
+            comms.apply(.some(nil))
+            return
+        default:
+            comms.applyMeeting(true, label: "Meeting 123 456 7890")
+            // The checkout this binary was built from (the fixture is a repo file).
+            let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("contracts/comms/zoom-comms-state.fixtures.json")
+            guard let data = try? Data(contentsOf: url),
+                  let doc = try? JSONSerialization.jsonObject(with: data) as? JSONObject,
+                  let line = (doc["facts"] as? [JSONObject])?.first(where: { $0["name"] as? String == seed })?["line"] as? String,
+                  let event = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? JSONObject,
+                  let fact = ZoomCommsProtocol.parseFact(event) else { return }
+            comms.apply(fact)
+        }
+        switch env["COREVIDEO_SHELL_COMMS_SEED_UI"] {
+        case "edit": comms.editMode = true
+        case "settings": comms.settingsOpen = true
+        case "ops": comms.opsOpen = true
+        default: break
+        }
+    }
+
     /// The Media tab: synthetic assets (never the operator's bin) and the
     /// COREVIDEO_SHELL_MEDIA_SNAPSHOT states.
     private static func seedMedia(_ model: AppModel) {
@@ -201,8 +242,11 @@ enum TabSnapshotHarness {
             .environment(\.colorScheme, .dark))
         host.frame = NSRect(x: 0, y: 0, width: width, height: 100)
         host.layoutSubtreeIfNeeded()
-        // A page that fills the window (Graphics) has no fitting height of its own: give it a window's.
-        let height = TabPageLayout.fillsHeight(tab) ? 760 : max(100, host.fittingSize.height)
+        // A page that fills the window has no fitting height of its own: give it a window's
+        // (Graphics a fixed 760; Comms 16:9-ish, so its pinned rows sit where a window puts them).
+        let height = tab == .overlays ? 760
+            : tab == .comms ? (width * 768 / 1360).rounded()
+            : max(100, host.fittingSize.height)
         let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: width, height: height),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .darkAqua)
