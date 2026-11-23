@@ -182,7 +182,7 @@ struct CommsDesk: View {
                 TalkKey(enabled: true,
                         onPress: { Task { await model.allPress() } },
                         onRelease: { Task { await model.allRelease() } }) {
-                    Text(model.allText).font(.plexMono(13, .medium)).foregroundStyle(tone.text)
+                    Text(model.allText).font(.plexMono(13, .medium)).tracking(13 * 0.24).foregroundStyle(tone.text)
                         .frame(maxWidth: .infinity, minHeight: 56)
                         .background(RoundedRectangle(cornerRadius: 8).fill(tone.background))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(tone.border, lineWidth: 2))
@@ -307,7 +307,8 @@ struct CommsToggleStyle: ButtonStyle {
             .font(.grotesk(12, .semibold))
             .foregroundStyle(Studio.textPrimary)
             .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(on || configuration.isPressed ? Studio.surfaceRaised : .clear))
+            .frame(minWidth: 96)   // CommsToggleButton MinWidth
+            .background(RoundedRectangle(cornerRadius: 8).fill(on || configuration.isPressed ? Studio.surfaceRaised : Studio.surface))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(on ? Studio.accent : Studio.border, lineWidth: 1))
             .contentShape(RoundedRectangle(cornerRadius: 8))
     }
