@@ -846,11 +846,14 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
     # CoreVideo OBS plugin's mac port; see the header of main-macos.mm.
     add_executable(corevideo-zoom-engine
       zoom-engine/engine/main-macos.mm
+      zoom-engine/engine/engine-comms-macos.mm
       ${COREVIDEO_COMMS_DIR}/talkback_sdk_mac.mm
     )
-    # The ported adapter refuses to compile without ARC (its own #error); the
-    # rest of the engine is MRC-era ObjC++ and keeps its flags.
+    # The ported adapter and the comms glue refuse to compile without ARC
+    # (each has its own #error); main-macos.mm is MRC-era ObjC++ and keeps its
+    # flags.
     set_source_files_properties(${COREVIDEO_COMMS_DIR}/talkback_sdk_mac.mm
+      zoom-engine/engine/engine-comms-macos.mm
       PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(corevideo-zoom-engine PRIVATE corevideo_comms_audio)
     target_include_directories(corevideo-zoom-engine PRIVATE

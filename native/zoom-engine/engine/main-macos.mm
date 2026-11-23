@@ -70,6 +70,8 @@
 #import <Cocoa/Cocoa.h>
 
 #include "engine-ipc.h"
+#include "engine-comms-macos.h"
+#include "engine-line-route.h"
 #include "engine-command.h"
 #include "SubscriptionEvidenceLines.h"
 #include "end-other-meeting.h"
@@ -327,6 +329,9 @@ static void handle_init(const std::string &line)
     // SDK init is done — from here on, heartbeat pings must prove the main
     // thread is alive (see the heartbeat thread in main()).
     g_heartbeat_via_main_queue.store(true, std::memory_order_release);
+    // Comms may touch SDK objects only from here on (its tick runs from
+    // main() onward, long before init).
+    if (err == ZoomSDKError_Success) EngineCommsMac::instance().set_sdk_ready(true);
     if (err != ZoomSDKError_Success) {
         EngineIpc::write(R"({"cmd":"auth_fail","stage":"init","code":)" +
                          std::to_string(static_cast<int>(err)) +
@@ -592,6 +597,10 @@ static bool g_end_other_meeting = false;
                  meetingError:(ZoomSDKMeetingError)error
                     EndReason:(EndMeetingReason)reason
 {
+    // First, on EVERY status, before the engine reacts (Windows
+    // EngineComms::on_meeting_status): mic ownership drops synchronously and
+    // the bank is released away from InMeeting.
+    EngineCommsMac::instance().on_meeting_status(static_cast<int>(state));
     EngineIpc::write(R"({"cmd":"debug","stage":"meeting_status","status":)" +
                      std::to_string(static_cast<int>(state)) +
                      R"(,"result":)" + std::to_string(static_cast<int>(error)) + "}");
@@ -790,6 +799,9 @@ static void handle_join(const std::string &line)
     // can never leak into the next one and silently evict the operator's own
     // Zoom client.
     g_end_other_meeting = engine_join::joinRequestsEndOtherMeeting(line);
+    // Windows main.cpp:1536. Pro never sends the flag (Private comms governs).
+    EngineCommsMac::instance().set_capture_only(
+        line.find("\"capture_only\":true") != std::string::npos);
 
     EngineIpc::write(R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
         json_escape(meeting_id) + R"(","has_on_behalf_token":)" +
@@ -2318,6 +2330,16 @@ int main(int argc, char **argv)
             if (line.empty())
                 continue;
 
+            // Comms lines first, as the Windows engine routes them (see
+            // engine-line-route.h).
+            if (routeEngineLine(line) == EngineLineRoute::Comms) {
+                const std::string comms_line = line;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    EngineCommsMac::instance().handle_line(comms_line);
+                });
+                continue;
+            }
+
             const EngineCommand command = engine_parse_command(line);
             if (command == EngineCommand::Quit)
                 break;
@@ -2389,6 +2411,10 @@ int main(int argc, char **argv)
         // Peer closed the socket or sent quit: unwind from the main thread,
         // which owns the run loop.
         dispatch_async(dispatch_get_main_queue(), ^{
+            // Comms first, while IPC is still open (it writes debug lines):
+            // stops the timer, releases the bank, joins the audio worker
+            // (Windows main.cpp:1668 runs EngineComms::shutdown before Leave).
+            EngineCommsMac::instance().shutdown();
             // Stop the heartbeat before closing the sockets, or it can write
             // into a descriptor that teardown has already closed (and that the
             // process may have handed to something else).
@@ -2413,6 +2439,9 @@ int main(int argc, char **argv)
     // badly. The cost is a Dock icon for the engine while it runs.
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    // Comms' 100 ms tick on the main queue; it touches no SDK object until
+    // handle_init reports the SDK initialised.
+    dispatch_async(dispatch_get_main_queue(), ^{ EngineCommsMac::instance().start(); });
     [NSApp run];
     return 0;
 }
