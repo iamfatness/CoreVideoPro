@@ -69,3 +69,71 @@ CLT toolchain + MacOSX26.5.sdk): **2239 passed, 2 failed** of 2241. The two fail
 `AvfProgramTail.SubThresholdVideoSkewIsStillReconciled` and `…AudioStalledBeforeStopIsPaddedWithSilenceNotCut`.
 In both, the writer produced an empty file (`n=0`) while other lanes were building. Rerun alone, the suite
 gave `AvfProgramTail.*` **7/7 passed**. Recorded as load flakes, not caused by this lane.
+
+## Task 8 (N1a): NDI output in the Mac core, Apple runtime discovery — `eb712af7`
+
+- **Tests.**
+  - New: `NdiRuntimeCandidates.*` (5). These are the plan's two cases plus a V6/V5/base order case, an
+    unset-or-empty case pinning the whole Apple list, and the header sentence. The sender case drives
+    the real adapter through `createNdiOutputSenderWithCandidatesForTest({})`.
+  - Also new: `OutputSenderAdapter.DefaultSenderWarnsForANetworkDestinationNoBuildHas` (review finding,
+    below).
+  - `Ndi*` on Mac: 22/22.
+  - Full suite with `-DCOREVIDEO_WITH_NDI_OUTPUT=ON` added to `native/build-metal`: **2246 passed, 0
+    failed**. This was the run before the review fix-ups. After the fix-ups, the touched tests were
+    rerun and pass.
+- **Mutations.**
+  - **M8a** (drop the three environment entries) turned `AppleOrderAndEnvironment` and
+    `AppleEnvironmentVariablesComeFirstInVersionOrder` red.
+  - **M8b** (Windows sentence in the adapter on Apple) turned `MissingRuntimeSentenceNamesNdiTools`
+    red.
+  - Each was applied alone, rebuilt, and restored with `touch`.
+- **One fixture error of mine was fixed:** the sender case first pinned `runtimeDetail` exactly. The
+  snapshot appends live counters (`connections=… program=… groups=… instance=… video=…`), so it now
+  pins the probe's words as a prefix.
+- **Live (no runtime on this Mac):** the built core reports
+  `capabilityStates["ndi-output"] = {state: omitted, detail: ndi-runtime-missing, failureScope: process}`.
+  The `available` half of Step 3 needs an NDI install (owner hardware, row N-1/N-2).
+- **Review** (independent agent, given the diff and the task's mutation list):
+  1. *Important:* turning NDI on in the Mac CI job left no CI configuration with RTMP on and NDI off. As
+     a result `OutputSenderAdapter.DefaultSenderWarnsWhenRequestedDestinationHasNoModule` compiled to
+     `EXPECT_TRUE(true)` everywhere CI runs. Fixed by a flag-independent twin that drives the same
+     composite missing-module branch with `webrtc`, which no build has. It asserts the exact sentence.
+  2. The adapter's sentence choice is covered only where NDI is built. That is now the Mac CI job, so
+     no change.
+  3. The header comment claimed the bare leaf lets `DYLD_*` work. A hardened-runtime core without
+     `allow-dyld-environment-variables` ignores `DYLD_*`, so the comment was corrected.
+  4. The middle of the order is pinned by exact-vector equality. Judged adequate; no change.
+- **Licence:** the NDI runtime is not bundled. **A licence read covering OD-1/OD-2 (redistribution,
+  attribution, trademark wording) is still owed** before a Mac release ships NDI to operators. This
+  task decides nothing about it.
+- **Ready for the control lane:** N1a supplies the core half (sender built, `ndi-output` capability).
+  The shell toggle and `transport.ndi.*` are Task 9 (N1b).
+
+## Task 1 note found in advance: D11 cannot be done in the args builder
+
+The Step 3 live check ran the bundled ffmpeg 8.1.3 against a local HTTPS PUT server whose certificate
+comes from a throwaway CA, with five options:
+1. no options;
+2. `-tls_verify 1 -ca_file /etc/ssl/cert.pem`;
+3. the same with the throwaway CA as `-ca_file`;
+4. `-http_opts tls_verify=1:ca_file=/etc/ssl/cert.pem`;
+5. `-http_persistent 0` plus the global options.
+
+**The `hls` muxer uploaded every segment and playlist under all five, including verification against
+the system bundle.**
+
+The control shows the options themselves work. The same global options on a plain `-method PUT -f
+mpegts https://…` output fail with `certificate verify failed` against `/etc/ssl/cert.pem` and succeed
+with the throwaway CA.
+
+The cause is in the pinned source. `libavformat/hlsenc.c` `set_http_options` (line 333) builds the
+options for every segment and playlist open from `method`, `user_agent`, `multiple_requests`, `timeout`
+and `headers` only. No TLS option reaches the tls protocol, and hlsenc has no `http_opts`. **No argument
+spelling makes ffmpeg 8.1.3 verify an HLS https endpoint.**
+
+Task 1 therefore ships no HLS verify args, and mutation M1d does not apply. The HLS-over-https
+certificate obligation stays open. Candidate fixes, each needing an owner call:
+- patch hlsenc in `build-macos-ffmpeg.sh` to forward the format's protocol options;
+- refuse `https://` HLS on Mac with a sentence;
+- accept and document the gap.
