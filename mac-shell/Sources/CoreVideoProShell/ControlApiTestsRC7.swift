@@ -28,6 +28,8 @@ extension ShellTests {
             ("control/action-vectors-shape", testActionVectorsShape),
             ("control/rc7-srt-vectors", testRC7SrtVectors),
             ("control/rc7-multiview-actions", testRC7MultiviewActions),
+            ("control/rc7-scene-route-parse", testRC7SceneRouteParse),
+            ("control/rc7-scene-routes", testRC7SceneRoutes),
         ]
     }
 
@@ -236,5 +238,115 @@ extension ShellTests {
             _ = invoke(surface, vector.action, vector.args)
             expectEqual(sent.count, before == after ? 0 : 1, "\(label): repeating the value sends nothing more")
         }
+    }
+
+    /// Task 4: section scene-routes through the Mac twins. Parse cases through
+    /// SceneRoutesArgs.parse (exact Windows sentences; the runtime JSON-exception case by
+    /// its declared prefix), refuse cases through SceneRoutesArgs.refuse with the
+    /// vector's own known lists. Mutation: accept 1.5 as slot 1 (parse-fractional-slot).
+    static func testRC7SceneRouteParse() {
+        let vectors = loadActionVectors(section: "scene-routes")
+        expect(vectors.count >= 14, "the scene-routes section carries the plan's inputs (\(vectors.count))")
+        for vector in vectors {
+            let label = "routes/\(vector.name)"
+            let raw = vector.args.count > 1 ? vector.args[1] as? String ?? "" : ""
+            switch vector.given["step"] as? String {
+            case "parse":
+                switch SceneRoutesArgs.parse(raw) {
+                case .routes(let routes):
+                    expectVectorReply(.success, vector, label)
+                    let expected = (vector.effects["routes"] as? [String: Any] ?? [:]).mapValues { vectorScalar($0) as? Int }
+                    expectEqual(routes.count, expected.count, "\(label): route count")
+                    for entry in routes.entries {
+                        expect(expected.keys.contains(entry.route), "\(label): route \(entry.route) expected")
+                        expectEqual(entry.slot, expected[entry.route] ?? nil, "\(label): slot for \(entry.route)")
+                    }
+                case .refused(let error):
+                    expectVectorReply(.fail(error), vector, label)
+                }
+            case "refuse":
+                guard case .routes(let routes) = SceneRoutesArgs.parse(raw) else {
+                    expect(false, "\(label): the refuse input parses"); continue
+                }
+                let refusal = SceneRoutesArgs.refuse(
+                    sceneId: vector.args.first as? String ?? "",
+                    knownScenes: vector.given["scenes"] as? [String] ?? [],
+                    knownRouteIds: vector.given["routeIds"] as? [String] ?? [],
+                    knownSlots: vector.given["slots"] as? [Int] ?? [],
+                    routes: routes)
+                expectVectorReply(refusal.map { .fail($0) } ?? .success, vector, label)
+            default:
+                expect(false, "\(label): a known step")
+            }
+        }
+        // Order matters: Windows reports the FIRST unknown route in JSON order.
+        if case .routes(let routes) = SceneRoutesArgs.parse(#"{"z":1,"a":2,"z":3}"#) {
+            expectEqual(routes.entries.map { $0.route }, ["z", "a"], "insertion order kept; a repeated key keeps its place")
+            expectEqual(routes.entries.first?.slot, 3, "a repeated key's last value wins (Dictionary indexer)")
+        } else { expect(false, "duplicate keys parse") }
+    }
+
+    /// The Task 4 fixture: takeModel (Program s2, Preview s1) plus scene "two-up" whose
+    /// preset layers are two-up-layer-0 and two-up-layer-1; slots 1-10.
+    @MainActor
+    static func sceneRoutesModel() -> AppModel {
+        let model = takeModel(FakeTakeCore())
+        model.scenes.append(SceneDef(id: "two-up", name: "Side by side", layout: "two-up"))
+        return model
+    }
+
+    /// Task 4: the refuse vectors (whose known lists ARE this fixture) through the real
+    /// dispatcher, all-or-nothing. Mutations: apply routes one by one, refusing midway
+    /// (refuse-unknown-route: layer 0 moved); select Preview before validating (Preview
+    /// moved on a refusal).
+    @MainActor
+    static func testRC7SceneRoutes() {
+        let model = sceneRoutesModel()
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        // Fixture invariants (rule 1): the vectors' lists equal the fixture's.
+        let refuse = loadActionVectors(section: "scene-routes").filter { $0.given["step"] as? String == "refuse" }
+        expect(!refuse.isEmpty, "refuse vectors present")
+        expectEqual(model.sceneLayerCandidates("two-up")?.map { $0.id }, ["two-up-layer-0", "two-up-layer-1"],
+                    "fixture: two-up's route ids are its two layer ids")
+        expectEqual(model.slots.map(\.id), Array(1...10), "fixture: slots 1-10, slot 11 does not exist")
+        for vector in refuse {
+            expectEqual(vector.given["routeIds"] as? [String], ["two-up-layer-0", "two-up-layer-1"], "\(vector.name): routeIds match the fixture")
+            expectEqual(vector.given["slots"] as? [Int], Array(1...10), "\(vector.name): slots match the fixture")
+        }
+        func layers() -> [SceneLayer] { model.scenes.first { $0.id == "two-up" }?.layers ?? [] }
+
+        for vector in refuse where !vector.ok {
+            let preview = model.previewSceneId, before = layers(), syncs = model.sceneSyncRequestCount
+            let result = invoke(surface, vector.action, vector.args)
+            expectVectorReply(result, vector, "routes-model/\(vector.name)")
+            expectEqual(model.previewSceneId, preview, "\(vector.name): Preview did not move")
+            expectEqual(layers(), before, "\(vector.name): no layer changed (all-or-nothing)")
+            expectEqual(model.sceneSyncRequestCount, syncs, "\(vector.name): nothing was sent")
+        }
+
+        guard let success = refuse.first(where: { $0.ok }) else { expect(false, "a success vector"); return }
+        let syncs = model.sceneSyncRequestCount
+        expectEqual(invoke(surface, success.action, success.args), .appliedPreview("two-up"), "success: applied to Preview")
+        expectEqual(model.previewSceneId, "two-up", "success: Preview is the scene")
+        expectEqual(layers().map(\.slotId), [1, nil], "success: layer 0 -> slot 1, layer 1 -> active speaker (null)")
+        expectEqual(model.sceneSyncRequestCount, syncs + 1, "success: ONE scene sync")
+        expectEqual(model.programSceneId, "s2", "Program is untouched")
+
+        // scene.route.set: a one-entry map; then null clears a slot back to the active speaker.
+        expectEqual(invoke(surface, "scene.route.set", ["two-up", "two-up-layer-1", 4]), .appliedPreview("two-up"), "route.set")
+        expectEqual(layers().map(\.slotId), [1, 4], "route.set writes only its layer")
+        expectEqual(invoke(surface, "scene.cueWithRoutes", ["two-up", #"{"two-up-layer-1":null}"#]), .appliedPreview("two-up"), "null route")
+        expectEqual(layers().map(\.slotId), [1, nil], "null clears the layer to the active speaker")
+        expectEqual(invoke(surface, "scene.route.set", ["two-up", "two-up-layer-0", 11]),
+                    .fail("Unknown Show Input slot 11 for route 'two-up-layer-0'."), "route.set: unknown slot (same Refuse)")
+        expectEqual(layers().map(\.slotId), [1, nil], "a refused route.set changes nothing")
+
+        // A parse refusal changes nothing either.
+        let preview = model.previewSceneId
+        model.previewSceneId = "s1"
+        let result = invoke(surface, "scene.cueWithRoutes", ["two-up", "not json"])
+        expect(result?.error?.hasPrefix(SceneRoutesArgs.notJsonPrefix) == true, "parse refusal: Windows prefix (\(result?.error ?? "nil"))")
+        expectEqual(model.previewSceneId, "s1", "parse refusal: Preview did not move")
+        model.previewSceneId = preview
     }
 }

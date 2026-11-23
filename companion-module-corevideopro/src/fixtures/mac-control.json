@@ -285,6 +285,50 @@
         "Title" : "Select scene"
       },
       {
+        "Description" : "Cue a scene to Preview and point named routes at Show Input slots. JSON object: routeId → slot number or null (empty box). Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
+        "Id" : "scene.cueWithRoutes",
+        "OscAddress" : "\/cvp\/scene\/cueWithRoutes",
+        "Params" : [
+          {
+            "Name" : "sceneId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "JSON object {\"ohg-host\":1,\"ohg-box-1\":null}",
+            "Name" : "routes",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Cue scene with routes"
+      },
+      {
+        "Description" : "Cue a scene to Preview and point one named route at a Show Input slot. Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
+        "Id" : "scene.route.set",
+        "OscAddress" : "\/cvp\/scene\/route\/set",
+        "Params" : [
+          {
+            "Name" : "sceneId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Route id on that scene (for example ohg-host)",
+            "Name" : "routeId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Show Input slot 1-10",
+            "Name" : "slot",
+            "Required" : true,
+            "Type" : "int"
+          }
+        ],
+        "Title" : "Set scene route"
+      },
+      {
         "Description" : "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.",
         "Id" : "scene.list",
         "OscAddress" : "\/cvp\/scene\/list",

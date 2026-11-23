@@ -40,8 +40,9 @@ extension AppModel {
     }
 
     /// The layer ids a scene would carry (its edited layers, else the preset
-    /// layout's layer ids ensureLayers would create), without mutating it.
-    private func voltCandidateLayers(_ sceneId: String) -> [(id: String, opacity: Double)]? {
+    /// layout's layer ids ensureLayers would create), without mutating it. Shared
+    /// with scene.cueWithRoutes / scene.route.set: a Mac route id IS a layer id (D-C2).
+    func sceneLayerCandidates(_ sceneId: String) -> [(id: String, opacity: Double)]? {
         guard let scene = scenes.first(where: { $0.id == sceneId }) else { return nil }
         if !scene.layers.isEmpty { return scene.layers.map { ($0.id, $0.opacity) } }
         guard let rects = Self.layoutRects[scene.layout] else { return [] }
@@ -50,7 +51,7 @@ extension AppModel {
 
     /// Windows FindVoltClipRoute: exactly one eligible layer, else nil.
     func voltClipLayerId(scene sceneId: String, route: String) -> String? {
-        let eligible = (voltCandidateLayers(sceneId) ?? [])
+        let eligible = (sceneLayerCandidates(sceneId) ?? [])
             .filter { $0.opacity > 0 && (route.isEmpty || $0.id == route) }
         return eligible.count == 1 ? eligible[0].id : nil
     }

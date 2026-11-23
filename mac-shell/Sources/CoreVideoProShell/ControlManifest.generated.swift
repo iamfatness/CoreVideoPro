@@ -128,14 +128,14 @@ enum ControlManifestGenerated {
                 ControlParam(name: "sceneId", type: .string, required: true, description: nil),
                 ControlParam(name: "routes", type: .string, required: true, description: "JSON object {\"ohg-host\":1,\"ohg-box-1\":null}"),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.route.set", title: "Set scene route", description: "Cue a scene to Preview and point one named route at a Show Input slot. Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.", params: [
                 ControlParam(name: "sceneId", type: .string, required: true, description: nil),
                 ControlParam(name: "routeId", type: .string, required: true, description: "Route id on that scene (for example ohg-host)"),
                 ControlParam(name: "slot", type: .int, required: true, description: "Show Input slot 1-10"),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.list", title: "List scenes", description: "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.", params: []),
             availability: .supported),

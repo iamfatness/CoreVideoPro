@@ -140,6 +140,14 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
                 ? .appliedPreview(sceneId) : .fail("Scene '\(sceneId)' was not queued on Preview.")
         case "scene.list":
             return .withData(sceneListJSON(model))
+        // RC7 (ControlSurface+Scenes.swift; Windows StudioControlSurface.cs:316-324).
+        case "scene.cueWithRoutes":
+            switch SceneRoutesArgs.parse(string(1)) {
+            case .refused(let error): return .fail(error)
+            case .routes(let routes): return cueWithRoutes(model, sceneId: string(0), routes: routes)
+            }
+        case "scene.route.set":
+            return cueWithRoutes(model, sceneId: string(0), routes: SceneRouteMap([(string(1), int(2))]))
         // ── Session (ControlSurface+Session.swift) ──
         case "zoom.join":
             return await model.joinZoomForControl(target: string(0), displayName: optionalString(1), webinar: bool(2))
@@ -254,6 +262,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         // Phase 4 (RC7)
         "transport.stream.srt.configure",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
+        "scene.cueWithRoutes", "scene.route.set",
     ]
 
     /// Windows RunTake: refuse when CanTake is false, else the one Take path.
