@@ -18,6 +18,21 @@ struct MultiviewOverlays: Codable, Equatable {
     var showTally = true
     var showMeters = true
     var showClock = false
+
+    init(showLabels: Bool = true, showTally: Bool = true, showMeters: Bool = true, showClock: Bool = false) {
+        self.showLabels = showLabels; self.showTally = showTally
+        self.showMeters = showMeters; self.showClock = showClock
+    }
+
+    /// Per key: a missing or unreadable flag keeps its default instead of throwing
+    /// away the other three (Windows' System.Text.Json defaults absent properties).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        showLabels = (try? c.decodeIfPresent(Bool.self, forKey: .showLabels)) ?? nil ?? true
+        showTally = (try? c.decodeIfPresent(Bool.self, forKey: .showTally)) ?? nil ?? true
+        showMeters = (try? c.decodeIfPresent(Bool.self, forKey: .showMeters)) ?? nil ?? true
+        showClock = (try? c.decodeIfPresent(Bool.self, forKey: .showClock)) ?? nil ?? false
+    }
 }
 
 /// Windows MultiviewOverlayFormatting (W/Controls/MultiviewOverlayFormatting.cs:91-92).
@@ -30,9 +45,26 @@ enum MultiviewOverlayFormatting {
         return (left, right)
     }
 
-    /// Windows ShouldShowMeter's tile test.
+    /// Windows NormalizeTally: trimmed, any case; "pgm"/"program" and "pvw"/"preview".
+    /// The core sends "pgm" | "pvw" | "none" (MediaCore.cpp, Interfaces.h).
+    static func normalizeTally(_ tally: String) -> String {
+        switch tally.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pgm", "program": return "pgm"
+        case "pvw", "preview": return "pvw"
+        default: return "none"
+        }
+    }
+
+    /// Windows ResolveTally: a pgm/pvw ROLE forces its tally, else the source's tally.
+    static func resolveTally(role: String, tally: String) -> String {
+        let cell = role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if cell == "pgm" || cell == "pvw" { return cell }
+        return normalizeTally(tally)
+    }
+
+    /// Windows ShouldShowMeter's tile test: the PGM cell, or a source on Program.
     static func isProgramTile(role: String, tally: String) -> Bool {
-        role == "pgm" || tally == "program"
+        resolveTally(role: role, tally: tally) == "pgm"
     }
 }
 

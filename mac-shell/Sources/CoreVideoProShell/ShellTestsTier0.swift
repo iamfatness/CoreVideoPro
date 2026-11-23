@@ -112,6 +112,7 @@ extension ShellTests {
         var saved = ShellPrefs()
         saved.canvasWidth = 3840; saved.canvasHeight = 2160; saved.canvasFps = 30
         saved.multiviewLayoutMode = "grid"; saved.multiviewTileCount = 6
+        saved.multiviewOverlays = MultiviewOverlays(showLabels: false, showTally: true, showMeters: true, showClock: true)
         model.applyRestoredPrefs(saved)
         model.reassertProductionSettings()
         spin(until: { !core.bodies.isEmpty }, limit: 3)
@@ -122,6 +123,8 @@ extension ShellTests {
         expectEqual(profile?["fps"] as? Int, 30, "the restored canvas fps is re-sent")
         expectEqual(multiview?["layoutMode"] as? String, "grid", "the restored layout is re-sent")
         expectEqual(multiview?["tileCount"] as? Int, 6, "the restored tile count is re-sent")
+        expectEqual(multiview?["showLabels"] as? Bool, false, "the restored overlays are re-sent (Phase 4 Task 3)")
+        expectEqual(multiview?["showClock"] as? Bool, true, "the restored clock flag is re-sent")
 
         // onConnected runs on EVERY generation (initial handshake and respawn);
         // it must call the re-assert, not the old multiview-only one-shot.

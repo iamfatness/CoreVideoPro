@@ -337,7 +337,7 @@ struct MultiviewTile: Identifiable, Equatable {
     let id: String
     var label: String
     var role: String      // pgm | pvw | source
-    var tally: String     // program | preview | none
+    var tally: String     // the core's words: pgm | pvw | none (normalize with MultiviewOverlayFormatting)
     var activeSpeaker: Bool
     var x: Double
     var y: Double

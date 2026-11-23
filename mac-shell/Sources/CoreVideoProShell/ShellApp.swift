@@ -773,6 +773,12 @@ struct MultiviewerCanvas: View {
         !isPopout && overlays.showClock
     }
 
+    /// The pop-out's on-canvas clock badge (MultiviewPopoutWindow.xaml:39-48 hosts
+    /// ShowMultiviewHost with the Clock toggle).
+    static func showsCanvasClock(isPopout: Bool, overlays: MultiviewOverlays) -> Bool {
+        isPopout && overlays.showClock
+    }
+
     @EnvironmentObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
     // The pop-out hosts this same view; it just hides the pop-out affordances.
@@ -842,8 +848,7 @@ struct MultiviewerCanvas: View {
                     ForEach(model.multiviewTiles) { tile in
                         MultiviewTileChrome(tile: tile, overlays: model.multiviewOverlays,
                                             masterLeft: Double(model.masterLevelLeft) / 100,
-                                            masterRight: Double(model.masterLevelRight) / 100,
-                                            drawsClock: isPopout, clockText: model.clockText)
+                                            masterRight: Double(model.masterLevelRight) / 100)
                             .frame(width: max(1, tile.w * geometry.size.width),
                                    height: max(1, tile.h * geometry.size.height))
                             .offset(x: tile.x * geometry.size.width,
@@ -874,6 +879,15 @@ struct MultiviewerCanvas: View {
                     }
                 }
                 .coordinateSpace(name: "multiview")
+                // Windows ShowMultiviewHost ClockChrome: ONE clock, top-right of the whole
+                // multiview, whatever the layout (so Grid has one too). Pop-out only; the
+                // main view's clock is in the header.
+                if Self.showsCanvasClock(isPopout: isPopout, overlays: model.multiviewOverlays) {
+                    MultiviewClockBadge(text: model.clockText)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .allowsHitTesting(false)
+                }
                 if MultiviewEmptyStatePolicy.showAssignmentGuidance(
                     tileCount: model.multiviewTiles.count,
                     multiviewSurfaceId: model.multiviewSurfaceId) {
@@ -904,10 +918,6 @@ struct MultiviewTileChrome: View {
     var overlays = MultiviewOverlays()
     var masterLeft = 0.0
     var masterRight = 0.0
-    /// The pop-out draws the clock on the canvas (MultiviewPopoutWindow.xaml:39-48);
-    /// the main view shows it in the header instead.
-    var drawsClock = false
-    var clockText = ""
 
     var meter: (Double, Double)? {
         MultiviewOverlayFormatting.programMeter(
@@ -920,9 +930,12 @@ struct MultiviewTileChrome: View {
         case "pgm": return Studio.red
         case "pvw": return Studio.accent
         default:
-            if tile.tally == "program" { return Studio.red }
-            if tile.tally == "preview" { return Studio.accent }
-            return tile.activeSpeaker ? Studio.accent : Studio.border
+            // The core's tally words are "pgm" / "pvw" (Windows ResolveTally).
+            switch MultiviewOverlayFormatting.normalizeTally(tile.tally) {
+            case "pgm": return Studio.red
+            case "pvw": return Studio.accent
+            default: return tile.activeSpeaker ? Studio.accent : Studio.border
+            }
         }
     }
 
@@ -947,11 +960,6 @@ struct MultiviewTileChrome: View {
                 .padding(.vertical, 22).padding(.trailing, 6)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
             }
-            if drawsClock && overlays.showClock && tile.role == "pgm" {
-                Text(clockText).font(.plexMono(11, .medium)).foregroundStyle(Studio.textPrimary)
-                    .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
             if overlays.showLabels {
             HStack(spacing: 4) {
                 Text(title)
@@ -973,6 +981,17 @@ struct MultiviewTileChrome: View {
         .overlay(Rectangle().stroke(overlays.showTally ? accent : Color.clear, lineWidth: isBus ? 3 : 2))
         .contentShape(Rectangle())
         .allowsHitTesting(!isBus)
+    }
+}
+
+/// Windows ClockChrome: HH:MM:SS on a dark rounded badge.
+struct MultiviewClockBadge: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.plexMono(14, .semibold)).foregroundStyle(Studio.textPrimary)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.69)))
     }
 }
 

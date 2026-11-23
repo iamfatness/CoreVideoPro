@@ -20,7 +20,9 @@ public sealed class ControlActionVectorExportTests
     /// <summary>Each case: the overlay state BEFORE the action (<c>given</c>), the action that moves it,
     /// and the state after. Fixture invariant: applying <c>Action(Arg)</c> to <c>Before</c> yields
     /// <c>After</c>, and the four <c>After</c> states are the plan's fixtures (all default; all off;
-    /// labels off only; clock on only).</summary>
+    /// labels off only; clock on only). Only <c>effects.command</c> is Windows OUTPUT (the real
+    /// builder); the action-to-flag mapping is this fixture's ASSERTION of StudioControlSurface's
+    /// dispatch (cs:679-690, one flag per action), which is not run here.</summary>
     private static readonly (string Name, bool[] Before, string Action, bool Arg, bool[] After)[] Cases =
     [
         ("all-default", [true, true, true, false], "multiview.showLabels.set", true, [true, true, true, false]),
@@ -100,6 +102,8 @@ public sealed class ControlActionVectorExportTests
         Assert.Equal("configure-multiviewer", (string?)clockOn["type"]);
         Assert.True((bool)clockOn["showClock"]!);
         Assert.True((bool)clockOn["showLabels"]!);
+        Assert.True((bool)clockOn["showTally"]!);
+        Assert.True((bool)clockOn["showMeters"]!);
         Assert.Equal(10, (int)clockOn["tileCount"]!);
     }
 }
