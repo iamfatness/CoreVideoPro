@@ -75,32 +75,28 @@ std::wstring widen(const std::string& s) {
 }
 }  // namespace
 
-// The Windows implementation of the verbatim-sample container. The samples are
-// written as GUID_WICPixelFormat32bppRGBA (straight in WIC's terms), so the
-// encoder stores them as given: premultiplied B,G,R,A reordered to R,G,B,A.
+// The Windows implementation of the verbatim-sample container. The WIC PNG
+// codec's 8-bit RGBA format is GUID_WICPixelFormat32bppBGRA (straight in
+// WIC's terms; 32bppRGBA is not a PNG codec format), so the premultiplied
+// B,G,R,A bytes go in as given and are stored as the PNG's R,G,B,A samples,
+// with no premultiply or gamma step: the same layout the Mac writes.
 bool writeParityPng(const std::string& path, const ParityImage& image, std::string& error) {
   ComScope com;
   auto factory = wic();
   if (!factory) { error = "WIC unavailable"; return false; }
-  std::vector<uint8_t> rgba(image.bgraPremultiplied.size());
-  for (size_t i = 0; i < rgba.size(); i += 4) {
-    rgba[i] = image.bgraPremultiplied[i + 2];
-    rgba[i + 1] = image.bgraPremultiplied[i + 1];
-    rgba[i + 2] = image.bgraPremultiplied[i];
-    rgba[i + 3] = image.bgraPremultiplied[i + 3];
-  }
+  std::vector<uint8_t> bgra = image.bgraPremultiplied;  // WritePixels takes a non-const buffer
   ComPtrLite<IWICStream> stream;
   ComPtrLite<IWICBitmapEncoder> encoder;
   ComPtrLite<IWICBitmapFrameEncode> frame;
-  WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
+  WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
   const auto wide = widen(path);
   if (FAILED(factory->CreateStream(stream.put())) || FAILED(stream->InitializeFromFilename(wide.c_str(), GENERIC_WRITE)) ||
       FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.put())) ||
       FAILED(encoder->Initialize(stream.get(), WICBitmapEncoderNoCache)) ||
       FAILED(encoder->CreateNewFrame(frame.put(), nullptr)) || FAILED(frame->Initialize(nullptr)) ||
       FAILED(frame->SetSize(UINT(image.width), UINT(image.height))) || FAILED(frame->SetPixelFormat(&format)) ||
-      !IsEqualGUID(format, GUID_WICPixelFormat32bppRGBA) ||
-      FAILED(frame->WritePixels(UINT(image.height), UINT(image.width) * 4, UINT(rgba.size()), rgba.data())) ||
+      !IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA) ||
+      FAILED(frame->WritePixels(UINT(image.height), UINT(image.width) * 4, UINT(bgra.size()), bgra.data())) ||
       FAILED(frame->Commit()) || FAILED(encoder->Commit())) {
     error = "PNG write failed: " + path;
     return false;
@@ -125,24 +121,18 @@ bool readParityPng(const std::string& path, ParityImage& image, std::string& err
   UINT w = 0, h = 0;
   frame->GetPixelFormat(&format);
   frame->GetSize(&w, &h);
-  if (!IsEqualGUID(format, GUID_WICPixelFormat32bppRGBA)) {
+  if (!IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA)) {
     error = "not an 8-bit RGBA PNG (verbatim samples required): " + path;
     return false;
   }
-  std::vector<uint8_t> rgba(size_t(w) * h * 4);
-  if (FAILED(frame->CopyPixels(nullptr, w * 4, UINT(rgba.size()), rgba.data()))) {
+  image.bgraPremultiplied.resize(size_t(w) * h * 4);
+  if (FAILED(frame->CopyPixels(nullptr, w * 4, UINT(image.bgraPremultiplied.size()), image.bgraPremultiplied.data()))) {
     error = "PNG samples unavailable: " + path;
+    image = ParityImage{};
     return false;
   }
   image.width = int(w);
   image.height = int(h);
-  image.bgraPremultiplied.resize(rgba.size());
-  for (size_t i = 0; i < rgba.size(); i += 4) {
-    image.bgraPremultiplied[i] = rgba[i + 2];
-    image.bgraPremultiplied[i + 1] = rgba[i + 1];
-    image.bgraPremultiplied[i + 2] = rgba[i];
-    image.bgraPremultiplied[i + 3] = rgba[i + 3];
-  }
   return true;
 }
 
@@ -313,6 +303,23 @@ Json samples(const ParityImage& image) {
 
 }  // namespace
 
+// The container first: a wrong WIC format fails here in one test, before
+// any fixture is rendered.
+TEST(ParityPng, RoundTripKeepsPremultipliedSamplesVerbatim) {
+  ParityImage image;
+  image.width = 4;
+  image.height = 1;
+  image.bgraPremultiplied = {10, 20, 30, 40, 0, 0, 0, 0, 255, 255, 255, 255, 1, 0, 0, 1};
+  const auto path = (fs::temp_directory_path() / "corevideo-parity-roundtrip.png").string();
+  std::string error;
+  ASSERT_TRUE(writeParityPng(path, image, error)) << error;
+  ParityImage back;
+  ASSERT_TRUE(readParityPng(path, back, error)) << error;
+  EXPECT_TRUE(back.bgraPremultiplied == image.bgraPremultiplied) << "PNG samples were not stored verbatim";
+  std::error_code ec;
+  fs::remove(path, ec);
+}
+
 TEST(OverlayRasterContract, MetadataBound) { overlayContract::contractMetadataBound<B>(); }
 TEST(OverlayRasterContract, Dimensions) { overlayContract::contractDimensions<B>(); }
 TEST(OverlayRasterContract, CompatibleSameSizeIsAdoptedOnTheFirstCall) {
@@ -343,6 +350,7 @@ TEST(GraphicsRasterReference, WriteWindowsReference) {
     return;
   }
   ASSERT_TRUE(sharedDevice().device) << "no D3D11 device";
+  if (!sharedDevice().device) return;  // the vendored ASSERT_* does not abort
   const std::string repo = root;
   const std::string fixturesDir = repo + "/native/tests/fixtures/graphics-parity";
   const std::string outDir = repo + "/native/tests/golden/windows-graphics";
@@ -353,15 +361,22 @@ TEST(GraphicsRasterReference, WriteWindowsReference) {
   Json::Array rows;
   for (const auto& fixture : fixtures) {
     const auto rendered = renderFixture(fixture, fixturesDir);
+    // A reference of a failure would pin the failure.
+    EXPECT_EQ("ready", rendered.state) << fixture.name << ": " << rendered.warning;
+    EXPECT_FALSE(rendered.image.bgraPremultiplied.empty()) << fixture.name << ": no pixels read back";
     Json::Object row{{"name", fixture.name}, {"state", rendered.state}, {"warning", rendered.warning},
                      {"layout", rendered.layout}, {"width", double(rendered.image.width)},
                      {"height", double(rendered.image.height)}};
     if (!rendered.image.bgraPremultiplied.empty()) {
       const std::string relative = "native/tests/golden/windows-graphics/" + fixture.name + ".png";
       const auto path = repo + "/" + relative;
-      ASSERT_TRUE(writeParityPng(path, rendered.image, error)) << error;
+      const bool written = writeParityPng(path, rendered.image, error);
+      EXPECT_TRUE(written) << error;
+      if (!written) continue;
       ParityImage back;
-      ASSERT_TRUE(readParityPng(path, back, error)) << error;
+      const bool reread = readParityPng(path, back, error);
+      EXPECT_TRUE(reread) << error;
+      if (!reread) continue;
       EXPECT_TRUE(back.bgraPremultiplied == rendered.image.bgraPremultiplied) << fixture.name << ": PNG not verbatim";
       row["png"] = relative;
       row["sha256"] = fileSha256(path);
@@ -392,6 +407,7 @@ TEST(GraphicsRasterReference, WindowsMatchesItsOwnReference) {
     return;
   }
   ASSERT_TRUE(sharedDevice().device) << "no D3D11 device";
+  if (!sharedDevice().device) return;
   std::ifstream file(referencePath, std::ios::binary);
   const auto reference = Json::parse(std::string(std::istreambuf_iterator<char>(file), {}));
   ASSERT_TRUE(reference && reference->get("fixtures"));
@@ -405,9 +421,14 @@ TEST(GraphicsRasterReference, WindowsMatchesItsOwnReference) {
     const auto found = rows.find(fixture.name);
     EXPECT_TRUE(found != rows.end()) << fixture.name << ": missing from the reference";
     if (found == rows.end() || found->second.getString("png").empty()) continue;
+    EXPECT_EQ("ready", found->second.getString("state")) << fixture.name << ": the reference pins a failure";
     ParityImage committed;
-    ASSERT_TRUE(readParityPng(repo + "/" + found->second.getString("png"), committed, error)) << error;
+    const bool read = readParityPng(repo + "/" + found->second.getString("png"), committed, error);
+    EXPECT_TRUE(read) << error;
+    if (!read) continue;
     const auto rendered = renderFixture(fixture, fixturesDir);
+    EXPECT_EQ("ready", rendered.state) << fixture.name << ": " << rendered.warning;
+    if (rendered.image.bgraPremultiplied.empty()) continue;
     const auto regions = regionsFromLayout(*found->second.get("layout"));
     for (const auto& verdict : {judgeGeometry(committed, rendered.image, regions),
                                 judgeText(committed, rendered.image, regions, fixture.textTolerance),

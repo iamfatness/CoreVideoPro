@@ -96,7 +96,8 @@ double alphaSsim(const ParityImage&, const ParityImage&, const ParityRegion&);
 // reordered to R,G,B,A and stored verbatim: a viewer shows them slightly dark
 // at partial alpha, which is expected. A reader must take the samples
 // verbatim (CGImageSource -> CGDataProviderCopyData on Apple, a WIC
-// CopyPixels in 32bppRGBA on Windows), never draw them through a context.
+// CopyPixels in 32bppBGRA, the PNG codec's RGBA format, on Windows), never
+// draw them through a context.
 // Apple: GraphicsParityImageApple.mm. Windows: D3D11GraphicsReferenceTest.cpp.
 bool writeParityPng(const std::string& path, const ParityImage& image, std::string& error);
 bool readParityPng(const std::string& path, ParityImage& image, std::string& error);
