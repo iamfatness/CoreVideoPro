@@ -729,3 +729,54 @@ TEST(GraphicsTemplate, CrawlValidatesBoundListAndPlaybackLimits) {
   document["layers"] = Json::Array{layer};
   EXPECT_FALSE(load(document, error));
 }
+
+// A crawl prepares into an atlas (one slice per item), so its cache admission
+// must bound the atlas, not the raster. Before this, both rasters admitted a
+// crawl at width x height x 8 bytes and the worker refused any crawl whose
+// items summed to more than about two raster widths with "Graphics
+// preparation exceeded its admitted budget." (found by the G3 contract case
+// CrawlAtTheItemLimitPreparesOrFailsWithAtlasWording). Fixture invariant: 64
+// items of 60 'W' at 72 px is the item maximum and fills the 4096-byte list
+// bound; its atlas must exceed the old raster admission (asserted), or the
+// test proves nothing.
+TEST(GraphicsTemplate, CrawlAdmissionBoundsItsAtlasNotItsRaster) {
+  using namespace corevideo::graphics;
+  std::string items = "[";
+  for (int i = 0; i < 64; ++i) items += std::string(i ? "," : "") + "\\\"" + std::string(60, 'W') + "\\\"";
+  items += "]";
+  const std::string document = R"({"schemaVersion":1,"templateId":"admission-crawl","templateVersion":1,"name":"Crawl",)"
+      R"("family":"title","canvas":{"width":1920,"height":1080},"bounds":{"width":1920,"height":96},"brandTokens":[],)"
+      R"("fields":[{"id":"crawl-items","type":"string","default":")" + items + R"(","maxLength":4096}],)"
+      R"("animations":{"in":{"type":"none"},"out":{"type":"none"}},)"
+      R"("layers":[{"id":"crawl","type":"crawl","x":0,"y":0,"width":1920,"height":96,"speed":240,"mode":"loop",)"
+      R"("font":"Arial","fontSize":72,"color":"#FFFFFF","items":{"field":"crawl-items"}}]})";
+  std::string error;
+  auto input = std::make_shared<GraphicsTemplateInput>();
+  input->definition = GraphicsTemplate::load(document, error);
+  ASSERT_TRUE(input->definition) << error;
+  if (!input->definition) return;
+  EXPECT_TRUE(input->definition->motionSummary().crawl);
+  input->fields = input->definition->defaultFields();
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(input->definition->resolve(input->fields, Json::Object{}, drawing, error)) << error;
+  ASSERT_TRUE(drawing.crawl.has_value());
+  for (const int height : {96, 192}) {
+    const int width = 1920 * height / 96;
+    auto runs = planRuns(drawing);
+    std::vector<GraphicsAtlasSlice> slices;
+    int atlasWidth = 0, atlasHeight = 0;
+    ASSERT_TRUE(packAtlas(runs, double(height) / drawing.height, slices, atlasWidth, atlasHeight));
+    const uint64_t atlasBytes = uint64_t(atlasWidth) * atlasHeight * 4;
+    const uint64_t rasterAdmission = uint64_t(width) * height * 8;
+    ASSERT_GT(atlasBytes, rasterAdmission) << "fixture atlas fits the raster admission; it proves nothing";
+    const auto admission = overlayAdmissionBytes(input.get(), width, height);
+    EXPECT_GE(admission, std::min<uint64_t>(atlasBytes, 256ull * 1024 * 1024)) << "height " << height;
+    EXPECT_LE(admission, 256ull * 1024 * 1024);
+  }
+  // A plain template keeps the raster admission.
+  const auto plain = std::make_shared<GraphicsTemplateInput>();
+  plain->definition = GraphicsTemplate::corporateLowerThird();
+  EXPECT_FALSE(plain->definition->motionSummary().crawl);
+  EXPECT_EQ(overlayAdmissionBytes(plain.get(), 640, 120), uint64_t(640) * 120 * 8);
+  EXPECT_EQ(overlayAdmissionBytes(nullptr, 640, 120), uint64_t(640) * 120 * 8);
+}
