@@ -60,6 +60,8 @@ final class GraphicsPlayout {
     /// The playlist rows and template pins of the loaded show document.
     var rows: () -> [GraphicsRow] = { [] }
     var pins: () -> [GraphicsTemplatePin] = { [] }
+    /// Every template version the show document references (eviction keeps them; GraphicsModel supplies it).
+    var references: () -> [GraphicsTemplateReference] = { [] }
     /// Clock for the cue and install budgets (tests advance it from `sleep`).
     var now: () -> Date = { Date() }
     /// Auto-out timers by instance id; the token makes a late fire a no-op.
@@ -306,9 +308,58 @@ final class GraphicsPlayout {
     }
 
     /// Install a pinned template, then list until it appears, its install fails,
-    /// or 5 s pass (GraphicsTemplateInstall, :393-427). No eviction on the Mac
-    /// until designs exist (G8).
+    /// or 5 s pass (GraphicsTemplateInstall.AttemptAsync).
+    static let libraryFull = "The graphics library is full. Delete designs you no longer use, or remove graphics from the playlist."
+
+    /// GraphicsTemplateInstall.RunAsync: one attempt; when the library is full and an eviction of unused
+    /// design versions removed at least one, one more attempt (plan D6; data designs and pin reinstalls alike).
     func install(_ pin: GraphicsTemplatePin, epoch: String) async throws -> (GraphicsTemplate?, GraphicsOperationResult?) {
+        let attempt = try await installAttempt(pin, epoch: epoch)
+        if attempt.1?.reason == Self.libraryFull, try await evictUnusedDesigns(epoch: epoch) > 0 {
+            return try await installAttempt(pin, epoch: epoch)
+        }
+        return attempt
+    }
+
+    /// GraphicsDesignEviction.InUse: document references plus every live instance's draft, cue and
+    /// program versions and images (no editor draft or unsaved edits on the Mac until G8).
+    nonisolated static func inUse(references: [GraphicsTemplateReference], state: GraphicsState) -> Set<String> {
+        var keep = Set(references.map { "\($0.templateId)|\($0.templateVersion)" })
+        for instance in state.instances {
+            for version in [instance.templateVersion, instance.cueTemplateVersion, instance.programTemplateVersion] where version > 0 {
+                keep.insert("\(instance.templateId)|\(version)")
+            }
+            for image in [instance.image, instance.cueImage, instance.programImage].compactMap({ $0 }) {
+                keep.insert("\(image.templateId)|\(image.templateVersion)")
+            }
+        }
+        return keep
+    }
+
+    /// GraphicsDesignEviction.EvictUnusedAsync: removes every installed DESIGN version nothing needs.
+    func evictUnusedDesigns(epoch: String) async throws -> Int {
+        let state = try current(epoch)
+        let keep = Self.inUse(references: references(), state: state)
+        var removed = 0
+        for template in state.templates where Self.isDesignTemplateId(template.templateId)
+            && !keep.contains("\(template.templateId)|\(template.templateVersion)") {
+            if try await removeTemplate(template.templateId, template.templateVersion).accepted { removed += 1 }
+        }
+        return removed
+    }
+
+    /// Native remove; template-library-busy never blocks, so retry it briefly (3 x 100 ms, RemoveAsync).
+    func removeTemplate(_ templateId: String, _ version: Int) async throws -> GraphicsOperationResult {
+        var attempt = 0
+        while true {
+            let result = try await send("graphics.template.remove", ["templateId": templateId, "templateVersion": version])
+            if result.accepted || result.reason != "template-library-busy" || attempt == 3 { return result }
+            attempt += 1
+            await sleep(100_000_000)
+        }
+    }
+
+    func installAttempt(_ pin: GraphicsTemplatePin, epoch: String) async throws -> (GraphicsTemplate?, GraphicsOperationResult?) {
         guard let manifestData = try? JSONSerialization.data(withJSONObject: pin.definition, options: [.sortedKeys]),
               let manifest = String(data: manifestData, encoding: .utf8) else { return (nil, refuse("The saved template pin is unreadable.")) }
         let requestId = "install-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
@@ -323,7 +374,7 @@ final class GraphicsPlayout {
             if let template = state.template(pin.templateId, pin.templateVersion) { return (template, nil) }
             if let failed = state.templateInstalls.first(where: { $0.requestId == requestId && $0.state == "failed" }) {
                 let reason = failed.reason == "template-library-capacity"
-                    ? "The graphics library is full. Delete designs you no longer use, or remove graphics from the playlist."
+                    ? Self.libraryFull
                     : "The template could not be installed (\(failed.reason))."
                 return (nil, GraphicsOperationResult(requestId: requestId, accepted: false, reason: reason))
             }
@@ -337,7 +388,7 @@ final class GraphicsPlayout {
     /// restart, install the DESIGN template versions the show references that this core lacks,
     /// from the pin, else the show's design entry. Non-design pins stay lazy (ensureCore), as on
     /// Windows. Not an operator action: no busy flag, no status (the model reports a failure).
-    /// No eviction when the library is full: the Mac has no designs to evict until G8.
+    /// A full library evicts unused design versions and retries once (install, plan D6).
     ///
     /// The gate is held for ONE design at a time (review round 1). Windows runs this under the
     /// design service's own lock, but both platforms share one single-slot gateway, so a separate

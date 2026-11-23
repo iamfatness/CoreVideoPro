@@ -74,3 +74,133 @@ enum GraphicsDesignIds {
         return true
     }
 }
+
+/// What a design action did (GraphicsDesignResult, plus the playlist row a data design was added to).
+struct GraphicsDesignOutcome: Equatable {
+    let ok: Bool
+    let message: String
+    let rowId: String?
+}
+
+enum GraphicsDataDesigns {
+    static let nameRule = "Use a design name of 1–80 characters."
+    static let tooMany = "A show holds at most 32 designs. Delete one you no longer use."
+    static let sourceChanged = "The data source changed or is unavailable. Choose the source again."
+
+    /// GraphicsBuilder.NextFreeHotkey: F1..F12, the first no row holds ("" when all are taken).
+    static func nextFreeHotkey(_ rows: [GraphicsRow]) -> String {
+        let taken = Set(rows.map(\.hotkey))
+        return (1...12).map { "F\($0)" }.first { !taken.contains($0) } ?? ""
+    }
+
+    /// GraphicsBuilder.Upsert: replace by id, else insert before the empty sponsor placeholder (or append);
+    /// the row's F-key moves to it from any other row.
+    static func upsert(_ rows: [GraphicsRow], _ row: GraphicsRow) -> [GraphicsRow] {
+        var list = rows.map { other -> GraphicsRow in
+            var other = other
+            if other.id != row.id && !row.hotkey.isEmpty && other.hotkey == row.hotkey { other.hotkey = "" }
+            return other
+        }
+        if let index = list.firstIndex(where: { $0.id == row.id }) { list[index] = row; return list }
+        if let sponsor = list.firstIndex(where: { $0.kind == GraphicsRow.sponsor && $0.templateId.isEmpty && $0.image == nil }) {
+            list.insert(row, at: sponsor)
+        } else {
+            list.append(row)
+        }
+        return list
+    }
+
+    /// The playlist row a NEW data design gets (GraphicsDesignWorkflow.PlaylistRow with no existing row,
+    /// via GraphicsBuilder.RowFrom): kind from the family, the design's name, the next free F-key, no
+    /// auto-out, the template's field defaults, the binding the manifest carries.
+    static func playlistRow(name: String, templateId: String, family: String, manifest: JSONObject,
+                            binding: GraphicsDataBinding, rows: [GraphicsRow]) -> GraphicsRow {
+        let kind: String
+        switch family {
+        case "bug": kind = GraphicsRow.logo
+        case "clock": kind = GraphicsRow.liveBug
+        default: kind = GraphicsRow.title   // title, full screen and a lower third not following Sources
+        }
+        var fields: JSONObject = [:]
+        for field in manifest["fields"] as? [JSONObject] ?? [] {
+            if let id = field["id"] as? String, let value = field["default"] { fields[id] = value }
+        }
+        let trimmed = GraphicsRowFields.clamp(GraphicsLocalData.trim(name), 128)
+        let hasClock = family == "clock" || fields["time"] != nil
+        var row = GraphicsRow(json: [
+            "id": GraphicsNamesList.newRowId(trimmed, taken: rows.map(\.id)), "kind": kind, "name": trimmed,
+            "hotkey": nextFreeHotkey(rows), "playOutAfterMs": 0, "templateId": templateId, "templateVersion": 1,
+            "fields": fields, "followSources": false, "showClock": hasClock,
+        ])
+        row.json["dataBinding"] = (GraphicsDataTable.binding(fromDefinition: manifest) ?? binding).json
+        return row
+    }
+}
+
+extension GraphicsModel {
+    /// Create a data table or crawl design from a local dataset and add its playlist row (plan D4: the
+    /// Mac has no Builder "Add to playlist" until G8). Port of GraphicsDesignService.CreateDataTableAsync
+    /// + Create, then GraphicsDesignWorkflow.PlaylistRow + GraphicsBuilder.Upsert. Nothing is written
+    /// before the install is confirmed; a failed save removes the installed template again.
+    func createDataDesign(name: String, data: GraphicsLocalData, binding: GraphicsDataBinding) async -> GraphicsDesignOutcome {
+        func fail(_ message: String) -> GraphicsDesignOutcome {
+            status = message
+            return GraphicsDesignOutcome(ok: false, message: message, rowId: nil)
+        }
+        let clean = GraphicsLocalData.trim(name)
+        guard (1...GraphicsDesignIds.maxNameLength).contains(clean.utf16.count) else { return fail(GraphicsDataDesigns.nameRule) }
+        guard document.designs.count < GraphicsDesignIds.maxDesigns else { return fail(GraphicsDataDesigns.tooMany) }
+        let existing = Set(document.designs.compactMap { $0["templateId"] as? String } + document.templates.map(\.templateId)
+                           + (state?.templates.map(\.templateId) ?? []))
+        guard let templateId = try? GraphicsDesignIds.newTemplateId(name: clean, existing: existing, hex6: designHex6) else {
+            return fail("Could not generate a unique design template id.")
+        }
+        let source = GraphicsDataSourceRecord(id: binding.sourceId, name: clean, revision: 1, receivedAt: playout.now(), data: data)
+        let feeds = (document.json["feeds"] as? [JSONObject] ?? []).compactMap { $0["id"] as? String }
+        guard source.isValid, binding.revision == source.revision, !binding.remote,
+              !document.dataSources.contains(where: { $0.id == source.id }), !feeds.contains(source.id) else {
+            return fail(GraphicsDataDesigns.sourceChanged)
+        }
+        let manifest: JSONObject
+        do { manifest = try GraphicsDataTable.manifest(templateId: templateId, name: clean, binding: binding, data: data) }
+        catch { return fail((error as? GraphicsDataError)?.message ?? "\(error)") }
+
+        // Install through the playout gate; the design is stored only once the core lists it.
+        let pin = GraphicsTemplatePin(templateId: templateId, templateVersion: 1, manifestHash: "", definition: manifest, packageRoot: "")
+        var installed: GraphicsTemplate?
+        let result = await playout.run { [playout] in
+            guard let playout else { return GraphicsOperationResult.refused(GraphicsCommandRequest.unavailable) }
+            let epoch = try playout.available().coreEpoch
+            playout.epoch = epoch
+            if let present = try playout.current(epoch).template(templateId, 1) { installed = present; return GraphicsOperationResult(accepted: true) }
+            let (landed, refusal) = try await playout.install(pin, epoch: epoch)
+            if let landed { installed = landed; return GraphicsOperationResult(accepted: true) }
+            return refusal ?? playout.refuse(GraphicsPlayout.designInstallTimeout)
+        }
+        guard result.accepted, let installed else { return fail(result.reason) }
+
+        let family = !installed.family.isEmpty ? installed.family : manifest["family"] as? String ?? ""
+        let design: JSONObject = ["designId": templateId, "name": clean, "family": family, "templateId": templateId, "templateVersion": 1,
+                                  "definition": installed.definition ?? manifest, "assets": [] as [Any],
+                                  "updatedAt": GraphicsDataSourceRecord.iso8601(playout.now()), "packageRoot": NSNull()]
+        let before = document
+        document.appendDesign(design)
+        document.upsertDataSource(source)
+        guard await saveNow() else {
+            let message = documentStatus
+            document = before
+            _ = await playout.gated { [playout] in try? await playout?.removeTemplate(templateId, 1) }
+            return fail(message)
+        }
+        var message = "Created \(clean)."
+        let row = GraphicsDataDesigns.playlistRow(name: clean, templateId: templateId, family: family, manifest: manifest, binding: binding, rows: rows)
+        let previousRows = document.playlist
+        setRows(GraphicsDataDesigns.upsert(rows, row))
+        guard document.playlist != previousRows else {
+            return fail(message + " Not added to the playlist: " + documentStatus)
+        }
+        message += " \"\(row.name)\" is in the playlist" + (row.hotkey.isEmpty ? "" : " on " + row.hotkey) + ". Show it from Operate when you want it on air."
+        status = message
+        return GraphicsDesignOutcome(ok: true, message: message, rowId: row.id)
+    }
+}

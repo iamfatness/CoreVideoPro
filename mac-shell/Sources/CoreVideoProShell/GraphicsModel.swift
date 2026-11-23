@@ -46,6 +46,8 @@ final class GraphicsModel: ObservableObject {
     let documentStore: GraphicsDocumentStore
     let documentQueue = DispatchQueue(label: "us.iamfatness.corevideopro.graphics-document")
     var saveTask: Task<Void, Never>?
+    /// Six hex digits for a new design template id (tests inject a fixed value).
+    var designHex6: () -> String = GraphicsDesignIds.randomHex6
     /// Debounce for playlist saves (tests set 0).
     var saveDelayNs: UInt64 = 300_000_000
 
@@ -81,6 +83,7 @@ final class GraphicsModel: ObservableObject {
         gateway.onSnapshot = { [weak self] in self?.observe(snapshot: $0) }
         playout.rows = { [weak self] in self?.document.playlist ?? [] }
         playout.pins = { [weak self] in self?.document.templates ?? [] }
+        playout.references = { [weak self] in self?.document.referencedTemplates ?? [] }
     }
 
     var available: Bool { gateway.available }
