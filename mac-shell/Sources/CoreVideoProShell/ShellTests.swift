@@ -3566,15 +3566,15 @@ enum ShellTests {
     // content is Mac's Zoom pane; Mac Settings is output/recording config).
     @MainActor
     private static func testNavigationMatchesWindowsOrderAndLabels() {
-        expectEqual(StudioTab.navigation.map(\.navLabel),
+        expectEqual(StudioTab.navigation(commsEnabled: false).map(\.navLabel),
                     ["Studio", "Zoom", "Sources", "Scenes", "Routing", "Graphics",
                      "Audio", "Media", "Health", "Settings"],
                     "Mac nav order + labels follow Windows 1.0")
-        expectEqual(StudioTab.navigation.map(\.rawValue),
+        expectEqual(StudioTab.navigation(commsEnabled: false).map(\.rawValue),
                     ["Studio", "Zoom", "Sources", "Scenes", "Routing", "Overlays",
                      "Audio", "Media", "Diagnose", "Settings"],
                     "tab identifiers are unchanged")
-        expect(!StudioTab.navigation.contains(.automation), "no Automation pill")
+        expect(!StudioTab.navigation(commsEnabled: false).contains(.automation), "no Automation pill")
         expectEqual(StudioTab.navGroups, ["Produce"], "one group label")
     }
 
@@ -4136,7 +4136,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + graphicsDesignResyncCases + graphicsLayoutParityCases + graphicsNamesCases + graphicsClockCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases + gradePhase2Cases + sourcesPhase2Cases + commsCases + commsModelCases
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + graphicsDesignResyncCases + graphicsLayoutParityCases + graphicsNamesCases + graphicsClockCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases + gradePhase2Cases + sourcesPhase2Cases + commsCases + commsModelCases + commsWiringCases
         // COREVIDEO_SHELL_TESTS_FILTER=<prefix> runs only the matching cases (mutation runs,
         // iteration); COREVIDEO_SHELL_TEST_FILTER is accepted too. Unset, every case runs.
         let env = ProcessInfo.processInfo.environment
