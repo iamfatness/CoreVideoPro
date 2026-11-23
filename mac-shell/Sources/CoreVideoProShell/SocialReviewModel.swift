@@ -31,6 +31,14 @@ struct SocialFeedRunners {
     var twitch: @MainActor (_ channel: String, _ clientId: String, _ playout: SocialPlayout, _ report: @escaping Report,
                             _ prompt: @escaping @MainActor (TwitchDevicePrompt) -> Void) async -> Void
 
+    /// Production: YouTube over URLSessionSocialHTTP (Task 15); Twitch joins in Tasks 16-17.
+    static let live = SocialFeedRunners(
+        youTube: { videoId, key, playout, report in
+            await YouTubeSocialFeed.run(videoId: videoId, key: key, playout: playout, http: URLSessionSocialHTTP(),
+                                        sleep: { try? await Task.sleep(nanoseconds: $0) }, report: report)
+        },
+        twitch: unavailable.twitch)
+
     static let unavailable = SocialFeedRunners(
         youTube: { _, _, _, report in report("YouTube live chat is not available in this build.") },
         twitch: { _, _, _, report, _ in report("Twitch chat is not available in this build.") })
@@ -79,7 +87,7 @@ final class SocialReviewModel: ObservableObject {
     private var showId: String
     private let sleep: (UInt64) async -> Void
 
-    init(playout: SocialPlayout, showId: String, feeds: SocialFeedRunners = .unavailable,
+    init(playout: SocialPlayout, showId: String, feeds: SocialFeedRunners = .live,
          sleep: @escaping (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }) {
         self.playout = playout
         self.showId = showId
