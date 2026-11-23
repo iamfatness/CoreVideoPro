@@ -12,6 +12,7 @@ extension ShellTests {
             ("leftovers/multiview-overlay-defaults", testMultiviewOverlayDefaults),
             ("leftovers/multiview-overlay-command", testMultiviewOverlayCommand),
             ("leftovers/multiview-program-meter", testMultiviewProgramMeter),
+            ("leftovers/starter-removed-set-persists", testStarterRemovedSetPersists),
         ]
     }
 
@@ -72,5 +73,27 @@ extension ShellTests {
         expect(MultiviewOverlayFormatting.isProgramTile(role: "source", tally: "program"), "program tally counts")
         expect(!MultiviewOverlayFormatting.isProgramTile(role: "pvw", tally: "preview"), "PVW is not")
         expect(!MultiviewOverlayFormatting.isProgramTile(role: "source", tally: ""), "a plain source is not")
+    }
+
+    /// D-C3: a deleted starter id survives a relaunch until Restore clears it.
+    /// Mutation: forget to record the removed id on delete.
+    @MainActor
+    static func testStarterRemovedSetPersists() {
+        let model = AppModel()
+        model.programSceneId = "fullscreen"
+        expect(model.deleteScene("two-up") == nil, "a starter that is not on air is removable")
+        expectEqual(model.currentPrefs().removedStarterSceneIds, ["two-up"], "the removed starter id is persisted")
+        let relaunched = AppModel()
+        relaunched.applyRestoredPrefs(model.currentPrefs())
+        expectEqual(relaunched.removedStarterSceneIds, ["two-up"], "a relaunch keeps the removed id")
+        expect(!relaunched.scenes.contains { $0.id == "two-up" }, "and the starter stays deleted")
+        relaunched.restoreStarterScenes()
+        expectEqual(relaunched.currentPrefs().removedStarterSceneIds, nil, "Restore clears the persisted set")
+        let custom = AppModel()
+        custom.programSceneId = "fullscreen"
+        custom.newScene(layout: "single")
+        let customId = custom.scenes.last?.id ?? ""
+        expect(custom.deleteScene(customId) == nil, "a custom scene is removable")
+        expectEqual(custom.removedStarterSceneIds, [], "a custom scene is never recorded as a starter")
     }
 }

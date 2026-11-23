@@ -508,11 +508,18 @@ final class AppModel: ObservableObject {
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
     @Published var displayName = "CoreVideo Pro (mac)"
-    @Published var scenes: [SceneDef] = [
+    /// The Mac's starter catalog (plan D-C3, the twin of Windows ProductionCatalog.Scenes):
+    /// the built-in scenes, in catalog order, with their preset (empty) layers.
+    static let starterScenes: [SceneDef] = [
         SceneDef(id: "fullscreen", name: "Fullscreen", layout: "single"),
         SceneDef(id: "two-up", name: "Side by side", layout: "two-up"),
         SceneDef(id: "pip", name: "Picture in picture", layout: "pip"),
     ]
+    static var starterSceneIds: [String] { starterScenes.map(\.id) }
+    @Published var scenes: [SceneDef] = AppModel.starterScenes
+    /// Starter ids the operator deleted (Windows RemovedCatalogSceneIds), persisted so
+    /// Restore can say what came back; cleared by restoreStarterScenes().
+    @Published var removedStarterSceneIds: [String] = []
     @Published var programSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != programSceneId) } }
     @Published var previewSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != previewSceneId) } }
     @Published var mediaAssets: [MediaAsset] = []
@@ -840,6 +847,7 @@ final class AppModel: ObservableObject {
         prefs.logoBugAssetId = logoBug?.id ?? ""
         prefs.streamUrl = streamUrl
         prefs.streamDestinations = streamDestinations
+        prefs.removedStarterSceneIds = removedStarterSceneIds.isEmpty ? nil : removedStarterSceneIds
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
@@ -980,6 +988,7 @@ final class AppModel: ObservableObject {
         }
         streamUrl = prefs.streamUrl
         if let saved = prefs.streamDestinations { streamDestinations = saved }
+        removedStarterSceneIds = (prefs.removedStarterSceneIds ?? []).filter { Self.starterSceneIds.contains($0) }
         recentMeetings = prefs.recentMeetings
         webinar = prefs.webinar
         if !prefs.scenes.isEmpty {
@@ -3683,6 +3692,9 @@ final class AppModel: ObservableObject {
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }) else { return nil }
         scenes.removeAll { $0.id == sceneId }
+        if Self.starterSceneIds.contains(sceneId), !removedStarterSceneIds.contains(sceneId) {
+            removedStarterSceneIds.append(sceneId)
+        }
         // Windows SceneCatalogPolicy.PreviewAfterRemoval: Preview moves to
         // Program. An EMPTY Preview sends no set-preview-scene, so the core's
         // PVW bus kept compositing the deleted scene while the chip read blank.

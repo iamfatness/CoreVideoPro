@@ -295,3 +295,40 @@ extension AppModel {
         return true
     }
 }
+
+extension AppModel {
+    /// Windows SceneCatalogPolicy.RestoreStatus, word for word (replayed from the
+    /// restore-starters vectors).
+    static func restoreStatus(_ restoredNames: [String]) -> String {
+        switch restoredNames.count {
+        case 0: return "All starter scenes are already present"
+        case 1: return "\(restoredNames[0]) restored"
+        default: return "\(restoredNames.count) starter scenes restored"
+        }
+    }
+
+    /// Windows RestoreStarterScenes (SVM:4141-4166): re-insert every starter whose id is
+    /// missing, at its catalog position (after the last earlier starter that is
+    /// present, MissingCatalogScenes), with fresh preset layers. Existing scenes,
+    /// Program and Preview are untouched; a scene already carrying a starter id is
+    /// never duplicated. Clears the removed set and saves. Returns the status sentence,
+    /// which is also the Studio command status.
+    @discardableResult
+    func restoreStarterScenes() -> String {
+        var restored: [String] = []
+        for (catalogIndex, starter) in Self.starterScenes.enumerated() where !scenes.contains(where: { $0.id == starter.id }) {
+            var insertAt = 0
+            for earlier in Self.starterScenes[..<catalogIndex] {
+                if let index = scenes.firstIndex(where: { $0.id == earlier.id }) { insertAt = max(insertAt, index + 1) }
+            }
+            scenes.insert(starter, at: min(insertAt, scenes.count))
+            restored.append(starter.name)
+        }
+        removedStarterSceneIds = []
+        let status = Self.restoreStatus(restored)
+        studioCommandStatus = status
+        if !restored.isEmpty { syncScenes() }
+        saveScenes()
+        return status
+    }
+}

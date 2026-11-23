@@ -30,6 +30,7 @@ extension ShellTests {
             ("control/rc7-multiview-actions", testRC7MultiviewActions),
             ("control/rc7-scene-route-parse", testRC7SceneRouteParse),
             ("control/rc7-scene-routes", testRC7SceneRoutes),
+            ("control/rc7-restore-starters", testRC7RestoreStarters),
         ]
     }
 
@@ -348,5 +349,81 @@ extension ShellTests {
         expect(result?.error?.hasPrefix(SceneRoutesArgs.notJsonPrefix) == true, "parse refusal: Windows prefix (\(result?.error ?? "nil"))")
         expectEqual(model.previewSceneId, "s1", "parse refusal: Preview did not move")
         model.previewSceneId = preview
+    }
+
+    /// Task 5: scene.restoreStarters. The status sentences are the restore-starters
+    /// vectors (Windows SceneCatalogPolicy.RestoreStatus); the model cases delete
+    /// starters through the real deleteScene and restore through the real dispatcher.
+    /// Mutations: pluralise "1 starter scenes restored" (one-missing vector); restore a
+    /// starter whose id is already present (duplicate assertion); forget the removed id
+    /// on delete (leftovers/starter-removed-set-persists).
+    @MainActor
+    static func testRC7RestoreStarters() {
+        let vectors = loadActionVectors(section: "restore-starters")
+        expectEqual(vectors.count, 3, "0, 1 and 3 restored")
+        for vector in vectors {
+            let names = vector.given["restoredNames"] as? [String] ?? []
+            expectEqual(AppModel.restoreStatus(names), vector.effects["status"] as? String ?? "<absent>",
+                        "restore/\(vector.name): Windows sentence")
+        }
+        // Fixture invariant: three Mac starters in catalog order.
+        expectEqual(AppModel.starterSceneIds, ["fullscreen", "two-up", "pip"], "the Mac starter catalog")
+
+        func fresh() -> (AppModel, AppModelControlSurface) {
+            let model = AppModel()
+            model.programSceneId = "fullscreen"
+            model.previewSceneId = "pip"
+            return (model, AppModelControlSurface(model: model, box: model.controlSnapshotBox))
+        }
+
+        // Nothing missing.
+        do {
+            let (model, surface) = fresh()
+            let syncs = model.sceneSyncRequestCount
+            expectEqual(invoke(surface, "scene.restoreStarters"), .success, "restore always succeeds")
+            expectEqual(model.studioCommandStatus, AppModel.restoreStatus([]), "nothing missing: the zero sentence")
+            expectEqual(model.scenes.map(\.id), AppModel.starterSceneIds, "nothing added")
+            expectEqual(model.sceneSyncRequestCount, syncs, "nothing missing sends no scene sync")
+        }
+        // One missing: back at its catalog position with fresh preset layers.
+        do {
+            let (model, surface) = fresh()
+            if let index = model.scenes.firstIndex(where: { $0.id == "two-up" }) {
+                model.scenes[index].layers = [SceneLayer(id: "two-up-layer-0", slotId: 7)]
+            }
+            expect(model.deleteScene("two-up") == nil, "two-up is removable")
+            expectEqual(invoke(surface, "scene.restoreStarters"), .success, "restore one")
+            expectEqual(model.scenes.map(\.id), AppModel.starterSceneIds, "two-up is back between fullscreen and pip")
+            expectEqual(model.scenes.first { $0.id == "two-up" }?.layers, [], "with fresh preset layers, not the deleted edit")
+            expectEqual(model.studioCommandStatus, AppModel.restoreStatus(["Side by side"]), "one restored: names it")
+            expectEqual(model.studioCommandStatus, "Side by side restored", "fixture-derived operand: the Mac starter's name")
+            expectEqual(model.programSceneId, "fullscreen", "Program untouched")
+            expectEqual(model.previewSceneId, "pip", "Preview untouched")
+            expectEqual(model.currentPrefs().removedStarterSceneIds, nil, "the removed set is empty after restore")
+        }
+        // All three missing (a custom scene keeps the rail non-empty).
+        do {
+            let (model, surface) = fresh()
+            model.newScene(layout: "single")
+            let custom = model.scenes.last?.id ?? ""
+            model.programSceneId = custom
+            model.previewSceneId = custom
+            for id in AppModel.starterSceneIds { expect(model.deleteScene(id) == nil, "\(id) removable") }
+            expectEqual(model.removedStarterSceneIds, AppModel.starterSceneIds, "three recorded, in delete order")
+            expectEqual(invoke(surface, "scene.restoreStarters"), .success, "restore three")
+            expectEqual(model.studioCommandStatus, AppModel.restoreStatus(["a", "b", "c"]), "three restored: counted")
+            expectEqual(Set(model.scenes.map(\.id)), Set(AppModel.starterSceneIds + [custom]), "all starters back, custom kept")
+            expectEqual(model.scenes.filter { AppModel.starterSceneIds.contains($0.id) }.map(\.id), AppModel.starterSceneIds,
+                        "starters back in catalog order")
+        }
+        // A starter id already present is never duplicated, even when the removed set names it.
+        do {
+            let (model, surface) = fresh()
+            model.removedStarterSceneIds = ["two-up"]
+            expectEqual(invoke(surface, "scene.restoreStarters"), .success, "restore with a stale removed set")
+            expectEqual(model.scenes.filter { $0.id == "two-up" }.count, 1, "a present starter is not duplicated")
+            expectEqual(model.studioCommandStatus, AppModel.restoreStatus([]), "nothing was missing")
+            expectEqual(model.removedStarterSceneIds, [], "the stale set is cleared")
+        }
     }
 }

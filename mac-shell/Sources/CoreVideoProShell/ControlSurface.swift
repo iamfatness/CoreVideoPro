@@ -146,6 +146,10 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             case .refused(let error): return .fail(error)
             case .routes(let routes): return cueWithRoutes(model, sceneId: string(0), routes: routes)
             }
+        case "scene.restoreStarters":
+            // Windows StudioControlSurface.cs: always Success; the sentence is CommandStatus.
+            model.restoreStarterScenes()
+            return .success
         case "scene.route.set":
             return cueWithRoutes(model, sceneId: string(0), routes: SceneRouteMap([(string(1), int(2))]))
         // ── Session (ControlSurface+Session.swift) ──
@@ -262,7 +266,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         // Phase 4 (RC7)
         "transport.stream.srt.configure",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
-        "scene.cueWithRoutes", "scene.route.set",
+        "scene.cueWithRoutes", "scene.route.set", "scene.restoreStarters",
     ]
 
     /// Windows RunTake: refuse when CanTake is false, else the one Take path.

@@ -141,7 +141,7 @@ enum ControlManifestGenerated {
             availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.restoreStarters", title: "Restore starter scenes", description: "Re-add any removed catalog scene (intro, interview, speaker-slides, panel, closing) at its catalog position with fresh starter routes. Existing scenes, Program and Preview are untouched.", params: []),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.dynamicGallery.create", title: "Create CoreVideo Tiles", description: "Create a dynamic CoreVideo Tiles scene and cue it to Preview.", params: []),
             availability: .blocked(workstream: "TIL", label: "CoreVideo Tiles")),

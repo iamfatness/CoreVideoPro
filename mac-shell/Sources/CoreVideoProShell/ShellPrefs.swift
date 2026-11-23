@@ -165,6 +165,8 @@ struct ShellPrefs: Codable, Equatable {
     var multiviewTileCount: Int?
     /// Multiview overlay toggles (Windows MultiviewShow*; nil = Windows defaults).
     var multiviewOverlays: MultiviewOverlays?
+    /// Starter scene ids the operator deleted (Windows RemovedCatalogSceneIds).
+    var removedStarterSceneIds: [String]?
     // Show-input slot assignments (Tier 0.8). nil = a file written before this
     // existed: slots start empty, exactly as before.
     var showInputSlots: [PersistedSlot]?
@@ -267,6 +269,7 @@ struct ShellPrefs: Codable, Equatable {
                                                        forKey: .multiviewLayoutMode)) ?? nil)
         multiviewTileCount = ((try? c.decodeIfPresent(Int.self, forKey: .multiviewTileCount)) ?? nil)
         multiviewOverlays = ((try? c.decodeIfPresent(MultiviewOverlays.self, forKey: .multiviewOverlays)) ?? nil)
+        removedStarterSceneIds = ((try? c.decodeIfPresent([String].self, forKey: .removedStarterSceneIds)) ?? nil)
         showInputSlots = ((try? c.decodeIfPresent([PersistedSlot].self,
                                                   forKey: .showInputSlots)) ?? nil)
         recordingFolder = ((try? c.decodeIfPresent(String.self, forKey: .recordingFolder)) ?? nil)
@@ -345,6 +348,7 @@ struct ShellPrefs: Codable, Equatable {
         p.multiviewLayoutMode = "grid"
         p.multiviewTileCount = 6
         p.multiviewOverlays = MultiviewOverlays(showLabels: false, showTally: true, showMeters: false, showClock: true)
+        p.removedStarterSceneIds = ["pip"]
         p.autoAssignInputs = false
         var columns = SourcesColumnPrefs(); columns.showAudio = false
         p.sourcesWorkspace = columns
