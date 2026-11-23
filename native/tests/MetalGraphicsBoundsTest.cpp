@@ -358,4 +358,122 @@ TEST(MetalGraphicsBounds, GuardedShotLayoutDrawsBothPreparedGraphicsOnItsFirstFr
   EXPECT_TRUE(bottom);
 }
 
+// Graphics-shell G6 prerequisite: a crawl's pending list is adopted exactly at
+// the loop boundary on a 1080p Metal Program. Port of the Program half of
+// D3D11Compositor.CrawlLoopSwitchKeepsFrameMatchedProgramAndKeyAt1080p (no
+// graphics key on Metal). Same manifest, but "font":"Arial": Arial exists on
+// both platforms, and Segoe UI would test the substitution, not the boundary.
+// Crawl time comes from the injected tick, never the wall clock.
+TEST(MetalGraphicsBounds, CrawlLoopSwitchAdoptsAtTheBoundaryOnA1080pProgram) {
+  double tick = 0;
+  MetalGraphicsRig rig([&] { return tick; });
+  RIG_OR_SKIP(rig);
+  rig.video = solidBgraFrame("p-key", 1920, 1080, 200);
+  auto plan = [&] {
+    rig.graphics.advanceCrawls();
+    auto value = fullRectParticipantPlan("crawl-boundary", "p-key", 1920, 1080);
+    value.fullProgramReadback = true;
+    rig.graphics.append(value, false);
+    return value;
+  };
+  auto waitFor = [&](const auto& ready) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+      rig.render(plan());
+      if (ready()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while (std::chrono::steady_clock::now() < until);
+    return false;
+  };
+  ASSERT_TRUE(rig.command("graphics-template-install", {{"manifest", R"({
+    "schemaVersion":1,"templateId":"metal-crawl","templateVersion":1,"name":"Crawl","family":"title",
+    "canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":96},"brandTokens":[],
+    "fields":[{"id":"crawl-items","type":"string","default":"[\"MMMMMMM\"]","maxLength":4096}],
+    "animations":{"in":{"type":"none"},"out":{"type":"none"}},
+    "layers":[{"id":"clip","type":"group","x":40,"y":10,"width":100,"height":64,"children":[
+      {"id":"crawl","type":"crawl","x":0,"y":0,"width":120,"height":64,"speed":1000,
+       "font":"Arial","fontSize":48,"color":"#FFFFFF","items":{"field":"crawl-items"}}]}]
+  })"}}));
+  ASSERT_TRUE(waitFor([&] {
+    const auto& installs = rig.graphics.snapshot().get("templateInstalls")->asArray();
+    return !installs.empty() && installs.back().getString("state") == "installed";
+  }));
+  // The full-resolution Program readback is a tap that fills on some frames
+  // only and trails the render. It is used only for the ink-in-clip check, on
+  // a static state: render until one arrives (bounded). Frame-to-frame
+  // equality uses the Program preview, as the D3D11 test does.
+  auto full = [&] {
+    ProgramFrame frame = rig.render(plan());
+    for (int i = 0; i < 20; ++i) {
+      frame = rig.render(plan());
+      if (!frame.programFullBgra.bgra.empty()) break;
+    }
+    return frame;
+  };
+  const auto blank = full();
+  ASSERT_EQ(size_t(1920) * 1080 * 4, blank.programFullBgra.bgra.size()) << "no full-resolution Program readback";
+  if (blank.programFullBgra.bgra.size() != size_t(1920) * 1080 * 4) return;
+  ASSERT_TRUE(rig.command("graphics-instance-create", {{"scope", "global"}, {"templateId", "metal-crawl"}, {"templateVersion", 1}}));
+  ASSERT_TRUE(rig.command("graphics-instance-cue", {{"expectedRevision", 1}}));
+  ASSERT_TRUE(waitFor([&] { return rig.row().getString("cuePreparation") == "ready"; }));
+  rig.graphics.promoteCuedForTake();
+  ASSERT_EQ(1., rig.row().getNumber("programRevision"));
+  const auto initial = plan();
+  ASSERT_TRUE(initial.layers.back().graphicsPreparedResource && initial.layers.back().graphicsPreparedResource->crawl);
+  if (!initial.layers.back().graphicsPreparedResource || !initial.layers.back().graphicsPreparedResource->crawl) return;
+  const double boundary = initial.layers.back().graphicsPreparedResource->crawl->passWidth;
+
+  // All crawl ink lies inside the manifest's clip group (x 40..140, y 10..74
+  // of the 320x96 bounds) placed by the layer rect, exactly as the D3D11 test
+  // computes it; and there is some ink.
+  auto inkInsideClip = [&](const CompositorRenderPlan& value, const ProgramFrame& program) {
+    const auto& rect = value.layers.back().rect;
+    const double left = (rect.x + rect.width * 40. / 320.) * 1920.;
+    const double right = (rect.x + rect.width * 140. / 320.) * 1920.;
+    const double top = (rect.y + rect.height * 10. / 96.) * 1080.;
+    const double bottom = (rect.y + rect.height * 74. / 96.) * 1080.;
+    const auto& pixels = program.programFullBgra.bgra;
+    if (pixels.size() != blank.programFullBgra.bgra.size()) return false;
+    size_t ink = 0;
+    for (int y = 0; y < 1080; ++y)
+      for (int x = 0; x < 1920; ++x) {
+        const size_t at = (size_t(y) * 1920 + x) * 4;
+        if (std::equal(pixels.begin() + at, pixels.begin() + at + 4, blank.programFullBgra.bgra.begin() + at)) continue;
+        if (x < std::floor(left) || x >= std::ceil(right) || y < std::floor(top) || y >= std::ceil(bottom)) {
+          std::printf("[crawl-boundary] ink outside the clip at %d,%d\n", x, y);
+          return false;
+        }
+        ++ink;
+      }
+    return ink > 0;
+  };
+
+  // Crawl time is the injected tick in ms (speed 1000 px/s, passWidth px).
+  tick = 65;
+  // The take adopts the cue revision; the 1080p Program raster then prepares
+  // asynchronously. Sample once it has drawn (bounded; asserts a state).
+  ASSERT_TRUE(waitFor([&] { return rig.row().getNumber("firstDrawSubmittedFrame") > 0; }));
+  const auto first = rig.render(plan());
+  EXPECT_TRUE(inkInsideClip(plan(), full()));
+  // The crawl moves with the tick within one revision. (The list change below
+  // cannot show this: M and W differ wherever the crawl is drawn.)
+  tick = 130;
+  const auto moved = rig.render(plan());
+  EXPECT_NE(first.preview.bgra, moved.preview.bgra) << "the crawl did not move with its clock";
+
+  ASSERT_TRUE(rig.command("graphics-instance-update", {{"expectedRevision", 1}, {"target", "program"},
+      {"fields", Json::Object{{"crawl-items", "[\"WWWWWWW\"]"}}}}));
+  ASSERT_TRUE(waitFor([&] { return rig.row().getString("preparation") == "ready"; }));
+  ASSERT_EQ(1., rig.row().getNumber("programRevision"));
+  const auto before = rig.render(plan());
+  EXPECT_EQ(moved.preview.bgra, before.preview.bgra) << "the pending list aired before the boundary";
+
+  tick = boundary + 65;
+  const auto after = rig.render(plan());
+  EXPECT_EQ(2., rig.row().getNumber("programRevision"));
+  EXPECT_NE(first.preview.bgra, after.preview.bgra);
+  EXPECT_EQ(before.frameNumber + 1, after.frameNumber);
+  EXPECT_TRUE(inkInsideClip(plan(), full()));
+}
+
 #endif  // COREVIDEO_WITH_METAL && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
