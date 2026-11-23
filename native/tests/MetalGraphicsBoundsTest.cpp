@@ -17,8 +17,6 @@
 #include <atomic>
 #include <cmath>
 #include <chrono>
-#include <condition_variable>
-#include <mutex>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -30,7 +28,6 @@
 #include <thread>
 #include <vector>
 
-#include "compositor/CompositorFaultInjection.h"
 #include "graphics/GraphicsCachePressure.h"
 #include "graphics/GraphicsInstances.h"
 #include "graphics/GraphicsResourceBudget.h"
@@ -556,25 +553,6 @@ TEST(MetalGraphicsBounds, AnUpdatePerFrameKeepsAcceptedPixelsAndAdoptsTheLatest)
 }
 
 namespace {
-// Worker gate for the held-name-line case (the CompositorFaultInjection hook).
-std::mutex gHeldGateMutex;
-std::condition_variable gHeldGateCv;
-std::atomic<bool> gHeldGateBlocked{false};
-void heldGateHook() {
-  std::unique_lock<std::mutex> lock(gHeldGateMutex);
-  gHeldGateCv.wait_for(lock, std::chrono::milliseconds(3000), [] { return !gHeldGateBlocked.load(); });
-}
-// Declare AFTER the compositor so a blocked worker is released before the
-// compositor joins it.
-struct HeldGate {
-  HeldGate() { corevideo::compositor::setOverlayRasterPrepareHookForTest(&heldGateHook); }
-  void block() { gHeldGateBlocked = true; }
-  void release() {
-    { std::lock_guard<std::mutex> lock(gHeldGateMutex); gHeldGateBlocked = false; }
-    gHeldGateCv.notify_all();
-  }
-  ~HeldGate() { release(); corevideo::compositor::setOverlayRasterPrepareHookForTest(nullptr); }
-};
 CompositorRenderPlanLayer nameLayer(const std::string& id, CompositorLayerRect rect, const std::string& name) {
   CompositorRenderPlanLayer layer;
   layer.layerId = "overlay:" + id;
@@ -610,13 +588,16 @@ std::vector<uint32_t> region(const ProgramFramePreviewPixels& p, int x0, int y0,
 
 // G2 "What G3 needs": Tiles name-line retention under load. Starts from
 // MetalCompositor.AHeldNameLineKeepsItsTextWhileTheResizedRasterPrepares and
-// adds cache pressure: with the worker blocked, three GraphicsCachePressure
-// trims land between renders. The held raster is leased by the adapter's
-// retention, so a trim must not take it: its pixels are identical on every
-// render. After release the new size draws.
+// adds real cache pressure. Both process preparation slots are held, so the
+// resized raster is refused as retryable on every render. That refusal path
+// retires the cache's least-used unleased result and requests a trim, and the
+// test adds three more trims. The cache worker stays free, so every trim is
+// processed. The held raster is leased by the adapter's retention, so it must
+// survive: its pixels are identical on every render, and its GPU charge
+// stays in the shared budget. A dropped lease shows as a released charge.
+// After the slots are released, the new size draws.
 TEST(MetalGraphicsBounds, AHeldNameLineSurvivesACacheTrimWhileItsNewSizePrepares) {
   METAL_COMPOSITOR_OR_SKIP(compositor);
-  HeldGate gate;
   CompositorRenderPlan plan;
   plan.renderPlanId = "plan-held-trim";
   plan.width = 320;
@@ -629,22 +610,37 @@ TEST(MetalGraphicsBounds, AHeldNameLineSurvivesACacheTrimWhileItsNewSizePrepares
   const auto ready = renderUntilPrepared(*compositor, plan, frames);
   ASSERT_GE(brightNameLine(ready.preview, 0, 0, 320, 72), 20);
 
-  gate.block();
+  auto& budget = corevideo::graphics::GraphicsResourceBudget::process();
+  // Wait for idle (bounded), then take every preparation slot.
+  const auto idle = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (budget.counters().activePreparations != 0 && std::chrono::steady_clock::now() < idle)
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  std::vector<std::shared_ptr<corevideo::graphics::GraphicsResourceBudget::Lease>> slots;
+  while (budget.counters().activePreparations < budget.counters().preparationLimit) {
+    auto lease = budget.tryReserve(1, 1, {}, false);
+    if (!lease) break;
+    slots.push_back(std::move(lease));
+  }
+  struct Release { decltype(slots)& s; ~Release() { s.clear(); } } release{slots};
+  ASSERT_EQ(budget.counters().activePreparations, budget.counters().preparationLimit);
+  // The held raster's GPU charge, plus the two 1-byte slot leases.
+  const auto heldGpu = budget.counters().gpuBytes;
+
   plan.layers[1].rect = {0.f, 0.f, 1.f, 0.45f};  // 72 -> 81 px tall
   std::vector<uint32_t> heldPixels;
-  for (int tick = 0; tick < 6; ++tick) {
-    if (tick >= 1 && tick <= 3) {
-      corevideo::graphics::GraphicsCachePressure::requestTrim();
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));  // let the cache owner act on it
-    }
+  for (int tick = 0; tick < 8; ++tick) {
+    if (tick >= 2 && tick <= 4) corevideo::graphics::GraphicsCachePressure::requestTrim();
     const auto frame = compositor->render(plan, frames);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));  // the free worker refuses, retires, trims
     ASSERT_TRUE(hasWarning(frame, "graphics-preparing")) << "tick " << tick;
     EXPECT_GE(brightNameLine(frame.preview, 0, 0, 320, 81), 20) << "tick " << tick << ": the held text is gone";
     const auto now = region(frame.preview, 0, 0, 320, 81);
     if (heldPixels.empty()) heldPixels = now;
     else EXPECT_EQ(heldPixels, now) << "tick " << tick << ": the held raster changed under cache pressure";
+    EXPECT_GE(budget.counters().gpuBytes, heldGpu) << "tick " << tick << ": the held raster's charge was released";
   }
-  gate.release();
+  EXPECT_GT(budget.counters().refused, 0u);
+  slots.clear();
   const auto resized = renderUntilPrepared(*compositor, plan, frames);
   EXPECT_FALSE(hasWarning(resized, "graphics-preparing"));
   EXPECT_GE(brightNameLine(resized.preview, 0, 0, 320, 81), 20);
@@ -669,6 +665,13 @@ TEST(MetalGraphicsBounds, ThumbnailsDuringAirtimeLeaveProgramUntouched) {
   ASSERT_GT(rig.row().getNumber("firstDrawSubmittedFrame"), 0.);
   const auto accepted = rig.render(rig.plan()).preview.bgra;
   auto& budget = corevideo::graphics::GraphicsResourceBudget::process();
+  // The budget is process-global: take the baseline with no preparation in flight.
+  const auto idle = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (budget.counters().activePreparations != 0 && std::chrono::steady_clock::now() < idle) {
+    rig.render(rig.plan());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_EQ(0u, budget.counters().activePreparations);
   const auto before = budget.counters();
   ASSERT_TRUE(rig.command("graphics-template-list", {{"includeThumbnails", true}}));
   auto terminal = [&] {

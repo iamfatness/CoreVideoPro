@@ -143,26 +143,40 @@ TEST(OverlayRasterContract, ThumbnailPngIsStraightAlphaAndMatchesItsHeader) {
 }
 
 // A crawl thumbnail draws each item at its start inside the crawl clip, with
-// no atlas. Manifest from GraphicsCompositionPixel.CrawlUsesPreparedTextAndClipsBothDirections:
-// a 320x180 template whose crawl sits in a 60x50 crop group at (90,65), so at
-// 320x180 the clip is x 90..150, y 65..115. Fixture invariant: the item
-// (MMMMMMMM at 32 px) is wider than the crop, so a missing clip shows ink
-// outside it.
+// no atlas. The manifest comes from
+// GraphicsCompositionPixel.CrawlUsesPreparedTextAndClipsBothDirections: a
+// 320x180 template whose crawl sits in a 60x50 crop group at (90,65), so at
+// 320x180 the clip is x 90..150, y 65..115. Fixture invariants:
+// - the first item (MMMMMMMM at 32 px) is wider than the crop, so a missing
+//   clip shows ink outside it;
+// - the second item starts at the first's width plus the 48 px gap, past the
+//   80 px crawl window, so shifted to its start it contributes no ink. The
+//   two-item thumbnail must therefore equal the one-item one. Unshifted, the
+//   W would be drawn over the M.
 TEST(OverlayRasterContract, CrawlThumbnailPlacesItemsAtTheirStartsInsideTheClip) {
-  std::string error;
-  const auto overlay = overlayContract::templateOverlay(R"({
+  auto crawlOverlay = [](const std::string& items, std::string* error, int gap = 48) {
+    return overlayContract::templateOverlay(R"({
       "schemaVersion":1,"templateId":"pixel-crawl","templateVersion":1,"name":"Crawl","family":"title",
       "canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":180},"brandTokens":[],
-      "fields":[{"id":"crawl-items","type":"string","default":"[\"MMMMMMMM\"]","maxLength":4096}],
+      "fields":[{"id":"crawl-items","type":"string","default":")" + items + R"(","maxLength":4096}],
       "animations":{"in":{"type":"none"},"out":{"type":"none"}},
       "layers":[{"id":"crop","type":"group","x":90,"y":65,"width":60,"height":50,"children":[
         {"id":"crawl","type":"crawl","x":0,"y":0,"width":80,"height":50,"font":"Arial",
-         "fontSize":32,"color":"#FFFFFF","items":{"field":"crawl-items"},"direction":"left"}]}]})", {}, &error);
-  ASSERT_TRUE(overlay.graphicsTemplate && overlay.graphicsTemplate->definition) << error;
-  if (!overlay.graphicsTemplate || !overlay.graphicsTemplate->definition) return;
+         "fontSize":32,"color":"#FFFFFF","items":{"field":"crawl-items"},"direction":"left","gap":)" +
+        std::to_string(gap) + R"(}]}]})", {}, error);
+  };
+  std::string error;
+  const auto one = crawlOverlay(R"([\"MMMMMMMM\"])", &error);
+  ASSERT_TRUE(one.graphicsTemplate && one.graphicsTemplate->definition) << error;
+  const auto two = crawlOverlay(R"([\"MMMMMMMM\",\"WWWW\"])", &error);
+  ASSERT_TRUE(two.graphicsTemplate && two.graphicsTemplate->definition) << error;
+  if (!one.graphicsTemplate || !two.graphicsTemplate || !one.graphicsTemplate->definition ||
+      !two.graphicsTemplate->definition) return;
   std::string warning;
-  const auto png = corevideo::modules::coreTextThumbnailPng(overlay, 320, 180, warning);
+  const auto png = corevideo::modules::coreTextThumbnailPng(one, 320, 180, warning);
   ASSERT_FALSE(png.empty()) << warning;
+  const auto pngTwo = corevideo::modules::coreTextThumbnailPng(two, 320, 180, warning);
+  ASSERT_FALSE(pngTwo.empty()) << warning;
   const auto decoded = decodePng(png);
   ASSERT_EQ(size_t(320) * 180 * 4, decoded.rgba.size());
   if (decoded.rgba.size() != size_t(320) * 180 * 4) return;
@@ -174,6 +188,30 @@ TEST(OverlayRasterContract, CrawlThumbnailPlacesItemsAtTheirStartsInsideTheClip)
     }
   EXPECT_GT(inside, 50u) << "no crawl ink at the item's start";
   EXPECT_EQ(outside, 0u) << "crawl ink outside its clip";
+  EXPECT_EQ(decoded.rgba, decodePng(pngTwo).rgba) << "the second item was not placed at its start";
+
+  // The shift's direction. With no gap and a short first item ("II"), the
+  // second item ("WWW") starts inside the clip, right after the first. Its
+  // extra ink must begin at or right of where the first item's ink ends. A
+  // shift with the wrong sign puts it left of the first item, overlapping it.
+  const auto shortOne = crawlOverlay(R"([\"II\"])", &error, 0);
+  const auto shortTwo = crawlOverlay(R"([\"II\",\"WWW\"])", &error, 0);
+  ASSERT_TRUE(shortOne.graphicsTemplate && shortTwo.graphicsTemplate) << error;
+  if (!shortOne.graphicsTemplate || !shortTwo.graphicsTemplate) return;
+  const auto a = decodePng(corevideo::modules::coreTextThumbnailPng(shortOne, 320, 180, warning));
+  const auto b = decodePng(corevideo::modules::coreTextThumbnailPng(shortTwo, 320, 180, warning));
+  ASSERT_EQ(a.rgba.size(), b.rgba.size());
+  if (a.rgba.size() != size_t(320) * 180 * 4 || b.rgba.size() != a.rgba.size()) return;
+  int firstRight = -1, extraLeft = 320;
+  for (int y = 0; y < 180; ++y)
+    for (int x = 0; x < 320; ++x) {
+      const size_t at = (size_t(y) * 320 + x) * 4 + 3;
+      if (a.rgba[at] > 8) firstRight = std::max(firstRight, x);
+      if (b.rgba[at] > 8 && a.rgba[at] <= 8) extraLeft = std::min(extraLeft, x);
+    }
+  ASSERT_GT(firstRight, 0) << "the first item drew nothing";
+  ASSERT_LT(extraLeft, 320) << "the second item drew nothing inside the clip";
+  EXPECT_GE(extraLeft, firstRight - 1) << "the second item sits left of the first: the crawl shift has the wrong sign";
 }
 
 #endif  // COREVIDEO_WITH_METAL && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
