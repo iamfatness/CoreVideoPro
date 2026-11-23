@@ -344,7 +344,8 @@ extension ShellTests {
             }
             checked += 1
         }
-        expectEqual(checked, 5, "\(w): every case checked (a vacuous loop fails)")
+        expectEqual(checked, cases.count, "\(w): every case checked")
+        expect(checked >= 10, "\(w): at least 10 cases (a vacuous loop fails)")
     }
 
     private static func guest(_ id: String, video: Bool = true, talking: Bool = false, muted: Bool = false,
@@ -455,6 +456,17 @@ extension ShellTests {
         let routed = TilesLocalSourcePolicy.routedSourceIds(
             [slot(1, "zoom", "16778240"), slot(2, "capture", "cam-1"), slot(3, "capture", "screen:1", inShow: false),
              slot(4, "media", "clip-7"), slot(5, "unassigned", "")])
+        let vendors = ["srt": "SRT", "rtmp": "RTMP", "ndi": "NDI", "blackmagic": "Camera", "aja": "Camera", "": "Camera"]
+        for (vendor, group) in vendors {
+            let device = CaptureDeviceRow(id: "dev", name: "Dev", kind: "video", vendor: vendor, connectionState: "connected",
+                                          signalPresent: true, warning: "")
+            expectEqual(TilesLocalSourcePolicy.localVideoSources([slot(1, "capture", "dev")], devices: [device]).first?.group,
+                        group, "\(t).GroupFor_MatchesTheShowInputPickerGroups (\(vendor.isEmpty ? "webcam" : vendor))")
+        }
+        var renamed = slot(6, "capture", "cam-unplugged")
+        renamed.name = "Operator's name"
+        expectEqual(TilesLocalSourcePolicy.localVideoSources([renamed], devices: []).first?.name, "Input 06",
+                    "\(t): an unenumerated device falls back to the slot LABEL (Windows SlotLabel), not its renamed name")
         expectEqual(routed, ["zoom:16778240", "capture:cam-1", "media:clip-7"], "\(t).RoutedSourceIds_AreTheInShowSlotIdsZoomAndLocalAlike")
         expect(TilesLocalSourcePolicy.isLocalSourceId("capture:x") && TilesLocalSourcePolicy.isLocalSourceId("media:x")
                && !TilesLocalSourcePolicy.isLocalSourceId("zoom:1") && !TilesLocalSourcePolicy.isLocalSourceId("")

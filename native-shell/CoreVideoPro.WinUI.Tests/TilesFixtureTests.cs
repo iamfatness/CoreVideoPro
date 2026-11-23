@@ -62,7 +62,9 @@ public class TilesFixtureTests
             checkedCases++;
         }
 
-        Assert.Equal(5, checkedCases);
+        // Every case in the file ran, and the file is not empty (a vacuous loop fails).
+        Assert.Equal(doc["cases"]!.AsArray().Count, checkedCases);
+        Assert.True(checkedCases >= 10, $"expected at least 10 cases, ran {checkedCases}");
     }
 
     private static ShowInputSlot ToSlot(JsonNode? node)

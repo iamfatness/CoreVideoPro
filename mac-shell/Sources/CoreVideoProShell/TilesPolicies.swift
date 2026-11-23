@@ -96,14 +96,15 @@ enum TilesLocalSourcePolicy {
 
     /// In-show slots bound to a local CAPTURE source (never media yet: the core
     /// opens media only for a route), slot order, deduped by "capture:<id>".
-    /// Name: the device name when enumerated, else the slot's name.
+    /// Name: the device name when enumerated, else the slot label "Input NN".
     static func localVideoSources(_ slots: [ShowInputSlot], devices: [CaptureDeviceRow],
                                   displayName: (String, String) -> String = { $1 }) -> [TilesLocalSource] {
         var result: [TilesLocalSource] = []
         var seen = Set<String>()
         for slot in slots.sorted(by: { $0.id < $1.id }) where slot.inShow && slot.kind == "capture" {
             guard let id = slot.sourceKey, isLocalSourceId(id), seen.insert(id).inserted else { continue }
-            let derived = devices.first { $0.id == slot.sourceId }?.name ?? slot.name
+            // Windows falls back to `SlotLabel` ("Input NN"), never the slot's display name.
+            let derived = devices.first { $0.id == slot.sourceId }?.name ?? String(format: "Input %02d", slot.id)
             result.append(TilesLocalSource(id: id, name: displayName(id, derived),
                                            group: groupFor(windowsKind: ControlSourceId.windowsKind(of: slot, devices: devices))))
         }

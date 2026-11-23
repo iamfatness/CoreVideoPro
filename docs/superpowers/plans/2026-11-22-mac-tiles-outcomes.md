@@ -147,3 +147,18 @@ The App Store began updating Xcode in place to 27.2 mid-session. From then on ev
 | skip the `init(persisted:)` thickness clamp | red: the Task 6 clamp test. Case 4 stays green because the payload's `FiniteClamp` clamps thickness to 32 again. Case 4's ratio 9→4 is clamped only at restore |
 | send `nameEachTile` from settings | red: the D3 check |
 | omit `overrides` when empty | red: key-set difference in every empty-override fixture case |
+
+### Task 7 review round 1 (independent review of `e0a3c092`)
+
+The reviewer found no behavioural divergence from the C#. Its findings were coverage gaps and one naming difference:
+
+- **HIGH (fixed): membership and identity had no fixture coverage.** The five cases were all eligible mode. Five cases were added and confirmed against the real Windows sources with the local oracle (10/10 pass):
+  - `manual-holes-excluded-duplicate`: a hole, an excluded name, a duplicate, a local id, and slots past `maxTiles`.
+  - `routed-mixed-ids-and-omitted`: routed mode with local ids, and an omitted name matched case-insensitively.
+  - `eligible-ignores-omitted-honours-excluded-and-pins`: omitted ignored in eligible mode, a `zoom-pid:` pin, a missing pid, an excluded `capture:` id, and a bare `zoom:2` that is never seated.
+  - `ambiguous-name-seats-nobody`.
+  - `wall-rect-degenerate`: width 0, x < 0, height > 1.
+- **MEDIUM (fixed): local-source group and name were barely covered.** The tests now cover the SRT, RTMP, NDI, Blackmagic, AJA and webcam groups.
+- **MEDIUM (fixed): the fallback name used the slot's display name.** It is now the slot label "Input NN", like Windows `SlotLabel`.
+- **LOW (fixed): both harnesses hard-coded 5 cases.** They now require "every case in the file, and at least 10".
+- **LOW (not changed): non-ASCII string semantics differ.** Swift grapheme counting and canonical equality versus C# ordinal comparison. Not reachable with Zoom ids.

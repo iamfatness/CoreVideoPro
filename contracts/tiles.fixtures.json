@@ -5,7 +5,8 @@
     "ScenePersistenceService.FromPersisted -> TilesLayerPayloadBuilder.Build -> TilesLayerWire.From ->",
     "MediaCoreCommandBuilder.BuildSceneGraphCommand. The Mac twin is ShellTestsTiles testEveryTilesFixtureMatchesTheSwiftBuilder.",
     "Participant ids are BARE Zoom ids (TilesLayerPayloadBuilderTests explains why). If Windows disagrees, fix `expected`, never Windows.",
-    "`settings` is a persisted Tiles object (camelCase, same keys on both platforms); slots carry the Mac `kind` and the Windows ShowInputKind name."
+    "`settings` is a persisted Tiles object (camelCase, same keys on both platforms); slots carry the Mac `kind` and the Windows ShowInputKind name.",
+    "Cases 6-10 cover manual holes/duplicates/exclusions, routed mode with local ids and omitted names, the eligible-mode rules (omitted ignored, pinned slots, a bare session id never seated), an ambiguous name and a degenerate wall rect."
   ],
   "cases": [
     {
@@ -366,6 +367,380 @@
             "z": null
           }
         },
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "manual-holes-excluded-duplicate",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "manual",
+        "maxTiles": 5,
+        "manualSlots": [
+          "zoom-name:Ann",
+          null,
+          "zoom-name:Ann",
+          "zoom-name:Bob",
+          "capture:cam-a",
+          "zoom-name:Ann"
+        ],
+        "excludedSourceIds": [
+          "zoom-name:Bob"
+        ]
+      },
+      "participants": [
+        {
+          "id": "7",
+          "name": "Ann",
+          "videoOn": true
+        },
+        {
+          "id": "5",
+          "name": "Bob",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:7",
+          "",
+          "",
+          "",
+          "capture:cam-a"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "manual",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "routed-mixed-ids-and-omitted",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "routed",
+        "omittedSourceIds": [
+          "zoom-name:guest 3"
+        ]
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Guest 1",
+          "videoOn": true
+        },
+        {
+          "id": "2",
+          "name": "Guest 2",
+          "videoOn": true
+        },
+        {
+          "id": "3",
+          "name": "Guest 3",
+          "videoOn": true
+        }
+      ],
+      "slots": [
+        {
+          "slot": 1,
+          "kind": "zoom",
+          "sourceId": "2",
+          "inShow": true,
+          "name": "Guest 2",
+          "windowsKind": "ZoomParticipant"
+        },
+        {
+          "slot": 2,
+          "kind": "zoom",
+          "sourceId": "3",
+          "inShow": true,
+          "name": "Guest 3",
+          "windowsKind": "ZoomParticipant"
+        },
+        {
+          "slot": 3,
+          "kind": "capture",
+          "sourceId": "cam-a",
+          "inShow": true,
+          "name": "Input 03",
+          "windowsKind": "UvcWebcam"
+        },
+        {
+          "slot": 4,
+          "kind": "capture",
+          "sourceId": "cam-b",
+          "inShow": false,
+          "name": "Input 04",
+          "windowsKind": "UvcWebcam"
+        }
+      ],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:2",
+          "capture:cam-a"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "routed",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "eligible-ignores-omitted-honours-excluded-and-pins",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "maxTiles": 3,
+        "omittedSourceIds": [
+          "zoom-name:Guest 1"
+        ],
+        "excludedSourceIds": [
+          "zoom-pid:P-missing",
+          "capture:cam-x"
+        ],
+        "manualSlots": [
+          null,
+          "zoom-pid:P4",
+          "zoom:2"
+        ]
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Guest 1",
+          "videoOn": true
+        },
+        {
+          "id": "2",
+          "name": "Guest 2",
+          "videoOn": true
+        },
+        {
+          "id": "3",
+          "name": "Guest 3",
+          "videoOn": true
+        },
+        {
+          "id": "4",
+          "name": "Guest 4",
+          "videoOn": true,
+          "persistentId": "P4"
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:1",
+          "zoom:4",
+          "zoom:2"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "ambiguous-name-seats-nobody",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "manual",
+        "manualSlots": [
+          "zoom-name:Sam"
+        ]
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Sam",
+          "videoOn": true
+        },
+        {
+          "id": "2",
+          "name": "sam",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          ""
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "manual",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "wall-rect-degenerate",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "wallRect": {
+          "x": -0.2,
+          "y": 0.3,
+          "width": 0,
+          "height": 1.5
+        },
+        "wallOpacity": 0.4
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Guest 1",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0.0001,
+          "h": 1
+        },
+        "opacity": 0.4,
+        "transparentBackground": false,
+        "members": [
+          "zoom:1"
+        ],
+        "overrides": {},
         "style": {
           "tileAspect": "16:9",
           "customAspectRatio": 1.7777777777777777,
