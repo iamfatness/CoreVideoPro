@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "compositor/MetalCompositorLibrary.h"
+#include "compositor/MetalCompositorShaders.h"
 #include "modules/Interfaces.h"
 
 namespace {
@@ -153,5 +155,88 @@ TEST(MetalTilesPixels, RoundedMaskInsetBorderAndAnalyticGlowMatchTheD3DProof) {
   }
 }
 
+
+// Twin of TilesDecoration.EffectCompilationFailureRetainsCleanShader: only the
+// effect code uses fwidth, so poisoning it must still yield a real library
+// compiled with COREVIDEO_DISABLE_TILES_EFFECT, and report effects unavailable.
+TEST(MetalTilesPixels, ABrokenEffectStillCompilesACleanLibrary) {
+  const std::string broken =
+      std::string("#define fwidth unavailable_effect_function\n") + kMetalCompositorShaderSource;
+  bool effectsAvailable = true;
+  const bool compiled = metalCompositorLibraryFallbackForTest(broken.c_str(), effectsAvailable);
+  if (!compiled && effectsAvailable) {
+    std::fprintf(stderr, "[metal-test] unavailable: no Metal device\n");
+    return;
+  }
+  EXPECT_TRUE(compiled);
+  EXPECT_FALSE(effectsAvailable);
+  // The healthy source keeps effects on.
+  bool healthy = false;
+  EXPECT_TRUE(metalCompositorLibraryFallbackForTest(kMetalCompositorShaderSource, healthy));
+  EXPECT_TRUE(healthy);
+}
+
+// The core sets each tile layer's opacity from the wall's; Metal must blend the
+// tile toward the background by exactly that much.
+TEST(MetalTilesPixels, WallOpacityBlendsTilesTowardTheBackground) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan = decorationPlan();
+  CompositorRenderPlanLayer tile;
+  tile.layerId = "tile:test"; tile.sourceId = "zoom:test"; tile.participantId = "test";
+  tile.kind = "participant-video"; tile.rect = {0.25f, 0.2f, 0.5f, 0.6f}; tile.order = 2;
+  tile.opacity = 0.5f;
+  plan.layers = {blackBackground(), tile};
+  const auto rendered = compositor->render(plan, {solidBgra("test", 255, 255, 255, 1)});
+  ASSERT_EQ(rendered.preview.width, 320);
+  const int g = rendered.preview.bgra[(90 * 320 + 160) * 4 + 1];
+  EXPECT_TRUE(g >= 120 && g <= 136) << "centre G=" << g;
+}
+
+// A tile (and its glow) clipped to the wall rect draws nothing outside it.
+TEST(MetalTilesPixels, ATileClippedToTheWallRectDrawsNothingOutsideIt) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan = decorationPlan();
+  CompositorRenderPlanLayer tile;
+  tile.layerId = "tile:test"; tile.sourceId = "zoom:test"; tile.participantId = "test";
+  tile.kind = "participant-video"; tile.rect = {0.1f, 0.1f, 0.8f, 0.8f}; tile.order = 2;
+  tile.hasClipRect = true; tile.clipRect = {0.25f, 0.25f, 0.5f, 0.5f};
+  tile.tilesDecoration.enabled = true; tile.tilesDecoration.glowSize = 16;
+  tile.tilesDecoration.glowIntensity = 1; tile.tilesDecoration.glowColor = "#00FF00";
+  auto glow = tile; glow.kind = "tiles-glow"; glow.layerId = "glow"; glow.participantId.clear();
+  glow.sourceId.clear(); glow.order = 1; glow.tilesDecoration.glowPass = true;
+  plan.layers = {blackBackground(), glow, tile};
+  const auto rendered = compositor->render(plan, {solidBgra("test", 255, 255, 255, 1)});
+  ASSERT_EQ(rendered.preview.width, 320);
+  const auto& img = rendered.preview.bgra;
+  // Inside the clip the white tile shows (proves the tile drew at all).
+  EXPECT_GT(img[(90 * 320 + 160) * 4 + 1], 245);
+  for (const int x : {64, 256}) {  // 0.2 and 0.8 of 320, y = 0.5
+    for (int c = 0; c < 3; ++c)
+      EXPECT_LE(img[(90 * 320 + x) * 4 + c], 2) << "x=" << x << " c=" << c;
+  }
+}
+
+// The wall's live background feed draws full-canvas under the tiles.
+TEST(MetalTilesPixels, ALiveBackgroundFrameDrawsUnderTheTiles) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan = decorationPlan();
+  CompositorRenderPlanLayer bg;
+  bg.layerId = "tiles-source-bg:w"; bg.sourceId = "zoom:bg"; bg.participantId = "bg";
+  bg.kind = "participant-video"; bg.rect = {0, 0, 1, 1}; bg.order = 0; bg.fitMode = "fill";
+  CompositorRenderPlanLayer tile;
+  tile.layerId = "tile:test"; tile.sourceId = "zoom:test"; tile.participantId = "test";
+  tile.kind = "participant-video"; tile.rect = {0.25f, 0.25f, 0.5f, 0.5f}; tile.order = 2;
+  plan.layers = {bg, tile};
+  const auto rendered = compositor->render(
+      plan, {solidBgra("bg", 255, 0, 0, 1), solidBgra("test", 255, 255, 255, 1)});
+  ASSERT_EQ(rendered.preview.width, 320);
+  const auto& img = rendered.preview.bgra;
+  const size_t corner = (5 * 320 + 5) * 4;
+  EXPECT_GT(img[corner], 240);
+  EXPECT_LT(img[corner + 1], 15);
+  EXPECT_LT(img[corner + 2], 15);
+  const size_t centre = (90 * 320 + 160) * 4;
+  EXPECT_GT(img[centre], 245); EXPECT_GT(img[centre + 1], 245); EXPECT_GT(img[centre + 2], 245);
+}
 
 #endif  // COREVIDEO_WITH_METAL

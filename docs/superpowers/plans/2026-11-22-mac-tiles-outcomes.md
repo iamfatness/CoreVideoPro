@@ -27,6 +27,7 @@ Every line of the plan's "Verified starting state" was re-read at `163c4a3f`. Li
 | Task | Range (at the commit) | What |
 |---|---|---|
 | 2 | none | test-only |
+| 3 | new `:64-93` (file scope, before `namespace corevideo::modules`): `compileMetalCompositorLibrary` + `metalCompositorLibraryFallbackForTest`; `ensurePipeline` `:380-384` (was `:350-364`): the inline compile + fallback replaced by one call | effect-compile seam, behaviour identical (same retry, same `[tiles] shader effect unavailable` log) |
 
 ## Slice N1
 
@@ -41,3 +42,19 @@ Every line of the plan's "Verified starting state" was re-read at `163c4a3f`. Li
 | (b) border `inner = 1` | red at `(83,90)` |
 | (c) glow pass skips its draw | red at `(72,90)` |
 | (d) `(1-t)^2` → `(1-t)` | red at `(72,90)` |
+
+### Task 3 — fallback, wall opacity, clip, live background
+
+- New header `native/src/compositor/MetalCompositorLibrary.h` (empty when Metal is off; the ObjC declaration only under `__OBJC__`).
+- `ABrokenEffectStillCompilesACleanLibrary` was red at compile (header missing), then green with the seam. The three pixel tests (`WallOpacityBlendsTilesTowardTheBackground`, `ATileClippedToTheWallRectDrawsNothingOutsideIt`, `ALiveBackgroundFrameDrawsUnderTheTiles`) were **green on first run**: Metal already blends wall opacity, scissors the glow to the clip rect and draws a live background feed. No pixel defect found.
+- Stub build (`-DCOREVIDEO_STUB=ON`, Metal off): builds, ctest 100% pass — the header compiles to nothing.
+
+| Mutation | Result |
+|---|---|
+| fallback returns nil instead of retrying | red (`ABroken…`, `compiled` false) |
+| glow branch skips `setScissorFromRect` | red (`ATileClipped…`, x=64 G channel green) |
+| `layerAlpha = 1` | red (`WallOpacity…`, centre G=255) |
+
+## Environment event (2026-11-22 ~19:25)
+
+The App Store began updating Xcode in place to 27.2 mid-session. From then on every `/usr/bin` shim (`c++`, `git`, `swift`, `xcrun`, `python3`) failed with "You have not agreed to the Xcode license agreements", and `Xcode.app`'s `MacOSX26.5.sdk` path disappeared. Workaround used: `DEVELOPER_DIR=/Library/Developer/CommandLineTools` with `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk` (compiles and links C++, ObjC++ and Metal); Homebrew `python3`. Builds made before the update used the Xcode 26.5 SDK.

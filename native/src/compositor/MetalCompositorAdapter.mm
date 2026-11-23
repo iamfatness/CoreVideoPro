@@ -61,6 +61,36 @@
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 #include "compositor/MetalPixelBufferTextures.h"
+#include "compositor/MetalCompositorLibrary.h"
+
+// Tiles N1 seam (MetalTilesPixels.ABrokenEffectStillCompilesACleanLibrary):
+// the library compile + clean-shader fallback, callable from a test.
+id<MTLLibrary> compileMetalCompositorLibrary(id<MTLDevice> device, const char* source,
+                                             bool& effectsAvailable, std::string& error) {
+  effectsAvailable = true;
+  NSError* nsError = nil;
+  id<MTLLibrary> library = [device newLibraryWithSource:[NSString stringWithUTF8String:source]
+                                                options:nil
+                                                  error:&nsError];
+  if (!library) {
+    effectsAvailable = false;
+    NSString* clean = [@"#define COREVIDEO_DISABLE_TILES_EFFECT 1\n" stringByAppendingString:
+        [NSString stringWithUTF8String:source]];
+    library = [device newLibraryWithSource:clean options:nil error:&nsError];
+    if (library) ::corevideo::core::nativeLogf("[tiles] shader effect unavailable; rendering clean tiles.\n");
+  }
+  if (!library) error = nsError ? nsError.localizedDescription.UTF8String : "no diagnostics";
+  return library;
+}
+
+bool metalCompositorLibraryFallbackForTest(const char* source, bool& effectsAvailable) {
+  @autoreleasepool {
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (!device) return false;
+    std::string error;
+    return compileMetalCompositorLibrary(device, source, effectsAvailable, error) != nil;
+  }
+}
 
 namespace corevideo::modules {
 namespace {
@@ -347,21 +377,11 @@ class MetalCompositor final : public ICompositor {
     }
     queue_ = [device_ newCommandQueue];
     pixelBufferTextures_ = std::make_unique<compositor::MetalPixelBufferTextures>(device_);
-    NSError* error = nil;
-    id<MTLLibrary> library =
-        [device_ newLibraryWithSource:[NSString stringWithUTF8String:kMetalCompositorShaderSource]
-                              options:nil
-                                error:&error];
+    std::string libraryError;
+    id<MTLLibrary> library = compileMetalCompositorLibrary(device_, kMetalCompositorShaderSource,
+                                                           tilesEffectsAvailable_, libraryError);
     if (!library) {
-      tilesEffectsAvailable_ = false;
-      NSString* clean = [@"#define COREVIDEO_DISABLE_TILES_EFFECT 1\n" stringByAppendingString:
-          [NSString stringWithUTF8String:kMetalCompositorShaderSource]];
-      library = [device_ newLibraryWithSource:clean options:nil error:&error];
-      if (library) ::corevideo::core::nativeLogf("[tiles] shader effect unavailable; rendering clean tiles.\n");
-    }
-    if (!library) {
-      return fail(std::string("shader compile failed: ") +
-                  (error ? error.localizedDescription.UTF8String : "no diagnostics"));
+      return fail(std::string("shader compile failed: ") + libraryError);
     }
     id<MTLFunction> vertexFn = [library newFunctionWithName:@"compositorVertex"];
     if (!vertexFn) {
