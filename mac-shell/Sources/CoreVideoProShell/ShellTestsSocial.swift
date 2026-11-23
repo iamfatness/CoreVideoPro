@@ -16,6 +16,7 @@ extension ShellTests {
             ("social/review-ban-and-user-clear", testSocialBanAndUserClear),
             ("social/review-edit-keeps-original-received-at", testSocialEditKeepsReceivedAt),
             ("social/review-byte-and-unit-limits-refuse-never-truncate", testSocialByteAndUnitLimits),
+            ("social/review-review-gaps", testSocialReviewGaps),
         ]
     }
 
@@ -102,7 +103,8 @@ extension ShellTests {
                "193 bytes refused, never truncated")
         let item = q.receive(source: source, id: "valid", author: " Author ", message: " Cafe\u{301} ")!
         expectEqual(item.author, "Author", "trimmed")
-        expectEqual(item.message, "Café", "NFC")
+        // Swift == is canonical equivalence; compare scalars so NFC is really pinned.
+        expectEqual(Array(item.message.unicodeScalars), Array("Caf\u{E9}".unicodeScalars), "NFC (precomposed é)")
         expect(q.approve(item.key), "approve")
         expectEqual(q.approved(item.key)?.message, item.message, "same text")
         expect(q.receive(source: source, id: "bad id", author: "A", message: "m") == nil, "id with a space")
@@ -168,5 +170,51 @@ extension ShellTests {
                "the UTF-16 limit applies before trimming (C# text.Length)")
         expect(q.receive(source: source, id: "auth", author: String(repeating: "a", count: 81), message: "m") == nil,
                "author limit 80")
+    }
+
+    /// Behaviour the C# set leaves unpinned (Task 12 review).
+    static func testSocialReviewGaps() {
+        let q = SocialReview(now: { socialNow }, capacity: 2)
+        let source = q.connect(provider: "YouTube")
+        // A refused edit pulls the existing (even approved) item.
+        let ok = q.receive(source: source, id: "e", author: "A", message: "fine")!
+        expect(q.approve(ok.key), "approve")
+        expect(q.receive(source: source, id: "e", author: "A", message: "bad\u{7}") == nil, "invalid edit refused")
+        expect(q.approved(ok.key) == nil && q.items.isEmpty, "and the old approved text is gone")
+        // Edits are allowed at a full queue; new ids are not.
+        guard let a = q.receive(source: source, id: "a", author: "A", message: "one"),
+              q.receive(source: source, id: "b", author: "B", message: "two") != nil
+        else { expect(false, "the refused edit must have freed its slot"); return }
+        expect(q.receive(source: source, id: "c", author: "C", message: "three") == nil, "full: new id refused")
+        expect(q.receive(source: source, id: "a", author: "A", message: "one edited")?.key != a.key, "full: edit accepted")
+        // A changed authorId is a new revision.
+        let rev = q.receive(source: source, id: "a", author: "A", message: "one edited", authorId: "x")
+        expect((rev?.key.revision ?? 0) > a.key.revision, "authorId change is a new revision")
+        // Id bounds.
+        let r = SocialReview(now: { socialNow })
+        let s2 = r.connect(provider: "Twitch")
+        expect(r.receive(source: s2, id: String(repeating: "a", count: 256), author: "A", message: "m") != nil, "256-char id ok")
+        expect(r.receive(source: s2, id: "", author: "A", message: "m") == nil, "empty id refused")
+        expect(r.receive(source: s2, id: "x\u{7F}", author: "A", message: "m") == nil, "DEL refused")
+        expect(r.receive(source: s2, id: "~!", author: "A", message: "m") != nil, "~ and ! ok")
+        expect(r.receive(source: s2, id: "\u{E9}", author: "A", message: "m") == nil, "non-ASCII id refused")
+        expect(r.receive(source: s2, id: "au", author: String(repeating: "a", count: 80), message: "m") != nil, "author 80 ok")
+        // Fence boundaries at equality.
+        r.apply(source: s2, .clearRoom(order: 200))
+        expect(r.receive(source: s2, id: "eq", author: "A", message: "m", order: 200) == nil, "order == room clear is fenced")
+        r.apply(source: s2, .clearUser(authorId: "u", order: 300))
+        expect(r.receive(source: s2, id: "eq2", author: "A", message: "m", authorId: "u", order: 300) == nil,
+               "order == user clear is fenced")
+        // Fail-closed paths.
+        r.apply(source: s2, .clearUser(authorId: "bad id", order: 400))
+        expect(!r.isConnected, "an invalid author id in a clear fails closed")
+        let t = SocialReview(now: { socialNow }, removalCapacity: 2)
+        let s3 = t.connect(provider: "Twitch")
+        t.apply(source: s3, .ban(authorId: "bad id"))
+        expect(t.isConnected, "an invalid ban id is ignored")
+        t.apply(source: s3, .ban(authorId: "u1")); t.apply(source: s3, .ban(authorId: "u2"))
+        expect(t.isConnected, "two bans fit a budget of 2")
+        t.apply(source: s3, .clearUser(authorId: "u3", order: 5))
+        expect(!t.isConnected, "the third removal fact overflows the budget: fails closed")
     }
 }
