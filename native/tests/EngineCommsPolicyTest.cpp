@@ -51,3 +51,17 @@ TEST(EngineCommsPolicy, MicAccessErrorNamesTheSetting) {
   EXPECT_EQ(engine_comms::micAccessError(1), engine_comms::micAccessError(2));  // Restricted
   EXPECT_EQ(engine_comms::micAccessError(0), "Waiting for microphone permission.");  // NotDetermined
 }
+
+// comms_audio_join answers the plan's audio-join unknown (owner decision N3):
+// is meeting audio joined at all after a Mac join? Written on every InMeeting
+// transition and every change of either value, never per tick.
+TEST(EngineCommsPolicy, AudioJoinBreadcrumbOnlyOnChange) {
+  EXPECT_EQ(engine_comms::audioJoinBreadcrumb(1, 2, 1, 2, false), std::nullopt);
+  EXPECT_EQ(engine_comms::audioJoinBreadcrumb(1, 2, 1, 2, true),
+            std::optional<std::string>(
+                R"({"cmd":"debug","stage":"comms_audio_join","audioType":1,"audioStatus":2})"));
+  EXPECT_EQ(engine_comms::audioJoinBreadcrumb(0, 0, 1, 1, false),
+            std::optional<std::string>(
+                R"({"cmd":"debug","stage":"comms_audio_join","audioType":1,"audioStatus":1})"));
+  EXPECT_NE(engine_comms::audioJoinBreadcrumb(1, 2, 1, 1, false), std::nullopt);  // status alone
+}

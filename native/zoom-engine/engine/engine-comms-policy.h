@@ -84,4 +84,16 @@ inline std::string micAccessError(int avAuthorizationStatus) {
   }
 }
 
+// The comms_audio_join breadcrumb: is meeting audio joined after a Mac join,
+// and is our mic open? Talkback is silent unless it is (ZComms law 1), and
+// whether the Mac SDK joins VoIP on its own with needCustomizedUI=NO is the
+// open question behind owner decision N3. Returns the line on an InMeeting
+// transition or when either value changed; nullopt otherwise.
+inline std::optional<std::string> audioJoinBreadcrumb(int prevType, int prevStatus, int type,
+                                                      int status, bool enteredMeeting) {
+  if (!enteredMeeting && prevType == type && prevStatus == status) return std::nullopt;
+  return std::string(R"({"cmd":"debug","stage":"comms_audio_join","audioType":)") +
+         std::to_string(type) + R"(,"audioStatus":)" + std::to_string(status) + "}";
+}
+
 }  // namespace engine_comms

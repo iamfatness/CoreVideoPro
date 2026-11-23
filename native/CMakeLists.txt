@@ -870,6 +870,9 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
       # The engine hosts an NSApplication: the Zoom macOS SDK is an AppKit
       # client, so a bare NSRunLoop cannot service its delegate callbacks.
       "-framework AppKit"
+      # Comms: the microphone permission check before the mic chain opens
+      # (a denied grant is digital silence on macOS, not an error).
+      "-framework AVFoundation"
     )
     # BUILD_RPATH is required, not optional: the framework is linked through
     # raw -F/-framework flags, so CMake infers no build-tree rpath â€” without
