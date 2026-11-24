@@ -522,6 +522,7 @@ final class AppModel: ObservableObject {
     /// catalog every launch and needs the set to drop removed scenes again
     /// (SceneCatalogPolicy.RemovalsToApply); the Mac persists every rail scene, so a deleted
     /// starter stays deleted without it, and Restore keys on presence, as Windows does.
+    // Nothing on the Mac reads this set yet (owner decision 2026-11-23: keep it Windows-shaped).
     @Published var removedStarterSceneIds: [String] = []
     @Published var programSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != programSceneId) } }
     @Published var previewSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != previewSceneId) } }
