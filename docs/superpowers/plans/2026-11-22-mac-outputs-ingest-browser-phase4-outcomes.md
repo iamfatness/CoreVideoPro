@@ -311,3 +311,82 @@ Branch `mac-outputs-phase4-o4`, stacked on slice 2 (`-o3`).
 - **Full native suite** (`-DCOREVIDEO_WITH_NDI_OUTPUT=ON` build, before the skip guard): 2256 passed,
   7 failed. The 7 failures were exactly the hardware tests failing with -12903 as described above. With
   the guard, the AVF+VT ordering runs 40 passed, 0 failed, with 7 loud skips.
+
+### Hardware-session exhaustion: resolved as a PRODUCTION defect — fixed in its own PR #1242 (off `main`)
+
+The coordinator asked for a bounded investigation. The answer is **production code, not the tests**.
+
+- **The composition.** The core wraps the AVFoundation recorder in one `AsyncEncoderSink` for the life of
+  the process. Every recording opens and finalizes on that sink's long-lived writer thread, and none of
+  its AVFoundation calls ran inside an autorelease pool. Autoreleased writer inputs, adaptors and sample
+  buffers were therefore never drained, and they kept their VideoToolbox sessions alive.
+- **The test.** `AvfRecorderSessionRelease.FinishedRecordingsGiveTheirHardwareSessionsBack` drives 40
+  short recordings through that exact composition and probes for a hardware session after every take.
+  - On `main` it fails: **exhausted at take 31 (-12903)**.
+  - With the fix (`@autoreleasepool` around every `AvfMp4Writer` entry point) it passes.
+- **Results on #1242.** Native suite 2242 passed, 0 failed; the AVF suites 72/72. An independent review
+  found the fix correct; its test-hygiene findings were fixed.
+- **Effect on this branch.** With #1242's change applied locally, the VideoToolbox encoder tests run, and
+  pass, after the AVF suites instead of skipping (157 passed, 0 failed). The skip guard stays: it
+  still covers CI virtual machines with no media engine.
+- **Follow-ups (review, not done).** These Metal compositor threads call Cocoa per frame without a pool:
+  the full-res tap, the vcam tap, and the vcam prep thread.
+
+## Task 3 (O4b): Metal encoder IOSurface ring; the sender accepts an IOSurface
+
+Branch `mac-outputs-phase4-o4b`, stacked on `-o4`.
+
+- **What changed.**
+  - `CompositorRenderPlan::encoderTextureExport`. MediaCore sets it only while `rtmp`, `srt` or `hls` is
+    in the output set; D3D11 ignores it.
+  - **Metal.** A ring of three non-global BGRA IOSurfaces (row E-1) is built on a preparation thread the
+    first tick a stream wants it. Until it is ready a tick exports nothing and counts no shed.
+  - **Export, every tick (fast and full).** The tick blits Program into the next slot that is not
+    `IOSurfaceIsInUse`, in its own command buffer, with no GPU wait. The slot's `publishedFrameNumber`
+    is stored in the blit's **completion** handler. The frame carries
+    `encoderSharedTexture{iosurfaceId, w, h, B8G8R8A8_UNORM, frameNumber, published}`.
+  - A tick with all three slots in use exports nothing and increments `encoderExportShedFrames()`.
+  - The ring is freed the first tick the flag drops, and rebuilt on a size change.
+  - **Sender.** It treats `sharedHandleHex` **or** `iosurfaceId` as "has encoder texture" and passes
+    `iosurfaceId` to the encoder. New test hook: `setGpuVideoEncoderFactoryForTest`.
+- **Tests (5):**
+  - `MetalEncoderExport.ExportsTheComposedFrameIntoTheRing`: the centre pixel of the exported surface is
+    (40,120,200) ±1 once published.
+  - `…NeverRewritesAnInUseSurface`: three distinct ids; all in use gives no export and exactly one shed;
+    export resumes once released.
+  - `…NoExportWhenNoStreamDestination`.
+  - `OutputSenderAdapter.IosurfaceEncoderTextureChoosesGpuDirect`: a fake encoder sees id 77; the fake
+    ffmpeg is the probe binary in `eof-exit` mode.
+  - `MediaCore.EncoderTextureExportFollowsStreamDestinations`: recording alone, false; +srt, true;
+    ndi, false; hls, true.
+- **Mutations** (each applied alone, restored):
+
+  | Mutation | Result |
+  |---|---|
+  | M3a: sender checks only `sharedHandleHex` | sender test red |
+  | M3b: no in-use check | in-use test red ("tick 2 rewrote an in-use surface") |
+  | M3c: export regardless of flag | no-export test red |
+  | M3d: publish at commit | **red, against the plan's expectation of green**: the export test reads the surface the moment `published` says so and sees pre-blit pixels, so the ordering is pinned by a unit test, not only by Task 6's frame-identity gate |
+  | M3e (added): MediaCore never sets the flag | flag test red |
+- **Review** (independent agent):
+  1. *Important:* a slot being rewritten kept advertising its old frame number until the new blit
+     **completed**. A backlogged encoder could therefore read it mid-blit under the old frame's timestamp:
+     Metal's own in-flight blit does not raise the IOSurface use count. Fixed in two places:
+     - the compositor stores a sentinel (-2) into the slot's `published` before committing the rewrite;
+     - the encoder re-checks `published` after taking its use count.
+
+     New test `ARewrittenSlotStopsAdvertisingItsOldFrameAtCommit`. Mutation **M3f** (no sentinel) turned
+     it red in 5 of 5 runs; restored, it passed 5 of 5.
+  2. *Important:* `encoderExporting()` stored false at the start of every tick, so a snapshot-thread read
+     could see a transient false. Render's early returns could also leave a stale true. Now one store per
+     tick, and false on the early returns.
+  3. *Minor, not changed:* a frame queued when the ring is released (size change or stream stop) fails
+     its lookup. That is a counted skip and sets `lastFailure` to `iosurface-lookup-failed`
+     (informational).
+  4. *Minor, not changed:* there is no test for a size-change rebuild or for the flag dropping while
+     the ring builds.
+- **Counts.**
+  - Full native suite (`native/build-metal`, NDI on, built before the review fixes): **2268 passed,
+    0 failed**. The 7 VideoToolbox tests skipped loudly, because this branch does not carry #1242.
+  - After the fixes: `MetalEncoderExport.*` + `VideoToolboxGpuVideoEncoder.*` + the two sender/core
+    tests, **14/14, three runs**.

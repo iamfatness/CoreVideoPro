@@ -1143,6 +1143,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
   // TEST-ONLY (see IBitstreamQueueTestAccess for the structural guard).
   // #597 Lever B seam: pushes straight onto bitstreamQueue_ so discard
   // correctness can be exercised with no hardware encoder.
+  void setGpuVideoEncoderFactoryForTest(std::function<std::unique_ptr<GpuVideoEncoder>()> factory) override {
+    gpuEncoderFactory_ = std::move(factory);
+  }
+
   void enqueueBitstreamChunkForTest(std::size_t bytes, bool keyframe) override {
 #if defined(_WIN32)
     GpuEncodedChunk metadata;
@@ -2112,7 +2116,9 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     in.sessionAvailable = probeAllows;
     const bool codecHasGpuEncoder =
         codecHasSupportedHardwareEncoder(normalizeVideoCodec(compatibility.videoCodec)) && probeAllows;
-    const bool frameHasEncoderTexture = !frame.encoderSharedTexture.sharedHandleHex.empty();
+    // Windows: a keyed-mutex handle; macOS: an IOSurface from the Metal ring.
+    const bool frameHasEncoderTexture =
+        !frame.encoderSharedTexture.sharedHandleHex.empty() || frame.encoderSharedTexture.iosurfaceId != 0;
     const char* reason = "cpu-fallback";
     const auto path = chooseStreamEncodePath(in, sentCodec, codecHasGpuEncoder, frameHasEncoderTexture, &reason);
     gpuEncodePathReason_ = reason;
@@ -2893,10 +2899,13 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
 #endif
     if (!gpuEncoder_) return false;
     if (!gpuEncoder_->healthy()) return false;
-    if (frame.encoderSharedTexture.sharedHandleHex.empty()) return true;
+    if (frame.encoderSharedTexture.sharedHandleHex.empty() && frame.encoderSharedTexture.iosurfaceId == 0) {
+      return true;
+    }
     GpuVideoEncoderFrame f;
     f.publishedFrameNumber = frame.encoderSharedTexture.publishedFrameNumber;
     f.sharedHandleHex = frame.encoderSharedTexture.sharedHandleHex;
+    f.iosurfaceId = frame.encoderSharedTexture.iosurfaceId;
     f.width = frame.encoderSharedTexture.width;
     f.height = frame.encoderSharedTexture.height;
     f.frameNumber = frame.frameNumber;

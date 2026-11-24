@@ -406,6 +406,10 @@ struct ProgramFrame {
   // Dedicated GPU keyed-mutex DXGI shared texture for hardware H.264 encode.
   // Separate from sharedTexture so sender encode does not contend with WinUI frame
   // consumption while the sender runs at encoder cadence.
+  // macOS (Phase 4 O4b): instead an in-process IOSurface from the Metal
+  // compositor's three-slot encoder ring (iosurfaceId set, sharedHandleHex
+  // empty); publishedFrameNumber is stored when the blit into that slot
+  // COMPLETES on the GPU, so the encoder never reads a half-written slot.
   ProgramFrameSharedTexture encoderSharedTexture;
   std::vector<ParticipantSharedTexture> participantSharedTextures;
   // Core-composited multiview grid: one keyed-mutex DXGI shared texture holding
@@ -656,6 +660,11 @@ struct CompositorRenderPlan {
   // __APPLE__ + COREVIDEO_WITH_MAC_VIRTUALCAM; every other compositor ignores it,
   // so it is inert on Windows.
   bool vcamNv12Tap = false;
+  // Phase 4 O4b: export the dedicated encoder texture (Metal: an IOSurface
+  // ring blitted after every Program pass) for the GPU-direct stream encoder.
+  // MediaCore sets it only while an rtmp/srt/hls destination is in the output
+  // set. The D3D11 compositor ignores it (it exports on fullProgramReadback).
+  bool encoderTextureExport = false;
   // When true, the GPU compositor ALSO composites the native graphics
   // instances on this plan (layers with a graphicsInstanceId) into their own
   // transparent BGRA target and publishes it, straight-alpha, through

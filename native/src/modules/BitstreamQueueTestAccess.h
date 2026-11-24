@@ -4,7 +4,10 @@
 #include <cstdint>
 #include <memory>
 
+#include "modules/GpuVideoEncoder.h"
 #include "modules/Interfaces.h"
+
+#include <functional>
 
 namespace corevideo::modules {
 
@@ -60,6 +63,10 @@ class IBitstreamQueueTestAccess {
   // Depth, keyframe presence, and the real bitstreamBufferedMs(), unaffected by
   // setBackpressureObservationForTest()'s override.
   virtual BitstreamQueueSnapshotForTest bitstreamQueueSnapshotForTest() const = 0;
+  // Phase 4 O4b: replaces the GPU video encoder factory (production: the shared
+  // platform pool) so a test can observe what the sender hands the encoder.
+  // Call before the first sync().
+  virtual void setGpuVideoEncoderFactoryForTest(std::function<std::unique_ptr<GpuVideoEncoder>()> factory) = 0;
 };
 
 // The concrete RTMP sender plus its test access. `queue` points into `sender` and is valid for

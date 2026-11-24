@@ -217,6 +217,16 @@ struct VideoToolboxGpuVideoEncoder::Impl : std::enable_shared_from_this<VideoToo
       return;
     }
     IOSurfaceIncrementUseCount(surface);
+    // Re-check under our use count (Task 3 review): a slot the compositor began
+    // rewriting between the check above and the increment no longer carries this
+    // frame. Once the count is held the compositor will not choose the slot.
+    if (published && published->load(std::memory_order_acquire) != frameNumber) {
+      IOSurfaceDecrementUseCount(surface);
+      CFRelease(surface);
+      skipped.fetch_add(1);
+      inFlight.fetch_sub(1);
+      return;
+    }
     CVPixelBufferRef pixels = nullptr;
     const CVReturn cv = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixels);
     if (cv != kCVReturnSuccess || pixels == nullptr) {
