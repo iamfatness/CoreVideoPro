@@ -83,6 +83,6 @@ extension AppModel {
         let caption = role == "pgm" ? "PROGRAM" : role == "pvw" ? "PREVIEW" : label
         let separator = " \u{00B7} "
         guard role == "pgm" || role == "pvw", let range = label.range(of: separator) else { return caption }
-        return caption + separator + label[range.upperBound...]
+        return caption + separator + String(label[range.upperBound...])
     }
 }
