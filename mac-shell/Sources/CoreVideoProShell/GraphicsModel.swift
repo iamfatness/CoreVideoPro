@@ -86,6 +86,11 @@ final class GraphicsModel: ObservableObject {
         playout.rows = { [weak self] in self?.document.playlist ?? [] }
         playout.pins = { [weak self] in self?.document.templates ?? [] }
         playout.references = { [weak self] in self?.document.referencedTemplates ?? [] }
+        playout.document = { [weak self] in self?.document ?? GraphicsDocument() }
+        playout.saveDocument = { [weak self] next in
+            guard let self else { return "The graphics show is unavailable." }
+            return await self.applyAndSave(next)   // nil = saved (not "?? fallback": nil is success here)
+        }
     }
 
     var available: Bool { gateway.available }

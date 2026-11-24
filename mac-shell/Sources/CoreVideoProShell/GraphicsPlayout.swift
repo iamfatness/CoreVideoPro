@@ -60,6 +60,9 @@ final class GraphicsPlayout {
     /// The playlist rows and template pins of the loaded show document.
     var rows: () -> [GraphicsRow] = { [] }
     var pins: () -> [GraphicsTemplatePin] = { [] }
+    /// The show document, and its write (GraphicsModel.applyAndSave; returns the failure message or nil).
+    var document: () -> GraphicsDocument = { GraphicsDocument() }
+    var saveDocument: (GraphicsDocument) async -> String? = { _ in "The graphics show is unavailable." }
     /// Every template version the show document references (eviction keeps them; GraphicsModel supplies it).
     var references: () -> [GraphicsTemplateReference] = { [] }
     /// Clock for the cue and install budgets (tests advance it from `sleep`).
@@ -222,7 +225,7 @@ final class GraphicsPlayout {
 
     func ensureCore(_ entry: GraphicsPlaylistEntry) async throws -> GraphicsOperationResult {
         guard let row = row(entry.rowId) else { return refuse("That playlist row no longer exists.") }
-        if row.needsDataPlayback { return refuse(Self.unsupportedDataText(row.name)) }
+        if row.needsFeedPlayback { return refuse(Self.unsupportedDataText(row.name)) }
         var state = try available()
         let epoch = state.coreEpoch
         self.epoch = epoch
