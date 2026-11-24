@@ -299,6 +299,9 @@ extension ShellTests {
         log("follow-speaker BEFORE (no sourceParticipantIds): \(before)")
         log("follow-speaker AFTER  (sourceParticipantIds \(sources.sorted())): \(after)")
         expect(!sources.isEmpty, "\(w): the spine names its sources")
+        expect(!after.isEmpty, "\(w): the director still directs someone (no speaker-following deadlock)")
+        expect(!Set(before).isSubset(of: sources),
+               "\(w): before the change the director followed a non-source (the evidence shows a difference)")
         expect(Set(after).isSubset(of: sources), "\(w): the director picks only among sources (\(after) ⊆ \(sources.sorted()))")
     }
 }

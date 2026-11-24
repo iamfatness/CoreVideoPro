@@ -302,3 +302,20 @@ Both run in `ShellTestsTilesLive.swift` against the real Metal core with the fak
 | names match case-sensitively | red: 3 failures (`never-show-by-name`, the routed omitted name) |
 | a duplicate name counts as a match | red: 4 failures (the ambiguous-name case, `DuplicateDisplayNames…`, Review Focus 5) |
 | local ids resolve against the roster | **equivalent**. Without the early return, a `capture:`/`media:` id falls through every Zoom-prefix branch to `return persisted`, so the result is identical. The early return is kept as documentation and parity |
+
+### S2 slice review (independent, `4d2107c0..e8a025da`)
+
+No HIGH. The reviewer confirmed tier-for-tier parity of the source set, the payload additions, the latch port, and that the latch is observed exactly once per build with the full roster and kept across a respawn. Findings:
+
+- **MEDIUM (fixed): arming ISO never re-pushed the spine.** The footer's "Program + ISOs" picker and the Routing matrix ISO cells changed the source set without a push. `isoRecordingEnabled` now has a `didSet` that calls `syncSpine()`, and `toggleIsoCell` pushes too. Test: `testArmingIsoRepushesTheSpine`. Mutation: drop the `didSet` push and it goes red.
+- **MEDIUM (fixed): the follow-speaker evidence could pass with nobody directed.** It now also asserts that AFTER is not empty (no speaker-following deadlock) and that BEFORE is not a subset of the sources, so the evidence must show a difference. Re-run live: 20/20.
+- **MEDIUM (recorded): the churn test's speaker half is close to vacuous on Mac.** A speaker change triggers no spine push here, by design: talking changes nothing. The Take half is judged by the core's own `subscriptionChurnDelta`.
+- **MEDIUM (fixed in part): the fixtures cannot see the production wiring.** Added `testAnOverBudgetMacMultiviewTileCarriesTheLabel`: the Mac's `participant-video` kind gets the unsubscribed label and the shortfall. Mutation: label only `zoom`-kind tiles and it goes red. ISO wiring is now covered (above), and Take wiring by the live test. A Zoom wall *background* rides `style.backgroundSourceId` on the Mac wire. Windows' record has it top-level, and `resolve` reads both; the hand-built both-buses fact covers the `style` path.
+- **LOW (fixed):** `endMeetingAudioSession()` clears the latch, so it never outlives a meeting even without a spine build.
+- **LOW (fixed):** `tilesMeetingStateObserved` is set only when the snapshot's roster and `meetingState` are adopted, never from a rejected stale snapshot.
+- **LOW (recorded, not changed):**
+  - Engine off still lets spine builds run; the clear still forgets camera-off members, which matches the observable behaviour.
+  - A roster change with a wall on a bus can push the spine twice with identical content.
+  - The Mac spine sends no "Media core is not running"/OAuth warnings, no `directorExcludedParticipantIds` and no breakout filter. That is the Mac shell's existing payload and out of Tiles scope; candidate follow-up.
+- **CI fix:** `busCaption` concatenated `String + Substring`, which Xcode 27.2 accepts and CI's older Swift rejects (`mac-shell-tests` failed to compile). Now `String(label[…])`. I found no other instance of the pattern on the branch.
+- Full suite: **8177 checks, 2 failed**, the known `.m4a` pair. `tiles/` filter: 318/318. `tiles-live/`: 20/20.

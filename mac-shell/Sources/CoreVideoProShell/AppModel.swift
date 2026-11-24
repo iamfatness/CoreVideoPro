@@ -600,7 +600,10 @@ final class AppModel: ObservableObject {
     // Which source the AUTOMATIC lower third currently names; "" = automation
     // does not own key:lower-third (the manual lower third may).
     @Published var autoLowerThirdSourceId = ""
-    @Published var isoRecordingEnabled = false
+    @Published var isoRecordingEnabled = false {
+        // ISO-armed guests are sources: arming or disarming changes the spine.
+        didSet { if oldValue != isoRecordingEnabled { syncSpine() } }
+    }
     /// THE ISO selection (Windows ShowInputsCoordinator.IsoSelectedSourceIds):
     /// scheme-qualified source ids. The Sources-tab ISO toggles, the Routing
     /// matrix and the footer all write THIS; the slot `iso` flags and the
@@ -2140,8 +2143,10 @@ final class AppModel: ObservableObject {
         }
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
-        if let state = snapshot["meetingState"] as? String, !state.isEmpty { tilesMeetingStateObserved = true }
         if acceptRoster {
+            // Observed only with the meetingState it vouches for (S2 review: a
+            // rejected stale snapshot must not mark a state we did not adopt).
+            if let state = snapshot["meetingState"] as? String, !state.isEmpty { tilesMeetingStateObserved = true }
             let previous = meetingState
             meetingState = snapshot["meetingState"] as? String ?? meetingState
             if meetingState == "idle", previous != "idle" { pruneStaleZoomIsoIntent() }
@@ -4379,6 +4384,7 @@ final class AppModel: ObservableObject {
         // and normalises the columns (the same path every other writer takes).
         isoSelectedSourceIds = selection
         isoRecordingEnabled = !visibleIsoSelection.isEmpty
+        syncSpine()   // a newly armed ISO guest is a source (S2 review)
     }
 
     /// The selected sources the operator can SEE (an assigned slot, so a
@@ -5768,6 +5774,7 @@ final class AppModel: ObservableObject {
     /// meeting's sources from the console now rather than at the next spine push.
     /// Non-Zoom sources (zoom-mix, capture mics, media) keep their settings.
     func endMeetingAudioSession() {
+        tilesAudioLatch.clear()   // Zoom reuses per-meeting ids: a latch must not outlive the meeting
         let isZoom = AudioConsolePolicy.isZoomParticipantChannel
         let hasState = !zoomAudioSourceIds.isEmpty || meetingAudioSubscribed
             || rememberedStripSettings.keys.contains(where: isZoom)

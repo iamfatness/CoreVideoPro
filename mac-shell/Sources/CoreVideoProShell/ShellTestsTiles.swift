@@ -43,6 +43,8 @@ extension ShellTests {
             ("tiles/capture-off-forgets-latch", testCaptureOffForgetsTheLatch),
             ("tiles/respawn-resends-walls-spine-latch", testACoreRespawnResendsBothWallsAndTheSpineAndKeepsTheLatch),
             ("tiles/bus-caption", testBusCaptionCarriesTheCoresNotice),
+            ("tiles/iso-arming-repushes-spine", testArmingIsoRepushesTheSpine),
+            ("tiles/mac-multiview-kind-label", testAnOverBudgetMacMultiviewTileCarriesTheLabel),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1173,5 +1175,31 @@ extension ShellTests {
         s.membershipMode = "eligible"; s.excludedSourceIds = ["zoom-name:Sam"]
         expectEqual(TilesMembershipPolicy.resolve(s, eligible: ["zoom:900", "zoom:31", "zoom:32"], routed: nil, roster: rejoined, meetingId: "m1"),
                     ["zoom:900", "zoom:31", "zoom:32"], "\(w): an ambiguous never-show name excludes nobody (it resolves to no one)")
+    }
+
+    @MainActor static func testArmingIsoRepushesTheSpine() {
+        let w = "S2 review: ISO arming re-pushes the spine"
+        let core = FakeTakeCore()
+        let (model, timers, spines) = spineModel(core)
+        model.roster = [guest("1"), guest("9")]
+        for i in model.slots.indices { model.slots[i].inShow = false; model.slots[i].iso = false }
+        if let i = model.slots.firstIndex(where: { $0.id == 3 }) {
+            model.slots[i].kind = "zoom"; model.slots[i].sourceId = "9"; model.slots[i].iso = true
+        }
+        let before = spines().count
+        model.isoRecordingEnabled = true
+        let payload = lastSpine(timers, spines, after: before)
+        expect(subs(payload, "participant-video").contains { $0["participantId"] as? String == "9" && $0["purpose"] as? String == "iso" },
+               "\(w): the ISO-armed guest is subscribed at purpose iso")
+    }
+
+    static func testAnOverBudgetMacMultiviewTileCarriesTheLabel() {
+        let w = "S2 review: the Mac multiview kind gets the unsubscribed label"
+        var input = ZoomSourceBudget.Input()
+        input.participants = (0..<11).map { ("g\($0)", true) }
+        input.multiview = (0..<11).map { ["kind": "participant-video", "participantId": "g\($0)", "slot": $0, "label": "Guest \($0)"] }
+        let parts = ZoomSourceBudget.spineParts(input, names: [:])
+        expectEqual(parts.multiviewSources.last?["label"] as? String, "Guest 10 · no video: subscription limit (10)", "\(w): label")
+        expectEqual(parts.shortfall.first?["participantId"] as? String, "g10", "\(w): shortfall")
     }
 }
