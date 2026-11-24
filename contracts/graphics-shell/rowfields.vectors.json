@@ -1,0 +1,1809 @@
+{
+  "area": "rowfields",
+  "description": "Operate inspector fields: GraphicsRowFields.TemplateFieldsOf / Typeable (title key per GraphicsPlayoutControl.TitleFieldKey; a Guest row passes none), GraphicsMappedValues.Eligible.",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "windows-show-guest",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": [
+          {
+            "templateId": "centered-title",
+            "templateVersion": 1,
+            "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "definition": {
+              "templateId": "centered-title",
+              "templateVersion": 1,
+              "runtime": "declarative"
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": "title",
+        "templateFields": [],
+        "typeable": [],
+        "eligible": []
+      }
+    },
+    {
+      "id": "windows-show-title",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "title",
+          "kind": "title",
+          "name": "Show title",
+          "hotkey": "F2",
+          "playOutAfterMs": 0,
+          "templateId": "centered-title",
+          "templateVersion": 1,
+          "fields": {
+            "heading": "In conversation",
+            "subtitle": "Stories worth sharing",
+            "text-size": 64
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": [
+          {
+            "templateId": "centered-title",
+            "templateVersion": 1,
+            "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "definition": {
+              "templateId": "centered-title",
+              "templateVersion": 1,
+              "runtime": "declarative"
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": "subtitle",
+        "templateFields": [
+          "heading",
+          "subtitle",
+          "text-size"
+        ],
+        "typeable": [
+          {
+            "id": "heading",
+            "label": "Heading",
+            "maxLength": 256
+          }
+        ],
+        "eligible": [
+          "heading",
+          "subtitle",
+          "text-size"
+        ]
+      }
+    },
+    {
+      "id": "windows-show-logo",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "logo",
+          "kind": "logo",
+          "name": "Logo",
+          "hotkey": "F3",
+          "playOutAfterMs": 0,
+          "templateId": "corner-logo",
+          "templateVersion": 1,
+          "fields": {
+            "logo": "logo",
+            "show-logo": true
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": [
+          {
+            "templateId": "centered-title",
+            "templateVersion": 1,
+            "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "definition": {
+              "templateId": "centered-title",
+              "templateVersion": 1,
+              "runtime": "declarative"
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": null,
+        "templateFields": [
+          "logo",
+          "show-logo"
+        ],
+        "typeable": [],
+        "eligible": [
+          "show-logo"
+        ]
+      }
+    },
+    {
+      "id": "windows-show-live-bug",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "live-bug",
+          "kind": "liveBug",
+          "name": "LIVE bug",
+          "hotkey": "F4",
+          "playOutAfterMs": 0,
+          "templateId": "clock-panel",
+          "templateVersion": 1,
+          "fields": {
+            "label": "LIVE",
+            "time": "12:34:56",
+            "text-size": 56
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": true,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": [
+          {
+            "templateId": "centered-title",
+            "templateVersion": 1,
+            "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "definition": {
+              "templateId": "centered-title",
+              "templateVersion": 1,
+              "runtime": "declarative"
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": "label",
+        "templateFields": [
+          "label",
+          "time",
+          "text-size"
+        ],
+        "typeable": [],
+        "eligible": [
+          "text-size"
+        ]
+      }
+    },
+    {
+      "id": "windows-show-sponsor",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "sponsor",
+          "kind": "sponsor",
+          "name": "Sponsor card",
+          "hotkey": "F5",
+          "playOutAfterMs": 15000,
+          "templateId": "",
+          "templateVersion": 0,
+          "fields": {},
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": [
+          {
+            "templateId": "centered-title",
+            "templateVersion": 1,
+            "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "definition": {
+              "templateId": "centered-title",
+              "templateVersion": 1,
+              "runtime": "declarative"
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": null,
+        "templateFields": [],
+        "typeable": [],
+        "eligible": []
+      }
+    },
+    {
+      "id": "windows-names-clock-panel-names",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "panel-names",
+          "kind": "title",
+          "name": "Panel names",
+          "hotkey": "F6",
+          "playOutAfterMs": 0,
+          "templateId": "logo-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Row default",
+            "title": "",
+            "text-size": 42
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [
+            {
+              "id": "v-ada",
+              "name": "Ada Lovelace",
+              "title": "Mathematician",
+              "cells": {
+                "text-size": "72"
+              }
+            },
+            {
+              "id": "v-bo",
+              "name": "Bo Diddley",
+              "title": "",
+              "cells": {
+                "text-size": "500"
+              }
+            },
+            {
+              "id": "v-cy",
+              "name": "Cy Twombly",
+              "title": "Painter",
+              "cells": {
+                "text-size": "big",
+                "show-logo": "false"
+              }
+            }
+          ],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": []
+      },
+      "expected": {
+        "titleFieldKey": "title",
+        "templateFields": [
+          "name",
+          "title",
+          "text-size",
+          "logo",
+          "show-logo"
+        ],
+        "typeable": [],
+        "eligible": [
+          "text-size",
+          "show-logo"
+        ]
+      }
+    },
+    {
+      "id": "windows-names-clock-countdown",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "countdown",
+          "kind": "liveBug",
+          "name": "Countdown",
+          "hotkey": "F7",
+          "playOutAfterMs": 0,
+          "templateId": "clock-panel",
+          "templateVersion": 1,
+          "fields": {},
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": true,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": {
+            "mode": "countdown",
+            "zone": "utc",
+            "format": "hm",
+            "finish": "hide",
+            "offsetMinutes": 0,
+            "durationSeconds": 600,
+            "restoreRemainingSeconds": null
+          }
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": []
+      },
+      "expected": {
+        "titleFieldKey": null,
+        "templateFields": [
+          "label",
+          "time",
+          "text-size"
+        ],
+        "typeable": [],
+        "eligible": [
+          "text-size"
+        ]
+      }
+    },
+    {
+      "id": "data-table-pin",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "scores",
+          "kind": "title",
+          "name": "Scores",
+          "hotkey": "",
+          "playOutAfterMs": 0,
+          "templateId": "design-scores-a1b2c3",
+          "templateVersion": 1,
+          "fields": {
+            "table-row-1": "[\"Ada\",\"3\"]",
+            "table-row-2": "[\"Bo\",\"5\"]",
+            "table-row-3": "[\"Cy\",\"4\"]"
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": {
+            "sourceId": "scores",
+            "keyColumn": "team",
+            "columns": [
+              "team",
+              "points"
+            ],
+            "sortColumn": null,
+            "limit": 3,
+            "revision": 1,
+            "crawl": null,
+            "liveFollow": false,
+            "remote": false
+          },
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": null,
+        "pins": [
+          {
+            "templateId": "design-scores-a1b2c3",
+            "templateVersion": 1,
+            "manifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "definition": {
+              "schemaVersion": 1,
+              "templateId": "design-scores-a1b2c3",
+              "templateVersion": 1,
+              "name": "Scores",
+              "family": "title",
+              "canvas": {
+                "width": 1920,
+                "height": 1080
+              },
+              "bounds": {
+                "width": 1440,
+                "height": 224
+              },
+              "brandTokens": [
+                "brand.primary",
+                "brand.onPrimary",
+                "brand.accent",
+                "brand.fontBody"
+              ],
+              "fields": [
+                {
+                  "id": "table-row-1",
+                  "type": "string",
+                  "maxLength": 4096,
+                  "default": "[\"Ada\",\"3\"]"
+                },
+                {
+                  "id": "table-row-2",
+                  "type": "string",
+                  "maxLength": 4096,
+                  "default": "[\"Bo\",\"5\"]"
+                },
+                {
+                  "id": "table-row-3",
+                  "type": "string",
+                  "maxLength": 4096,
+                  "default": "[\"Cy\",\"4\"]"
+                }
+              ],
+              "layers": [
+                {
+                  "id": "data-table",
+                  "type": "table",
+                  "x": 0,
+                  "y": 0,
+                  "width": 1440,
+                  "height": 224,
+                  "rowHeight": 56,
+                  "fontSize": 29,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "headerFill": {
+                    "token": "brand.primary"
+                  },
+                  "rowFill": "#18232D",
+                  "alternateFill": "#243440",
+                  "columns": [
+                    {
+                      "heading": "team",
+                      "weight": 1,
+                      "align": "left"
+                    },
+                    {
+                      "heading": "points",
+                      "weight": 1,
+                      "align": "left"
+                    }
+                  ],
+                  "rows": [
+                    {
+                      "field": "table-row-1"
+                    },
+                    {
+                      "field": "table-row-2"
+                    },
+                    {
+                      "field": "table-row-3"
+                    }
+                  ],
+                  "metadata": {
+                    "label": "Data table"
+                  }
+                }
+              ],
+              "animations": {
+                "in": {
+                  "type": "fade",
+                  "durationMs": 250,
+                  "easing": "ease-out"
+                },
+                "out": {
+                  "type": "fade",
+                  "durationMs": 200,
+                  "easing": "ease-in"
+                }
+              },
+              "defaultPlacement": {
+                "anchor": "center",
+                "x": 0,
+                "y": 0,
+                "scale": 1
+              },
+              "metadata": {
+                "dataBinding": {
+                  "sourceId": "scores",
+                  "keyColumn": "team",
+                  "columns": [
+                    "team",
+                    "points"
+                  ],
+                  "sortColumn": null,
+                  "limit": 3,
+                  "revision": 1,
+                  "crawl": null,
+                  "liveFollow": false,
+                  "remote": false
+                }
+              }
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": null,
+        "templateFields": [
+          "table-row-1",
+          "table-row-2",
+          "table-row-3"
+        ],
+        "typeable": [],
+        "eligible": [
+          "table-row-1",
+          "table-row-2",
+          "table-row-3"
+        ]
+      }
+    },
+    {
+      "id": "data-table-without-binding-offers-row-fields",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "scores",
+          "kind": "title",
+          "name": "Scores",
+          "hotkey": "",
+          "playOutAfterMs": 0,
+          "templateId": "design-scores-a1b2c3",
+          "templateVersion": 1,
+          "fields": {
+            "table-row-1": "[\"Ada\",\"3\"]",
+            "table-row-2": "[\"Bo\",\"5\"]",
+            "table-row-3": "[\"Cy\",\"4\"]"
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": null,
+        "pins": [
+          {
+            "templateId": "design-scores-a1b2c3",
+            "templateVersion": 1,
+            "manifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "definition": {
+              "schemaVersion": 1,
+              "templateId": "design-scores-a1b2c3",
+              "templateVersion": 1,
+              "name": "Scores",
+              "family": "title",
+              "canvas": {
+                "width": 1920,
+                "height": 1080
+              },
+              "bounds": {
+                "width": 1440,
+                "height": 224
+              },
+              "brandTokens": [
+                "brand.primary",
+                "brand.onPrimary",
+                "brand.accent",
+                "brand.fontBody"
+              ],
+              "fields": [
+                {
+                  "id": "table-row-1",
+                  "type": "string",
+                  "maxLength": 4096,
+                  "default": "[\"Ada\",\"3\"]"
+                },
+                {
+                  "id": "table-row-2",
+                  "type": "string",
+                  "maxLength": 4096,
+                  "default": "[\"Bo\",\"5\"]"
+                },
+                {
+                  "id": "table-row-3",
+                  "type": "string",
+                  "maxLength": 4096,
+                  "default": "[\"Cy\",\"4\"]"
+                }
+              ],
+              "layers": [
+                {
+                  "id": "data-table",
+                  "type": "table",
+                  "x": 0,
+                  "y": 0,
+                  "width": 1440,
+                  "height": 224,
+                  "rowHeight": 56,
+                  "fontSize": 29,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "headerFill": {
+                    "token": "brand.primary"
+                  },
+                  "rowFill": "#18232D",
+                  "alternateFill": "#243440",
+                  "columns": [
+                    {
+                      "heading": "team",
+                      "weight": 1,
+                      "align": "left"
+                    },
+                    {
+                      "heading": "points",
+                      "weight": 1,
+                      "align": "left"
+                    }
+                  ],
+                  "rows": [
+                    {
+                      "field": "table-row-1"
+                    },
+                    {
+                      "field": "table-row-2"
+                    },
+                    {
+                      "field": "table-row-3"
+                    }
+                  ],
+                  "metadata": {
+                    "label": "Data table"
+                  }
+                }
+              ],
+              "animations": {
+                "in": {
+                  "type": "fade",
+                  "durationMs": 250,
+                  "easing": "ease-out"
+                },
+                "out": {
+                  "type": "fade",
+                  "durationMs": 200,
+                  "easing": "ease-in"
+                }
+              },
+              "defaultPlacement": {
+                "anchor": "center",
+                "x": 0,
+                "y": 0,
+                "scale": 1
+              },
+              "metadata": {
+                "dataBinding": {
+                  "sourceId": "scores",
+                  "keyColumn": "team",
+                  "columns": [
+                    "team",
+                    "points"
+                  ],
+                  "sortColumn": null,
+                  "limit": 3,
+                  "revision": 1,
+                  "crawl": null,
+                  "liveFollow": false,
+                  "remote": false
+                }
+              }
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": null,
+        "templateFields": [
+          "table-row-1",
+          "table-row-2",
+          "table-row-3"
+        ],
+        "typeable": [
+          {
+            "id": "table-row-1",
+            "label": "Table row 1",
+            "maxLength": 4096
+          },
+          {
+            "id": "table-row-2",
+            "label": "Table row 2",
+            "maxLength": 4096
+          },
+          {
+            "id": "table-row-3",
+            "label": "Table row 3",
+            "maxLength": 4096
+          }
+        ],
+        "eligible": [
+          "table-row-1",
+          "table-row-2",
+          "table-row-3"
+        ]
+      }
+    },
+    {
+      "id": "guest-design-pin",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "guest-design",
+          "kind": "guest",
+          "name": "Guest design",
+          "hotkey": "",
+          "playOutAfterMs": 0,
+          "templateId": "design-guest-d4e5f6",
+          "templateVersion": 1,
+          "fields": {},
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": null,
+        "pins": [
+          {
+            "templateId": "design-guest-d4e5f6",
+            "templateVersion": 1,
+            "manifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "definition": {
+              "schemaVersion": 1,
+              "templateId": "design-guest-d4e5f6",
+              "templateVersion": 1,
+              "name": "Guest design",
+              "family": "title",
+              "canvas": {
+                "width": 1920,
+                "height": 1080
+              },
+              "bounds": {
+                "width": 1440,
+                "height": 288
+              },
+              "brandTokens": [
+                "brand.primary",
+                "brand.onPrimary",
+                "brand.accent",
+                "brand.fontBody"
+              ],
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 128
+                },
+                {
+                  "id": "title",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "location",
+                  "type": "string",
+                  "maxLength": 64,
+                  "metadata": {
+                    "label": "City and venue"
+                  }
+                },
+                {
+                  "id": "pronoun_line",
+                  "type": "string"
+                },
+                {
+                  "id": "mood",
+                  "type": "string",
+                  "choices": [
+                    "calm",
+                    "loud"
+                  ]
+                },
+                {
+                  "id": "seat-count",
+                  "type": "number"
+                },
+                {
+                  "id": "accent",
+                  "type": "color"
+                },
+                {
+                  "id": "time",
+                  "type": "string"
+                }
+              ],
+              "layers": [
+                {
+                  "id": "plate",
+                  "metadata": {
+                    "label": "Plate"
+                  },
+                  "type": "rect",
+                  "x": 0,
+                  "y": 0,
+                  "width": 1440,
+                  "height": 288,
+                  "fill": {
+                    "token": "brand.primary"
+                  }
+                },
+                {
+                  "id": "heading-label",
+                  "metadata": {
+                    "label": "Heading"
+                  },
+                  "type": "text",
+                  "text": {
+                    "field": "heading"
+                  },
+                  "x": 48,
+                  "y": 52,
+                  "width": 1344,
+                  "height": 100,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "fontWeight": 600,
+                  "fontSize": 64,
+                  "lineHeight": 1.2,
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "align": "center",
+                  "maxLines": 1,
+                  "overflow": "ellipsis"
+                },
+                {
+                  "id": "subheading-label",
+                  "metadata": {
+                    "label": "Subheading"
+                  },
+                  "type": "text",
+                  "text": {
+                    "field": "subheading"
+                  },
+                  "x": 48,
+                  "y": 174,
+                  "width": 1344,
+                  "height": 58,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "fontWeight": 600,
+                  "fontSize": 32,
+                  "lineHeight": 1.2,
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "align": "center",
+                  "maxLines": 1,
+                  "overflow": "ellipsis",
+                  "collapseWhenEmpty": true
+                }
+              ],
+              "animations": {
+                "in": {
+                  "type": "fade",
+                  "durationMs": 250,
+                  "easing": "ease-out"
+                },
+                "out": {
+                  "type": "fade",
+                  "durationMs": 200,
+                  "easing": "ease-in"
+                }
+              },
+              "defaultPlacement": {
+                "anchor": "center",
+                "x": 0,
+                "y": 0,
+                "scale": 1
+              }
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": "title",
+        "templateFields": [
+          "name",
+          "title",
+          "location",
+          "pronoun_line",
+          "mood",
+          "seat-count",
+          "accent",
+          "time"
+        ],
+        "typeable": [
+          {
+            "id": "location",
+            "label": "City and venue",
+            "maxLength": 64
+          },
+          {
+            "id": "pronoun_line",
+            "label": "Pronoun line",
+            "maxLength": null
+          }
+        ],
+        "eligible": [
+          "location",
+          "pronoun_line",
+          "mood",
+          "seat-count",
+          "accent"
+        ]
+      }
+    },
+    {
+      "id": "guest-design-pin-version-mismatch",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "guest-design",
+          "kind": "guest",
+          "name": "Guest design",
+          "hotkey": "",
+          "playOutAfterMs": 0,
+          "templateId": "design-guest-d4e5f6",
+          "templateVersion": 2,
+          "fields": {},
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": true,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": null,
+        "pins": [
+          {
+            "templateId": "design-guest-d4e5f6",
+            "templateVersion": 1,
+            "manifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "definition": {
+              "schemaVersion": 1,
+              "templateId": "design-guest-d4e5f6",
+              "templateVersion": 1,
+              "name": "Guest design",
+              "family": "title",
+              "canvas": {
+                "width": 1920,
+                "height": 1080
+              },
+              "bounds": {
+                "width": 1440,
+                "height": 288
+              },
+              "brandTokens": [
+                "brand.primary",
+                "brand.onPrimary",
+                "brand.accent",
+                "brand.fontBody"
+              ],
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 128
+                },
+                {
+                  "id": "title",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "location",
+                  "type": "string",
+                  "maxLength": 64,
+                  "metadata": {
+                    "label": "City and venue"
+                  }
+                },
+                {
+                  "id": "pronoun_line",
+                  "type": "string"
+                },
+                {
+                  "id": "mood",
+                  "type": "string",
+                  "choices": [
+                    "calm",
+                    "loud"
+                  ]
+                },
+                {
+                  "id": "seat-count",
+                  "type": "number"
+                },
+                {
+                  "id": "accent",
+                  "type": "color"
+                },
+                {
+                  "id": "time",
+                  "type": "string"
+                }
+              ],
+              "layers": [
+                {
+                  "id": "plate",
+                  "metadata": {
+                    "label": "Plate"
+                  },
+                  "type": "rect",
+                  "x": 0,
+                  "y": 0,
+                  "width": 1440,
+                  "height": 288,
+                  "fill": {
+                    "token": "brand.primary"
+                  }
+                },
+                {
+                  "id": "heading-label",
+                  "metadata": {
+                    "label": "Heading"
+                  },
+                  "type": "text",
+                  "text": {
+                    "field": "heading"
+                  },
+                  "x": 48,
+                  "y": 52,
+                  "width": 1344,
+                  "height": 100,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "fontWeight": 600,
+                  "fontSize": 64,
+                  "lineHeight": 1.2,
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "align": "center",
+                  "maxLines": 1,
+                  "overflow": "ellipsis"
+                },
+                {
+                  "id": "subheading-label",
+                  "metadata": {
+                    "label": "Subheading"
+                  },
+                  "type": "text",
+                  "text": {
+                    "field": "subheading"
+                  },
+                  "x": 48,
+                  "y": 174,
+                  "width": 1344,
+                  "height": 58,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "fontWeight": 600,
+                  "fontSize": 32,
+                  "lineHeight": 1.2,
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "align": "center",
+                  "maxLines": 1,
+                  "overflow": "ellipsis",
+                  "collapseWhenEmpty": true
+                }
+              ],
+              "animations": {
+                "in": {
+                  "type": "fade",
+                  "durationMs": 250,
+                  "easing": "ease-out"
+                },
+                "out": {
+                  "type": "fade",
+                  "durationMs": 200,
+                  "easing": "ease-in"
+                }
+              },
+              "defaultPlacement": {
+                "anchor": "center",
+                "x": 0,
+                "y": 0,
+                "scale": 1
+              }
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": "title",
+        "templateFields": [],
+        "typeable": [],
+        "eligible": []
+      }
+    },
+    {
+      "id": "image-pin-wins-over-template",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "card",
+          "kind": "sponsor",
+          "name": "Card",
+          "hotkey": "",
+          "playOutAfterMs": 0,
+          "templateId": "",
+          "templateVersion": 0,
+          "fields": {},
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": {
+            "templateId": "design-guest-d4e5f6",
+            "templateVersion": 1,
+            "assetId": "asset-1"
+          },
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": null,
+        "pins": [
+          {
+            "templateId": "design-guest-d4e5f6",
+            "templateVersion": 1,
+            "manifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "definition": {
+              "schemaVersion": 1,
+              "templateId": "design-guest-d4e5f6",
+              "templateVersion": 1,
+              "name": "Guest design",
+              "family": "title",
+              "canvas": {
+                "width": 1920,
+                "height": 1080
+              },
+              "bounds": {
+                "width": 1440,
+                "height": 288
+              },
+              "brandTokens": [
+                "brand.primary",
+                "brand.onPrimary",
+                "brand.accent",
+                "brand.fontBody"
+              ],
+              "fields": [
+                {
+                  "id": "name",
+                  "type": "string",
+                  "maxLength": 128
+                },
+                {
+                  "id": "title",
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "id": "location",
+                  "type": "string",
+                  "maxLength": 64,
+                  "metadata": {
+                    "label": "City and venue"
+                  }
+                },
+                {
+                  "id": "pronoun_line",
+                  "type": "string"
+                },
+                {
+                  "id": "mood",
+                  "type": "string",
+                  "choices": [
+                    "calm",
+                    "loud"
+                  ]
+                },
+                {
+                  "id": "seat-count",
+                  "type": "number"
+                },
+                {
+                  "id": "accent",
+                  "type": "color"
+                },
+                {
+                  "id": "time",
+                  "type": "string"
+                }
+              ],
+              "layers": [
+                {
+                  "id": "plate",
+                  "metadata": {
+                    "label": "Plate"
+                  },
+                  "type": "rect",
+                  "x": 0,
+                  "y": 0,
+                  "width": 1440,
+                  "height": 288,
+                  "fill": {
+                    "token": "brand.primary"
+                  }
+                },
+                {
+                  "id": "heading-label",
+                  "metadata": {
+                    "label": "Heading"
+                  },
+                  "type": "text",
+                  "text": {
+                    "field": "heading"
+                  },
+                  "x": 48,
+                  "y": 52,
+                  "width": 1344,
+                  "height": 100,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "fontWeight": 600,
+                  "fontSize": 64,
+                  "lineHeight": 1.2,
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "align": "center",
+                  "maxLines": 1,
+                  "overflow": "ellipsis"
+                },
+                {
+                  "id": "subheading-label",
+                  "metadata": {
+                    "label": "Subheading"
+                  },
+                  "type": "text",
+                  "text": {
+                    "field": "subheading"
+                  },
+                  "x": 48,
+                  "y": 174,
+                  "width": 1344,
+                  "height": 58,
+                  "font": {
+                    "token": "brand.fontBody"
+                  },
+                  "fontWeight": 600,
+                  "fontSize": 32,
+                  "lineHeight": 1.2,
+                  "color": {
+                    "token": "brand.onPrimary"
+                  },
+                  "align": "center",
+                  "maxLines": 1,
+                  "overflow": "ellipsis",
+                  "collapseWhenEmpty": true
+                }
+              ],
+              "animations": {
+                "in": {
+                  "type": "fade",
+                  "durationMs": 250,
+                  "easing": "ease-out"
+                },
+                "out": {
+                  "type": "fade",
+                  "durationMs": 200,
+                  "easing": "ease-in"
+                }
+              },
+              "defaultPlacement": {
+                "anchor": "center",
+                "x": 0,
+                "y": 0,
+                "scale": 1
+              }
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": null,
+        "templateFields": [
+          "name",
+          "title",
+          "location",
+          "pronoun_line",
+          "mood",
+          "seat-count",
+          "accent",
+          "time"
+        ],
+        "typeable": [
+          {
+            "id": "location",
+            "label": "City and venue",
+            "maxLength": 64
+          },
+          {
+            "id": "pronoun_line",
+            "label": "Pronoun line",
+            "maxLength": null
+          }
+        ],
+        "eligible": [
+          "location",
+          "pronoun_line",
+          "mood",
+          "seat-count",
+          "accent"
+        ]
+      }
+    },
+    {
+      "id": "title-row-label-key",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "countdown",
+          "kind": "title",
+          "name": "Countdown",
+          "hotkey": "F7",
+          "playOutAfterMs": 0,
+          "templateId": "clock-panel",
+          "templateVersion": 1,
+          "fields": {
+            "label": "LIVE",
+            "text-size": 40
+          },
+          "style": {
+            "version": 1,
+            "preset": "compact-solid",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 42,
+            "titleSize": 28,
+            "nameColor": "#F4F7FA",
+            "titleColor": "#44C1A1",
+            "backgroundColor": "#0C1118",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0.9,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 8,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": true,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": {
+            "mode": "countdown",
+            "zone": "utc",
+            "format": "hm",
+            "finish": "hide",
+            "offsetMinutes": 0,
+            "durationSeconds": 600,
+            "restoreRemainingSeconds": null
+          }
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": []
+      },
+      "expected": {
+        "titleFieldKey": "label",
+        "templateFields": [
+          "label",
+          "time",
+          "text-size"
+        ],
+        "typeable": [],
+        "eligible": [
+          "text-size"
+        ]
+      }
+    },
+    {
+      "id": "compatibility-template-has-none",
+      "operation": "rowFields",
+      "input": {
+        "row": {
+          "id": "guest",
+          "kind": "guest",
+          "name": "Guest name",
+          "hotkey": "F1",
+          "playOutAfterMs": 8000,
+          "templateId": "minimal-accent",
+          "templateVersion": 1,
+          "fields": {
+            "name": "Alex Rivera",
+            "title": "Host · Interview"
+          },
+          "style": {
+            "version": 1,
+            "preset": "minimal-accent",
+            "anchor": "lower-left",
+            "fontFamily": "Segoe UI",
+            "nameSize": 40,
+            "titleSize": 26,
+            "nameColor": "#FFFFFF",
+            "titleColor": "#E1E9F2",
+            "backgroundColor": "#172433",
+            "accentColor": "#44C1A1",
+            "backgroundOpacity": 0,
+            "padding": 20,
+            "width": 0.6,
+            "cornerRadius": 0,
+            "safeOffsetX": 0.05,
+            "safeOffsetY": 0.06,
+            "showLogo": true,
+            "logoScale": 1,
+            "isValid": true
+          },
+          "imagePath": null,
+          "image": null,
+          "followSources": false,
+          "dataBinding": null,
+          "sourceMappings": {},
+          "showClock": false,
+          "motion": null,
+          "variants": [],
+          "placement": null,
+          "clock": null
+        },
+        "nodeFile": "nodes/program-and-cue.json",
+        "pins": [
+          {
+            "templateId": "centered-title",
+            "templateVersion": 1,
+            "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "definition": {
+              "templateId": "centered-title",
+              "templateVersion": 1,
+              "runtime": "declarative"
+            },
+            "packageRoot": ""
+          }
+        ]
+      },
+      "expected": {
+        "titleFieldKey": "title",
+        "templateFields": [],
+        "typeable": [],
+        "eligible": []
+      }
+    }
+  ]
+}

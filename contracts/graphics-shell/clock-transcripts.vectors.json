@@ -1,0 +1,1687 @@
+{
+  "area": "clock-transcripts",
+  "description": "Countdown transport: GraphicsPlayoutService.ClockAsync transcripts (wire command + node after each step) and the row card readout (m\\:ss drops hours, plan D3).",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "start-without-instance-refused",
+      "operation": "clock",
+      "input": {
+        "document": "documents/windows-names-clock.json",
+        "rowId": "countdown",
+        "initialNode": {
+          "familyAuthorities": {},
+          "authoring": null,
+          "automation": null,
+          "schemaVersion": 1,
+          "layoutTakeReceipts": [],
+          "coreEpoch": "epoch-1",
+          "instances": [],
+          "operations": [],
+          "lastResult": null,
+          "sources": [],
+          "sourceBindingStatus": "unavailable",
+          "resourceBudgetAtStatePublication": null,
+          "templates": [],
+          "templateInstalls": [],
+          "encodedTemplateAssetBytes": 0,
+          "encodedTemplateAssetLimit": 0
+        },
+        "intent": {
+          "op": "clock",
+          "action": "start"
+        }
+      },
+      "expected": {
+        "steps": [],
+        "accepted": false,
+        "reason": "That row is not on Preview or Program yet. Cue or Show it first."
+      }
+    },
+    {
+      "id": "start-on-program",
+      "operation": "clock",
+      "input": {
+        "document": "documents/windows-names-clock.json",
+        "rowId": "countdown",
+        "initialNode": {
+          "familyAuthorities": {},
+          "authoring": null,
+          "automation": null,
+          "schemaVersion": 1,
+          "layoutTakeReceipts": [],
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "label": "",
+              "rackOrder": 0,
+              "identity": null,
+              "preparationObservation": null,
+              "firstCompositionObservation": null,
+              "instanceId": "playlist-countdown",
+              "templateId": "clock-panel",
+              "templateVersion": 1,
+              "image": null,
+              "cueImage": null,
+              "programImage": null,
+              "clock": {
+                "text": "10:00",
+                "state": "ready",
+                "finishAction": "hide",
+                "remainingSeconds": 600,
+                "configuration": {
+                  "mode": "countdown",
+                  "zone": "utc",
+                  "format": "hm",
+                  "finish": "hide",
+                  "offsetMinutes": 0,
+                  "durationSeconds": 600,
+                  "restoreRemainingSeconds": null
+                }
+              },
+              "clockConfigurationRevision": 0,
+              "clockRequestedConfiguration": null,
+              "scope": "global",
+              "sceneId": "",
+              "sourceId": "",
+              "binding": null,
+              "programBinding": null,
+              "bindingState": "unbound",
+              "revision": 3,
+              "programRevision": 3,
+              "crawlPlayback": "",
+              "crawlPendingRevision": 0,
+              "cueRevision": 0,
+              "cueOwner": "",
+              "cueTemplateVersion": 0,
+              "programTemplateVersion": 0,
+              "cueRequestedRevision": 0,
+              "cuePending": false,
+              "cuePreparation": "unprepared",
+              "cueWarning": "",
+              "cueFields": null,
+              "cueStyle": null,
+              "cueAnimations": null,
+              "cueBinding": null,
+              "cueResource": null,
+              "preparation": "unprepared",
+              "preparedResource": null,
+              "programResource": null,
+              "visibility": "visible",
+              "cued": false,
+              "showPending": false,
+              "firstDrawSubmittedFrame": 0,
+              "currentlyComposed": false,
+              "warning": "",
+              "fields": {
+                "name": "",
+                "title": ""
+              },
+              "style": {
+                "version": 1,
+                "preset": "compact-solid",
+                "anchor": "lower-left",
+                "fontFamily": "Segoe UI",
+                "nameSize": 42,
+                "titleSize": 28,
+                "nameColor": "#F4F7FA",
+                "titleColor": "#44C1A1",
+                "backgroundColor": "#0C1118",
+                "accentColor": "#44C1A1",
+                "backgroundOpacity": 0.9,
+                "padding": 20,
+                "width": 0.6,
+                "cornerRadius": 8,
+                "safeOffsetX": 0.05,
+                "safeOffsetY": 0.06,
+                "showLogo": true,
+                "logoScale": 1,
+                "isValid": true
+              },
+              "animations": {
+                "layers": "own",
+                "in": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                },
+                "out": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                }
+              },
+              "placement": null,
+              "programPlacement": null,
+              "cuePlacement": null,
+              "programSourceId": "",
+              "programFields": null,
+              "programStyle": null,
+              "programAnimations": null
+            }
+          ],
+          "operations": [],
+          "lastResult": null,
+          "sources": [],
+          "sourceBindingStatus": "unavailable",
+          "resourceBudgetAtStatePublication": null,
+          "templates": [],
+          "templateInstalls": [],
+          "encodedTemplateAssetBytes": 0,
+          "encodedTemplateAssetLimit": 0
+        },
+        "intent": {
+          "op": "clock",
+          "action": "start"
+        }
+      },
+      "expected": {
+        "steps": [
+          {
+            "command": {
+              "type": "graphics-clock-control",
+              "graphics": {
+                "instanceId": "playlist-countdown",
+                "expectedRevision": 3,
+                "action": "start"
+              }
+            },
+            "nodeAfter": {
+              "familyAuthorities": {},
+              "authoring": null,
+              "automation": null,
+              "schemaVersion": 1,
+              "layoutTakeReceipts": [],
+              "coreEpoch": "epoch-1",
+              "instances": [
+                {
+                  "label": "",
+                  "rackOrder": 0,
+                  "identity": null,
+                  "preparationObservation": null,
+                  "firstCompositionObservation": null,
+                  "instanceId": "playlist-countdown",
+                  "templateId": "clock-panel",
+                  "templateVersion": 1,
+                  "image": null,
+                  "cueImage": null,
+                  "programImage": null,
+                  "clock": {
+                    "text": "09:59",
+                    "state": "running",
+                    "finishAction": "hide",
+                    "remainingSeconds": 599,
+                    "configuration": {
+                      "mode": "countdown",
+                      "zone": "utc",
+                      "format": "hm",
+                      "finish": "hide",
+                      "offsetMinutes": 0,
+                      "durationSeconds": 600,
+                      "restoreRemainingSeconds": null
+                    }
+                  },
+                  "clockConfigurationRevision": 0,
+                  "clockRequestedConfiguration": null,
+                  "scope": "global",
+                  "sceneId": "",
+                  "sourceId": "",
+                  "binding": null,
+                  "programBinding": null,
+                  "bindingState": "unbound",
+                  "revision": 4,
+                  "programRevision": 3,
+                  "crawlPlayback": "",
+                  "crawlPendingRevision": 0,
+                  "cueRevision": 0,
+                  "cueOwner": "",
+                  "cueTemplateVersion": 0,
+                  "programTemplateVersion": 0,
+                  "cueRequestedRevision": 0,
+                  "cuePending": false,
+                  "cuePreparation": "unprepared",
+                  "cueWarning": "",
+                  "cueFields": null,
+                  "cueStyle": null,
+                  "cueAnimations": null,
+                  "cueBinding": null,
+                  "cueResource": null,
+                  "preparation": "unprepared",
+                  "preparedResource": null,
+                  "programResource": null,
+                  "visibility": "visible",
+                  "cued": false,
+                  "showPending": false,
+                  "firstDrawSubmittedFrame": 0,
+                  "currentlyComposed": false,
+                  "warning": "",
+                  "fields": {
+                    "name": "",
+                    "title": ""
+                  },
+                  "style": {
+                    "version": 1,
+                    "preset": "compact-solid",
+                    "anchor": "lower-left",
+                    "fontFamily": "Segoe UI",
+                    "nameSize": 42,
+                    "titleSize": 28,
+                    "nameColor": "#F4F7FA",
+                    "titleColor": "#44C1A1",
+                    "backgroundColor": "#0C1118",
+                    "accentColor": "#44C1A1",
+                    "backgroundOpacity": 0.9,
+                    "padding": 20,
+                    "width": 0.6,
+                    "cornerRadius": 8,
+                    "safeOffsetX": 0.05,
+                    "safeOffsetY": 0.06,
+                    "showLogo": true,
+                    "logoScale": 1,
+                    "isValid": true
+                  },
+                  "animations": {
+                    "layers": "own",
+                    "in": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    },
+                    "out": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    }
+                  },
+                  "placement": null,
+                  "programPlacement": null,
+                  "cuePlacement": null,
+                  "programSourceId": "",
+                  "programFields": null,
+                  "programStyle": null,
+                  "programAnimations": null
+                }
+              ],
+              "operations": [],
+              "lastResult": null,
+              "sources": [],
+              "sourceBindingStatus": "unavailable",
+              "resourceBudgetAtStatePublication": null,
+              "templates": [],
+              "templateInstalls": [],
+              "encodedTemplateAssetBytes": 0,
+              "encodedTemplateAssetLimit": 0
+            }
+          }
+        ],
+        "accepted": true,
+        "reason": "Clock start."
+      }
+    },
+    {
+      "id": "pause-on-program",
+      "operation": "clock",
+      "input": {
+        "document": "documents/windows-names-clock.json",
+        "rowId": "countdown",
+        "initialNode": {
+          "familyAuthorities": {},
+          "authoring": null,
+          "automation": null,
+          "schemaVersion": 1,
+          "layoutTakeReceipts": [],
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "label": "",
+              "rackOrder": 0,
+              "identity": null,
+              "preparationObservation": null,
+              "firstCompositionObservation": null,
+              "instanceId": "playlist-countdown",
+              "templateId": "clock-panel",
+              "templateVersion": 1,
+              "image": null,
+              "cueImage": null,
+              "programImage": null,
+              "clock": {
+                "text": "10:00",
+                "state": "running",
+                "finishAction": "hide",
+                "remainingSeconds": 600,
+                "configuration": {
+                  "mode": "countdown",
+                  "zone": "utc",
+                  "format": "hm",
+                  "finish": "hide",
+                  "offsetMinutes": 0,
+                  "durationSeconds": 600,
+                  "restoreRemainingSeconds": null
+                }
+              },
+              "clockConfigurationRevision": 0,
+              "clockRequestedConfiguration": null,
+              "scope": "global",
+              "sceneId": "",
+              "sourceId": "",
+              "binding": null,
+              "programBinding": null,
+              "bindingState": "unbound",
+              "revision": 3,
+              "programRevision": 3,
+              "crawlPlayback": "",
+              "crawlPendingRevision": 0,
+              "cueRevision": 0,
+              "cueOwner": "",
+              "cueTemplateVersion": 0,
+              "programTemplateVersion": 0,
+              "cueRequestedRevision": 0,
+              "cuePending": false,
+              "cuePreparation": "unprepared",
+              "cueWarning": "",
+              "cueFields": null,
+              "cueStyle": null,
+              "cueAnimations": null,
+              "cueBinding": null,
+              "cueResource": null,
+              "preparation": "unprepared",
+              "preparedResource": null,
+              "programResource": null,
+              "visibility": "visible",
+              "cued": false,
+              "showPending": false,
+              "firstDrawSubmittedFrame": 0,
+              "currentlyComposed": false,
+              "warning": "",
+              "fields": {
+                "name": "",
+                "title": ""
+              },
+              "style": {
+                "version": 1,
+                "preset": "compact-solid",
+                "anchor": "lower-left",
+                "fontFamily": "Segoe UI",
+                "nameSize": 42,
+                "titleSize": 28,
+                "nameColor": "#F4F7FA",
+                "titleColor": "#44C1A1",
+                "backgroundColor": "#0C1118",
+                "accentColor": "#44C1A1",
+                "backgroundOpacity": 0.9,
+                "padding": 20,
+                "width": 0.6,
+                "cornerRadius": 8,
+                "safeOffsetX": 0.05,
+                "safeOffsetY": 0.06,
+                "showLogo": true,
+                "logoScale": 1,
+                "isValid": true
+              },
+              "animations": {
+                "layers": "own",
+                "in": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                },
+                "out": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                }
+              },
+              "placement": null,
+              "programPlacement": null,
+              "cuePlacement": null,
+              "programSourceId": "",
+              "programFields": null,
+              "programStyle": null,
+              "programAnimations": null
+            }
+          ],
+          "operations": [],
+          "lastResult": null,
+          "sources": [],
+          "sourceBindingStatus": "unavailable",
+          "resourceBudgetAtStatePublication": null,
+          "templates": [],
+          "templateInstalls": [],
+          "encodedTemplateAssetBytes": 0,
+          "encodedTemplateAssetLimit": 0
+        },
+        "intent": {
+          "op": "clock",
+          "action": "pause"
+        }
+      },
+      "expected": {
+        "steps": [
+          {
+            "command": {
+              "type": "graphics-clock-control",
+              "graphics": {
+                "instanceId": "playlist-countdown",
+                "expectedRevision": 3,
+                "action": "pause"
+              }
+            },
+            "nodeAfter": {
+              "familyAuthorities": {},
+              "authoring": null,
+              "automation": null,
+              "schemaVersion": 1,
+              "layoutTakeReceipts": [],
+              "coreEpoch": "epoch-1",
+              "instances": [
+                {
+                  "label": "",
+                  "rackOrder": 0,
+                  "identity": null,
+                  "preparationObservation": null,
+                  "firstCompositionObservation": null,
+                  "instanceId": "playlist-countdown",
+                  "templateId": "clock-panel",
+                  "templateVersion": 1,
+                  "image": null,
+                  "cueImage": null,
+                  "programImage": null,
+                  "clock": {
+                    "text": "10:00",
+                    "state": "paused",
+                    "finishAction": "hide",
+                    "remainingSeconds": 600,
+                    "configuration": {
+                      "mode": "countdown",
+                      "zone": "utc",
+                      "format": "hm",
+                      "finish": "hide",
+                      "offsetMinutes": 0,
+                      "durationSeconds": 600,
+                      "restoreRemainingSeconds": null
+                    }
+                  },
+                  "clockConfigurationRevision": 0,
+                  "clockRequestedConfiguration": null,
+                  "scope": "global",
+                  "sceneId": "",
+                  "sourceId": "",
+                  "binding": null,
+                  "programBinding": null,
+                  "bindingState": "unbound",
+                  "revision": 4,
+                  "programRevision": 3,
+                  "crawlPlayback": "",
+                  "crawlPendingRevision": 0,
+                  "cueRevision": 0,
+                  "cueOwner": "",
+                  "cueTemplateVersion": 0,
+                  "programTemplateVersion": 0,
+                  "cueRequestedRevision": 0,
+                  "cuePending": false,
+                  "cuePreparation": "unprepared",
+                  "cueWarning": "",
+                  "cueFields": null,
+                  "cueStyle": null,
+                  "cueAnimations": null,
+                  "cueBinding": null,
+                  "cueResource": null,
+                  "preparation": "unprepared",
+                  "preparedResource": null,
+                  "programResource": null,
+                  "visibility": "visible",
+                  "cued": false,
+                  "showPending": false,
+                  "firstDrawSubmittedFrame": 0,
+                  "currentlyComposed": false,
+                  "warning": "",
+                  "fields": {
+                    "name": "",
+                    "title": ""
+                  },
+                  "style": {
+                    "version": 1,
+                    "preset": "compact-solid",
+                    "anchor": "lower-left",
+                    "fontFamily": "Segoe UI",
+                    "nameSize": 42,
+                    "titleSize": 28,
+                    "nameColor": "#F4F7FA",
+                    "titleColor": "#44C1A1",
+                    "backgroundColor": "#0C1118",
+                    "accentColor": "#44C1A1",
+                    "backgroundOpacity": 0.9,
+                    "padding": 20,
+                    "width": 0.6,
+                    "cornerRadius": 8,
+                    "safeOffsetX": 0.05,
+                    "safeOffsetY": 0.06,
+                    "showLogo": true,
+                    "logoScale": 1,
+                    "isValid": true
+                  },
+                  "animations": {
+                    "layers": "own",
+                    "in": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    },
+                    "out": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    }
+                  },
+                  "placement": null,
+                  "programPlacement": null,
+                  "cuePlacement": null,
+                  "programSourceId": "",
+                  "programFields": null,
+                  "programStyle": null,
+                  "programAnimations": null
+                }
+              ],
+              "operations": [],
+              "lastResult": null,
+              "sources": [],
+              "sourceBindingStatus": "unavailable",
+              "resourceBudgetAtStatePublication": null,
+              "templates": [],
+              "templateInstalls": [],
+              "encodedTemplateAssetBytes": 0,
+              "encodedTemplateAssetLimit": 0
+            }
+          }
+        ],
+        "accepted": true,
+        "reason": "Clock pause."
+      }
+    },
+    {
+      "id": "resume-on-program",
+      "operation": "clock",
+      "input": {
+        "document": "documents/windows-names-clock.json",
+        "rowId": "countdown",
+        "initialNode": {
+          "familyAuthorities": {},
+          "authoring": null,
+          "automation": null,
+          "schemaVersion": 1,
+          "layoutTakeReceipts": [],
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "label": "",
+              "rackOrder": 0,
+              "identity": null,
+              "preparationObservation": null,
+              "firstCompositionObservation": null,
+              "instanceId": "playlist-countdown",
+              "templateId": "clock-panel",
+              "templateVersion": 1,
+              "image": null,
+              "cueImage": null,
+              "programImage": null,
+              "clock": {
+                "text": "10:00",
+                "state": "paused",
+                "finishAction": "hide",
+                "remainingSeconds": 600,
+                "configuration": {
+                  "mode": "countdown",
+                  "zone": "utc",
+                  "format": "hm",
+                  "finish": "hide",
+                  "offsetMinutes": 0,
+                  "durationSeconds": 600,
+                  "restoreRemainingSeconds": null
+                }
+              },
+              "clockConfigurationRevision": 0,
+              "clockRequestedConfiguration": null,
+              "scope": "global",
+              "sceneId": "",
+              "sourceId": "",
+              "binding": null,
+              "programBinding": null,
+              "bindingState": "unbound",
+              "revision": 3,
+              "programRevision": 3,
+              "crawlPlayback": "",
+              "crawlPendingRevision": 0,
+              "cueRevision": 0,
+              "cueOwner": "",
+              "cueTemplateVersion": 0,
+              "programTemplateVersion": 0,
+              "cueRequestedRevision": 0,
+              "cuePending": false,
+              "cuePreparation": "unprepared",
+              "cueWarning": "",
+              "cueFields": null,
+              "cueStyle": null,
+              "cueAnimations": null,
+              "cueBinding": null,
+              "cueResource": null,
+              "preparation": "unprepared",
+              "preparedResource": null,
+              "programResource": null,
+              "visibility": "visible",
+              "cued": false,
+              "showPending": false,
+              "firstDrawSubmittedFrame": 0,
+              "currentlyComposed": false,
+              "warning": "",
+              "fields": {
+                "name": "",
+                "title": ""
+              },
+              "style": {
+                "version": 1,
+                "preset": "compact-solid",
+                "anchor": "lower-left",
+                "fontFamily": "Segoe UI",
+                "nameSize": 42,
+                "titleSize": 28,
+                "nameColor": "#F4F7FA",
+                "titleColor": "#44C1A1",
+                "backgroundColor": "#0C1118",
+                "accentColor": "#44C1A1",
+                "backgroundOpacity": 0.9,
+                "padding": 20,
+                "width": 0.6,
+                "cornerRadius": 8,
+                "safeOffsetX": 0.05,
+                "safeOffsetY": 0.06,
+                "showLogo": true,
+                "logoScale": 1,
+                "isValid": true
+              },
+              "animations": {
+                "layers": "own",
+                "in": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                },
+                "out": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                }
+              },
+              "placement": null,
+              "programPlacement": null,
+              "cuePlacement": null,
+              "programSourceId": "",
+              "programFields": null,
+              "programStyle": null,
+              "programAnimations": null
+            }
+          ],
+          "operations": [],
+          "lastResult": null,
+          "sources": [],
+          "sourceBindingStatus": "unavailable",
+          "resourceBudgetAtStatePublication": null,
+          "templates": [],
+          "templateInstalls": [],
+          "encodedTemplateAssetBytes": 0,
+          "encodedTemplateAssetLimit": 0
+        },
+        "intent": {
+          "op": "clock",
+          "action": "resume"
+        }
+      },
+      "expected": {
+        "steps": [
+          {
+            "command": {
+              "type": "graphics-clock-control",
+              "graphics": {
+                "instanceId": "playlist-countdown",
+                "expectedRevision": 3,
+                "action": "resume"
+              }
+            },
+            "nodeAfter": {
+              "familyAuthorities": {},
+              "authoring": null,
+              "automation": null,
+              "schemaVersion": 1,
+              "layoutTakeReceipts": [],
+              "coreEpoch": "epoch-1",
+              "instances": [
+                {
+                  "label": "",
+                  "rackOrder": 0,
+                  "identity": null,
+                  "preparationObservation": null,
+                  "firstCompositionObservation": null,
+                  "instanceId": "playlist-countdown",
+                  "templateId": "clock-panel",
+                  "templateVersion": 1,
+                  "image": null,
+                  "cueImage": null,
+                  "programImage": null,
+                  "clock": {
+                    "text": "09:59",
+                    "state": "running",
+                    "finishAction": "hide",
+                    "remainingSeconds": 599,
+                    "configuration": {
+                      "mode": "countdown",
+                      "zone": "utc",
+                      "format": "hm",
+                      "finish": "hide",
+                      "offsetMinutes": 0,
+                      "durationSeconds": 600,
+                      "restoreRemainingSeconds": null
+                    }
+                  },
+                  "clockConfigurationRevision": 0,
+                  "clockRequestedConfiguration": null,
+                  "scope": "global",
+                  "sceneId": "",
+                  "sourceId": "",
+                  "binding": null,
+                  "programBinding": null,
+                  "bindingState": "unbound",
+                  "revision": 4,
+                  "programRevision": 3,
+                  "crawlPlayback": "",
+                  "crawlPendingRevision": 0,
+                  "cueRevision": 0,
+                  "cueOwner": "",
+                  "cueTemplateVersion": 0,
+                  "programTemplateVersion": 0,
+                  "cueRequestedRevision": 0,
+                  "cuePending": false,
+                  "cuePreparation": "unprepared",
+                  "cueWarning": "",
+                  "cueFields": null,
+                  "cueStyle": null,
+                  "cueAnimations": null,
+                  "cueBinding": null,
+                  "cueResource": null,
+                  "preparation": "unprepared",
+                  "preparedResource": null,
+                  "programResource": null,
+                  "visibility": "visible",
+                  "cued": false,
+                  "showPending": false,
+                  "firstDrawSubmittedFrame": 0,
+                  "currentlyComposed": false,
+                  "warning": "",
+                  "fields": {
+                    "name": "",
+                    "title": ""
+                  },
+                  "style": {
+                    "version": 1,
+                    "preset": "compact-solid",
+                    "anchor": "lower-left",
+                    "fontFamily": "Segoe UI",
+                    "nameSize": 42,
+                    "titleSize": 28,
+                    "nameColor": "#F4F7FA",
+                    "titleColor": "#44C1A1",
+                    "backgroundColor": "#0C1118",
+                    "accentColor": "#44C1A1",
+                    "backgroundOpacity": 0.9,
+                    "padding": 20,
+                    "width": 0.6,
+                    "cornerRadius": 8,
+                    "safeOffsetX": 0.05,
+                    "safeOffsetY": 0.06,
+                    "showLogo": true,
+                    "logoScale": 1,
+                    "isValid": true
+                  },
+                  "animations": {
+                    "layers": "own",
+                    "in": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    },
+                    "out": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    }
+                  },
+                  "placement": null,
+                  "programPlacement": null,
+                  "cuePlacement": null,
+                  "programSourceId": "",
+                  "programFields": null,
+                  "programStyle": null,
+                  "programAnimations": null
+                }
+              ],
+              "operations": [],
+              "lastResult": null,
+              "sources": [],
+              "sourceBindingStatus": "unavailable",
+              "resourceBudgetAtStatePublication": null,
+              "templates": [],
+              "templateInstalls": [],
+              "encodedTemplateAssetBytes": 0,
+              "encodedTemplateAssetLimit": 0
+            }
+          }
+        ],
+        "accepted": true,
+        "reason": "Clock resume."
+      }
+    },
+    {
+      "id": "reset-on-program",
+      "operation": "clock",
+      "input": {
+        "document": "documents/windows-names-clock.json",
+        "rowId": "countdown",
+        "initialNode": {
+          "familyAuthorities": {},
+          "authoring": null,
+          "automation": null,
+          "schemaVersion": 1,
+          "layoutTakeReceipts": [],
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "label": "",
+              "rackOrder": 0,
+              "identity": null,
+              "preparationObservation": null,
+              "firstCompositionObservation": null,
+              "instanceId": "playlist-countdown",
+              "templateId": "clock-panel",
+              "templateVersion": 1,
+              "image": null,
+              "cueImage": null,
+              "programImage": null,
+              "clock": {
+                "text": "10:00",
+                "state": "running",
+                "finishAction": "hide",
+                "remainingSeconds": 600,
+                "configuration": {
+                  "mode": "countdown",
+                  "zone": "utc",
+                  "format": "hm",
+                  "finish": "hide",
+                  "offsetMinutes": 0,
+                  "durationSeconds": 600,
+                  "restoreRemainingSeconds": null
+                }
+              },
+              "clockConfigurationRevision": 0,
+              "clockRequestedConfiguration": null,
+              "scope": "global",
+              "sceneId": "",
+              "sourceId": "",
+              "binding": null,
+              "programBinding": null,
+              "bindingState": "unbound",
+              "revision": 3,
+              "programRevision": 3,
+              "crawlPlayback": "",
+              "crawlPendingRevision": 0,
+              "cueRevision": 0,
+              "cueOwner": "",
+              "cueTemplateVersion": 0,
+              "programTemplateVersion": 0,
+              "cueRequestedRevision": 0,
+              "cuePending": false,
+              "cuePreparation": "unprepared",
+              "cueWarning": "",
+              "cueFields": null,
+              "cueStyle": null,
+              "cueAnimations": null,
+              "cueBinding": null,
+              "cueResource": null,
+              "preparation": "unprepared",
+              "preparedResource": null,
+              "programResource": null,
+              "visibility": "visible",
+              "cued": false,
+              "showPending": false,
+              "firstDrawSubmittedFrame": 0,
+              "currentlyComposed": false,
+              "warning": "",
+              "fields": {
+                "name": "",
+                "title": ""
+              },
+              "style": {
+                "version": 1,
+                "preset": "compact-solid",
+                "anchor": "lower-left",
+                "fontFamily": "Segoe UI",
+                "nameSize": 42,
+                "titleSize": 28,
+                "nameColor": "#F4F7FA",
+                "titleColor": "#44C1A1",
+                "backgroundColor": "#0C1118",
+                "accentColor": "#44C1A1",
+                "backgroundOpacity": 0.9,
+                "padding": 20,
+                "width": 0.6,
+                "cornerRadius": 8,
+                "safeOffsetX": 0.05,
+                "safeOffsetY": 0.06,
+                "showLogo": true,
+                "logoScale": 1,
+                "isValid": true
+              },
+              "animations": {
+                "layers": "own",
+                "in": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                },
+                "out": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                }
+              },
+              "placement": null,
+              "programPlacement": null,
+              "cuePlacement": null,
+              "programSourceId": "",
+              "programFields": null,
+              "programStyle": null,
+              "programAnimations": null
+            }
+          ],
+          "operations": [],
+          "lastResult": null,
+          "sources": [],
+          "sourceBindingStatus": "unavailable",
+          "resourceBudgetAtStatePublication": null,
+          "templates": [],
+          "templateInstalls": [],
+          "encodedTemplateAssetBytes": 0,
+          "encodedTemplateAssetLimit": 0
+        },
+        "intent": {
+          "op": "clock",
+          "action": "reset"
+        }
+      },
+      "expected": {
+        "steps": [
+          {
+            "command": {
+              "type": "graphics-clock-control",
+              "graphics": {
+                "instanceId": "playlist-countdown",
+                "expectedRevision": 3,
+                "action": "reset"
+              }
+            },
+            "nodeAfter": {
+              "familyAuthorities": {},
+              "authoring": null,
+              "automation": null,
+              "schemaVersion": 1,
+              "layoutTakeReceipts": [],
+              "coreEpoch": "epoch-1",
+              "instances": [
+                {
+                  "label": "",
+                  "rackOrder": 0,
+                  "identity": null,
+                  "preparationObservation": null,
+                  "firstCompositionObservation": null,
+                  "instanceId": "playlist-countdown",
+                  "templateId": "clock-panel",
+                  "templateVersion": 1,
+                  "image": null,
+                  "cueImage": null,
+                  "programImage": null,
+                  "clock": {
+                    "text": "10:00",
+                    "state": "ready",
+                    "finishAction": "hide",
+                    "remainingSeconds": 600,
+                    "configuration": {
+                      "mode": "countdown",
+                      "zone": "utc",
+                      "format": "hm",
+                      "finish": "hide",
+                      "offsetMinutes": 0,
+                      "durationSeconds": 600,
+                      "restoreRemainingSeconds": null
+                    }
+                  },
+                  "clockConfigurationRevision": 0,
+                  "clockRequestedConfiguration": null,
+                  "scope": "global",
+                  "sceneId": "",
+                  "sourceId": "",
+                  "binding": null,
+                  "programBinding": null,
+                  "bindingState": "unbound",
+                  "revision": 4,
+                  "programRevision": 3,
+                  "crawlPlayback": "",
+                  "crawlPendingRevision": 0,
+                  "cueRevision": 0,
+                  "cueOwner": "",
+                  "cueTemplateVersion": 0,
+                  "programTemplateVersion": 0,
+                  "cueRequestedRevision": 0,
+                  "cuePending": false,
+                  "cuePreparation": "unprepared",
+                  "cueWarning": "",
+                  "cueFields": null,
+                  "cueStyle": null,
+                  "cueAnimations": null,
+                  "cueBinding": null,
+                  "cueResource": null,
+                  "preparation": "unprepared",
+                  "preparedResource": null,
+                  "programResource": null,
+                  "visibility": "visible",
+                  "cued": false,
+                  "showPending": false,
+                  "firstDrawSubmittedFrame": 0,
+                  "currentlyComposed": false,
+                  "warning": "",
+                  "fields": {
+                    "name": "",
+                    "title": ""
+                  },
+                  "style": {
+                    "version": 1,
+                    "preset": "compact-solid",
+                    "anchor": "lower-left",
+                    "fontFamily": "Segoe UI",
+                    "nameSize": 42,
+                    "titleSize": 28,
+                    "nameColor": "#F4F7FA",
+                    "titleColor": "#44C1A1",
+                    "backgroundColor": "#0C1118",
+                    "accentColor": "#44C1A1",
+                    "backgroundOpacity": 0.9,
+                    "padding": 20,
+                    "width": 0.6,
+                    "cornerRadius": 8,
+                    "safeOffsetX": 0.05,
+                    "safeOffsetY": 0.06,
+                    "showLogo": true,
+                    "logoScale": 1,
+                    "isValid": true
+                  },
+                  "animations": {
+                    "layers": "own",
+                    "in": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    },
+                    "out": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    }
+                  },
+                  "placement": null,
+                  "programPlacement": null,
+                  "cuePlacement": null,
+                  "programSourceId": "",
+                  "programFields": null,
+                  "programStyle": null,
+                  "programAnimations": null
+                }
+              ],
+              "operations": [],
+              "lastResult": null,
+              "sources": [],
+              "sourceBindingStatus": "unavailable",
+              "resourceBudgetAtStatePublication": null,
+              "templates": [],
+              "templateInstalls": [],
+              "encodedTemplateAssetBytes": 0,
+              "encodedTemplateAssetLimit": 0
+            }
+          }
+        ],
+        "accepted": true,
+        "reason": "Clock reset."
+      }
+    },
+    {
+      "id": "start-fresh-instance-revision-zero",
+      "operation": "clock",
+      "input": {
+        "document": "documents/windows-names-clock.json",
+        "rowId": "countdown",
+        "initialNode": {
+          "familyAuthorities": {},
+          "authoring": null,
+          "automation": null,
+          "schemaVersion": 1,
+          "layoutTakeReceipts": [],
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "label": "",
+              "rackOrder": 0,
+              "identity": null,
+              "preparationObservation": null,
+              "firstCompositionObservation": null,
+              "instanceId": "playlist-countdown",
+              "templateId": "clock-panel",
+              "templateVersion": 1,
+              "image": null,
+              "cueImage": null,
+              "programImage": null,
+              "clock": {
+                "text": "10:00",
+                "state": "ready",
+                "finishAction": "hide",
+                "remainingSeconds": 600,
+                "configuration": {
+                  "mode": "countdown",
+                  "zone": "utc",
+                  "format": "hm",
+                  "finish": "hide",
+                  "offsetMinutes": 0,
+                  "durationSeconds": 600,
+                  "restoreRemainingSeconds": null
+                }
+              },
+              "clockConfigurationRevision": 0,
+              "clockRequestedConfiguration": null,
+              "scope": "global",
+              "sceneId": "",
+              "sourceId": "",
+              "binding": null,
+              "programBinding": null,
+              "bindingState": "unbound",
+              "revision": 0,
+              "programRevision": 0,
+              "crawlPlayback": "",
+              "crawlPendingRevision": 0,
+              "cueRevision": 0,
+              "cueOwner": "",
+              "cueTemplateVersion": 0,
+              "programTemplateVersion": 0,
+              "cueRequestedRevision": 0,
+              "cuePending": false,
+              "cuePreparation": "unprepared",
+              "cueWarning": "",
+              "cueFields": null,
+              "cueStyle": null,
+              "cueAnimations": null,
+              "cueBinding": null,
+              "cueResource": null,
+              "preparation": "unprepared",
+              "preparedResource": null,
+              "programResource": null,
+              "visibility": "hidden",
+              "cued": false,
+              "showPending": false,
+              "firstDrawSubmittedFrame": 0,
+              "currentlyComposed": false,
+              "warning": "",
+              "fields": {
+                "name": "",
+                "title": ""
+              },
+              "style": {
+                "version": 1,
+                "preset": "compact-solid",
+                "anchor": "lower-left",
+                "fontFamily": "Segoe UI",
+                "nameSize": 42,
+                "titleSize": 28,
+                "nameColor": "#F4F7FA",
+                "titleColor": "#44C1A1",
+                "backgroundColor": "#0C1118",
+                "accentColor": "#44C1A1",
+                "backgroundOpacity": 0.9,
+                "padding": 20,
+                "width": 0.6,
+                "cornerRadius": 8,
+                "safeOffsetX": 0.05,
+                "safeOffsetY": 0.06,
+                "showLogo": true,
+                "logoScale": 1,
+                "isValid": true
+              },
+              "animations": {
+                "layers": "own",
+                "in": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                },
+                "out": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                }
+              },
+              "placement": null,
+              "programPlacement": null,
+              "cuePlacement": null,
+              "programSourceId": "",
+              "programFields": null,
+              "programStyle": null,
+              "programAnimations": null
+            }
+          ],
+          "operations": [],
+          "lastResult": null,
+          "sources": [],
+          "sourceBindingStatus": "unavailable",
+          "resourceBudgetAtStatePublication": null,
+          "templates": [],
+          "templateInstalls": [],
+          "encodedTemplateAssetBytes": 0,
+          "encodedTemplateAssetLimit": 0
+        },
+        "intent": {
+          "op": "clock",
+          "action": "start"
+        }
+      },
+      "expected": {
+        "steps": [
+          {
+            "command": {
+              "type": "graphics-clock-control",
+              "graphics": {
+                "instanceId": "playlist-countdown",
+                "expectedRevision": 1,
+                "action": "start"
+              }
+            },
+            "nodeAfter": {
+              "familyAuthorities": {},
+              "authoring": null,
+              "automation": null,
+              "schemaVersion": 1,
+              "layoutTakeReceipts": [],
+              "coreEpoch": "epoch-1",
+              "instances": [
+                {
+                  "label": "",
+                  "rackOrder": 0,
+                  "identity": null,
+                  "preparationObservation": null,
+                  "firstCompositionObservation": null,
+                  "instanceId": "playlist-countdown",
+                  "templateId": "clock-panel",
+                  "templateVersion": 1,
+                  "image": null,
+                  "cueImage": null,
+                  "programImage": null,
+                  "clock": {
+                    "text": "09:59",
+                    "state": "running",
+                    "finishAction": "hide",
+                    "remainingSeconds": 599,
+                    "configuration": {
+                      "mode": "countdown",
+                      "zone": "utc",
+                      "format": "hm",
+                      "finish": "hide",
+                      "offsetMinutes": 0,
+                      "durationSeconds": 600,
+                      "restoreRemainingSeconds": null
+                    }
+                  },
+                  "clockConfigurationRevision": 0,
+                  "clockRequestedConfiguration": null,
+                  "scope": "global",
+                  "sceneId": "",
+                  "sourceId": "",
+                  "binding": null,
+                  "programBinding": null,
+                  "bindingState": "unbound",
+                  "revision": 1,
+                  "programRevision": 0,
+                  "crawlPlayback": "",
+                  "crawlPendingRevision": 0,
+                  "cueRevision": 0,
+                  "cueOwner": "",
+                  "cueTemplateVersion": 0,
+                  "programTemplateVersion": 0,
+                  "cueRequestedRevision": 0,
+                  "cuePending": false,
+                  "cuePreparation": "unprepared",
+                  "cueWarning": "",
+                  "cueFields": null,
+                  "cueStyle": null,
+                  "cueAnimations": null,
+                  "cueBinding": null,
+                  "cueResource": null,
+                  "preparation": "unprepared",
+                  "preparedResource": null,
+                  "programResource": null,
+                  "visibility": "hidden",
+                  "cued": false,
+                  "showPending": false,
+                  "firstDrawSubmittedFrame": 0,
+                  "currentlyComposed": false,
+                  "warning": "",
+                  "fields": {
+                    "name": "",
+                    "title": ""
+                  },
+                  "style": {
+                    "version": 1,
+                    "preset": "compact-solid",
+                    "anchor": "lower-left",
+                    "fontFamily": "Segoe UI",
+                    "nameSize": 42,
+                    "titleSize": 28,
+                    "nameColor": "#F4F7FA",
+                    "titleColor": "#44C1A1",
+                    "backgroundColor": "#0C1118",
+                    "accentColor": "#44C1A1",
+                    "backgroundOpacity": 0.9,
+                    "padding": 20,
+                    "width": 0.6,
+                    "cornerRadius": 8,
+                    "safeOffsetX": 0.05,
+                    "safeOffsetY": 0.06,
+                    "showLogo": true,
+                    "logoScale": 1,
+                    "isValid": true
+                  },
+                  "animations": {
+                    "layers": "own",
+                    "in": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    },
+                    "out": {
+                      "type": "none",
+                      "direction": "left",
+                      "easing": "linear",
+                      "durationMs": 0
+                    }
+                  },
+                  "placement": null,
+                  "programPlacement": null,
+                  "cuePlacement": null,
+                  "programSourceId": "",
+                  "programFields": null,
+                  "programStyle": null,
+                  "programAnimations": null
+                }
+              ],
+              "operations": [],
+              "lastResult": null,
+              "sources": [],
+              "sourceBindingStatus": "unavailable",
+              "resourceBudgetAtStatePublication": null,
+              "templates": [],
+              "templateInstalls": [],
+              "encodedTemplateAssetBytes": 0,
+              "encodedTemplateAssetLimit": 0
+            }
+          }
+        ],
+        "accepted": true,
+        "reason": "Clock start."
+      }
+    },
+    {
+      "id": "invalid-action-refused",
+      "operation": "clock",
+      "input": {
+        "document": "documents/windows-names-clock.json",
+        "rowId": "countdown",
+        "initialNode": {
+          "familyAuthorities": {},
+          "authoring": null,
+          "automation": null,
+          "schemaVersion": 1,
+          "layoutTakeReceipts": [],
+          "coreEpoch": "epoch-1",
+          "instances": [
+            {
+              "label": "",
+              "rackOrder": 0,
+              "identity": null,
+              "preparationObservation": null,
+              "firstCompositionObservation": null,
+              "instanceId": "playlist-countdown",
+              "templateId": "clock-panel",
+              "templateVersion": 1,
+              "image": null,
+              "cueImage": null,
+              "programImage": null,
+              "clock": {
+                "text": "10:00",
+                "state": "ready",
+                "finishAction": "hide",
+                "remainingSeconds": 600,
+                "configuration": {
+                  "mode": "countdown",
+                  "zone": "utc",
+                  "format": "hm",
+                  "finish": "hide",
+                  "offsetMinutes": 0,
+                  "durationSeconds": 600,
+                  "restoreRemainingSeconds": null
+                }
+              },
+              "clockConfigurationRevision": 0,
+              "clockRequestedConfiguration": null,
+              "scope": "global",
+              "sceneId": "",
+              "sourceId": "",
+              "binding": null,
+              "programBinding": null,
+              "bindingState": "unbound",
+              "revision": 3,
+              "programRevision": 3,
+              "crawlPlayback": "",
+              "crawlPendingRevision": 0,
+              "cueRevision": 0,
+              "cueOwner": "",
+              "cueTemplateVersion": 0,
+              "programTemplateVersion": 0,
+              "cueRequestedRevision": 0,
+              "cuePending": false,
+              "cuePreparation": "unprepared",
+              "cueWarning": "",
+              "cueFields": null,
+              "cueStyle": null,
+              "cueAnimations": null,
+              "cueBinding": null,
+              "cueResource": null,
+              "preparation": "unprepared",
+              "preparedResource": null,
+              "programResource": null,
+              "visibility": "visible",
+              "cued": false,
+              "showPending": false,
+              "firstDrawSubmittedFrame": 0,
+              "currentlyComposed": false,
+              "warning": "",
+              "fields": {
+                "name": "",
+                "title": ""
+              },
+              "style": {
+                "version": 1,
+                "preset": "compact-solid",
+                "anchor": "lower-left",
+                "fontFamily": "Segoe UI",
+                "nameSize": 42,
+                "titleSize": 28,
+                "nameColor": "#F4F7FA",
+                "titleColor": "#44C1A1",
+                "backgroundColor": "#0C1118",
+                "accentColor": "#44C1A1",
+                "backgroundOpacity": 0.9,
+                "padding": 20,
+                "width": 0.6,
+                "cornerRadius": 8,
+                "safeOffsetX": 0.05,
+                "safeOffsetY": 0.06,
+                "showLogo": true,
+                "logoScale": 1,
+                "isValid": true
+              },
+              "animations": {
+                "layers": "own",
+                "in": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                },
+                "out": {
+                  "type": "none",
+                  "direction": "left",
+                  "easing": "linear",
+                  "durationMs": 0
+                }
+              },
+              "placement": null,
+              "programPlacement": null,
+              "cuePlacement": null,
+              "programSourceId": "",
+              "programFields": null,
+              "programStyle": null,
+              "programAnimations": null
+            }
+          ],
+          "operations": [],
+          "lastResult": null,
+          "sources": [],
+          "sourceBindingStatus": "unavailable",
+          "resourceBudgetAtStatePublication": null,
+          "templates": [],
+          "templateInstalls": [],
+          "encodedTemplateAssetBytes": 0,
+          "encodedTemplateAssetLimit": 0
+        },
+        "intent": {
+          "op": "clock",
+          "action": "stop"
+        }
+      },
+      "expected": {
+        "steps": [],
+        "accepted": false,
+        "reason": "Clock action must be start, pause, resume or reset."
+      }
+    },
+    {
+      "id": "readout-not-cued-600",
+      "operation": "readout",
+      "input": {
+        "durationSeconds": 600,
+        "clock": null
+      },
+      "expected": {
+        "text": "10:00 · not cued"
+      }
+    },
+    {
+      "id": "readout-not-cued-59",
+      "operation": "readout",
+      "input": {
+        "durationSeconds": 59,
+        "clock": null
+      },
+      "expected": {
+        "text": "0:59 · not cued"
+      }
+    },
+    {
+      "id": "readout-not-cued-3600",
+      "operation": "readout",
+      "input": {
+        "durationSeconds": 3600,
+        "clock": null
+      },
+      "expected": {
+        "text": "0:00 · not cued"
+      }
+    },
+    {
+      "id": "readout-not-cued-5400",
+      "operation": "readout",
+      "input": {
+        "durationSeconds": 5400,
+        "clock": null
+      },
+      "expected": {
+        "text": "30:00 · not cued"
+      }
+    },
+    {
+      "id": "readout-not-cued-86399",
+      "operation": "readout",
+      "input": {
+        "durationSeconds": 86399,
+        "clock": null
+      },
+      "expected": {
+        "text": "59:59 · not cued"
+      }
+    },
+    {
+      "id": "readout-instance-clock",
+      "operation": "readout",
+      "input": {
+        "durationSeconds": 600,
+        "clock": {
+          "text": "09:41",
+          "state": "running",
+          "finishAction": "hide",
+          "remainingSeconds": 600,
+          "configuration": {
+            "mode": "countdown",
+            "zone": "utc",
+            "format": "hm",
+            "finish": "hide",
+            "offsetMinutes": 0,
+            "durationSeconds": 600,
+            "restoreRemainingSeconds": null
+          }
+        }
+      },
+      "expected": {
+        "text": "09:41 · running"
+      }
+    }
+  ]
+}

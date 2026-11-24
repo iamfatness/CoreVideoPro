@@ -16,6 +16,7 @@ enum ShellHarness {
         environment["COREVIDEO_SHELL_TESTS"] != nil
             || environment["COREVIDEO_SHELL_SELFCHECK"] != nil
             || environment["COREVIDEO_SHELL_TAB_SNAPSHOT"] != nil
+            || environment["COREVIDEO_SHELL_GRAPHICS_SNAPSHOT"] != nil
     }
 
     static let isActive: Bool = detect(in: ProcessInfo.processInfo.environment)

@@ -55,7 +55,8 @@ enum GraphicsRowStates {
 
 extension GraphicsModel {
     static let fKeyHint = "macOS uses F1-F12 for system controls unless \"Use F1, F2, etc. keys as standard function keys\" is on (System Settings > Keyboard)."
-    static let hidesAfterChoices: [(ms: Int, label: String)] = [(0, "Off"), (8000, "8 s"), (15000, "15 s")]
+    /// Windows PlayOutChoices (GraphicsPlayoutControl.cs:34).
+    static let hidesAfterChoices: [(ms: Int, label: String)] = [(0, "Manual"), (8000, "8 s"), (15000, "15 s")]
     static let hotkeys = [""] + (1...12).map { "F\($0)" }
 
     // ── document ─────────────────────────────────────────────────────────────
@@ -165,15 +166,102 @@ extension GraphicsModel {
         })
     }
 
-    /// Template string fields the inspector types (the template's `fields`).
-    func editableFields(_ row: GraphicsRow) -> [GraphicsTemplateField] {
-        guard let template = state?.template(row.templateId, row.templateVersion) else {
-            return GraphicsPlayout.curated(row.templateId) ? [GraphicsTemplateField(id: "name", type: "string"), GraphicsTemplateField(id: "title", type: "string")] : []
+    /// A typed template variable (Windows commits through WithText): clamped to the box's MaxLength
+    /// (the field's own, at most 4096, else the core's 512), stored at once like every inspector edit.
+    func setTypedText(_ id: String, _ field: GraphicsTypeableField, _ text: String) {
+        let cap = field.maxLength.map { $0 > 0 ? min($0, 4096) : GraphicsRowFields.coreStringLimit } ?? GraphicsRowFields.coreStringLimit
+        setField(id, field.id, GraphicsRowFields.clamp(text, cap))
+    }
+
+    /// The row's Title line (MaxLength 512).
+    func setTitleLine(_ id: String, key: String, _ text: String) {
+        setField(id, key, GraphicsRowFields.clamp(text, GraphicsRowFields.titleLineLimit))
+    }
+
+    // ── names list (GraphicsPlayoutControl.NamesList.cs:40-63) ──────────────
+
+    static let noNamesText = "No names found. Use Name, Title and optional variable IDs in the header."
+
+    /// The variable ids a names-list header may name: the row's eligible template fields (Windows passes
+    /// TemplateFieldsOf(...).Where(GraphicsMappedValues.Eligible); a compatibility template has none).
+    func namesListVariableIds(_ row: GraphicsRow) -> [String] {
+        GraphicsRowFields.templateFields(row, state: state, pins: document.templates).filter(GraphicsRowFields.eligibleForMapping).map(\.id)
+    }
+
+    /// Saves a row's names list from the editor's text. nil = saved; "" = refused silently (the row is
+    /// gone, or its template changed since the editor opened); else the message to show.
+    func saveNamesList(rowId: String, text: String, templateId: String, templateVersion: Int) -> String? {
+        guard let current = rows.first(where: { $0.id == rowId }), current.templateId == templateId,
+              current.templateVersion == templateVersion else { return "" }
+        let variants = GraphicsNamesList.parse(text, existing: current.variants, variableIds: namesListVariableIds(current))
+        if variants.isEmpty && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return Self.noNamesText }
+        var updated = current
+        updated.json["variants"] = variants
+        updated.kind = !variants.isEmpty ? GraphicsRow.title : current.followSources ? GraphicsRow.guest : current.kind
+        let before = document.playlist
+        setRows(rows.map { $0.id == rowId ? updated : $0 })
+        return document.playlist == before && updated != current ? documentStatus : nil
+    }
+
+    // ── selection and inspector (GraphicsPlayoutControl.Select / RefreshInspector) ──
+
+    nonisolated static func selectionKey(rowId: String, sourceId: String) -> String { sourceId.isEmpty ? rowId : rowId + "|" + sourceId }
+
+    func select(_ key: String) { if selectedKey != key { selectedKey = key } }
+
+    /// A card shows the accent border when it, or (for a Guest / names-list row) one of its lines, is selected.
+    func isCardSelected(_ row: GraphicsRow) -> Bool {
+        let multi = row.kind == GraphicsRow.guest || row.hasVariants
+        return selectedKey == row.id || (multi && selectedKey.hasPrefix(row.id + "|"))
+    }
+
+    /// Windows Caption(row) (:181-184).
+    nonisolated static func caption(_ row: GraphicsRow) -> String {
+        switch row.kind {
+        case GraphicsRow.guest: return row.followSources ? "Guest · names from Sources" : "Guest"
+        case GraphicsRow.title: return row.hasVariants ? "Names list · \(row.variants.count) · hotkey steps through" : "Title"
+        case GraphicsRow.logo: return "Logo"
+        case GraphicsRow.liveBug: return "Live bug"
+        case GraphicsRow.sponsor: return row.templateId.isEmpty && row.image == nil ? "Sponsor card · no image yet" : "Sponsor card"
+        default: return row.kind
         }
-        if template.runtime != "declarative" {
-            return [GraphicsTemplateField(id: "name", type: "string"), GraphicsTemplateField(id: "title", type: "string")]
+    }
+
+    /// The row and (for "rowId|sourceId") the line a selection key names.
+    func selection(_ key: String) -> (row: GraphicsRow, entry: GraphicsPlaylistEntry?)? {
+        let rowId = String(key.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+        guard let row = rows.first(where: { $0.id == rowId }) else { return nil }
+        guard key.count > rowId.count else { return (row, nil) }
+        let sourceId = String(key.dropFirst(rowId.count + 1))
+        let entries = row.hasVariants ? GraphicsPlayout.variantEntries(row) : row.kind == GraphicsRow.guest ? guestEntries(row) : []
+        return (row, entries.first { $0.sourceId == sourceId })
+    }
+
+    func typeableFields(_ row: GraphicsRow) -> [GraphicsTypeableField] {
+        GraphicsRowFields.typeable(row, state: state, pins: document.templates,
+                                   titleKey: row.kind == GraphicsRow.guest ? nil : GraphicsRowFields.titleFieldKey(row))
+    }
+
+    /// The inspector, top to bottom, in Windows' RefreshInspector order (:598-692). Empty = no row
+    /// selected (the view shows the hint). Sources-column pickers are not on the Mac (owner decision 6).
+    func inspectorSections(for key: String) -> [GraphicsInspectorSection] {
+        guard let (row, entry) = selection(key) else { return [] }
+        var out: [GraphicsInspectorSection] = [
+            .header(title: entry?.label ?? row.name, caption: entry.map { "Guest · " + $0.sourceId } ?? Self.caption(row)),
+            .name,
+        ]
+        if row.kind == GraphicsRow.guest && row.followSources {
+            out.append(.titleLine(key: "title", readOnly: true))
+        } else if let key = GraphicsRowFields.titleFieldKey(row) {
+            out.append(.titleLine(key: key, readOnly: false))
         }
-        return template.fields.filter { $0.type == "string" || $0.type == "number" }
+        out += typeableFields(row).map(GraphicsInspectorSection.typeable)
+        if row.kind == GraphicsRow.guest { out.append(.fromSources) }
+        if row.kind == GraphicsRow.guest || row.hasVariants { out.append(.namesList) }
+        if row.dataBinding != nil { out.append(.data) }
+        out += [.hidesAfter, .hotkey, .hotkeyHint, .openInDesign]
+        if row.templateId.isEmpty && row.image == nil { out.append(.noGraphicWarning) }
+        return out
     }
 
     // ── lines ────────────────────────────────────────────────────────────────
@@ -210,4 +298,42 @@ extension GraphicsModel {
     func cue(_ entry: GraphicsPlaylistEntry) { perform { await $0.cue(entry) } }
     func show(_ entry: GraphicsPlaylistEntry) { perform { await $0.show(entry) } }
     func hide(entry: GraphicsPlaylistEntry) { hide(entry.instanceId) }
+
+    // ── countdown transport (GraphicsPlayoutControl.cs:454-465) ──────────────
+
+    /// Start / Pause / Resume / Reset appear only on rows whose clock is a countdown.
+    nonisolated static func showsClockTransport(_ row: GraphicsRow) -> Bool { row.clock?["mode"] as? String == "countdown" }
+
+    /// The row's own instance (a clock row is a single-line row).
+    func clockInstance(_ row: GraphicsRow) -> GraphicsInstance? {
+        state?.instance(GraphicsPlayoutIds.instanceId(rowId: row.id, sourceId: ""))
+    }
+
+    @discardableResult
+    func clock(rowId: String, action: String) -> Task<GraphicsOperationResult, Never> {
+        guard rows.contains(where: { $0.id == rowId }) else {
+            // Windows StudioControlSurface (:498) refuses an unknown row before playout runs.
+            let refused = GraphicsOperationResult.refused("That playlist row does not exist.")
+            report(refused)
+            return Task { refused }
+        }
+        return perform { await $0.clock(GraphicsPlaylistEntry(rowId: rowId, sourceId: "", name: "", title: ""), action: action) }
+    }
+}
+
+/// The countdown row's readout (GraphicsPlayoutControl.cs:458): the core's clock text and state when
+/// the instance has a clock, else the row's duration and "not cued". C#'s m\:ss TimeSpan format is kept
+/// byte for byte, including its quirk: the minutes component is 0-59, so hours are dropped (3600 s reads
+/// "0:00"; plan D3, owner decision 7: noted for a Windows fix, not diverged).
+enum GraphicsClockReadout {
+    static func text(row: GraphicsRow, instance: GraphicsInstance?) -> String {
+        if let clock = instance?.clock { return "\(clock.text) · \(clock.state)" }
+        return minutesSeconds((row.clock?["durationSeconds"] as? NSNumber)?.intValue ?? 300) + " · not cued"
+    }
+
+    /// TimeSpan.FromSeconds(s).ToString(@"m\:ss").
+    static func minutesSeconds(_ totalSeconds: Int) -> String {
+        let minutes = (totalSeconds / 60) % 60, seconds = totalSeconds % 60
+        return "\(minutes):" + (seconds < 10 ? "0" : "") + "\(seconds)"
+    }
 }

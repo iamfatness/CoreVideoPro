@@ -16,7 +16,7 @@ namespace CoreVideoPro.MediaCore.Tests;
 /// without the vectors changing in the same commit. The Mac shell replays every row
 /// (COREVIDEO_SHELL_TESTS, ShellTestsGraphics.swift). Regenerate with
 /// COREVIDEO_WRITE_GRAPHICS_SHELL_VECTORS=1.</summary>
-public sealed class GraphicsShellVectorTests
+public sealed partial class GraphicsShellVectorTests
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions Pretty = new()

@@ -29,6 +29,9 @@ final class GraphicsModel: ObservableObject {
     @Published var documentReadOnly = false
     @Published var documentStatus = ""
     @Published var documentLoaded = false
+    /// Operate's selection, as Windows `_selectedKey`: "", a row id, or "rowId|sourceId" for a
+    /// Guest or names-list line (GraphicsPlayoutControl.Select).
+    @Published var selectedKey = ""
     /// Set by every accepted lower-third Hide, cleared by every accepted Show
     /// (spec 5.5). Nothing reads it while Auto is retired on Mac.
     @Published var lowerThirdAutomationSuppressed = false

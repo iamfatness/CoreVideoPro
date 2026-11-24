@@ -16,13 +16,19 @@ enum TabPageLayout {
     static func maxWidth(for tab: StudioTab) -> CGFloat {
         switch tab {
         // Tables and grids: use the window, like Windows.
-        case .sources, .routing, .diagnose: return .infinity
+        // Graphics: Windows' OverlaysPage fills the page (playlist + a 300 px inspector).
+        case .sources, .routing, .diagnose, .overlays: return .infinity
         // The mixer asks for 1000 itself (AudioConsole.swift).
         case .audio: return 1000
         // Forms and cards: a readable measure.
-        case .studio, .zoom, .scenes, .overlays, .media, .automation, .settings: return 720
+        case .studio, .zoom, .scenes, .media, .automation, .settings: return 720
         }
     }
+
+    /// A page that owns its own scrolling and fills the window's height (Windows hosts the
+    /// Graphics page in a fixed-height Border: its playlist and inspector scroll on their own,
+    /// StudioWorkspace.xaml:725-728). Every other tab scrolls as one page.
+    static func fillsHeight(_ tab: StudioTab) -> Bool { tab == .overlays }
 
     /// The width a tab's page actually gets in a window this wide.
     static func pageWidth(for tab: StudioTab, window: CGFloat) -> CGFloat {
@@ -192,7 +198,8 @@ enum TabSnapshotHarness {
             .environment(\.colorScheme, .dark))
         host.frame = NSRect(x: 0, y: 0, width: width, height: 100)
         host.layoutSubtreeIfNeeded()
-        let height = max(100, host.fittingSize.height)
+        // A page that fills the window (Graphics) has no fitting height of its own: give it a window's.
+        let height = TabPageLayout.fillsHeight(tab) ? 760 : max(100, host.fittingSize.height)
         let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: width, height: height),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .darkAqua)
