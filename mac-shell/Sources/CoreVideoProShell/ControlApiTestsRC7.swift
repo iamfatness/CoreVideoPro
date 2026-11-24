@@ -27,6 +27,7 @@ extension ShellTests {
         [
             ("control/action-vectors-shape", testActionVectorsShape),
             ("control/rc7-srt-vectors", testRC7SrtVectors),
+            ("control/rc7-srt-host-injection", testRC7SrtHostInjection),
             ("control/rc7-multiview-actions", testRC7MultiviewActions),
             ("control/rc7-scene-route-parse", testRC7SceneRouteParse),
             ("control/rc7-scene-routes", testRC7SceneRoutes),
@@ -429,6 +430,36 @@ extension ShellTests {
             expectEqual(model.scenes.filter { $0.id == "two-up" }.count, 1, "a present starter is not duplicated")
             expectEqual(model.studioCommandStatus, AppModel.restoreStatus([]), "nothing was missing")
             expectEqual(model.removedStarterSceneIds, ["two-up"], "nothing missing: Windows returns early, the set is untouched")
+        }
+    }
+
+    /// SECURITY (2026-11-23 review): the host lands in the srt:// URL whose query carries
+    /// mode, passphrase and streamid. An IPv6 zone id is accepted only as 1-15
+    /// [A-Za-z0-9_.-]; '?', '&', '#', '/', '%', '@' and whitespace never pass. (Windows'
+    /// Uri.CheckHostName accepts the zone-id strings below; the native URL builder refuses
+    /// them too, SrtFfmpegArgsTest RefusesHostsThatCouldInjectUrlOptions.)
+    /// Mutation: accept everything after '%' (the first five strings go green).
+    @MainActor
+    static func testRC7SrtHostInjection() {
+        let refused = [
+            "fe80::1%en0?passphrase=x&mode=listener", "fe80::1%en0&mode=listener", "fe80::1%en0#x",
+            "fe80::1%en 0", "fe80::1%", "fe80::1%abcdefghijklmnop", "fe80::1%en0/x",
+            "host?mode=listener", "host&mode=listener", "user@host", "host name",
+        ]
+        for host in refused {
+            expect(!SrtDestinationControlPolicy.isHostName(host), "refused host: \(host)")
+            let model = takeModel(FakeTakeCore())
+            var saved = false
+            model.srtDestinationSaver = { _, _ in saved = true; return true }
+            let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+            let result = invoke(surface, "transport.stream.srt.configure",
+                                [true, "caller", host, "9000", "120", "", "0"])
+            expectEqual(result, .fail(SrtDestinationControlPolicy.hostRefusal), "configure refuses \(host)")
+            expect(!saved, "\(host): nothing saved")
+            expect(!(result?.error ?? "").contains("passphrase=x"), "\(host): the reply never echoes it")
+        }
+        for host in ["fe80::1%en0", "fe80::1%utun_3.a-b", "::1", "example.test", "192.168.1.20"] {
+            expect(SrtDestinationControlPolicy.isHostName(host), "accepted host: \(host)")
         }
     }
 }

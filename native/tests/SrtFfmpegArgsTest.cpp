@@ -196,6 +196,58 @@ TEST(SrtFfmpegArgs, AcceptsHostPortPastedIntoTheHostField) {
   EXPECT_NE(result.url.find("srt://relay.example.net:7001?"), std::string::npos);
 }
 
+// SECURITY (2026-11-23 review): the host is written into the srt:// URL, and
+// that URL's query carries mode, passphrase and streamid. A host that smuggles
+// '?', '&', '#', '/', '%', '@' or whitespace could rewrite those options (for
+// example turn a caller into a listener, or swap the passphrase). The .NET host
+// check the Windows shell uses accepts "fe80::1%en0?passphrase=x&mode=listener"
+// as IPv6 (everything after '%' passes as a scope id), so the core must refuse
+// these itself, whatever the shell validated.
+TEST(SrtFfmpegArgs, RefusesHostsThatCouldInjectUrlOptions) {
+  for (const std::string host : {
+           "fe80::1%en0?passphrase=x&mode=listener", "fe80::1%en0&mode=listener",
+           "fe80::1%en0#x", "fe80::1%en 0", "fe80::1%", "fe80::1%abcdefghijklmnop",
+           "host?mode=listener", "host&mode=listener", "host#x", "host/path", "host name",
+           "host%20x", "user@host", "host\tx", "[fe80::1]x", "[::1", "::1]"}) {
+    auto config = baseConfig();
+    config.host = host;
+    const auto result = buildSrtUrl(config);
+    EXPECT_FALSE(result.valid) << "host must be refused: " << host << " -> " << result.url;
+    EXPECT_EQ(result.url, "") << host;
+  }
+}
+
+// An IPv6 literal is bracketed in the URL (otherwise its last group reads as a
+// port), with an allow-listed zone id kept inside the brackets.
+TEST(SrtFfmpegArgs, BracketsIpv6LiteralsAndKeepsAnAllowListedZone) {
+  auto config = baseConfig();
+  config.host = "fe80::1";
+  auto result = buildSrtUrl(config);
+  ASSERT_TRUE(result.valid) << result.error;
+  EXPECT_EQ(result.url.rfind("srt://[fe80::1]:9000?mode=caller&", 0), 0u) << result.url;
+
+  config.host = "[::1]";
+  result = buildSrtUrl(config);
+  ASSERT_TRUE(result.valid) << result.error;
+  EXPECT_EQ(result.url.rfind("srt://[::1]:9000?", 0), 0u) << result.url;
+
+  config.host = "fe80::1%en0";
+  result = buildSrtUrl(config);
+  ASSERT_TRUE(result.valid) << result.error;
+  EXPECT_EQ(result.url.rfind("srt://[fe80::1%en0]:9000?", 0), 0u) << result.url;
+
+  SrtEndpointConfig pasted;   // "[addr]:port" pasted into the host field
+  pasted.host = "srt://[2001:db8::7]:7001";
+  result = buildSrtUrl(pasted);
+  ASSERT_TRUE(result.valid) << result.error;
+  EXPECT_EQ(result.url.rfind("srt://[2001:db8::7]:7001?", 0), 0u) << result.url;
+
+  config.host = "192.168.1.20";
+  result = buildSrtUrl(config);
+  ASSERT_TRUE(result.valid) << result.error;
+  EXPECT_EQ(result.url.rfind("srt://192.168.1.20:9000?", 0), 0u) << result.url;
+}
+
 // Fail as a configuration error rather than at FFmpeg spawn time, where the
 // message is far less useful mid-show.
 TEST(SrtFfmpegArgs, RefusesIncompleteOrInvalidEndpoints) {
