@@ -3415,6 +3415,34 @@ TEST(OutputSenderAdapter, DefaultSenderWarnsWhenRequestedDestinationHasNoModule)
 #endif
 }
 
+// The same missing-module branch, independent of the NDI build flag. The case
+// above runs only in an RTMP-on/NDI-off build, and since Phase 4 Task 8 turned
+// NDI output on in the macOS CI job no CI configuration is that shape any more.
+// No build has a WebRTC sender, so "webrtc" reaches the branch everywhere the
+// default module set uses the composite sender (RTMP on).
+TEST(OutputSenderAdapter, DefaultSenderWarnsForANetworkDestinationNoBuildHas) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto modules = corevideo::modules::createDefaultModules();
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 1920;
+  frame.height = 1080;
+  frame.frameNumber = 9;
+  frame.renderPlanId = "missing-webrtc-output-plan";
+
+  const auto session = modules.outputSender->sync({"webrtc"}, &frame, 123);
+
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.status, "warning");
+  EXPECT_EQ(session.senders[0].destination, "webrtc");
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_EQ(session.senders[0].lastResultCode, "webrtc-output-unavailable");
+  EXPECT_EQ(session.senders[0].warning,
+            "WEBRTC output is selected, but no WEBRTC sender module is available in this build.");
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(OutputSenderAdapter, SyncAcceptsRealProgramAudioWithoutChangingDiagnostics) {
   // The IOutputSender::sync boundary now carries the real program-audio mix. The
   // synthetic stub sender must accept the extra audio params and keep identical

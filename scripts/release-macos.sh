@@ -174,7 +174,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Clean builds ────────────────────────────────────────────────────────────
-log "core (clean Release: Metal + AVF encoder/capture + SCK + CoreAudio + RTMP)"
+log "core (clean Release: Metal + AVF encoder/capture + SCK + CoreAudio + RTMP + NDI output)"
 rm -rf "$CORE_BUILD"
 cmake -S native -B "$CORE_BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
@@ -185,7 +185,8 @@ cmake -S native -B "$CORE_BUILD" -G Ninja \
     -DCOREVIDEO_WITH_COREAUDIO=ON \
     -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON \
     -DCOREVIDEO_WITH_RTMP_OUTPUT=ON \
-    -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
+    -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON \
+    -DCOREVIDEO_WITH_NDI_OUTPUT=ON
 cmake --build "$CORE_BUILD" --target corevideo-native corevideo-plugin-host corevideo-child-guard
 
 # The LGPL ffmpeg the app ships (cached by SHA-256 of the lock + build script).

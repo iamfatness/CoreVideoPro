@@ -2137,6 +2137,10 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createHlsOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
+// Test seam: the Program NDI sender probing exactly `candidates` instead of the
+// platform search list, so a test can model a machine with no NDI install.
+// nullptr when NDI output is not built. Nothing outside native/tests calls it.
+std::unique_ptr<IOutputSender> createNdiOutputSenderWithCandidatesForTest(std::vector<std::string> candidates);
 // The NDI graphics-key sender: destination "ndi-graphics", a second libNDI
 // source carrying ProgramFrame::graphicsKeyBgraShared as BGRA with straight
 // alpha (fill+key in one stream) and no audio. Same runtime probe and build
