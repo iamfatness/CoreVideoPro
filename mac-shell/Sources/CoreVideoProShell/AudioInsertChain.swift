@@ -171,14 +171,15 @@ enum InsertChainPolicy {
 
 // ── A7 Task 3: processing targets ───────────────────────────────────────────
 //
-// Windows' SETUP "Processing target" picker (SVM RefreshAudioProcessingTargets,
-// SVM:11506-11603): one target per channel strip ("channel:<id>"), then
+// Windows' SETUP "Processing target" picker (SVM:11506-11609,
+// RefreshAudioProcessingTargets): one target per channel strip ("channel:<id>"), then
 // "bus:master", then every other bus in header order. A channel target edits
 // that strip's own chain (ChannelInserts.chain); a bus target edits a
 // session-only chain that rides EVERY send to that bus
-// (AudioConsolePolicy.baseRoutingSends, SVM:9221-9229).
+// (AudioConsolePolicy.baseRoutingSends, SVM:9222-9230).
 
-/// One entry of the processing-target picker (Windows AudioProcessingTargetOption).
+/// One entry of the processing-target picker (Windows
+/// Models/RoutingMatrixModels.cs:109, AudioProcessingTargetOption).
 struct AudioProcessingTarget: Identifiable, Equatable {
     let id: String
     let label: String
@@ -191,13 +192,13 @@ enum AudioProcessingTargetPolicy {
     /// SVM:508 `_selectedAudioProcessingTargetId = "bus:master"`.
     static let defaultTargetId = "bus:master"
 
-    /// SVM FormatChannelProcessingTargetId.
+    /// SVM:5670 (FormatChannelProcessingTargetId).
     static func channelId(_ stripId: String) -> String { "channel:\(stripId)" }
 
-    /// SVM FormatBusProcessingTargetId.
+    /// SVM:5672 (FormatBusProcessingTargetId).
     static func busId(_ busId: String) -> String { "bus:\(busId)" }
 
-    /// The strip or bus a target id names (SVM TryParseChannelProcessingTargetId:
+    /// The strip or bus a target id names (SVM:5674-5684, TryParseChannelProcessingTargetId:
     /// a case-insensitive "channel:" prefix and a non-empty id). An id that is
     /// neither yields (nil, nil).
     static func parse(_ id: String) -> (channel: String?, bus: String?) {
@@ -214,7 +215,7 @@ enum AudioProcessingTargetPolicy {
         return (nil, nil)
     }
 
-    /// SVM ResolveBusProcessingKind (SVM:11614-11637), verbatim.
+    /// SVM:11614-11637 (ResolveBusProcessingKind), verbatim.
     static func kind(busId: String) -> String {
         let lowered = busId.lowercased()
         if lowered == "master" { return "Master bus" }
@@ -224,7 +225,7 @@ enum AudioProcessingTargetPolicy {
         return "Bus"
     }
 
-    /// SVM ResolveBusProcessingDetail (SVM:11639-11649), verbatim. The fixed
+    /// SVM:11639-11649 (ResolveBusProcessingDetail), verbatim. The fixed
     /// names compare ordinally, the prefixes case-insensitively, as on Windows.
     static func detail(busId: String) -> String {
         switch busId {
@@ -240,7 +241,7 @@ enum AudioProcessingTargetPolicy {
         }
     }
 
-    /// SVM FormatInsertLabel (SVM:11611-11612).
+    /// SVM:11611-11612 (FormatInsertLabel).
     static func insertLabel(_ chain: [String]) -> String {
         chain.isEmpty ? "No inserts" : chain.joined(separator: " + ")
     }

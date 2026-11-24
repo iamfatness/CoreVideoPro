@@ -4829,14 +4829,14 @@ final class AppModel: ObservableObject {
     /// reassertAudioConsole() re-sends.
     @Published var busInserts: [String: [String]] = [:]
 
-    /// SVM SelectParticipant (SVM:4688-4693): selecting a strip also selects
+    /// SVM:4688-4693 (SelectParticipant): selecting a strip also selects
     /// its channel processing target.
     func selectAudioStrip(_ id: String) {
         selectedAudioStripId = id
         selectProcessingTarget(AudioProcessingTargetPolicy.channelId(id))
     }
 
-    /// SVM SelectAudioProcessingTarget (SVM:4695-4713): only a target that
+    /// SVM:4695-4713 (SelectAudioProcessingTarget): only a target that
     /// exists is selected.
     func selectProcessingTarget(_ id: String) {
         guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -4850,7 +4850,7 @@ final class AppModel: ObservableObject {
             buses: buses, channelChains: channelInserts.mapValues(\.chain), busChains: busInserts)
     }
 
-    /// SVM ResolvePrimaryAudioBusLabel (SVM:11651-11661): the first routed bus
+    /// SVM:11651-11661 (ResolvePrimaryAudioBusLabel): the first routed bus
     /// in header order, else "MASTER".
     func primaryBusLabel(_ stripId: String) -> String {
         buses.first { audioSends[stripId]?[$0.id] != nil }?.label ?? "MASTER"
@@ -4870,7 +4870,7 @@ final class AppModel: ObservableObject {
     }
 
     /// A strip or bus that left while selected falls back to bus:master.
-    /// Windows (SVM:11591-11596) falls back to the FIRST target; the Mac uses
+    /// Windows (SVM:11592-11597) falls back to the FIRST target; the Mac uses
     /// bus:master, the documented default, because the first target is a
     /// channel and moves with roster churn.
     private func reconcileAudioSelection() {
@@ -4890,7 +4890,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// SVM ResolveAudioProcessingTargetName (SVM:5653-5665): a channel's
+    /// SVM:5653-5665 (ResolveAudioProcessingTargetName): a channel's
     /// display name, else the bus header label, else the raw id.
     private func processingTargetName(_ targetId: String) -> String {
         let target = AudioProcessingTargetPolicy.parse(targetId)
@@ -4899,7 +4899,7 @@ final class AppModel: ObservableObject {
         return targetId
     }
 
-    /// SVM AddAudioProcessingInsert (SVM:5570-5596), statuses verbatim. On a
+    /// SVM:5570-5599 (AddAudioProcessingInsert), statuses verbatim. On a
     /// bus target, an insert the bus chain cannot process is refused (OD-1).
     func addProcessingInsert(_ raw: String) {
         guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -4939,7 +4939,7 @@ final class AppModel: ObservableObject {
         pushRoutingBase()
     }
 
-    /// SVM RemoveAudioProcessingInsert (SVM:2618-2632): case-insensitive, the
+    /// SVM:2618-2632 (RemoveAudioProcessingInsert): case-insensitive, the
     /// status names the insert as given; nothing removed, nothing said.
     func removeProcessingInsert(_ insertName: String) {
         let targetId = selectedProcessingTargetId
@@ -4960,7 +4960,7 @@ final class AppModel: ObservableObject {
         takeStatus = "Removed \(insertName) from \(processingTargetName(targetId))"
     }
 
-    /// SVM ClearAudioProcessingInserts (SVM:5615-5631).
+    /// SVM:5615-5631 (ClearAudioProcessingInserts).
     func clearProcessingInserts() {
         let targetId = selectedProcessingTargetId
         let target = AudioProcessingTargetPolicy.parse(targetId)
@@ -5053,7 +5053,7 @@ final class AppModel: ObservableObject {
             mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
             operatorEdits: operatorRouteEdits,
             zoomAudioMode: zoomAudioMode, meetingAudio: meetingAudioSubscribed,
-            busInserts: busInserts)
+            busInserts: wireBusInserts)
         let busSends = AudioBusPolicy.busSends(buses)
         let monitorBusId = listenBusId ?? ""
         // Never an EMPTY matrix (the core holds-last on a blank). A matrix whose
@@ -5175,13 +5175,15 @@ final class AppModel: ObservableObject {
             return
         }
         var sends: [JSONObject] = []
+        let wireBusChains = wireBusInserts
         for (source, buses) in audioSends {
             for (bus, gainDb) in buses {
                 sends.append([
                     "sourceId": source, "busId": bus,
                     "gainDb": max(-60, min(10, gainDb)),
-                    // A7: the bus chain rides this path too (SVM:9221-9229).
-                    "busPluginInserts": busInserts[bus] ?? [],
+                    // A7: the bus chain rides this path too (SVM:9222-9230),
+                    // plug-in names gated on the host like the base matrix.
+                    "busPluginInserts": wireBusChains[bus] ?? [],
                 ])
             }
         }
