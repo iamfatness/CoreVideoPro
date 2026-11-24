@@ -1,0 +1,61 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-shapes",
+ "templateVersion": 1,
+ "name": "p-shapes",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 800,
+  "height": 240
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "r",
+   "type": "rect",
+   "x": 10,
+   "y": 10,
+   "width": 240,
+   "height": 200,
+   "fill": "#2050A0",
+   "cornerRadius": 24,
+   "stroke": "#FFFFFF",
+   "strokeWidth": 6
+  },
+  {
+   "id": "e",
+   "type": "ellipse",
+   "x": 280,
+   "y": 10,
+   "width": 240,
+   "height": 200,
+   "fill": "#C04020",
+   "stroke": "#FFFFFF",
+   "strokeWidth": 4
+  },
+  {
+   "id": "l",
+   "type": "line",
+   "x": 550,
+   "y": 10,
+   "width": 230,
+   "height": 200,
+   "stroke": "#F0C030",
+   "strokeWidth": 8,
+   "diagonal": "down"
+  }
+ ]
+}

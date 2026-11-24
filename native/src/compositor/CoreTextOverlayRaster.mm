@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
+#include "compositor/CoreTextThumbnail.h"
 #include "graphics/GraphicsTextCoreText.h"
 #include "graphics/GraphicsTemplate.h"
 #include "modules/OverlayTileRaster.h"
@@ -154,6 +155,29 @@ ImageInput openPackagedImage(const graphics::GraphicsAsset& asset) {
       width != asset.width || height != asset.height) return {};
   // Keeps the bytes the no-copy CFData points at alive for the decode.
   return {std::move(source), uint64_t(width) * height * 12};
+}
+
+// Decodes the image NOW and returns it backed by its decoded bytes, or null
+// when the pixels do not decode. ImageIO defers the decode: for a corrupt
+// stream (a bad zlib/IDAT payload) CGImageSourceCreateImageAtIndex still
+// returns an image, which then draws nothing, so a broken asset would prepare
+// "ready" and air a blank. Copying the provider's bytes forces the decode and
+// surfaces the failure on the worker, as WIC's CreateBitmapFromWicBitmap does
+// on Windows. The copy is the decoded allowance the budget already charges.
+CfRef<CGImageRef> decodeImageNow(CGImageSourceRef source) {
+  if (!source) return {};
+  CfRef<CGImageRef> lazy(CGImageSourceCreateImageAtIndex(source, 0, nullptr));
+  if (!lazy) return {};
+  CGDataProviderRef provider = CGImageGetDataProvider(lazy.get());
+  CfRef<CFDataRef> pixels(provider ? CGDataProviderCopyData(provider) : nullptr);
+  const size_t rowBytes = CGImageGetBytesPerRow(lazy.get()), height = CGImageGetHeight(lazy.get());
+  if (!pixels || rowBytes == 0 || size_t(CFDataGetLength(pixels.get())) < rowBytes * height) return {};
+  CfRef<CGDataProviderRef> decoded(CGDataProviderCreateWithCFData(pixels.get()));
+  if (!decoded) return {};
+  return CfRef<CGImageRef>(CGImageCreate(CGImageGetWidth(lazy.get()), height, CGImageGetBitsPerComponent(lazy.get()),
+      CGImageGetBitsPerPixel(lazy.get()), rowBytes, CGImageGetColorSpace(lazy.get()), CGImageGetBitmapInfo(lazy.get()),
+      decoded.get(), CGImageGetDecode(lazy.get()), CGImageGetShouldInterpolate(lazy.get()),
+      CGImageGetRenderingIntent(lazy.get())));
 }
 
 
@@ -313,7 +337,7 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
         if (bitmap == bitmaps.end()) {
           const auto source = images.find(p.image->id);
           if (source != images.end() && source->second.source) {
-            CfRef<CGImageRef> decoded(CGImageSourceCreateImageAtIndex(source->second.source.get(), 0, nullptr));
+            CfRef<CGImageRef> decoded(decodeImageNow(source->second.source.get()));
             if (decoded) {
               CfRef<CGImageRef> retagged(
                   CGColorSpaceGetModel(CGImageGetColorSpace(decoded.get())) == kCGColorSpaceModelRGB
@@ -490,17 +514,11 @@ id<MTLTexture> CoreTextOverlayRaster::rasterOverlayTexture(
   // cache hit allocates nothing.
   if (!activeLease_) {
     Request request{device, overlay, width, height, strictResources};
-    uint64_t admissionBytes = uint64_t(width) * height * 8;
-    if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition) {
-      const auto& definition = *overlay.graphicsTemplate->definition;
-      const auto& motion = definition.motionSummary();
-      if (motion.layered && !overlay.graphicsTemplate->wholeGraphicMotion) {
-        const auto maxRuns = 2 * motion.units + 1;
-        const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (height + 3) - 2);
-        const auto maxWidth = uint64_t(std::min(16384., 1 + std::ceil(height * definition.width() / definition.height())));
-        admissionBytes = std::min<uint64_t>(256ull * 1024 * 1024, maxWidth * maxHeight * 4);
-      }
-    }
+    // Bounds the atlas for layered motion AND crawls. CompositorOverlayRaster.cpp
+    // still inlines the layered-only bound, which refuses a crawl longer than
+    // about two raster widths ("exceeded its admitted budget"): Windows-session
+    // agenda item, switch it to this shared helper.
+    const uint64_t admissionBytes = graphics::overlayAdmissionBytes(overlay.graphicsTemplate.get(), width, height);
     activeLease_ = cache_.findOrRequest(key, std::move(request),
         admissionBytes + (overlay.imageUri.empty() ? 0 : 128ull * 1024 * 1024), preparationSlot);
   }
@@ -576,7 +594,7 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     compositor::invokeOverlayRasterPrepareHook();
     const auto& overlay = request.overlay;
     const int widthPx = request.width, heightPx = request.height;
-    if (!request.device) return {{}, 0, "Native graphics preparation unavailable."};
+    if (!request.device && !request.thumbnail) return {{}, 0, "Native graphics preparation unavailable."};
     std::string warning;
     // Template content resolves HERE, on the worker (fields, brand, layout with
     // Core Text measurement). A resolve error is a failed preparation.
@@ -623,7 +641,16 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     int textureWidth = widthPx, textureHeight = heightPx;
     const double scale = drawing.height > 0 ? double(heightPx) / drawing.height : 1.0;
     std::shared_ptr<graphics::GraphicsRunLayout> runs;
-    if (templated && (drawing.crawl || (overlay.graphicsTemplate->definition->motionSummary().layered &&
+    // A thumbnail draws a crawl in one raster: each item at its start, clipped
+    // to the crawl window (CompositorOverlayRaster.cpp thumbnail parity).
+    if (drawing.crawl && request.thumbnail) {
+      for (auto& primitive : drawing.primitives) {
+        if (!primitive.crawlStart) continue;
+        primitive.box.x += *primitive.crawlStart;
+        primitive.clip = graphics::intersect(primitive.box, drawing.crawl->clip);
+      }
+    }
+    if (templated && !request.thumbnail && (drawing.crawl || (overlay.graphicsTemplate->definition->motionSummary().layered &&
                                         !overlay.graphicsTemplate->wholeGraphicMotion))) {
       runs = std::make_shared<graphics::GraphicsRunLayout>();
       runs->width = drawing.width;
@@ -712,7 +739,7 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
       CGContextFillRect(cg, bottomUp(layout.accentBar, heightPx));
     }
     if (layout.hasImage) {
-      CfRef<CGImageRef> decoded(image.source ? CGImageSourceCreateImageAtIndex(image.source.get(), 0, nullptr) : nullptr);
+      CfRef<CGImageRef> decoded(decodeImageNow(image.source.get()));
       if (!decoded) {
         warning += " Logo unavailable; image omitted.";
         complete = false;
@@ -751,6 +778,29 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     if (request.strictResources && !complete)
       return {{}, 0, warning.empty() ? "Graphics resources could not be prepared completely." : warning};
 
+    if (request.thumbnail) {
+      // PNG stores straight alpha: ImageIO un-premultiplies the premultiplied
+      // BGRA bitmap on encode (WIC's format converter does the same on Windows).
+      CfRef<CFDataRef> bytes(CFDataCreate(kCFAllocatorDefault, pixels.data(), CFIndex(pixels.size())));
+      CfRef<CGDataProviderRef> provider(bytes ? CGDataProviderCreateWithCFData(bytes.get()) : nullptr);
+      CfRef<CGImageRef> bitmap(provider ? CGImageCreate(size_t(textureWidth), size_t(textureHeight), 8, 32, stride,
+          space.get(), CGBitmapInfo(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little, provider.get(),
+          nullptr, false, kCGRenderingIntentDefault) : nullptr);
+      CfRef<CFMutableDataRef> encoded(CFDataCreateMutable(kCFAllocatorDefault, 0));
+      CfRef<CGImageDestinationRef> destination(bitmap && encoded
+          ? CGImageDestinationCreateWithData(encoded.get(), CFSTR("public.png"), 1, nullptr) : nullptr);
+      if (!destination) return {{}, 0, "Native thumbnail PNG encoding failed."};
+      CGImageDestinationAddImage(destination.get(), bitmap.get(), nullptr);
+      if (!CGImageDestinationFinalize(destination.get())) return {{}, 0, "Native thumbnail PNG encoding failed."};
+      const auto length = CFDataGetLength(encoded.get());
+      if (length <= 0 || length > 256 * 1024) return {{}, 0, "Native thumbnail exceeds its encoded limit."};
+      auto entry = std::make_shared<MetalRasterTex>();
+      entry->thumbnail.assign(CFDataGetBytePtr(encoded.get()), CFDataGetBytePtr(encoded.get()) + length);
+      std::vector<uint8_t>().swap(pixels);
+      budget->finishPreparation();
+      return {std::move(entry), 0, warning};
+    }
+
     MTLTextureDescriptor* descriptor =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                            width:NSUInteger(textureWidth)
@@ -773,6 +823,24 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     budget->finishPreparation();
     return {std::move(entry), textureBytes, warning};
   }
+}
+
+std::vector<uint8_t> coreTextThumbnailPng(const CompositorOverlayContent& overlay, int width, int height,
+                                          std::string& warning) {
+  if (width < 1 || height < 1 || width > 320 || height > 180) {
+    warning = "Invalid thumbnail dimensions.";
+    return {};
+  }
+  CoreTextOverlayRaster::Request request;
+  request.overlay = overlay;
+  request.width = width;
+  request.height = height;
+  request.strictResources = true;
+  request.thumbnail = true;
+  const auto result = CoreTextOverlayRaster::prepareRaster(request);
+  warning = result.warning;
+  // The entry (and its budget lease) is released when `result` goes out of scope.
+  return result.asset ? result.asset->thumbnail : std::vector<uint8_t>{};
 }
 
 }  // namespace corevideo::modules

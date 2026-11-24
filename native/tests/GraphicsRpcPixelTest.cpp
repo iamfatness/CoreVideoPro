@@ -15,8 +15,8 @@
 
 // Runs on every GPU compositor that supports graphics instances: D3D11 on
 // Windows and, since Metal graphics backend G2, Metal on macOS. Tests that open
-// a DXGI shared handle (the private preview) or call the D3D raster directly
-// (thumbnails) stay D3D11-only until G6 / G5.
+// a DXGI shared handle (the private preview) stay D3D11-only until G6.
+// Thumbnails run on both since G5, through a raster-neutral helper.
 #if COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL
 #include <filesystem>
 #include <fstream>
@@ -25,9 +25,20 @@
 #include <d3d11.h>
 #include "compositor/ComPtrLite.h"
 #include "compositor/CompositorOverlayRaster.h"
+#else
+#include "compositor/CoreTextThumbnail.h"
 #endif
 
 namespace {
+// The library thumbnail on this platform's native raster.
+std::vector<uint8_t> nativeThumbnail(const corevideo::modules::CompositorOverlayContent& overlay, int width, int height,
+                                     std::string& error) {
+#if COREVIDEO_WITH_D3D11
+  return corevideo::modules::CompositorOverlayRaster{}.thumbnailPng(overlay, width, height, error);
+#else
+  return corevideo::modules::coreTextThumbnailPng(overlay, width, height, error);
+#endif
+}
 std::unique_ptr<corevideo::modules::ICompositor> createGraphicsTestCompositor() {
 #if COREVIDEO_WITH_D3D11
   return corevideo::modules::createD3D11Compositor();
@@ -925,7 +936,7 @@ TEST(GraphicsCompositionPixel, BarLeadsTheWordsOnProgramPixels) {
     EXPECT_NEAR((black[channel] + opaque[channel]) / 2., blended[channel], 2.);
 }
 
-#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
 TEST(GraphicsCompositionPixel, ThumbnailForALayeredTemplateMatchesItsSettledDesign) {
   using namespace corevideo;
   const auto manifest = graphics::test::motionFixture("bar-first.json");
@@ -939,7 +950,6 @@ TEST(GraphicsCompositionPixel, ThumbnailForALayeredTemplateMatchesItsSettledDesi
     node = std::move(layer);
   }
   plain["layers"] = std::move(layers);
-  modules::CompositorOverlayRaster raster;
   std::string error;
   const auto thumbnail = [&](const std::string& json) {
     auto input = std::make_shared<graphics::GraphicsTemplateInput>();
@@ -949,7 +959,7 @@ TEST(GraphicsCompositionPixel, ThumbnailForALayeredTemplateMatchesItsSettledDesi
     input->brand = graphics::test::motionBrand();
     modules::CompositorOverlayContent overlay;
     overlay.graphicsTemplate = std::move(input);
-    return raster.thumbnailPng(overlay, 320, 51, error);
+    return nativeThumbnail(overlay, 320, 51, error);
   };
   const auto layered = thumbnail(manifest);
   ASSERT_GT(layered.size(), 100u) << error;

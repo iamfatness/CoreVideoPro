@@ -46,6 +46,9 @@ struct GraphicsMotionSummary {
   size_t units = 0;
   double inMs = 0, outMs = 0;
   bool inFollows = true, outFollows = true;
+  // The template declares a crawl (visible or not): it prepares into an atlas
+  // of one slice per item, like layered motion.
+  bool crawl = false;
 };
 
 struct GraphicsMotionState {

@@ -208,6 +208,7 @@ class Layout {
     return result;
   }
   bool hasUnanimatedLayer() const { return hasUnanimatedLayer_; }
+  bool hasCrawl() const { return hasCrawl_; }
  private:
   Json resolve(const Json* value, const std::string& type) {
     need(value != nullptr, "template-property-required");
@@ -692,6 +693,7 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
       if (unit.root && !unit.out) motion.outFollows = true;
     }
     motion.anyFollows = motion.inFollows || motion.outFollows;
+    motion.crawl = layout.hasCrawl();
     for (const auto& field : fields->asArray()) if (boolean(field,"required"))
       need(analysis.usedFields.count(field.getString("id")) != 0,"required-template-field-unused");
     const auto canonical = d.stringify(); definition->hash_ = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(canonical.data()), canonical.size());
@@ -716,5 +718,20 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::corporateLowerThird() 
     return result;
   }();
   return definition;
+}
+uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, int height) {
+  const uint64_t raster = uint64_t(std::max(width, 0)) * uint64_t(std::max(height, 0)) * 8;
+  if (!input || !input->definition || input->definition->height() <= 0) return raster;
+  const auto& definition = *input->definition;
+  const auto& motion = definition.motionSummary();
+  const bool layered = motion.layered && !input->wholeGraphicMotion;
+  if (!layered && !motion.crawl) return raster;
+  // Each animated subtree can split its surrounding paint run twice; each
+  // crawl item is its own run and splits its surrounding run once more.
+  const uint64_t maxRuns = (layered ? 2 * uint64_t(motion.units) + 1 : 1) + (motion.crawl ? 64 + 1 : 0);
+  const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (uint64_t(height) + 3) - 2);
+  const double sourceWidth = motion.crawl ? 8192. : definition.width();  // bounds and crawl items are <= 8192
+  const auto maxWidth = uint64_t(std::min(16384., 1 + std::ceil(height * sourceWidth / definition.height())));
+  return std::min<uint64_t>(256ull * 1024 * 1024, maxWidth * maxHeight * 4);
 }
 } // namespace corevideo::graphics

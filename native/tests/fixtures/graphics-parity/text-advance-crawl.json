@@ -1,0 +1,50 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-advance",
+ "templateVersion": 1,
+ "name": "p-advance",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1920,
+  "height": 96
+ },
+ "brandTokens": [],
+ "fields": [
+  {
+   "id": "crawl-items",
+   "type": "string",
+   "default": "[\"alpha\", \"bravo\", \"charlie\", \"delta\", \"echo\", \"foxtrot\", \"golf\", \"hotel\", \"india\", \"juliet\"]",
+   "maxLength": 4096
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "crawl",
+   "type": "crawl",
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 96,
+   "speed": 240,
+   "mode": "loop",
+   "font": "Arial",
+   "fontSize": 40,
+   "color": "#FFFFFF",
+   "items": {
+    "field": "crawl-items"
+   }
+  }
+ ]
+}

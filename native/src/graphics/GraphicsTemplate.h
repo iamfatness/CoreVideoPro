@@ -83,4 +83,14 @@ struct GraphicsTemplateInput {
   bool wholeGraphicMotion = false;
   mutable std::shared_ptr<const GraphicsTemplateInput> resolvedDraft;
 };
+// Upper bound, in bytes, that one raster preparation of `input` at
+// width x height px is admitted with by the preparation cache. A plain
+// template (or a legacy overlay, input == nullptr) prepares one raster:
+// width x height x 8. Layered motion (not whole-graphic) and crawls prepare an
+// atlas of one slice per run, so the bound is the atlas's: at most
+// 2 * units + 1 runs of the raster width, plus one run per crawl item (64 at
+// most) and one split of the surrounding run, each item at most 8192 template
+// units wide. Capped at the 256 MiB cache budget. The worker charges the
+// actual atlas against the process budget after layout.
+uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, int height);
 } // namespace corevideo::graphics

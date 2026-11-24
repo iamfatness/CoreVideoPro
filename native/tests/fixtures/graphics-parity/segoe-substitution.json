@@ -1,0 +1,52 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-segoe",
+ "templateVersion": 1,
+ "name": "p-segoe",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 160
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "n",
+   "type": "text",
+   "x": 10,
+   "y": 10,
+   "width": 880,
+   "height": 70,
+   "text": "Segoe UI substitution",
+   "font": "Segoe UI",
+   "fontSize": 52,
+   "color": "#FFFFFF",
+   "fontWeight": 600
+  },
+  {
+   "id": "t",
+   "type": "text",
+   "x": 10,
+   "y": 90,
+   "width": 880,
+   "height": 60,
+   "text": "Selawik on the Mac",
+   "font": "Segoe UI",
+   "fontSize": 36,
+   "color": "#FFFFFF"
+  }
+ ]
+}

@@ -41,6 +41,11 @@ ResolvedFontFamily resolveGraphicsFontFamily(const std::string& requested);
 std::string graphicsFontSubstitutionWarning(const std::string& requested, const std::string& resolved);
 std::string graphicsFontsDirectory();
 size_t registeredBundledGraphicsFonts();
+// "graphics fonts: registered N faces from <dir>", or "graphics fonts: none
+// found at <dir>; Windows families in the substitution table will fail".
+// Registers the bundled faces first (once per process) and names the directory
+// that registration used; the same line is logged once at registration.
+std::string bundledGraphicsFontsSummary();
 
 // +1 reference. Nearest real face of `family` to the CSS-style `weight`
 // (400 regular, 500 medium, 600 semibold, 700 bold); Core Text never

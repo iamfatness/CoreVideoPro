@@ -1,4 +1,5 @@
 #include "graphics/GraphicsTextCoreText.h"
+#include "core/BoundedAsyncLog.h"
 
 #if defined(__APPLE__)
 
@@ -50,9 +51,20 @@ CFStringRef createCfString(const std::string& text) {
 
 std::once_flag gRegisterOnce;
 size_t gRegisteredFaces = 0;
+std::string gRegisteredDirectory;
+
+std::string summaryLine() {
+  return gRegisteredFaces
+      ? "graphics fonts: registered " + std::to_string(gRegisteredFaces) + " faces from " + gRegisteredDirectory
+      : "graphics fonts: none found at " + gRegisteredDirectory + "; Windows families in the substitution table will fail";
+}
 
 void registerBundledFonts() {
   const auto directory = graphicsFontsDirectory();
+  gRegisteredDirectory = directory;
+  struct LogOnExit {
+    ~LogOnExit() { core::nativeLogf("%s\n", summaryLine().c_str()); }
+  } log;
   DIR* dir = opendir(directory.c_str());
   if (!dir) return;
   while (const dirent* entry = readdir(dir)) {
@@ -183,6 +195,11 @@ std::string graphicsFontsDirectory() {
 size_t registeredBundledGraphicsFonts() {
   ensureRegistered();
   return gRegisteredFaces;
+}
+
+std::string bundledGraphicsFontsSummary() {
+  ensureRegistered();
+  return summaryLine();
 }
 
 ResolvedFontFamily resolveGraphicsFontFamily(const std::string& requested) {
