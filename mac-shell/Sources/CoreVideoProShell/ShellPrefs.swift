@@ -195,6 +195,9 @@ struct ShellPrefs: Codable, Equatable {
     // Z1: Zoom camera ceilings ("360p" | "720p" | "1080p", 15/24/25/30/60).
     var zoomCameraMaxResolution: String?
     var zoomCameraMaxFps: Int?
+    // Comms: the operator's "Private comms" choice. nil = never saved = OFF
+    // (owner ruling 2026-11-10; Windows' default too).
+    var commsPrivate: Bool?
     // O1: the recording render profile and the stream encoder settings.
     var recordingProfile: RecordingProfile?
     var streamEncoder: StreamEncoderSettings?
@@ -281,6 +284,7 @@ struct ShellPrefs: Codable, Equatable {
         zoomCameraMaxResolution = ((try? c.decodeIfPresent(String.self,
                                                            forKey: .zoomCameraMaxResolution)) ?? nil)
         zoomCameraMaxFps = ((try? c.decodeIfPresent(Int.self, forKey: .zoomCameraMaxFps)) ?? nil)
+        commsPrivate = ((try? c.decodeIfPresent(Bool.self, forKey: .commsPrivate)) ?? nil)
         recordingProfile = ((try? c.decodeIfPresent(RecordingProfile.self, forKey: .recordingProfile)) ?? nil)
         streamEncoder = ((try? c.decodeIfPresent(StreamEncoderSettings.self, forKey: .streamEncoder)) ?? nil)
     }
@@ -352,6 +356,7 @@ struct ShellPrefs: Codable, Equatable {
         p.localAudioDeviceName = "MacBook Pro Microphone"
         p.zoomCameraMaxResolution = "720p"
         p.zoomCameraMaxFps = 30
+        p.commsPrivate = true
         p.recordingProfile = RecordingProfile(width: 1280, height: 720, codec: "h265",
                                               targetBitrateMbps: 9, audioBitrateKbps: 192)
         p.streamEncoder = StreamEncoderSettings(audioBitrateKbps: 128, keyframeIntervalSeconds: 4,

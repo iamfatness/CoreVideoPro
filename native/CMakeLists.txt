@@ -817,12 +817,45 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
     message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE expected include/ or h/ under ZOOM_SDK_DIR=${ZOOM_SDK_DIR}")
   endif()
 
+  # The Comms mic chain (miniaudio: WASAPI capture + sidetone on Windows,
+  # the CoreAudio backend on macOS). Real engine only. The MA_NO_* macros
+  # change miniaudio's struct layouts, so they are PUBLIC: every translation
+  # unit that sees miniaudio.h must see the same.
+  add_library(corevideo_comms_audio STATIC
+    ${COREVIDEO_COMMS_DIR}/devices.cpp
+    ${COREVIDEO_COMMS_DIR}/engine.cpp
+    ${COREVIDEO_COMMS_DIR}/miniaudio_impl.cpp
+  )
+  target_include_directories(corevideo_comms_audio PUBLIC ${COREVIDEO_COMMS_DIR} zoom-engine/third_party/miniaudio)
+  target_compile_definitions(corevideo_comms_audio PUBLIC MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE MA_NO_NODE_GRAPH)
+  target_link_libraries(corevideo_comms_audio PUBLIC corevideo_comms_core)
+  if(APPLE)
+    # miniaudio's CoreAudio backend, as ZComms CMakeLists.txt links it for its
+    # macOS CI. Without these the link fails on AudioUnit /
+    # AudioObjectGetPropertyData symbols rather than at compile time.
+    target_link_libraries(corevideo_comms_audio PUBLIC
+      "-framework CoreAudio"
+      "-framework AudioToolbox"
+      "-framework CoreFoundation")
+  endif()
+
   if(APPLE)
     # The macOS Meeting SDK is a pure Objective-C framework (no C++ surface),
     # so the engine is the self-contained ObjC++ rewrite in main-macos.mm â€”
     # the Windows sources cannot compile against it. Re-forked from the
     # CoreVideo OBS plugin's mac port; see the header of main-macos.mm.
-    add_executable(corevideo-zoom-engine zoom-engine/engine/main-macos.mm)
+    add_executable(corevideo-zoom-engine
+      zoom-engine/engine/main-macos.mm
+      zoom-engine/engine/engine-comms-macos.mm
+      ${COREVIDEO_COMMS_DIR}/talkback_sdk_mac.mm
+    )
+    # The ported adapter and the comms glue refuse to compile without ARC
+    # (each has its own #error); main-macos.mm is MRC-era ObjC++ and keeps its
+    # flags.
+    set_source_files_properties(${COREVIDEO_COMMS_DIR}/talkback_sdk_mac.mm
+      zoom-engine/engine/engine-comms-macos.mm
+      PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(corevideo-zoom-engine PRIVATE corevideo_comms_audio)
     target_include_directories(corevideo-zoom-engine PRIVATE
       zoom-engine/engine
       zoom-engine/shared
@@ -837,6 +870,9 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
       # The engine hosts an NSApplication: the Zoom macOS SDK is an AppKit
       # client, so a bare NSRunLoop cannot service its delegate callbacks.
       "-framework AppKit"
+      # Comms: the microphone permission check before the mic chain opens
+      # (a denied grant is digital silence on macOS, not an error).
+      "-framework AVFoundation"
     )
     # BUILD_RPATH is required, not optional: the framework is linked through
     # raw -F/-framework flags, so CMake infers no build-tree rpath â€” without
@@ -859,17 +895,6 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
       zoom-engine/engine/engine-comms.cpp
       ${COREVIDEO_COMMS_DIR}/talkback_sdk_win.cpp
     )
-    # The Comms mic chain (miniaudio: WASAPI capture + sidetone). Real engine
-    # only. The MA_NO_* macros change miniaudio's struct layouts, so they are
-    # PUBLIC: every translation unit that sees miniaudio.h must see the same.
-    add_library(corevideo_comms_audio STATIC
-      ${COREVIDEO_COMMS_DIR}/devices.cpp
-      ${COREVIDEO_COMMS_DIR}/engine.cpp
-      ${COREVIDEO_COMMS_DIR}/miniaudio_impl.cpp
-    )
-    target_include_directories(corevideo_comms_audio PUBLIC ${COREVIDEO_COMMS_DIR} zoom-engine/third_party/miniaudio)
-    target_compile_definitions(corevideo_comms_audio PUBLIC MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE MA_NO_NODE_GRAPH)
-    target_link_libraries(corevideo_comms_audio PUBLIC corevideo_comms_core)
     target_link_libraries(corevideo-zoom-engine PRIVATE corevideo_comms_audio)
     # The ported comms headers call std::min/std::max after <windows.h>; Edge
     # builds with NOMINMAX globally. Scoped to the comms translation units so
@@ -1139,6 +1164,7 @@ if(BUILD_TESTING)
   # the ported pieces (tests/comms/test_util.h maps ZC_CHECK onto the shim).
   target_sources(corevideo-native-tests PRIVATE
     tests/CommsRelayTest.cpp tests/CommsCoreTest.cpp tests/CommsProtocolTest.cpp tests/MicGuardTest.cpp
+    tests/EngineCommsPolicyTest.cpp tests/MainQueueTalkbackSdkTest.cpp tests/EngineLineRouteTest.cpp
     tests/comms/ZCommsPortedTest.cpp tests/comms/test_talkback_channels.cpp tests/comms/test_talkback_eligibility.cpp
     tests/comms/test_room_plan.cpp tests/comms/test_reach.cpp tests/comms/test_duck_plan.cpp
     tests/comms/test_envelope.cpp tests/comms/test_limiter.cpp tests/comms/test_frame_accumulator.cpp

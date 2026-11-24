@@ -18,6 +18,8 @@ enum TabPageLayout {
         // Tables and grids: use the window, like Windows.
         // Graphics: Windows' OverlaysPage fills the page (playlist + a 300 px inspector).
         case .sources, .routing, .diagnose, .overlays: return .infinity
+        // Comms fills the window, like Windows (Border margin 12, padding 20, no cap).
+        case .comms: return .infinity
         // The mixer asks for 1000 itself (AudioConsole.swift).
         case .audio: return 1000
         // Forms and cards: a readable measure.
@@ -54,6 +56,7 @@ struct TabPageContent: View {
                 case .routing: RoutingPane()
                 case .overlays: GraphicsTabPane(graphics: model.graphics)
                 case .audio: AudioPane()
+                case .comms: CommsPage(model: model.comms)
                 case .media: MediaPane()
                 case .automation: AutomationPane()
                 case .settings: SettingsPane()
@@ -220,6 +223,7 @@ enum TabSnapshotHarness {
         seed(model)
         let wanted = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_LIST"]?
             .split(separator: ",").compactMap { StudioTab(rawValue: String($0)) }
+            .filter { $0 != .comms || CommsGate.enabled }
         for tab in wanted ?? StudioTab.navigation where tab != .studio {
             for width in [1360.0, 1920.0] {
                 let url = URL(fileURLWithPath: dir)

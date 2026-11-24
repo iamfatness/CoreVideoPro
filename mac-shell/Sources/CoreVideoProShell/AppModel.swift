@@ -16,22 +16,26 @@ enum StudioTab: String, CaseIterable {
     case routing = "Routing"
     case overlays = "Overlays"
     case audio = "Audio"
+    case comms = "Comms"
     case media = "Media"
     case automation = "Automation"
     case settings = "Settings"
     case diagnose = "Diagnose"
 
     // Top navigation, matching Windows 1.0 (StudioWorkspace.xaml): one "Produce"
-    // group — Studio, Zoom, Sources, Scenes, Routing, Graphics, Audio, Media,
-    // Health. Comms and OHG Show are not on Mac in 1.0, so they are omitted
-    // rather than shown disabled. Settings trails: Windows reaches its Zoom
-    // connection page through "Zoom", which is Mac's Zoom pane; Mac Settings
-    // (output/recording/stream) has no Windows nav counterpart.
+    // group — Studio, Zoom, Sources, Scenes, Routing, Graphics, Audio, Comms,
+    // Media, Health. Comms sits between Audio and Media, as on Windows, but
+    // only once CommsGate is on (owner decision 2: the tab ships after the live
+    // co-host test passes). OHG Show is not on Mac. Settings trails: Windows
+    // reaches its Zoom connection page through "Zoom", which is Mac's Zoom
+    // pane; Mac Settings (output/recording/stream) has no Windows counterpart.
     static let navGroups = ["Produce"]
-    static let navigation: [StudioTab] = [
-        .studio, .zoom, .sources, .scenes, .routing, .overlays, .audio, .media,
-        .diagnose, .settings,
-    ]
+    static var navigation: [StudioTab] { navigation(commsEnabled: CommsGate.enabled) }
+    static func navigation(commsEnabled: Bool) -> [StudioTab] {
+        [.studio, .zoom, .sources, .scenes, .routing, .overlays, .audio]
+            + (commsEnabled ? [.comms] : [])
+            + [.media, .diagnose, .settings]
+    }
 
     /// Operator-facing label. rawValue stays the stable identifier (control
     /// state, COREVIDEO_SHELL_TAB); Windows calls these Graphics and Health.
@@ -48,7 +52,7 @@ enum StudioTab: String, CaseIterable {
         let n = name.lowercased()
         guard let tab = StudioTab.allCases.first(where: {
             $0.rawValue.lowercased() == n || $0.navLabel.lowercased() == n
-        }) else { return nil }
+        }), tab != .comms || CommsGate.enabled else { return nil }
         self = tab
     }
 }
@@ -394,7 +398,10 @@ final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
     @Published var meetingState = "idle" {
-        didSet { latchZoomCameraCeilingIfJoined() }   // Z1: a join reached the meeting
+        didSet {
+            latchZoomCameraCeilingIfJoined()   // Z1: a join reached the meeting
+            feedCommsMeeting()
+        }
     }
     /// Z1 (ZoomCameraQuality.swift): the operator's ceilings, what the in-flight
     /// join sent, and what the current meeting applied.
@@ -850,6 +857,7 @@ final class AppModel: ObservableObject {
         prefs.zoomAudioMode = zoomAudioMode.persisted
         prefs.zoomCameraMaxResolution = zoomCameraMaxResolution
         prefs.zoomCameraMaxFps = zoomCameraMaxFps
+        prefs.commsPrivate = comms.privatePreference ? true : nil
         prefs.localAudioEnabled = localAudio.enabled
         prefs.localAudioDeviceId = localAudio.deviceId.isEmpty ? nil : localAudio.deviceId
         prefs.localAudioDeviceName = localAudio.deviceName.isEmpty ? nil : localAudio.deviceName
@@ -899,6 +907,7 @@ final class AppModel: ObservableObject {
         zoomCameraMaxResolution = ZoomCameraResolutionPreference.normalize(prefs.zoomCameraMaxResolution)
         zoomCameraMaxFps = ZoomCameraFrameRatePreference.normalize(
             prefs.zoomCameraMaxFps ?? ZoomCameraFrameRatePreference.defaultFps)
+        comms.restorePrivatePreference(prefs.commsPrivate ?? false)
         localAudio = LocalAudioSetting(enabled: prefs.localAudioEnabled ?? false,
                                        deviceId: prefs.localAudioDeviceId ?? "",
                                        deviceName: prefs.localAudioDeviceName ?? "")
@@ -1162,6 +1171,7 @@ final class AppModel: ObservableObject {
         syncTimer?.invalidate(); syncTimer = nil
         zoomTimer?.invalidate(); zoomTimer = nil
         cameraUpdateTimer?.invalidate(); cameraUpdateTimer = nil
+        commsLeaseTimer?.invalidate(); commsLeaseTimer = nil
     }
 
     // The Studio center is ONE multiview canvas (reference 01-studio): the
@@ -1771,6 +1781,11 @@ final class AppModel: ObservableObject {
     /// Every core generation (initial handshake AND respawn). Internal: the
     /// harness drives it to prove the console is re-asserted.
     func onConnected() {
+        // Comms: a new core generation has no held keys and no report yet
+        // (every-core-generation rule). Private is re-sent only when the new
+        // report disagrees, never blindly.
+        comms.coreGenerationChanged()
+        startCommsLeaseTimer()
         resetMasterMetersForProcess()
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
@@ -2198,6 +2213,53 @@ final class AppModel: ObservableObject {
     var slotWriteObserverForTesting: ((String) -> Void)?
     /// Observed row facts, one box per slot. NOT @Published (frame-fact rate).
     let sourceFacts = SourceFactsStore()
+    /// Comms (Zoom talkback): the tab's model, fed by zoom-comms-state facts
+    /// and the meeting state; it sends through the core like every request.
+    lazy var comms: CommsModel = makeCommsModel()
+    private var commsLeaseTimer: Timer?
+    var commsLeaseTimerIntervalForTesting: TimeInterval? { commsLeaseTimer?.timeInterval }
+
+    private func makeCommsModel() -> CommsModel {
+        let model = CommsModel(send: { [weak self] verb, payload in
+            guard let self else { return "The media core is not running." }
+            return await self.sendComms(verb, payload)
+        })
+        model.onPrivatePreferenceChanged = { [weak self] _ in self?.persistPrefsNow() }
+        return model
+    }
+
+    /// One comms-* request. nil = accepted; otherwise the core's refusal
+    /// message verbatim (Windows shows it and never branches on the code).
+    private func sendComms(_ verb: String, _ payload: JSONObject) async -> String? {
+        do {
+            _ = try await gradeRequest(["type": verb, "payload": payload])
+            return nil
+        } catch BridgeError.remote(let message) {
+            return message
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// The meeting phase and its label reach the Comms model on every change.
+    private func feedCommsMeeting() {
+        comms.applyMeeting(Self.isInMeeting(meetingState),
+                           label: CommsModel.meetingLabel(for: joinMeetingId))
+    }
+
+    /// The 500 ms lease renewal (Windows StudioViewModel.Comms.cs:36-43):
+    /// always scheduled, sends only while a key is held.
+    func commsLeaseTick() async {
+        guard comms.anyHeld else { return }
+        await comms.renewLeases()
+    }
+
+    private func startCommsLeaseTimer() {
+        guard commsLeaseTimer == nil else { return }
+        commsLeaseTimer = Timer.scheduledTimer(withTimeInterval: Double(CommsModel.renewEveryMs) / 1000, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.commsLeaseTick() }
+        }
+    }
     /// S6: the core's source sheet (surface + cell identities). Written only on change; the
     /// surface id is stable and cells change only on reassignment.
     @Published private(set) var sourceSheet: SourceSheetState?
@@ -2380,6 +2442,10 @@ final class AppModel: ObservableObject {
             // Phase 2 Task 8: route to the editor that owns the instance (spec §5.5).
             let instance = event["instanceId"] as? String
             gradeEditors.values.first { $0.previewInstanceId == instance }?.observePreview(event)
+        case "zoom-comms-state":
+            // Comms: the core relays the engine's talkback report (or null
+            // when the report drops). A response with an id is never a fact.
+            if let fact = ZoomCommsProtocol.parseFact(event) { comms.apply(fact) }
         case "zoom-source-format":
             // One row's facts; no sync and no AppModel @Published write (spec §4.4).
             if let fact = ZoomFormatFact.parse(event: event) {
@@ -6164,11 +6230,22 @@ final class AppModel: ObservableObject {
 // The environment the shell adds when it launches the core: pure, so the
 // shell suite can pin it (ShellTestsGraphicsFonts). Moved out of AppModel's
 // launch unchanged, plus COREVIDEO_GRAPHICS_FONTS_DIR.
+/// The Comms tab is hidden until the live co-host acceptance passes (owner
+/// decision 2; plan Task 11). Until then COREVIDEO_SHELL_COMMS=1 shows it.
+enum CommsGate {
+    static var enabled: Bool { ProcessInfo.processInfo.environment["COREVIDEO_SHELL_COMMS"] == "1" }
+}
+
 enum CoreLaunchEnvironment {
     static func extras(paths: ShellPaths.Paths, processEnvironment: [String: String],
                        zoomPublicAppKey: String?) -> [String: String] {
         var env: [String: String] = [:]
-        if let enginePath = paths.engineBinaryPath {
+        // A pre-set engine path wins (Windows run-studio.ps1 rule): it is how a
+        // developer points the shell at the fake engine on a machine that also
+        // has a real engine build.
+        if let preset = processEnvironment["COREVIDEO_ZOOM_ENGINE_PATH"], !preset.isEmpty {
+            env["COREVIDEO_ZOOM_ENGINE_PATH"] = preset
+        } else if let enginePath = paths.engineBinaryPath {
             env["COREVIDEO_ZOOM_ENGINE_PATH"] = enginePath
         }
         if let key = zoomPublicAppKey, !key.isEmpty {

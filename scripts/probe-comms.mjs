@@ -9,16 +9,26 @@
  * web-client refusal) end to end. It does NOT prove real Zoom talkback.
  *
  * Port of CoreVideo Edge's scripts/probe-comms.mjs onto Pro's core protocol.
- * Usage: node ./scripts/probe-comms.mjs
+ * Usage: node ./scripts/probe-comms.mjs [--build-dir <dir>] [--capture <file.jsonl>]
+ *   --build-dir  build holding corevideo-native + corevideo-zoom-engine-fake
+ *                (default native/build-dev; macOS: native/build-metal)
+ *   --capture    append every zoom-comms-state FACT line here, verbatim (the
+ *                bytes the shell receives). Source of the shared Swift/C#
+ *                fixture contracts/comms/zoom-comms-state.fixtures.json.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const buildDir = join(repoRoot, "native", "build-dev");
+const argValue = (flag) => {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
+};
+const buildDir = resolve(repoRoot, argValue("--build-dir") ?? join("native", "build-dev"));
+const capturePath = argValue("--capture");
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
 const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
@@ -64,7 +74,10 @@ child.stdout.on("data", (chunk) => {
     let m;
     try { m = JSON.parse(line); } catch { continue; }
     if (m.type === "handshake" && m.ok === true) handshake = true;
-    if (m.type === "zoom-comms-state" && m.id === undefined) { comms = m.comms; commsFacts += 1; }
+    if (m.type === "zoom-comms-state" && m.id === undefined) {
+      comms = m.comms; commsFacts += 1;
+      if (capturePath) appendFileSync(capturePath, line + "\n");
+    }
     if (typeof m.id === "string" && pending.has(m.id)) {
       pending.get(m.id)(m);
       pending.delete(m.id);

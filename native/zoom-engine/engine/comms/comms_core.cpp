@@ -597,7 +597,11 @@ std::string CommsCore::StateJson(bool with_peak) const {
   std::string mic = "{\"device\":" + Quoted(a.device) + ",\"devices\":" + StringArray(a.devices) +
                     ",\"peak_dbfs\":" + peak + ",\"gain_db\":" + std::to_string(a.gain_db) +
                     ",\"sidetone\":" + Bool(a.sidetone) + ",\"sidetone_device\":" + Quoted(a.sidetone_device) +
-                    ",\"sidetone_devices\":" + StringArray(a.sidetone_devices) + ",\"tone\":" + Bool(a.tone) + "}";
+                    ",\"sidetone_devices\":" + StringArray(a.sidetone_devices) + ",\"tone\":" + Bool(a.tone) +
+                    // The audio worker's last failure verbatim (macOS: the mic
+                    // permission text, owner decision N1). Additive: shells
+                    // that do not read it are unaffected.
+                    ",\"error\":" + (a.error.empty() ? std::string("null") : Quoted(a.error)) + "}";
 
   const uint64_t channel_sends = bank_ != nullptr ? bank_->channel_sends() : 0;
   const uint64_t send_errors = bank_ != nullptr ? bank_->send_failures() : 0;
