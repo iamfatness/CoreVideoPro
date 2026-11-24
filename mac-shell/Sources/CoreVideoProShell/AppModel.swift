@@ -517,8 +517,11 @@ final class AppModel: ObservableObject {
     ]
     static var starterSceneIds: [String] { starterScenes.map(\.id) }
     @Published var scenes: [SceneDef] = AppModel.starterScenes
-    /// Starter ids the operator deleted (Windows RemovedCatalogSceneIds), persisted so
-    /// Restore can say what came back; cleared by restoreStarterScenes().
+    /// Starter ids the operator deleted (Windows RemovedCatalogSceneIds), persisted and
+    /// cleared by restoreStarterScenes(). BOOKKEEPING ONLY on the Mac: Windows re-seeds its
+    /// catalog every launch and needs the set to drop removed scenes again
+    /// (SceneCatalogPolicy.RemovalsToApply); the Mac persists every rail scene, so a deleted
+    /// starter stays deleted without it, and Restore keys on presence, as Windows does.
     @Published var removedStarterSceneIds: [String] = []
     @Published var programSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != programSceneId) } }
     @Published var previewSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != previewSceneId) } }

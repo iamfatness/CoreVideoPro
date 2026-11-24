@@ -36,6 +36,8 @@ public sealed class ControlActionVectorExportTests
         ("parse-exponent-slot", """{"cam":1e2}"""),
         ("parse-int32-overflow", """{"cam":3000000000}"""),
         ("parse-two-routes", """{"a":1,"b":null}"""),
+        // A repeated key: Dictionary assignment keeps the FIRST position, last value wins.
+        ("parse-duplicate-key", """{"z":1,"a":2,"z":3}"""),
     ];
 
     /// <summary>
@@ -69,7 +71,9 @@ public sealed class ControlActionVectorExportTests
             {
                 var map = new JsonObject();
                 foreach (var (route, slot) in routes) map[route] = slot is { } value ? JsonValue.Create(value) : null;
-                expect["effects"] = new JsonObject { ["routes"] = map };
+                // The enumeration order Refuse walks (a JSON object alone does not carry order).
+                var order = new JsonArray(routes.Keys.Select(k => (JsonNode?)k).ToArray());
+                expect["effects"] = new JsonObject { ["routes"] = map, ["order"] = order };
             }
             else
             {

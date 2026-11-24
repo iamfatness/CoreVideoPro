@@ -349,11 +349,16 @@ enum SrtDestinationControlPolicy {
     static func isHostName(_ name: String) -> Bool {
         guard !name.isEmpty else { return false }
         var v4 = in_addr(), v6 = in6_addr()
-        if inet_pton(AF_INET, name, &v4) == 1 || inet_pton(AF_INET6, name, &v6) == 1 { return true }
+        if inet_pton(AF_INET, name, &v4) == 1 { return true }
+        // An IPv6 literal may carry a zone id ("fe80::1%en0"), which .NET accepts.
+        let address = name.contains(":") ? String(name.split(separator: "%", maxSplits: 1).first ?? "") : name
+        if inet_pton(AF_INET6, address, &v6) == 1 && (address == name || !name.hasSuffix("%")) { return true }
         guard name.count <= 255 else { return false }
         var labels = name.split(separator: ".", omittingEmptySubsequences: false)
         if labels.count > 1, labels.last?.isEmpty == true { labels.removeLast() }
         return labels.allSatisfy { label in
+            // .NET's IRI host path accepts Unicode letters and numbers ("cam².example" is a
+            // valid host on Windows: srt-configure vector host-superscript-digit).
             (1...63).contains(label.count) && label.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
         }
     }

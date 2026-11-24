@@ -20,7 +20,10 @@
             "effects": {
               "routes": {
                 "cam": 2
-              }
+              },
+              "order": [
+                "cam"
+              ]
             }
           }
         },
@@ -39,7 +42,10 @@
             "effects": {
               "routes": {
                 "cam": null
-              }
+              },
+              "order": [
+                "cam"
+              ]
             }
           }
         },
@@ -162,7 +168,8 @@
           "expect": {
             "ok": true,
             "effects": {
-              "routes": {}
+              "routes": {},
+              "order": []
             }
           }
         },
@@ -227,7 +234,35 @@
               "routes": {
                 "a": 1,
                 "b": null
-              }
+              },
+              "order": [
+                "a",
+                "b"
+              ]
+            }
+          }
+        },
+        {
+          "name": "parse-duplicate-key",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"z\":1,\"a\":2,\"z\":3}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "routes": {
+                "z": 3,
+                "a": 2
+              },
+              "order": [
+                "z",
+                "a"
+              ]
             }
           }
         },
@@ -766,6 +801,80 @@
               "enabled": true,
               "mode": "caller",
               "host": "[::1]",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "host-ipv6-zone",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "fe80::1%en0",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "fe80::1%en0",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "host-superscript-digit",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "cam².example",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "cam².example",
               "port": "9000",
               "latencyMs": "120",
               "streamId": "test-stream-id",

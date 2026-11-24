@@ -315,6 +315,12 @@ extension AppModel {
     /// which is also the Studio command status.
     @discardableResult
     func restoreStarterScenes() -> String {
+        // Windows returns early when nothing is missing: no save, the removed set untouched.
+        guard Self.starterScenes.contains(where: { starter in !scenes.contains { $0.id == starter.id } }) else {
+            let status = Self.restoreStatus([])
+            studioCommandStatus = status
+            return status
+        }
         var restored: [String] = []
         for (catalogIndex, starter) in Self.starterScenes.enumerated() where !scenes.contains(where: { $0.id == starter.id }) {
             var insertAt = 0
@@ -327,7 +333,7 @@ extension AppModel {
         removedStarterSceneIds = []
         let status = Self.restoreStatus(restored)
         studioCommandStatus = status
-        if !restored.isEmpty { syncScenes() }
+        syncScenes()
         saveScenes()
         return status
     }

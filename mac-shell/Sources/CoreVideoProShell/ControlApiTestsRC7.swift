@@ -262,6 +262,8 @@ extension ShellTests {
                         expect(expected.keys.contains(entry.route), "\(label): route \(entry.route) expected")
                         expectEqual(entry.slot, expected[entry.route] ?? nil, "\(label): slot for \(entry.route)")
                     }
+                    expectEqual(routes.entries.map { $0.route }, vector.effects["order"] as? [String] ?? [],
+                                "\(label): Windows' enumeration order")
                 case .refused(let error):
                     expectVectorReply(.fail(error), vector, label)
                 }
@@ -280,11 +282,8 @@ extension ShellTests {
                 expect(false, "\(label): a known step")
             }
         }
-        // Order matters: Windows reports the FIRST unknown route in JSON order.
-        if case .routes(let routes) = SceneRoutesArgs.parse(#"{"z":1,"a":2,"z":3}"#) {
-            expectEqual(routes.entries.map { $0.route }, ["z", "a"], "insertion order kept; a repeated key keeps its place")
-            expectEqual(routes.entries.first?.slot, 3, "a repeated key's last value wins (Dictionary indexer)")
-        } else { expect(false, "duplicate keys parse") }
+        expect(vectors.contains { $0.name == "parse-duplicate-key" },
+               "the repeated-key order comes from Windows (parse-duplicate-key), not from this file")
     }
 
     /// The Task 4 fixture: takeModel (Program s2, Preview s1) plus scene "two-up" whose
@@ -317,6 +316,7 @@ extension ShellTests {
         func layers() -> [SceneLayer] { model.scenes.first { $0.id == "two-up" }?.layers ?? [] }
 
         for vector in refuse where !vector.ok {
+            model.previewSceneId = "s1"   // every refusal starts off two-up, so a moved Preview shows
             let preview = model.previewSceneId, before = layers(), syncs = model.sceneSyncRequestCount
             let result = invoke(surface, vector.action, vector.args)
             expectVectorReply(result, vector, "routes-model/\(vector.name)")
@@ -392,6 +392,7 @@ extension ShellTests {
                 model.scenes[index].layers = [SceneLayer(id: "two-up-layer-0", slotId: 7)]
             }
             expect(model.deleteScene("two-up") == nil, "two-up is removable")
+            let restoreSyncsBefore = model.sceneSyncRequestCount
             expectEqual(invoke(surface, "scene.restoreStarters"), .success, "restore one")
             expectEqual(model.scenes.map(\.id), AppModel.starterSceneIds, "two-up is back between fullscreen and pip")
             expectEqual(model.scenes.first { $0.id == "two-up" }?.layers, [], "with fresh preset layers, not the deleted edit")
@@ -400,6 +401,10 @@ extension ShellTests {
             expectEqual(model.programSceneId, "fullscreen", "Program untouched")
             expectEqual(model.previewSceneId, "pip", "Preview untouched")
             expectEqual(model.currentPrefs().removedStarterSceneIds, nil, "the removed set is empty after restore")
+            expectEqual(model.sceneSyncRequestCount, restoreSyncsBefore + 1, "restore sends ONE scene sync")
+            let saved = ShellPrefs.load()
+            expect(saved.scenes.contains { $0.id == "two-up" }, "restore wrote the restored scene to the prefs file")
+            expectEqual(saved.removedStarterSceneIds, nil, "and the cleared removed set")
         }
         // All three missing (a custom scene keeps the rail non-empty).
         do {
@@ -423,7 +428,7 @@ extension ShellTests {
             expectEqual(invoke(surface, "scene.restoreStarters"), .success, "restore with a stale removed set")
             expectEqual(model.scenes.filter { $0.id == "two-up" }.count, 1, "a present starter is not duplicated")
             expectEqual(model.studioCommandStatus, AppModel.restoreStatus([]), "nothing was missing")
-            expectEqual(model.removedStarterSceneIds, [], "the stale set is cleared")
+            expectEqual(model.removedStarterSceneIds, ["two-up"], "nothing missing: Windows returns early, the set is untouched")
         }
     }
 }

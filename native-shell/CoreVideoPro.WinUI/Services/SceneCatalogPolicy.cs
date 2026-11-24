@@ -128,8 +128,6 @@ public static class SceneCatalogPolicy
         return result;
     }
 
-    /// <summary>Catalog scenes missing from the live list, in catalog order, each paired with
-    /// the index it should be re-inserted at so the rail keeps the starter order.</summary>
     /// <summary>The command status after "Restore starter scenes": names the one scene restored,
     /// counts several, or says nothing was missing. Moved verbatim out of
     /// <c>StudioViewModel.RestoreStarterScenes</c> so the macOS port replays the exact sentences
@@ -141,6 +139,8 @@ public static class SceneCatalogPolicy
                 ? $"{restoredSceneNames[0]} restored"
                 : $"{restoredSceneNames.Count} starter scenes restored";
 
+    /// <summary>Catalog scenes missing from the live list, in catalog order, each paired with
+    /// the index it should be re-inserted at so the rail keeps the starter order.</summary>
     public static List<(Scene Scene, int InsertIndex)> MissingCatalogScenes(IReadOnlyList<Scene> scenes)
     {
         var present = scenes.Select(scene => scene.Id).ToList();

@@ -47,6 +47,8 @@ public sealed class ControlActionVectorExportTests
         ("host-with-query", With(2, "h?x=1"), false, ""),
         ("host-ipv4", With(2, "192.168.1.20"), false, ""),
         ("host-ipv6-bracketed", With(2, "[::1]"), false, ""),
+        ("host-ipv6-zone", With(2, "fe80::1%en0"), false, ""),
+        ("host-superscript-digit", With(2, "cam\u00B2.example"), false, ""),
         ("port-zero", With(3, "0"), false, ""),
         ("port-65536", With(3, "65536"), false, ""),
         ("latency-19", With(4, "19"), false, ""),
