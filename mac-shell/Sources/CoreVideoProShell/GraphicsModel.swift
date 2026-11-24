@@ -48,6 +48,8 @@ final class GraphicsModel: ObservableObject {
     var saveTask: Task<Void, Never>?
     /// Six hex digits for a new design template id (tests inject a fixed value).
     var designHex6: () -> String = GraphicsDesignIds.randomHex6
+    /// The document write (tests replace it to make a save fail on demand).
+    var writeDocument: @Sendable (GraphicsDocumentStore, GraphicsDocument) throws -> Void = { try $0.save($1) }
     /// Debounce for playlist saves (tests set 0).
     var saveDelayNs: UInt64 = 300_000_000
 

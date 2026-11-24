@@ -408,7 +408,7 @@
       "id": "scores",
       "name": "scores",
       "revision": 2,
-      "receivedAt": "2026-11-22T12:00:00+00:00",
+      "receivedAt": "2026-11-22T12:00:00.1234567+00:00",
       "data": {
         "columns": [
           {
@@ -490,7 +490,7 @@
       "id": "headlines",
       "name": "crawl",
       "revision": 1,
-      "receivedAt": "2026-11-22T12:00:00+00:00",
+      "receivedAt": "2026-11-22T07:00:00.000001-05:00",
       "data": {
         "columns": [
           {

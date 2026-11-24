@@ -194,9 +194,11 @@ extension GraphicsModel {
         }
         var message = "Created \(clean)."
         let row = GraphicsDataDesigns.playlistRow(name: clean, templateId: templateId, family: family, manifest: manifest, binding: binding, rows: rows)
+        // As Windows' SavePlaylistAsync: the row counts only once it is on disk (review I1).
         let previousRows = document.playlist
         setRows(GraphicsDataDesigns.upsert(rows, row))
-        guard document.playlist != previousRows else {
+        saveTask?.cancel()
+        guard document.playlist != previousRows, await saveNow() else {
             return fail(message + " Not added to the playlist: " + documentStatus)
         }
         message += " \"\(row.name)\" is in the playlist" + (row.hotkey.isEmpty ? "" : " on " + row.hotkey) + ". Show it from Operate when you want it on air."

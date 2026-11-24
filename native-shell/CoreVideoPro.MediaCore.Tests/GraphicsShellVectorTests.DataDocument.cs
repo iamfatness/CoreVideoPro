@@ -39,8 +39,9 @@ public sealed partial class GraphicsShellVectorTests
                 new GraphicsDesign(crawlId, "Headlines", "title", crawlId, 1, JsonSerializer.SerializeToElement(crawlManifest), [], FixtureTime),
             ],
             DataSources = [
-                new GraphicsDataSource("scores", "scores", 2, FixtureTime, scores),
-                new GraphicsDataSource("headlines", "crawl", 1, FixtureTime, crawl),
+                // Real Windows writes 7 fractional digits; one source also carries a non-UTC offset (review I3).
+                new GraphicsDataSource("scores", "scores", 2, FixtureTime.AddTicks(1234567), scores),
+                new GraphicsDataSource("headlines", "crawl", 1, new DateTimeOffset(2026, 11, 22, 7, 0, 0, TimeSpan.FromHours(-5)).AddTicks(10), crawl),
             ],
             Metadata = new() { ["futureSection"] = JsonSerializer.SerializeToElement(new { keep = true }) },
         };

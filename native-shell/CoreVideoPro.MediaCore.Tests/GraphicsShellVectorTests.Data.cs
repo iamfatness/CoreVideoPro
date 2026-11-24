@@ -141,6 +141,15 @@ public sealed partial class GraphicsShellVectorTests
         Text("csv-quote-only-field", "a\n\"\"\"\"");
         Text("csv-trailing-comma", "a,b\nx,\n");
         Text("csv-trailing-comma-last-line", "a,b\nx,");
+        // Ordinal and OrdinalIgnoreCase, never Swift's canonical equivalence or full case mapping (review I2).
+        Text("csv-sharp-s-columns-distinct", "Masse,MA\u00dfE\n1,2");
+        Text("csv-nfc-nfd-keys-distinct", "k\ncaf\u00e9\ncafe\u0301", key: "k");
+        Text("csv-key-nfd-does-not-match-nfc-heading", "caf\u00e9,v\n1,2", key: "cafe\u0301");
+        Text("csv-long-s-boolean", "b\nfal\u017fe\ntrue");
+        Text("csv-dotless-i-boolean", "b\ntru\u0131\nfalse");
+        Text("json-ligature-ff-names-distinct", "[{\"\ufb00\":1,\"FF\":2}]", ".json");
+        Text("json-sharp-s-names-distinct", "[{\"stra\u00dfe\":1,\"STRASSE\":2}]", ".json");
+        Text("json-kelvin-and-k-names-duplicate", "[{\"\u212a\":1,\"k\":2}]", ".json");
         Text("csv-line-separator-inside", "a,b\nx\u2028y,z");
         Generated("csv-33-columns", new JsonObject { ["prefix"] = "", ["unit"] = "c{i},", ["count"] = 32, ["suffix"] = "c32\n" + string.Join(",", Enumerable.Repeat("1", 33)) }, ".csv");
         Generated("csv-32-columns", new JsonObject { ["prefix"] = "", ["unit"] = "c{i},", ["count"] = 31, ["suffix"] = "c31\n" + string.Join(",", Enumerable.Repeat("1", 32)) }, ".csv");

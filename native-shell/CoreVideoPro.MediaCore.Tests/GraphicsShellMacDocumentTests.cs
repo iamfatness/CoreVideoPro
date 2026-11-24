@@ -24,7 +24,7 @@ public sealed class GraphicsShellMacDocumentTests
             var dataSource = Assert.Single(load.Document.DataSources);
             Assert.True(dataSource.Valid());
             Assert.Equal("mac-scores", dataSource.Id);
-            Assert.Equal(2026, dataSource.ReceivedAt.Year);
+            Assert.Equal(new DateTimeOffset(2026, 11, 28, 12, 0, 0, TimeSpan.Zero), dataSource.ReceivedAt);
             var design = Assert.Single(load.Document.Designs);
             Assert.Equal("design-mac-scores-0a1b2c", design.TemplateId);
             Assert.NotNull(GraphicsDataTable.Binding(design.Definition));

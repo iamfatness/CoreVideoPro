@@ -106,10 +106,10 @@ extension GraphicsModel {
     /// Writes the current document; reports a failure on the status line.
     @discardableResult
     func saveNow() async -> Bool {
-        let store = documentStore, snapshot = document
+        let store = documentStore, snapshot = document, write = writeDocument
         let error: String? = await withCheckedContinuation { done in
             documentQueue.async {
-                do { try store.save(snapshot); done.resume(returning: nil) }
+                do { try write(store, snapshot); done.resume(returning: nil) }
                 catch { done.resume(returning: GraphicsDocumentStore.message(error)) }
             }
         }

@@ -15,6 +15,7 @@ extension ShellTests {
             ("graphics-data-design/playlist-pin-install-also-evicts", testPlaylistPinInstallAlsoEvicts),
             ("graphics-data-design/reinstalled-after-restart", testMacDataDesignIsReinstalledAfterRestart),
             ("graphics-data-design/name-rule", testCreateDataDesignNameRule),
+            ("graphics-data-design/row-save-failure-is-reported", testRowSaveFailureIsReported),
         ]
     }
 
@@ -207,5 +208,23 @@ extension ShellTests {
             expectEqual(outcome?.message, "Use a design name of 1–80 characters.", "name rule for \(name.count) chars")
         }
         expectEqual(core.commands.count, 0, "nothing sent")
+    }
+
+    /// Windows awaits SavePlaylistAsync: a row that never reached disk is not reported as added (review I1).
+    @MainActor
+    static func testRowSaveFailureIsReported() {
+        guard let (data, binding, _) = scoresDesignInput() else { expect(false, "input"); return }
+        let (model, _) = designModel()
+        final class Count: @unchecked Sendable { var n = 0 }
+        let saves = Count()
+        model.writeDocument = { store, document in
+            saves.n += 1
+            if saves.n == 2 { throw GraphicsDocumentError(message: "disk full") }
+            try store.save(document)
+        }
+        let outcome = awaitMain { await model.createDataDesign(name: "Scores", data: data, binding: binding) }
+        expectEqual(outcome?.ok, false, "not ok")
+        expectEqual(outcome?.message, "Created Scores. Not added to the playlist: Graphics playlist not saved: disk full", "says the row was not saved")
+        expectEqual(saves.n, 2, "design save, then the row save")
     }
 }

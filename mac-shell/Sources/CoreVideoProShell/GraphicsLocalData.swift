@@ -68,7 +68,7 @@ struct GraphicsLocalData: Equatable {
         default: throw GraphicsDataError(message: "Choose a CSV or JSON file.")
         }
         let keyGiven = key.map { !isNullOrWhiteSpace($0) } ?? false
-        let keyIndex = keyGiven ? headings.firstIndex(of: trim(key!)) ?? -1 : -1
+        let keyIndex = keyGiven ? headings.firstIndex(where: { ordinalEqual($0, trim(key!)) }) ?? -1 : -1
         if keyGiven && keyIndex < 0 { throw GraphicsDataError(message: "The selected row key is missing.") }
         let rows = cells.enumerated().map { index, row in
             GraphicsDataRow(key: keyIndex < 0 ? String(format: "%04d", index + 1) : row[keyIndex], cells: row)
@@ -89,7 +89,7 @@ struct GraphicsLocalData: Equatable {
     var isValid: Bool {
         guard (1...Self.maxColumns).contains(columns.count),
               columns.allSatisfy({ (1...128).contains($0.id.utf16.count) && ["text", "number", "boolean"].contains($0.kind) }),
-              Set(columns.map { $0.id.uppercased() }).count == columns.count,
+              Set(columns.map { Self.ordinalKey(Self.ignoreCaseKey($0.id)) }).count == columns.count,
               rows.count <= Self.maxRows else { return false }
         for row in rows {
             guard (1...256).contains(row.key.utf16.count), !Self.isNullOrWhiteSpace(row.key), row.cells.count == columns.count else { return false }
@@ -103,7 +103,7 @@ struct GraphicsLocalData: Equatable {
                 }
             }
         }
-        guard Set(rows.map(\.key)).count == rows.count else { return false }
+        guard Set(rows.map { Self.ordinalKey($0.key) }).count == rows.count else { return false }
         return rows.reduce(0) { $0 + $1.cells.reduce(0) { $0 + $1.utf8.count } } <= Self.byteLimit
     }
 
@@ -130,7 +130,7 @@ struct GraphicsLocalData: Equatable {
     }
 
     func indexOf(_ id: String) throws -> Int {
-        guard let index = columns.firstIndex(where: { $0.id == id }) else { throw GraphicsDataError(message: "Data column '\(id)' is missing.") }
+        guard let index = columns.firstIndex(where: { Self.ordinalEqual($0.id, id) }) else { throw GraphicsDataError(message: "Data column '\(id)' is missing.") }
         return index
     }
 
@@ -144,15 +144,16 @@ struct GraphicsLocalData: Equatable {
     init(columns: [GraphicsDataColumn], rows: [GraphicsDataRow]) { self.columns = columns; self.rows = rows }
 
     init?(json: JSONObject) {
-        guard let cols = json["columns"] as? [JSONObject], let rows = json["rows"] as? [JSONObject] else { return nil }
+        let v = GraphicsDataBinding.value   // Web defaults: property names in any case
+        guard let cols = v(json, "columns") as? [JSONObject], let rows = v(json, "rows") as? [JSONObject] else { return nil }
         var columns: [GraphicsDataColumn] = []
         for c in cols {
-            guard let id = c["id"] as? String, let kind = c["kind"] as? String else { return nil }
+            guard let id = v(c, "id") as? String, let kind = v(c, "kind") as? String else { return nil }
             columns.append(GraphicsDataColumn(id: id, kind: kind))
         }
         var out: [GraphicsDataRow] = []
         for r in rows {
-            guard let key = r["key"] as? String, let cells = r["cells"] as? [String] else { return nil }
+            guard let key = v(r, "key") as? String, let cells = v(r, "cells") as? [String] else { return nil }
             out.append(GraphicsDataRow(key: key, cells: cells))
         }
         self.columns = columns; self.rows = out
@@ -190,11 +191,27 @@ struct GraphicsLocalData: Equatable {
         var s = Array(value.unicodeScalars)
         while let f = s.first, f.properties.isWhitespace || f.value == 0 { s.removeFirst() }
         while let l = s.last, l.properties.isWhitespace || l.value == 0 { s.removeLast() }
-        switch String(String.UnicodeScalarView(s)).lowercased() {
-        case "true": return true
-        case "false": return false
+        switch ignoreCaseKey(String(String.UnicodeScalarView(s))) {
+        case "TRUE": return true
+        case "FALSE": return false
         default: return nil
         }
+    }
+
+    /// StringComparer.Ordinal: UTF-16 code units, no canonical equivalence (Swift == would equate NFC and NFD).
+    static func ordinalKey(_ s: String) -> [UInt16] { Array(s.utf16) }
+    static func ordinalEqual(_ a: String, _ b: String) -> Bool { a.utf16.elementsEqual(b.utf16) }
+
+    /// StringComparer.OrdinalIgnoreCase's key: each character's simple upper case, never a mapping that
+    /// expands (ß stays ß) or that turns a non-ASCII character into ASCII (ſ, ı, the Kelvin sign stay).
+    /// Measured against .NET in the data vectors.
+    static func ignoreCaseKey(_ s: String) -> String {
+        String(String.UnicodeScalarView(s.unicodeScalars.map { scalar in
+            let upper = scalar.properties.uppercaseMapping.unicodeScalars
+            guard upper.count == 1, let mapped = upper.first, scalar.value <= 0xFFFF, mapped.value <= 0xFFFF,
+                  !(scalar.value > 0x7F && mapped.value <= 0x7F) else { return scalar }
+            return mapped
+        }))
     }
 
     /// string.Trim(): char.IsWhiteSpace at both ends.
@@ -242,7 +259,7 @@ struct GraphicsLocalData: Equatable {
         var rows: [[String]] = []
         for element in elements {
             guard case .object(let properties) = element else { throw GraphicsDataError(message: "Every JSON row must be an object.") }
-            guard (1...maxColumns).contains(properties.count), Set(properties.map { $0.name.uppercased() }).count == properties.count else {
+            guard (1...maxColumns).contains(properties.count), Set(properties.map { ordinalKey(ignoreCaseKey($0.name)) }).count == properties.count else {
                 throw GraphicsDataError(message: "Use distinct JSON columns and at most 32 per row.")
             }
             if headings == nil { headings = properties.map(\.name); kinds = Array(repeating: nil, count: properties.count) }
@@ -250,7 +267,7 @@ struct GraphicsLocalData: Equatable {
             guard properties.count == names.count else { throw GraphicsDataError(message: "Every JSON row must have the same columns.") }
             var cells = Array(repeating: "", count: names.count)
             for property in properties {
-                guard let index = names.firstIndex(of: property.name) else { throw GraphicsDataError(message: "Every JSON row must have the same columns.") }
+                guard let index = names.firstIndex(where: { ordinalEqual($0, property.name) }) else { throw GraphicsDataError(message: "Every JSON row must have the same columns.") }
                 let value: String, kind: String?
                 switch property.value {
                 case .null: (value, kind) = ("", nil)

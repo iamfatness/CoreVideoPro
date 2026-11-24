@@ -631,12 +631,14 @@ struct GraphicsDataSourceRecord: Equatable {
     }
 
     init?(json: JSONObject) {
-        guard let id = json["id"] as? String, let name = json["name"] as? String,
-              let revision = (json["revision"] as? NSNumber)?.int64Value, let at = (json["receivedAt"] as? String).flatMap(Self.parseISO8601),
-              let dataJSON = json["data"] as? JSONObject, let data = GraphicsLocalData(json: dataJSON) else { return nil }
-        let sequence = json["feedSequence"]
-        if let sequence, !(sequence is NSNull), !(sequence is NSNumber) { return nil }
-        self.init(id: id, name: name, revision: revision, receivedAt: at, data: data, feedSequence: (sequence as? NSNumber)?.int64Value)
+        // System.Text.Json Web defaults, as Windows reads it: names in any case, numbers also as strings.
+        let v = { (key: String) in GraphicsDataBinding.value(json, key) }
+        guard let id = v("id") as? String, let name = v("name") as? String,
+              let revision = GraphicsDataBinding.int64(v("revision")), let at = (v("receivedAt") as? String).flatMap(Self.parseISO8601),
+              let dataJSON = v("data") as? JSONObject, let data = GraphicsLocalData(json: dataJSON) else { return nil }
+        let sequence = v("feedSequence")
+        if sequence != nil && GraphicsDataBinding.int64(sequence) == nil { return nil }
+        self.init(id: id, name: name, revision: revision, receivedAt: at, data: data, feedSequence: GraphicsDataBinding.int64(sequence))
     }
 
     /// ISO 8601 with milliseconds and a zone, which System.Text.Json reads as a DateTimeOffset.

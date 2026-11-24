@@ -15,6 +15,7 @@ extension ShellTests {
             ("graphics-data/mac-writes-a-data-source-windows-can-read", testMacWritesADataSourceWindowsCanRead),
             ("graphics-data/data-sources-setter-keeps-other-sections", testDataSourcesSetterKeepsOtherSections),
             ("graphics-data/save-refuses-an-invalid-binding", testSaveRefusesAnInvalidBinding),
+            ("graphics-data/reads-like-system-text-json-web", testDataSectionsReadLikeSystemTextJsonWeb),
         ]
     }
 
@@ -248,5 +249,24 @@ extension ShellTests {
         sources[0]["revision"] = 0
         json["dataSources"] = sources
         expect((try? GraphicsDocument.validate(json)) == nil, "a dataset at revision 0 fails validation")
+    }
+
+    /// Windows reads the document with JsonSerializerDefaults.Web: property names in any case and numbers
+    /// written as strings are accepted, so a hand-edited Windows show must not be refused here (review I2).
+    static func testDataSectionsReadLikeSystemTextJsonWeb() {
+        var json = documentJSON("windows-data.json")
+        var sources = json["dataSources"] as? [JSONObject] ?? []
+        sources[0]["revision"] = "2"
+        sources[0]["Name"] = sources[0].removeValue(forKey: "name")
+        json["dataSources"] = sources
+        var playlist = json["playlist"] as? [JSONObject] ?? []
+        var binding = playlist[0]["dataBinding"] as? JSONObject ?? [:]
+        binding["limit"] = "5"; binding["Revision"] = binding.removeValue(forKey: "revision")
+        playlist[0]["dataBinding"] = binding
+        json["playlist"] = playlist
+        expect((try? GraphicsDocument.validate(json)) != nil, "string numbers and any-case names validate, as on Windows")
+        expectEqual(GraphicsDocument(json: json).dataSources.first?.revision, 2, "revision read from a string")
+        expectEqual(GraphicsDocument(json: json).dataSources.first?.receivedAt, GraphicsDataSourceRecord.parseISO8601("2026-11-22T12:00:00.123Z"),
+                    "7 fractional digits read to the millisecond")
     }
 }

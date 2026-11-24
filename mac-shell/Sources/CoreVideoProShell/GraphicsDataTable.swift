@@ -43,7 +43,7 @@ struct GraphicsDataBinding: Equatable {
     var isValid: Bool {
         let lengthOK: (String?) -> Bool = { $0 == nil || (1...128).contains($0!.utf16.count) }
         guard GraphicsRow.validId(sourceId), (1...GraphicsLocalData.maxVisibleColumns).contains(columns.count),
-              columns.allSatisfy({ (1...128).contains($0.utf16.count) }), Set(columns).count == columns.count,
+              columns.allSatisfy({ (1...128).contains($0.utf16.count) }), Set(columns.map(GraphicsLocalData.ordinalKey)).count == columns.count,
               lengthOK(keyColumn), lengthOK(sortColumn), sortColumn == nil || columns.count < GraphicsLocalData.maxVisibleColumns
         else { return false }
         if let crawl {
@@ -71,6 +71,13 @@ struct GraphicsDataBinding: Equatable {
         return hit is NSNull ? nil : hit
     }
 
+    /// A JSON integer as System.Text.Json Web reads it: a number, or a string holding one.
+    static func int64(_ value: Any?) -> Int64? {
+        if let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() { return n.int64Value }
+        if let s = value as? String, let n = Int64(s) { return n }
+        return nil
+    }
+
     init?(json: JSONObject) {
         func optionalString(_ key: String) -> String?? {
             guard let v = Self.value(json, key) else { return .some(nil) }
@@ -85,8 +92,8 @@ struct GraphicsDataBinding: Equatable {
         guard let source = optionalString("sourceId"), let key = optionalString("keyColumn"), let sort = optionalString("sortColumn"),
               let live = bool("liveFollow"), let remote = bool("remote") else { return nil }
         let columns = Self.value(json, "columns") as? [String] ?? []
-        let limit = (Self.value(json, "limit") as? NSNumber)?.intValue ?? 0
-        let revision = (Self.value(json, "revision") as? NSNumber)?.int64Value ?? 0
+        let limit = Int(Self.int64(Self.value(json, "limit")) ?? 0)
+        let revision = Self.int64(Self.value(json, "revision")) ?? 0
         var crawl: GraphicsCrawlOptions?
         if let c = Self.value(json, "crawl") {
             guard let object = c as? JSONObject, let options = GraphicsCrawlOptions(json: object) else { return nil }

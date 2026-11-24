@@ -2863,6 +2863,231 @@
       }
     },
     {
+      "id": "parse-csv-sharp-s-columns-distinct",
+      "operation": "read",
+      "input": {
+        "text": "Masse,MAßE\n1,2",
+        "extension": ".csv",
+        "key": null
+      },
+      "expected": {
+        "columns": [
+          {
+            "id": "Masse",
+            "kind": "number"
+          },
+          {
+            "id": "MAßE",
+            "kind": "number"
+          }
+        ],
+        "rows": [
+          {
+            "key": "0001",
+            "cells": [
+              "1",
+              "2"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-csv-nfc-nfd-keys-distinct",
+      "operation": "read",
+      "input": {
+        "text": "k\ncafé\ncafé",
+        "extension": ".csv",
+        "key": "k"
+      },
+      "expected": {
+        "columns": [
+          {
+            "id": "k",
+            "kind": "text"
+          }
+        ],
+        "rows": [
+          {
+            "key": "café",
+            "cells": [
+              "café"
+            ]
+          },
+          {
+            "key": "café",
+            "cells": [
+              "café"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-csv-key-nfd-does-not-match-nfc-heading",
+      "operation": "read",
+      "input": {
+        "text": "café,v\n1,2",
+        "extension": ".csv",
+        "key": "café"
+      },
+      "expected": {
+        "error": "The selected row key is missing."
+      }
+    },
+    {
+      "id": "parse-csv-long-s-boolean",
+      "operation": "read",
+      "input": {
+        "text": "b\nfalſe\ntrue",
+        "extension": ".csv",
+        "key": null
+      },
+      "expected": {
+        "columns": [
+          {
+            "id": "b",
+            "kind": "text"
+          }
+        ],
+        "rows": [
+          {
+            "key": "0001",
+            "cells": [
+              "falſe"
+            ]
+          },
+          {
+            "key": "0002",
+            "cells": [
+              "true"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-csv-dotless-i-boolean",
+      "operation": "read",
+      "input": {
+        "text": "b\ntruı\nfalse",
+        "extension": ".csv",
+        "key": null
+      },
+      "expected": {
+        "columns": [
+          {
+            "id": "b",
+            "kind": "text"
+          }
+        ],
+        "rows": [
+          {
+            "key": "0001",
+            "cells": [
+              "truı"
+            ]
+          },
+          {
+            "key": "0002",
+            "cells": [
+              "false"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-json-ligature-ff-names-distinct",
+      "operation": "read",
+      "input": {
+        "text": "[{\"ﬀ\":1,\"FF\":2}]",
+        "extension": ".json",
+        "key": null
+      },
+      "expected": {
+        "columns": [
+          {
+            "id": "ﬀ",
+            "kind": "number"
+          },
+          {
+            "id": "FF",
+            "kind": "number"
+          }
+        ],
+        "rows": [
+          {
+            "key": "0001",
+            "cells": [
+              "1",
+              "2"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-json-sharp-s-names-distinct",
+      "operation": "read",
+      "input": {
+        "text": "[{\"straße\":1,\"STRASSE\":2}]",
+        "extension": ".json",
+        "key": null
+      },
+      "expected": {
+        "columns": [
+          {
+            "id": "straße",
+            "kind": "number"
+          },
+          {
+            "id": "STRASSE",
+            "kind": "number"
+          }
+        ],
+        "rows": [
+          {
+            "key": "0001",
+            "cells": [
+              "1",
+              "2"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "parse-json-kelvin-and-k-names-duplicate",
+      "operation": "read",
+      "input": {
+        "text": "[{\"K\":1,\"k\":2}]",
+        "extension": ".json",
+        "key": null
+      },
+      "expected": {
+        "columns": [
+          {
+            "id": "K",
+            "kind": "number"
+          },
+          {
+            "id": "k",
+            "kind": "number"
+          }
+        ],
+        "rows": [
+          {
+            "key": "0001",
+            "cells": [
+              "1",
+              "2"
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "parse-csv-line-separator-inside",
       "operation": "read",
       "input": {
