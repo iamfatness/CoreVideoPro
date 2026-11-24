@@ -1132,8 +1132,9 @@ if(BUILD_TESTING)
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native corevideo_comms_core)
   if(COREVIDEO_WITH_AVF_ENCODER AND NOT COREVIDEO_STUB)  # frameworks are only linked in the non-stub config
     # AVAssetReader decode helper for the Mac ISO recording pixel tests.
-    target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
-    set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm tests/AvfRecorderSessionReleaseTest.mm)
+    set_source_files_properties(tests/AvfMp4Decode.mm tests/AvfRecorderSessionReleaseTest.mm
+      PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   endif()
   if(COREVIDEO_WITH_METAL AND NOT COREVIDEO_STUB)
     # CoreTextOverlayRaster full-resolution pixel tests (ObjC++: they read the

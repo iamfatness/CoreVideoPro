@@ -66,6 +66,11 @@ class AvfMp4Writer {
   bool open(const std::string& path, int width, int height, int fps, double bitrateMbps,
             const std::string& codec, std::string& errorOut,
             VideoInput videoInput = VideoInput::Bgra) {
+    // Every AVFoundation call here runs on the recorder's process-lifetime writer
+    // thread (AsyncEncoderSink). Without a pool, autoreleased writer inputs and
+    // buffers were never drained: measured, 35 finished recordings exhausted the
+    // hardware encoder (VideoToolbox -12903 for every new session).
+    @autoreleasepool {
     // O2: honour the requested codec; never write a different one silently.
     // AVAssetWriter writes HEVC as an 'hvc1' sample entry (QuickTime and
     // editors open it). AVFoundation has no AV1 encoder, so AV1 is refused at
@@ -143,6 +148,7 @@ class AvfMp4Writer {
         assetWriterInputPixelBufferAdaptorWithAssetWriterInput:videoInput_
                                    sourcePixelBufferAttributes:adaptorAttrs];
     return true;
+    }  // @autoreleasepool
   }
 
   // The size this writer opened at (even-aligned for NV12). An MP4 video track
@@ -154,6 +160,7 @@ class AvfMp4Writer {
 
   bool ensureAudioStream(int channels, int sampleRate, int audioBitrateKbps,
                          std::string& errorOut) {
+    @autoreleasepool {  // drained per call: see open()
     if (audioConfigured_) {
       return true;
     }
@@ -180,9 +187,11 @@ class AvfMp4Writer {
     [writer_ addInput:audioInput_];
     audioConfigured_ = true;
     return true;
+    }  // @autoreleasepool
   }
 
   bool beginWriting(std::string& errorOut) {
+    @autoreleasepool {  // drained per call: see open()
     if (!writer_) {
       errorOut = "writer not open";
       return false;
@@ -195,10 +204,12 @@ class AvfMp4Writer {
     [writer_ startSessionAtSourceTime:kCMTimeZero];
     writing_ = true;
     return true;
+    }  // @autoreleasepool
   }
 
   bool writeVideo(const uint8_t* bgra, int srcWidth, int srcHeight, int srcStride,
                   int64_t pts100ns, std::string& errorOut) {
+    @autoreleasepool {  // drained per call: see open()
     if (!writing_ || !adaptor_) {
       errorOut = "writer not writing";
       return false;
@@ -238,6 +249,7 @@ class AvfMp4Writer {
     ++videoFrameCount_;
     lastVideoPts100ns_ = pts100ns;
     return true;
+    }  // @autoreleasepool
   }
 
   // O2: a source of another size is SCALED to fit, aspect preserved, centred on
@@ -282,6 +294,7 @@ class AvfMp4Writer {
   // fills to the configured dims like the MF writer: luma fill 0, chroma 128.
   bool writeVideoNv12(const uint8_t* nv12, int srcWidth, int srcHeight, int64_t pts100ns,
                       std::string& errorOut) {
+    @autoreleasepool {  // drained per call: see open()
     if (!writing_ || !adaptor_ || inputKind_ != VideoInput::Nv12) {
       errorOut = "writer not accepting NV12";
       return false;
@@ -341,11 +354,13 @@ class AvfMp4Writer {
     ++videoFrameCount_;
     lastVideoPts100ns_ = pts100ns;
     return true;
+    }  // @autoreleasepool
   }
 
   // Silence-fill for gapped ISO stems (0.1s chunks like the MF writer).
   bool writeAudioSilence(int64_t frames, int64_t ptsStart100ns, std::string& errorOut,
                          bool mustAccept = false) {
+    @autoreleasepool {  // drained per call: see open()
     constexpr int kChunkFrames = 4800;
     std::vector<float> zeros;
     int64_t written = 0;
@@ -359,11 +374,13 @@ class AvfMp4Writer {
       written += chunk;
     }
     return true;
+    }  // @autoreleasepool
   }
 
   // `mustAccept`: a refused buffer is an error, not a silent drop (tail alignment).
   bool writeAudio(const float* interleaved, int frameCount, int64_t pts100ns,
                   std::string& errorOut, bool mustAccept = false) {
+    @autoreleasepool {  // drained per call: see open()
     if (!writing_ || !audioConfigured_ || !audioInput_) {
       errorOut = "audio stream not configured";
       return false;
@@ -428,6 +445,7 @@ class AvfMp4Writer {
     audioSampleCount_ += frameCount;
     lastAudioEnd100ns_ = pts100ns + static_cast<int64_t>(frameCount) * kHundredNsPerSecond / audioSampleRate_;
     return true;
+    }  // @autoreleasepool
   }
 
   // ISO writers hold the final picture with one real sample (Windows ISO rule);
@@ -511,6 +529,7 @@ class AvfMp4Writer {
   }
 
   bool finalize(std::string* errorOut = nullptr, std::string* tailError = nullptr) {
+    @autoreleasepool {  // drained per call: see open()
     bool finalized = true;
     if (writer_ && writing_) {
       std::string tail;
@@ -555,6 +574,7 @@ class AvfMp4Writer {
     writing_ = false;
     audioConfigured_ = false;
     return finalized;
+    }  // @autoreleasepool
   }
 
   // Test-only (probeStoppedWriterForTest): a writer that stops writing mid-session.
