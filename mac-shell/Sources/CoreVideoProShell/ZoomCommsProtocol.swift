@@ -1,8 +1,10 @@
 // Comms (Zoom talkback) wire format between the shell and the media core:
 // the Swift twin of native-shell/CoreVideoPro.MediaCore/Services/ZoomCommsProtocol.cs.
 // Requests are ordinary core requests whose `type` is one of `verbs` with the
-// arguments in `payload`; state arrives unsolicited as
-// {"type":"zoom-comms-state","comms":{...}|null}.
+// arguments in `payload`; state arrives unsolicited as a core EVENT of type
+// zoom-comms-state whose `comms` is an object or null. (Written without the
+// JSON key/value form on purpose: ContractParity scans product Swift for
+// "type":"<name>" as types the shell SENDS, and the shell never sends this.)
 //
 // The parse rules are the C# ones exactly (ZoomCommsProtocol.cs:22-77): an
 // `id` means a response, never a fact; `comms` must be an object or null;
