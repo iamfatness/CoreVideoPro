@@ -264,3 +264,18 @@ Shell, full suite: **8070 checks, 2 failed**, the known `.m4a` pair.
 | an unknown meeting state treated as not-in-meeting | red: `AnUnknownMeetingStateTickNeverWipesTheLatch` plus the respawn test (3 failures) |
 | no spine re-push after a scene push | red: the cue test (5 failures) |
 | the bus caption ignores the notice | red: the caption test |
+
+### Task 12 — churn across a wall Take, and follow-speaker evidence (D6)
+
+Both run in `ShellTestsTilesLive.swift` against the real Metal core with the fake engine, and both pass. The `tiles-live/` filter passes all 18 checks across its 3 cases.
+
+- **`tiles-live/take-and-speaker-change-churn-nothing`.**
+  - Setup: 6 participants with `COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE=0`, so a member gets frames only through an explicit spine subscription. No slot is in the show, so the wall alone makes the guests sources; this answers the S1 slice review's MEDIUM 1. The wall goes on Preview, settles 3 s, is taken, and then the fake's speaker rotation runs for 15 s.
+  - Take record: verdict `cut`, wall `continuous`, `subscriptionChurnDelta 0`. The Program wall drew ≥5 members from spine subscriptions alone.
+  - Per-source churn did not move for 101, 102, 103, 105 or 106 (all 0 → 0). Only `participant-video-104` moved, 0 → 1. That is the fake engine's own roster oscillation (guest 104 leaves and rejoins every 10 s), not a speaker change, so the test excludes 104 by design.
+- **`tiles-live/follow-speaker-evidence` (D6, before/after for the owner).**
+  - Setup: 4 participants with autosubscribe on, so everyone has frames. Only slot 1 is in the show. Program is a two-up scene whose second cell follows the speaker. Each window records 30 s of directed-speaker changes (`activeSpeakerId` in the zoom snapshot).
+  - "Before" is the base commit's wire. The spine is identical except that `sourceParticipantIds` is stripped, which is the only D6 wire change, so the same core and engine judge both.
+  - **BEFORE (no `sourceParticipantIds`):** `101, 102, 103, 104, 101, 102, 103, 104, 101, 102, 103, 101, 102, 103, 101`. The director followed every talker, including guests on no bus and no slot.
+  - **AFTER (this branch, sources `[101, 104]`):** `101, 104, 101, 104, 101`. The director chose only among sources. 104 is a source because the slot law seated it in the show when it rejoined (the fake's oscillation).
+  - Assertion: AFTER ⊆ sources. **For the owner:** follow-speaker on Mac now follows only show sources, which is the Windows rule (#478 R1). A guest who is on no bus, no wall slot and no ISO is never directed.

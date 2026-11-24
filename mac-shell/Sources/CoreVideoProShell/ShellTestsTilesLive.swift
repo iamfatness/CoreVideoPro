@@ -11,7 +11,9 @@ import Foundation
 
 extension ShellTests {
     static var tilesLiveCases: [(String, () -> Void)] {
-        [("tiles-live/wall-cuts-and-owns-an-empty-scene", testTilesLiveWallCutsAndOwnsAnEmptyScene)]
+        [("tiles-live/wall-cuts-and-owns-an-empty-scene", testTilesLiveWallCutsAndOwnsAnEmptyScene),
+         ("tiles-live/take-and-speaker-change-churn-nothing", testTilesLiveTakeAndSpeakerChangeChurnNothing),
+         ("tiles-live/follow-speaker-evidence", testTilesLiveFollowSpeakerEvidence)]
     }
 
     /// Pixel (BGRA) at a normalized point of a surface's bytes.
@@ -148,5 +150,155 @@ extension ShellTests {
         // 4. No routes+wall collision anywhere in the snapshot.
         let text = (try? JSONSerialization.data(withJSONObject: snapshot)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
         expect(!text.contains("tiles wall on the"), "\(w): no routes + wall collision warning")
+    }
+
+    // ── Task 12: churn across a wall Take, and follow-speaker evidence (D6) ──
+
+    /// A live core + fake engine + AppModel wired like the app (spine included).
+    @MainActor
+    final class TilesLiveRig {
+        let bridge: MediaCoreBridge
+        let app = AppModel()
+        var snapshot: JSONObject = [:]
+        var zoom: JSONObject = [:]
+        init?(participants: Int, extra: [String: String]) {
+            let env = ProcessInfo.processInfo.environment
+            guard let core = env["COREVIDEO_SHELL_LIVE_CORE"], !core.isEmpty,
+                  let engine = env["COREVIDEO_SHELL_LIVE_ENGINE"], !engine.isEmpty else { return nil }
+            let paths = ShellPaths.Paths(corePath: core, engineBinaryPath: engine, pluginHostPath: nil, graphicsFontsDirectory: nil)
+            var extras = CoreLaunchEnvironment.extras(paths: paths, processEnvironment: [:], zoomPublicAppKey: nil)
+            extras["COREVIDEO_FAKE_ENGINE_PARTICIPANTS"] = String(participants)
+            extras["COREVIDEO_FAKE_ENGINE_FPS"] = "30"
+            for (k, v) in extra { extras[k] = v }
+            bridge = MediaCoreBridge(corePath: core, environmentExtras: extras)
+            let flag = LiveFlag()
+            bridge.onStatus = { status in if case .connected = status { flag.connected = true } }
+            bridge.start()
+            ShellTests.spin(until: { flag.connected }, limit: 30)
+            guard flag.connected else { bridge.stop(); return nil }
+            let bridge = self.bridge
+            app.quitRequestForTesting = { body, timeout in try await bridge.request(body, timeout: timeout) }
+            app.spineRequestForTesting = { body in try await bridge.request(body) }
+            app.status = .connected(renderer: "metal")
+            app.onConnected()
+        }
+        func stop() { bridge.stop() }
+        func poll() {
+            let bridge = self.bridge, app = self.app
+            let reply = ShellTests.awaitMain(8) { (try? await bridge.request(["type": "media-core-sync", "elapsedMs": app.elapsedMs(), "commands": []])) ?? [:] } ?? [:]
+            if let s = reply["snapshot"] as? JSONObject, !s.isEmpty { snapshot = s; app.applySnapshotForTesting(s) }
+            if let z = ShellTests.awaitMain(8, { (try? await bridge.request(["type": "zoom-snapshot"])) ?? [:] }),
+               let zs = z["snapshot"] as? JSONObject { zoom = zs; app.applyZoomForTesting(zs) }
+        }
+        @discardableResult
+        func wait(_ seconds: TimeInterval, until condition: () -> Bool = { false }) -> Bool {
+            let end = Date().addingTimeInterval(seconds)
+            while Date() < end { poll(); if condition() { return true }; RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+            return false
+        }
+        /// Per-source churn counts, keyed by source uuid.
+        var churnBySource: [String: Int] {
+            let sources = (snapshot["zoomSubscriptionChurn"] as? JSONObject)?["sources"] as? [JSONObject] ?? []
+            var out: [String: Int] = [:]
+            for s in sources {
+                let key = s["sourceUuid"] as? String ?? s["sourceId"] as? String ?? "?"
+                out[key] = (s["churn"] as? NSNumber)?.intValue ?? 0
+            }
+            return out
+        }
+    }
+
+    @MainActor
+    static func testTilesLiveTakeAndSpeakerChangeChurnNothing() {
+        let w = "tiles live churn"
+        // Explicit subscriptions only: a wall member gets frames ONLY because the
+        // spine subscribed it (S1 slice review: the S1 live check could not see this).
+        guard let rig = TilesLiveRig(participants: 6, extra: ["COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0"]) else {
+            FileHandle.standardError.write(Data("  [skip] tiles live churn: set COREVIDEO_SHELL_LIVE_CORE and COREVIDEO_SHELL_LIVE_ENGINE\n".utf8))
+            return
+        }
+        defer { rig.stop() }
+        func log(_ s: String) { FileHandle.standardError.write(Data("  [tiles-live] \(s)\n".utf8)) }
+        let app = rig.app
+        app.joinMeetingId = "1234567890"
+        _ = awaitMain(15) { await app.performJoin() }
+        guard rig.wait(30, until: { app.roster.filter(\.hasVideo).count >= 5 }) else { expect(false, "\(w): roster"); return }
+        // No guest is on the multiview: the wall alone makes them sources.
+        for i in app.slots.indices { app.slots[i].inShow = false }
+        app.setCapture(enabled: true)
+        app.newTilesScene()
+        let wallId = app.previewSceneId
+        rig.wait(3)
+        let wallMembers = { ((rig.snapshot["tiles"] as? JSONObject)?["members"] as? [JSONObject])?.count ?? 0 }
+        let beforeChurn = rig.churnBySource
+        let beforeCount = ((rig.snapshot["takeRecords"] as? JSONObject)?["count"] as? NSNumber)?.intValue ?? 0
+        let take = awaitMain(10) { await app.take() }
+        log("Take: \(String(describing: take)); wall \(wallId)")
+        rig.wait(3)
+        let record = ((rig.snapshot["takeRecords"] as? JSONObject)?["records"] as? [JSONObject])?.last ?? [:]
+        let afterCount = ((rig.snapshot["takeRecords"] as? JSONObject)?["count"] as? NSNumber)?.intValue ?? 0
+        expect(afterCount > beforeCount, "\(w): a take record")
+        log("take record: verdict=\(record["verdict"] ?? "-") wall=\(record["wall"] ?? "-") churnDelta=\(record["subscriptionChurnDelta"] ?? "-")")
+        expectEqual(record["verdict"] as? String, "cut", "\(w): the wall Take is a cut")
+        expectEqual((record["subscriptionChurnDelta"] as? NSNumber)?.intValue, 0, "\(w): no subscription churn on the Take")
+        expect(wallMembers() >= 5, "\(w): the Program wall draws its members from spine subscriptions alone (\(wallMembers()))")
+        // The fake engine rotates the speaker every 2 s, and every 10 s guest 104
+        // leaves or rejoins (its own roster churn, not a speaker change).
+        rig.wait(15)
+        let afterChurn = rig.churnBySource
+        let moved = afterChurn.filter { key, value in !key.contains("104") && value != (beforeChurn[key] ?? value) }
+        log("churn before \(beforeChurn.sorted { $0.key < $1.key }) after \(afterChurn.sorted { $0.key < $1.key })")
+        expect(moved.isEmpty, "\(w): speaker changes churn no subscription (moved: \(moved))")
+    }
+
+    @MainActor
+    static func testTilesLiveFollowSpeakerEvidence() {
+        let w = "tiles live follow-speaker (D6)"
+        guard let rig = TilesLiveRig(participants: 4, extra: [:]) else {
+            FileHandle.standardError.write(Data("  [skip] tiles live follow-speaker: set COREVIDEO_SHELL_LIVE_CORE and COREVIDEO_SHELL_LIVE_ENGINE\n".utf8))
+            return
+        }
+        defer { rig.stop() }
+        func log(_ s: String) { FileHandle.standardError.write(Data("  [tiles-live] \(s)\n".utf8)) }
+        let app = rig.app
+        app.joinMeetingId = "1234567890"
+        _ = awaitMain(15) { await app.performJoin() }
+        guard rig.wait(30, until: { app.roster.filter(\.hasVideo).count >= 4 }) else { expect(false, "\(w): roster"); return }
+        // Slot 1 in show, every other slot out; a two-up scene whose second cell
+        // follows the speaker.
+        for i in app.slots.indices { app.slots[i].inShow = (app.slots[i].id == 1 && app.slots[i].kind == "zoom") }
+        app.scenes.append(SceneDef(id: "follow", name: "Follow", layout: "two-up"))
+        app.programSceneId = "follow"
+        app.setCapture(enabled: true)
+        app.syncScenes()
+        func record(_ seconds: TimeInterval) -> [String] {
+            var picks: [String] = []
+            let end = Date().addingTimeInterval(seconds)
+            while Date() < end {
+                rig.poll()
+                if let id = rig.zoom["activeSpeakerId"] as? String, !id.isEmpty, picks.last != id { picks.append(id) }
+                RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+            }
+            return picks
+        }
+        // BEFORE (the base commit's wire): the spine without sourceParticipantIds.
+        let bridge = rig.bridge
+        app.spineRequestForTesting = { body in
+            var b = body
+            if var payload = b["spinePayload"] as? JSONObject { payload.removeValue(forKey: "sourceParticipantIds"); b["spinePayload"] = payload }
+            return try await bridge.request(b)
+        }
+        app.setCapture(enabled: true)
+        let before = record(30)
+        // AFTER (this branch): sourceParticipantIds rides the spine.
+        app.spineRequestForTesting = { body in try await bridge.request(body) }
+        app.setCapture(enabled: true)
+        rig.wait(2)
+        let sources = Set((app.spinePushRequests().last?["spinePayload"] as? JSONObject)?["sourceParticipantIds"] as? [String] ?? [])
+        let after = record(30)
+        log("follow-speaker BEFORE (no sourceParticipantIds): \(before)")
+        log("follow-speaker AFTER  (sourceParticipantIds \(sources.sorted())): \(after)")
+        expect(!sources.isEmpty, "\(w): the spine names its sources")
+        expect(Set(after).isSubset(of: sources), "\(w): the director picks only among sources (\(after) ⊆ \(sources.sorted()))")
     }
 }
