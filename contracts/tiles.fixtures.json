@@ -6,7 +6,8 @@
     "MediaCoreCommandBuilder.BuildSceneGraphCommand. The Mac twin is ShellTestsTiles testEveryTilesFixtureMatchesTheSwiftBuilder.",
     "Participant ids are BARE Zoom ids (TilesLayerPayloadBuilderTests explains why). If Windows disagrees, fix `expected`, never Windows.",
     "`settings` is a persisted Tiles object (camelCase, same keys on both platforms); slots carry the Mac `kind` and the Windows ShowInputKind name.",
-    "Cases 6-10 cover manual holes/duplicates/exclusions, routed mode with local ids and omitted names, the eligible-mode rules (omitted ignored, pinned slots, a bare session id never seated), an ambiguous name and a degenerate wall rect."
+    "Cases 6-10 cover manual holes/duplicates/exclusions, routed mode with local ids and omitted names, the eligible-mode rules (omitted ignored, pinned slots, a bare session id never seated), an ambiguous name and a degenerate wall rect.",
+    "Cases 11-12 (Task 13): a never-show entry keyed by name (case-insensitive) follows the person, and a legacy session id saved in another meeting seats nobody while a zoom-pid: slot follows the rejoined guest."
   ],
   "cases": [
     {
@@ -759,6 +760,138 @@
           "animateLayout": false,
           "animationDurationMs": 350,
           "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "never-show-by-name",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "excludedSourceIds": [
+          "zoom-name:jason bache"
+        ],
+        "boundMeetingId": "97682593786"
+      },
+      "participants": [
+        {
+          "id": "16778240",
+          "name": "Someone else",
+          "videoOn": true
+        },
+        {
+          "id": "222",
+          "name": "Jason Bache",
+          "videoOn": true
+        },
+        {
+          "id": "333",
+          "name": "Guest 333",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8916561023",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:16778240",
+          "zoom:333"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "legacy-session-id-in-new-meeting",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "manual",
+        "maxTiles": 4,
+        "manualSlots": [
+          "zoom:33556480",
+          "zoom-pid:P1"
+        ],
+        "boundMeetingId": "97682593786"
+      },
+      "participants": [
+        {
+          "id": "33556480",
+          "name": "Someone else",
+          "videoOn": true
+        },
+        {
+          "id": "900",
+          "name": "Rejoined",
+          "videoOn": true,
+          "persistentId": "P1"
+        }
+      ],
+      "slots": [],
+      "meetingId": "8916561023",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "",
+          "zoom:900"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "manual",
           "nameEachTile": false
         }
       }

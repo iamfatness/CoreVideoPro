@@ -43,6 +43,10 @@ extension ShellTests {
             ("tiles/capture-off-forgets-latch", testCaptureOffForgetsTheLatch),
             ("tiles/respawn-resends-walls-spine-latch", testACoreRespawnResendsBothWallsAndTheSpineAndKeepsTheLatch),
             ("tiles/bus-caption", testBusCaptionCarriesTheCoresNotice),
+            // Task 13: identity and roster-aware membership.
+            ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
+            ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
+            ("tiles/rejoin-and-duplicate-name", testARejoinedGuestKeepsTheirSlotAndADuplicateNameSeatsNobody),
         ]
     }
 
@@ -1016,5 +1020,158 @@ extension ShellTests {
                     "PROGRAM · no video: Ann (subscription limit 10)", "\(w): Program notice")
         expectEqual(AppModel.busCaption(role: "pvw", label: "Preview"), "PREVIEW", "\(w): no notice")
         expectEqual(AppModel.busCaption(role: "pvw", label: ""), "PREVIEW", "\(w): empty label")
+    }
+
+    // ── Task 13 ──────────────────────────────────────────────────────────────
+
+    private static func person(_ session: String, _ name: String, _ pid: String? = nil) -> TilesIdentityPolicy.Person {
+        TilesIdentityPolicy.Person(sessionSourceId: "zoom:" + session, displayName: name, persistentId: pid)
+    }
+
+    static func testTilesIdentityPortsTheWindowsFacts() {
+        let t = "TilesIdentityPolicyTests"
+        typealias P = TilesIdentityPolicy
+        for id in ["capture:cam-1", "capture:screen:1", "media:clip-7"] {
+            let roster = [person("16778240", "Someone", "pid-1")]
+            expectEqual(P.persist(id, roster: roster), id, "\(t).Local1071_ALocalId…: persist \(id)")
+            expectEqual(P.resolveLiveSourceId(id, roster: roster, currentMeetingId: "8916561023", boundMeetingId: "97682593786"), id,
+                        "\(t).Local1071_ALocalId…: resolve \(id)")
+            expectEqual(P.resolveLiveSourceId(id, roster: [], currentMeetingId: nil, boundMeetingId: nil), id, "\(t).Local1071_ALocalId…: no roster")
+            expectEqual(P.label(id, roster: roster), id, "\(t).Local1071_ALocalId…: label")
+            var s = TilesSettings(); s.manualSlots = [id]; s.excludedSourceIds = [id]; s.boundMeetingId = "97682593786"
+            expect(P.describeStale(s, roster: roster, meetingId: "8916561023", liveLocal: nil).isEmpty, "\(t).Local1071_ALocalId…: not stale unjudged")
+            P.clearStale(&s, roster: roster, meetingId: "8916561023", liveLocal: nil)
+            expectEqual(s.manualSlots, [id], "\(t).Local1071_ALocalId…: slot kept")
+            expectEqual(s.excludedSourceIds, [id], "\(t).Local1071_ALocalId…: never-show kept")
+            expect(P.describeStale(s, roster: roster, meetingId: "8916561023", liveLocal: [id]).isEmpty,
+                   "\(t).Local1071_ALocalIdPersistsAndResolvesUnchangedInAnyMeeting (\(id))")
+        }
+
+        do {
+            let roster = [person("16778240", "Someone", "pid-1")]
+            var s = TilesSettings()
+            s.manualSlots = ["zoom-pid:pid-1", "capture:gone", "capture:cam-1"]
+            s.excludedSourceIds = ["media:deleted", "capture:cam-1"]; s.boundMeetingId = "97682593786"
+            let stale = P.describeStale(s, roster: roster, meetingId: "8916561023", liveLocal: ["capture:cam-1"])
+            expectEqual(stale.map(\.label), ["2: capture:gone: not in the show", "media:deleted: not in the show"],
+                        "\(t).Local1071_ALocalEntryWhoseSourceLeftTheShowIsStaleAndClearable: labels")
+            expectEqual(stale.map(\.kind), ["slot", "never-show"], "\(t).Local1071_ALocalEntry…: kinds")
+            P.clearStale(&s, roster: roster, meetingId: "8916561023", liveLocal: ["capture:cam-1"])
+            expectEqual(s.manualSlots, ["zoom-pid:pid-1", nil, "capture:cam-1"], "\(t).Local1071_ALocalEntry…: cleared slot")
+            expectEqual(s.excludedSourceIds, ["capture:cam-1"], "\(t).Local1071_ALocalEntry…: cleared never-show")
+            P.clearStale(&s, roster: roster, meetingId: "8916561023", liveLocal: [])
+            expectEqual(s.manualSlots, ["zoom-pid:pid-1", nil, nil], "\(t).Local1071_ALocalEntry…: empty live set")
+            expect(s.excludedSourceIds.isEmpty, "\(t).Local1071_ALocalEntryWhoseSourceLeftTheShowIsStaleAndClearable")
+        }
+
+        do {
+            var s = TilesSettings(); s.manualSlots = ["zoom:33556480"]; s.excludedSourceIds = ["zoom:67109888"]; s.boundMeetingId = "97682593786"
+            let next = [person("33556480", "Someone else"), person("16778240", "Jason Bache", "jason-pid")]
+            expect(P.resolveLiveSourceId("zoom:33556480", roster: next, currentMeetingId: "8916561023", boundMeetingId: s.boundMeetingId) == nil
+                   && P.resolveLiveSourceId("zoom:67109888", roster: next, currentMeetingId: "8916561023", boundMeetingId: s.boundMeetingId) == nil,
+                   "\(t).LiveCase479_LegacySessionIdIsNotAppliedToWhoeverInheritedItNextMeeting")
+            let stale = P.describeStale(s, roster: next, meetingId: "8916561023", liveLocal: nil)
+            expect(stale.contains { $0.kind == "slot" && $0.label.contains("not in this meeting") } && stale.contains { $0.kind == "never-show" },
+                   "\(t).LiveCase479_…: both stale")
+        }
+
+        expectEqual(P.persist("zoom:16778240", roster: [person("16778240", "Jamal", "jamal-pid")]), "zoom-pid:jamal-pid", "\(t).PersistPrefersPersistentIdThenDisplayName: pid")
+        expectEqual(P.persist("zoom:16778240", roster: [person("16778240", "Jamal")]), "zoom-name:Jamal", "\(t).PersistPrefersPersistentIdThenDisplayName: name")
+        expectEqual(P.persist("capture:cam-1", roster: [person("16778240", "Jamal", "jamal-pid")]), "capture:cam-1", "\(t).PersistPrefersPersistentIdThenDisplayName: local")
+
+        let saved = P.persist("zoom:111", roster: [person("111", "Jason Bache")])
+        expectEqual(saved, "zoom-name:Jason Bache", "\(t).NameKeyFollowsThePersonAcrossSessionIds: saved")
+        expectEqual(P.resolveLiveSourceId(saved, roster: [person("222", "Jason Bache")], currentMeetingId: "meeting-2", boundMeetingId: "meeting-1"),
+                    "zoom:222", "\(t).NameKeyFollowsThePersonAcrossSessionIds")
+        expect(P.resolveLiveSourceId("zoom-name:Alex", roster: [person("1", "Alex"), person("2", "Alex")], currentMeetingId: "m", boundMeetingId: "m") == nil,
+               "\(t).DuplicateDisplayNamesDoNotStealASlot")
+        expect(P.resolveLiveSourceId("zoom:16778240", roster: [person("16778240", "David Paskin")], currentMeetingId: "8916561023", boundMeetingId: nil) == nil,
+               "\(t).UnboundLegacySessionIdIsNeverApplied")
+
+        do {
+            var s = TilesSettings(); s.manualSlots = ["zoom:33556480"]; s.boundMeetingId = "97682593786"
+            let next = [person("33556480", "Someone else"), person("222", "Jason Bache")]
+            s.boundMeetingId = "8916561023"
+            s.manualSlots.append(P.persist("zoom:222", roster: next))
+            expect(P.resolveLiveSourceId("zoom:33556480", roster: next, currentMeetingId: "8916561023", boundMeetingId: s.boundMeetingId) == nil,
+                   "\(t).AssigningInANewMeetingDoesNotValidateLeftoverSessionIds: leftover")
+            expectEqual(P.resolveLiveSourceId("zoom-name:Jason Bache", roster: next, currentMeetingId: "8916561023", boundMeetingId: s.boundMeetingId),
+                        "zoom:222", "\(t).AssigningInANewMeetingDoesNotValidateLeftoverSessionIds")
+        }
+
+        do {
+            var s = TilesSettings()
+            s.manualSlots = ["zoom-name:Jamal", "zoom:33556480"]; s.excludedSourceIds = ["zoom-name:Jason Bache", "zoom-name:Susan"]; s.boundMeetingId = "old"
+            P.clearStale(&s, roster: [person("9", "Susan")], meetingId: "new", liveLocal: nil)
+            expectEqual(s.manualSlots, [nil, nil], "\(t).ClearStaleRemovesMissingSlotsAndNeverShow: slots")
+            expectEqual(s.excludedSourceIds, ["zoom-name:Susan"], "\(t).ClearStaleRemovesMissingSlotsAndNeverShow")
+        }
+
+        expectEqual(P.label("zoom-pid:x", roster: []), "saved Zoom participant", "Label: unknown pid")
+        expectEqual(P.label("zoom:5", roster: nil), "Unavailable source", "Label: session id without roster")
+        expectEqual(P.label("", roster: nil), "Unavailable source", "Label: empty")
+    }
+
+    static func testTilesMembershipPortsTheWindowsFacts() {
+        let t = "TilesMembershipPolicyTests"
+        typealias M = TilesMembershipPolicy
+        var manual = TilesSettings(); manual.autoFill = false; manual.membershipMode = "manual"
+        manual.manualSlots = ["zoom:a", nil, "zoom:absent", "zoom:b", "zoom:a"]; manual.excludedSourceIds = ["zoom:b"]
+        expectEqual(M.resolve(manual, eligible: ["zoom:a", "zoom:c"], routed: nil, roster: nil, meetingId: nil),
+                    ["zoom:a", "", "zoom:absent", "", ""], "\(t).ManualSlotsKeepHolesAndMissingIdentityWithoutPromotingRoster")
+        expectEqual(M.resolve(manual, eligible: ["zoom:a", "zoom:c", "zoom:absent"], routed: nil, roster: nil, meetingId: nil),
+                    ["zoom:a", "", "zoom:absent", "", ""], "\(t).ManualSlotsKeepHoles…: unchanged when present")
+
+        var routed = TilesSettings(); routed.membershipMode = "routed"; routed.manualSlots = ["zoom:c"]
+        expectEqual(M.resolve(routed, eligible: ["zoom:a", "zoom:b", "zoom:c"], routed: ["zoom:a", "zoom:c", "capture:cam"], roster: nil, meetingId: nil),
+                    ["zoom:c", "zoom:a"], "\(t).RoutedModeUsesOnlyLiveSourcesAssignedToTheShow")
+
+        let mixed = [person("a", "Guest A", "pid-a"), person("b", "Guest B", "pid-b")]
+        var bound = TilesSettings(); bound.boundMeetingId = "111"
+        expectEqual(M.resolve(bound, eligible: ["zoom:a", "capture:cam-1", "zoom:b", "media:clip-7"], routed: nil, roster: mixed, meetingId: "111"),
+                    ["zoom:a", "capture:cam-1", "zoom:b", "media:clip-7"], "\(t).Local1071_EligibleModeSeatsZoomAndLocalMembersInEligibleOrder")
+        var manualLocal = TilesSettings(); manualLocal.membershipMode = "manual"
+        manualLocal.manualSlots = ["capture:screen:1", "zoom-pid:pid-a", "media:clip-7"]; manualLocal.boundMeetingId = "111"
+        expectEqual(M.resolve(manualLocal, eligible: ["zoom:a", "capture:screen:1"], routed: nil, roster: mixed, meetingId: "222"),
+                    ["capture:screen:1", "zoom:a", "media:clip-7"], "\(t).Local1071_ManualSlotsHoldCanonicalLocalIdsWithoutRosterResolution")
+        var never = TilesSettings(); never.excludedSourceIds = ["capture:cam-1"]; never.manualSlots = ["capture:cam-1"]; never.boundMeetingId = "111"
+        let eligible = ["zoom:a", "capture:cam-1", "media:clip-7"]
+        expectEqual(M.resolve(never, eligible: eligible, routed: nil, roster: mixed, meetingId: "111"), ["zoom:a", "media:clip-7"],
+                    "\(t).Local1071_NeverShowAcceptsALocalIdAndKeepsItOffEveryMode: eligible")
+        never.membershipMode = "manual"
+        expectEqual(M.resolve(never, eligible: eligible, routed: nil, roster: mixed, meetingId: "111"), [""],
+                    "\(t).Local1071_NeverShow…: manual")
+        never.membershipMode = "routed"
+        expectEqual(M.resolve(never, eligible: eligible, routed: ["capture:cam-1", "media:clip-7"], roster: mixed, meetingId: "111"), ["media:clip-7"],
+                    "\(t).Local1071_NeverShowAcceptsALocalIdAndKeepsItOffEveryMode")
+        var routedMixed = TilesSettings(); routedMixed.membershipMode = "routed"
+        expectEqual(M.resolve(routedMixed, eligible: ["zoom:a", "capture:cam-1", "media:clip-7", "capture:screen:1"],
+                              routed: ["capture:screen:1", "zoom:a"], roster: mixed, meetingId: "111"),
+                    ["zoom:a", "capture:screen:1"], "\(t).Local1071_RoutedModeKeepsFilteringMixedIdsToTheRoutedSet")
+
+        var auto = TilesSettings(); auto.maxTiles = 3; auto.manualSlots = ["zoom:c"]; auto.excludedSourceIds = ["zoom:b"]
+        expectEqual(M.resolve(auto, eligible: ["zoom:a", "zoom:b", "zoom:c", "zoom:d", "zoom:e"], routed: nil, roster: nil, meetingId: nil),
+                    ["zoom:c", "zoom:a", "zoom:d"], "\(t).AutomaticFillRespectsPriorityAssignmentsExclusionsAndLimit")
+
+        var live = TilesSettings(); live.maxTiles = 4; live.membershipMode = "manual"; live.manualSlots = ["zoom:33556480"]
+        live.excludedSourceIds = ["zoom-name:Jason Bache"]; live.boundMeetingId = "97682593786"
+        let roster = [person("16778240", "Someone else"), person("222", "Jason Bache")]
+        expectEqual(M.resolve(live, eligible: ["zoom:16778240", "zoom:222", "zoom:333"], routed: nil, roster: roster, meetingId: "8916561023"),
+                    [""], "\(t).LiveCase479_…: a leftover session id seats nobody")
+        live.membershipMode = "eligible"
+        let members = M.resolve(live, eligible: ["zoom:16778240", "zoom:222", "zoom:333"], routed: nil, roster: roster, meetingId: "8916561023")
+        expect(!members.contains("zoom:222") && members.contains("zoom:16778240") && members.contains("zoom:333"),
+               "\(t).LiveCase479_NameKeyedNeverShowFollowsThePersonAndLegacyIdsDoNotSeatAStranger")
+    }
+
+    static func testARejoinedGuestKeepsTheirSlotAndADuplicateNameSeatsNobody() {
+        let w = "Review Focus 5"
+        var s = TilesSettings(); s.membershipMode = "manual"; s.manualSlots = ["zoom-pid:P1", "zoom-name:Sam"]; s.boundMeetingId = "m1"
+        let rejoined = [person("900", "Pat", "P1"), person("31", "Sam"), person("32", "Sam")]
+        expectEqual(TilesMembershipPolicy.resolve(s, eligible: ["zoom:900", "zoom:31", "zoom:32"], routed: nil, roster: rejoined, meetingId: "m1"),
+                    ["zoom:900", ""], "\(w): the pid slot follows the rejoined session id; two Sams seat nobody")
+        s.membershipMode = "eligible"; s.excludedSourceIds = ["zoom-name:Sam"]
+        expectEqual(TilesMembershipPolicy.resolve(s, eligible: ["zoom:900", "zoom:31", "zoom:32"], routed: nil, roster: rejoined, meetingId: "m1"),
+                    ["zoom:900", "zoom:31", "zoom:32"], "\(w): an ambiguous never-show name excludes nobody (it resolves to no one)")
     }
 }

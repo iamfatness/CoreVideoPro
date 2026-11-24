@@ -130,6 +130,74 @@ enum TilesIdentityPolicy {
         var persistentId: String? = nil
     }
 
+    /// A saved entry that cannot seat anyone now (Windows `StaleEntry`). kind: "slot" | "never-show".
+    struct StaleEntry: Equatable {
+        let persistedKey: String
+        let label: String
+        let kind: String
+    }
+
+    static func person(_ participant: RosterParticipant) -> Person { person(from: participant) }
+
+    /// `Persist`: a live `zoom:<session>` id becomes `zoom-pid:<persistentId>`, else
+    /// `zoom-name:<display name>`, else stays as-is. Locals and keys are unchanged.
+    static func persist(_ liveSourceId: String, roster: [Person]) -> String {
+        guard !liveSourceId.isEmpty, liveSourceId.hasPrefix(zoomSessionPrefix),
+              !liveSourceId.hasPrefix(zoomPidPrefix), !liveSourceId.hasPrefix(zoomNamePrefix),
+              let person = roster.first(where: { $0.sessionSourceId == liveSourceId }) else { return liveSourceId }
+        if let pid = person.persistentId?.trimmingCharacters(in: .whitespacesAndNewlines), !pid.isEmpty {
+            return zoomPidPrefix + pid
+        }
+        let name = person.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? liveSourceId : zoomNamePrefix + name
+    }
+
+    /// `Label`.
+    static func label(_ persisted: String?, roster: [Person]?) -> String {
+        guard let persisted, !persisted.isEmpty else { return "Unavailable source" }
+        if TilesLocalSourcePolicy.isLocalSourceId(persisted) { return persisted }
+        if persisted.hasPrefix(zoomNamePrefix) { return String(persisted.dropFirst(zoomNamePrefix.count)) }
+        if persisted.hasPrefix(zoomPidPrefix) {
+            let pid = String(persisted.dropFirst(zoomPidPrefix.count))
+            return roster?.first { $0.persistentId == pid }?.displayName ?? "saved Zoom participant"
+        }
+        return roster?.first { $0.sessionSourceId == persisted }?.displayName ?? "Unavailable source"
+    }
+
+    /// `DescribeStale`. `liveLocal == nil` means "do not judge local ids".
+    static func describeStale(_ s: TilesSettings, roster: [Person], meetingId: String?, liveLocal: Set<String>?) -> [StaleEntry] {
+        var stale: [StaleEntry] = []
+        for (index, key) in s.manualSlots.enumerated() {
+            guard let key, !key.isEmpty, isStale(key, s, roster: roster, meetingId: meetingId, liveLocal: liveLocal) else { continue }
+            stale.append(StaleEntry(persistedKey: key, label: "\(index + 1): \(label(key, roster: roster)): \(staleReason(key))", kind: "slot"))
+        }
+        for key in s.excludedSourceIds where !key.isEmpty && isStale(key, s, roster: roster, meetingId: meetingId, liveLocal: liveLocal) {
+            stale.append(StaleEntry(persistedKey: key, label: "\(label(key, roster: roster)): \(staleReason(key))", kind: "never-show"))
+        }
+        return stale
+    }
+
+    /// `ClearStale`: stale manual slots become holes, stale never-show entries are removed.
+    static func clearStale(_ s: inout TilesSettings, roster: [Person], meetingId: String?, liveLocal: Set<String>?) {
+        let settings = s
+        for index in s.manualSlots.indices {
+            if let key = s.manualSlots[index], !key.isEmpty,
+               isStale(key, settings, roster: roster, meetingId: meetingId, liveLocal: liveLocal) {
+                s.manualSlots[index] = nil
+            }
+        }
+        s.excludedSourceIds.removeAll { !$0.isEmpty && isStale($0, settings, roster: roster, meetingId: meetingId, liveLocal: liveLocal) }
+    }
+
+    private static func isStale(_ key: String, _ s: TilesSettings, roster: [Person], meetingId: String?, liveLocal: Set<String>?) -> Bool {
+        if TilesLocalSourcePolicy.isLocalSourceId(key) { return liveLocal.map { !$0.contains(key) } ?? false }
+        return resolveLiveSourceId(key, roster: roster, currentMeetingId: meetingId, boundMeetingId: s.boundMeetingId) == nil
+    }
+
+    private static func staleReason(_ key: String) -> String {
+        TilesLocalSourcePolicy.isLocalSourceId(key) ? "not in the show" : "not in this meeting"
+    }
+
     static func person(from participant: RosterParticipant) -> Person {
         Person(sessionSourceId: "zoom:" + participant.id, displayName: participant.name,
                persistentId: participant.persistentId)

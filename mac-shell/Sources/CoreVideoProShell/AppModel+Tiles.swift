@@ -26,7 +26,17 @@ extension AppModel {
             sceneId: sceneId, settings: settings, roster: roster,
             localVideoSourceIds: TilesLocalSourcePolicy.localVideoSources(slots, devices: captureDevices).map(\.id),
             routedSourceIds: TilesLocalSourcePolicy.routedSourceIds(slots),
-            identityRoster: nil, meetingId: nil)
+            identityRoster: tilesIdentityRoster, meetingId: currentTilesMeetingId)
+    }
+
+    /// The FULL roster, camera-off included (Windows `RoomParticipantsForInputs`):
+    /// saved identities resolve against everyone in the room.
+    var tilesIdentityRoster: [TilesIdentityPolicy.Person] { roster.map(TilesIdentityPolicy.person(from:)) }
+
+    /// Windows `CurrentTilesMeetingId`: the meeting number being joined, nil when blank.
+    var currentTilesMeetingId: String? {
+        let id = Self.parseZoomTarget(joinMeetingId, fallbackPasscode: joinPasscode).meetingId
+        return id.isEmpty ? nil : id
     }
 
     /// Windows `MakeUniqueSceneName`: the base name, else " 2", " 3"…, compared

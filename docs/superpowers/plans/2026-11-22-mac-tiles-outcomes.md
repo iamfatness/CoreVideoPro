@@ -279,3 +279,26 @@ Both run in `ShellTestsTilesLive.swift` against the real Metal core with the fak
   - **BEFORE (no `sourceParticipantIds`):** `101, 102, 103, 104, 101, 102, 103, 104, 101, 102, 103, 101, 102, 103, 101`. The director followed every talker, including guests on no bus and no slot.
   - **AFTER (this branch, sources `[101, 104]`):** `101, 104, 101, 104, 101`. The director chose only among sources. 104 is a source because the slot law seated it in the show when it rejoined (the fake's oscillation).
   - Assertion: AFTER ⊆ sources. **For the owner:** follow-speaker on Mac now follows only show sources, which is the Windows rule (#478 R1). A guest who is on no bus, no wall slot and no ISO is never directed.
+
+## Slice S3
+
+### Task 13 — `TilesIdentityPolicy` and roster-aware membership
+
+- `TilesIdentityPolicy` is now complete: `StaleEntry`, `person`, `persist`, `resolveLiveSourceId`, `label`, `describeStale` and `clearStale`. The Windows strings are copied exactly ("Unavailable source", "saved Zoom participant", "not in this meeting", "not in the show", "<n>: <label>: <reason>"). `AppModel+Tiles` adds `tilesIdentityRoster` (the full roster) and `currentTilesMeetingId` (the parsed `joinMeetingId`, nil when blank, like Windows `CurrentTilesMeetingId`). `tilesPayload(for:)` now passes both.
+- `contracts/tiles.fixtures.json` has 12 cases:
+  - Cases 1-10 already covered the plan's `manual-holes` and `routed-mixed-ids` (`manual-holes-excluded-duplicate`, `routed-mixed-ids-and-omitted`).
+  - Added `never-show-by-name`, matched case-insensitively.
+  - Added `legacy-session-id-in-new-meeting`: a leftover session id seats nobody, and a `zoom-pid:` slot follows the rejoined guest.
+  - All 12 pass against the real Windows sources with the local oracle. Windows CI confirms them on the next run.
+- Tests:
+  - all 9 `TilesIdentityPolicyTests` facts by name, the 3-id theory included;
+  - the 8 `TilesMembershipPolicyTests` facts the plan names, the 4 `Local1071_*` included;
+  - `testARejoinedGuestKeepsTheirSlotAndADuplicateNameSeatsNobody` (Review Focus 5).
+- `tiles/` filter: 315/315. Full suite: **8174 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 13) | Result |
+|---|---|
+| a legacy `zoom:<n>` is applied | red: 7 failures (fixture case 12, LiveCase479, the unbound id, etc.) |
+| names match case-sensitively | red: 3 failures (`never-show-by-name`, the routed omitted name) |
+| a duplicate name counts as a match | red: 4 failures (the ambiguous-name case, `DuplicateDisplayNames…`, Review Focus 5) |
+| local ids resolve against the roster | **equivalent**. Without the early return, a `capture:`/`media:` id falls through every Zoom-prefix branch to `return persisted`, so the result is identical. The early return is kept as documentation and parity |
