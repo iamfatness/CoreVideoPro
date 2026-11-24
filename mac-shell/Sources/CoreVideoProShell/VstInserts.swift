@@ -247,6 +247,16 @@ extension AppModel {
         return vstInsertsLive ? chain : chain.filter { !InsertChainPolicy.isHostHandled($0) }
     }
 
+    // Bus chains actually sent to the core (both routing paths): the
+    // operator's busInserts with plug-in names (isHostHandled) dropped while
+    // the host is not live, exactly as pluginInsertNames does for a channel.
+    // Wire-only: busInserts itself keeps the operator's chain, and the slot
+    // for a dropped name reads BYPASS (InsertChainPolicy.slots).
+    var wireBusInserts: [String: [String]] {
+        vstInsertsLive ? busInserts
+            : busInserts.mapValues { $0.filter { !InsertChainPolicy.isHostHandled($0) } }
+    }
+
     // stripId -> the LAST VST name in that strip's chain. The VST picker and
     // the ShellPrefs `vstChannelSelections` compatibility both read this view.
     var vstChannelSelection: [String: String] {

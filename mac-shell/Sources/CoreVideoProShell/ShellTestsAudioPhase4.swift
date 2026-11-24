@@ -41,6 +41,7 @@ extension ShellTests {
             ("a7-fix-bus-slot-rule", testFixBusSlotRule),
             ("a7-fix-vst-repick-is-noop", testFixVstRepickIsNoop),
             ("a7-fix-empty-prefs-clears-vst", testFixEmptyPrefsClearsVst),
+            ("a7-fix-bus-vst-gated-on-host", testFixBusVstGatedOnHost),
         ]
     }
 
@@ -413,7 +414,7 @@ extension ShellTests {
         // defaults are synthesised -> red here (the defaults lack it).
         for send in master {
             expectEqual(chainOf(send), ["Compressor", "Limiter"],
-                        "default master send \(send["sourceId"] ?? "?") carries the master chain (SVM:9221-9229)")
+                        "default master send \(send["sourceId"] ?? "?") carries the master chain (SVM:9222-9230)")
         }
         for send in all where send["busId"] as? String != "master" {
             expectEqual(chainOf(send), [], "a \(send["busId"] ?? "?") send carries that bus's (empty) chain")
@@ -539,8 +540,8 @@ extension ShellTests {
         // Mutation: master after the other buses -> red.
         expectEqual(model.processingTargets.map(\.id), expected, "Windows RefreshAudioProcessingTargets order")
         func target(_ id: String) -> AudioProcessingTarget? { model.processingTargets.first { $0.id == id } }
-        expectEqual(target("bus:aux-1")?.kind, "Aux bus", "aux kind (SVM ResolveBusProcessingKind)")
-        expectEqual(target("bus:aux-1")?.detail, "Aux send processing.", "aux detail (SVM ResolveBusProcessingDetail)")
+        expectEqual(target("bus:aux-1")?.kind, "Aux bus", "aux kind (SVM:11614-11637)")
+        expectEqual(target("bus:aux-1")?.detail, "Aux send processing.", "aux detail (SVM:11639-11649)")
         expectEqual(target("bus:master")?.kind, "Master bus", "master kind")
         expectEqual(target("bus:master")?.detail, "Final program mix processing before output.", "master detail")
         expectEqual(target("bus:master")?.label, "MASTER", "a bus target's label is its header label")
@@ -551,7 +552,17 @@ extension ShellTests {
         expectEqual(target("bus:pgm-l")?.detail, "Left program bus processing.", "pgm-l detail")
         expectEqual(target("bus:pgm-r")?.kind, "Bus", "pgm-r kind")
         expectEqual(target("channel:101")?.kind, "Channel", "channel kind")
-        expectEqual(target("channel:101")?.detail, "Channel - MASTER", "channel detail names the primary bus")
+        expect(model.audioSends.isEmpty, "precondition: nothing routed yet")
+        expectEqual(target("channel:101")?.detail, "Channel - MASTER",
+                    "with no routed bus the detail falls back to MASTER (SVM:11660)")
+        // A real routed state: the primary bus is the first ROUTED bus in header
+        // order (SVM:11651-11661). Mutation: always return "MASTER", or take the
+        // first routed bus in dictionary order instead of header order -> red.
+        model.audioSends = ["101": ["aux-1": 0], "102": ["aux-1": 0, "iso-3": -6]]
+        expectEqual(target("channel:101")?.detail, "Channel - AUX 1", "channel routed only to aux-1")
+        expectEqual(target("channel:102")?.detail, "Channel - ISO 3",
+                    "iso-3 precedes aux-1 in header order, so it is the primary bus")
+        model.audioSends = [:]
         expectEqual(target("bus:master")?.insertLabel, "No inserts", "an empty chain")
         model.busInserts["master"] = ["Compressor", "Limiter"]
         expectEqual(target("bus:master")?.insertLabel, "Compressor + Limiter", "the chain joined with \" + \"")
@@ -793,5 +804,50 @@ extension ShellTests {
         empty.applyRestoredPrefs(ShellPrefs())
         expectEqual(empty.channelInserts["101"]?.chain, ["Compressor"], "empty prefs clear the VST selection")
         expect(empty.currentPrefs().vstChannelSelections == nil, "and nothing is saved back")
+    }
+
+    @MainActor
+    private static func testFixBusVstGatedOnHost() {
+        let model = targetModel()
+        model.busInserts = ["master": ["Compressor", "vst:Test"]]
+        expect(!model.vstInsertsLive, "precondition: no live host")
+        // Base matrix (routingBaseCommand -> baseRoutingSends).
+        // Mutation: pass busInserts instead of wireBusInserts there -> red.
+        let base = sends(model.routingBaseCommand()).filter { $0["busId"] as? String == "master" }
+        expectEqual(base.count, 2, "fixture: two default master sends")
+        for send in base {
+            expectEqual(chainOf(send), ["Compressor"], "base master send: the plug-in is dropped without a host")
+        }
+        // Legacy pushAudioRouting tail (no authority epoch).
+        // Mutation: read busInserts instead of wireBusInserts there -> red.
+        model.audioSends = ["101": ["master": 0], "102": ["master": -3]]
+        var requests: [JSONObject] = []
+        model.audioRoutingRequestForTesting = { body in
+            requests.append(body)
+            return ["snapshot": ["audioRoutingMatrix": ["sends": [JSONObject]()]] as JSONObject]
+        }
+        model.syncAudioRouting()
+        func matrix() -> JSONObject? {
+            requests.lazy.compactMap { ($0["commands"] as? [JSONObject])?.first }
+                .first { $0["type"] as? String == "sync-audio-routing-matrix" }
+        }
+        spin(until: { matrix() != nil }, limit: 3)
+        let legacy = sends(matrix()).filter { $0["busId"] as? String == "master" }
+        expectEqual(legacy.count, 2, "legacy tail: both master sends")
+        for send in legacy {
+            expectEqual(chainOf(send), ["Compressor"], "legacy master send: the plug-in is dropped without a host")
+        }
+        // Wire-only: the operator's chain is kept, and its slot says why.
+        expectEqual(model.busInserts["master"], ["Compressor", "vst:Test"], "busInserts keeps the operator's chain")
+        let slots = InsertChainPolicy.slots(chain: model.busInserts["master"] ?? [], onBus: true,
+                                            vstLive: model.vstInsertsLive, vstStatusLine: model.vstStatusLine,
+                                            labelStyle: .target)
+        expectEqual(slots.map(\.statusLabel), ["LIVE", "BYPASS"], "the bus plug-in slot reads BYPASS")
+        expectEqual(slots.last?.tooltip, model.vstStatusLine, "with the host status line")
+        // A live host gets the full chain in the base matrix.
+        model.vstHost.serveRunning = true
+        for send in sends(model.routingBaseCommand()) where send["busId"] as? String == "master" {
+            expectEqual(chainOf(send), ["Compressor", "vst:Test"], "a live host gets the bus plug-in")
+        }
     }
 }
