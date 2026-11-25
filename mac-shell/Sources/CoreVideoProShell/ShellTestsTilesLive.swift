@@ -13,7 +13,8 @@ extension ShellTests {
     static var tilesLiveCases: [(String, () -> Void)] {
         [("tiles-live/wall-cuts-and-owns-an-empty-scene", testTilesLiveWallCutsAndOwnsAnEmptyScene),
          ("tiles-live/take-and-speaker-change-churn-nothing", testTilesLiveTakeAndSpeakerChangeChurnNothing),
-         ("tiles-live/follow-speaker-evidence", testTilesLiveFollowSpeakerEvidence)]
+         ("tiles-live/follow-speaker-evidence", testTilesLiveFollowSpeakerEvidence),
+         ("tiles-live/presets-change-program-pixels", testTilesLivePresetsChangeProgramPixels)]
     }
 
     /// Pixel (BGRA) at a normalized point of a surface's bytes.
@@ -303,5 +304,73 @@ extension ShellTests {
         expect(!Set(before).isSubset(of: sources),
                "\(w): before the change the director followed a non-source (the evidence shows a difference)")
         expect(Set(after).isSubset(of: sources), "\(w): the director picks only among sources (\(after) ⊆ \(sources.sorted()))")
+    }
+
+    // ── Task 18: preset pixels on Program ──
+
+    @MainActor
+    static func testTilesLivePresetsChangeProgramPixels() {
+        let w = "tiles live presets"
+        guard let rig = TilesLiveRig(participants: 4, extra: ["COREVIDEO_FAKE_PRIMARY_COLORS": "1", "COREVIDEO_FAKE_NO_CHURN": "1"]) else {
+            FileHandle.standardError.write(Data("  [skip] tiles live presets: set COREVIDEO_SHELL_LIVE_CORE and COREVIDEO_SHELL_LIVE_ENGINE\n".utf8))
+            return
+        }
+        defer { rig.stop() }
+        func log(_ s: String) { FileHandle.standardError.write(Data("  [tiles-live] \(s)\n".utf8)) }
+        let app = rig.app
+        app.joinMeetingId = "1234567890"
+        _ = awaitMain(15) { await app.performJoin() }
+        guard rig.wait(30, until: { app.roster.filter(\.hasVideo).count >= 4 }) else { expect(false, "\(w): roster"); return }
+        app.setCapture(enabled: true)
+        // Two walls: A on Program, B on Preview. Each preset is applied to the
+        // Preview wall and taken; the next one lands on the other wall.
+        app.scenes.append(SceneDef(id: "wall-a", name: "Wall A", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        app.scenes.append(SceneDef(id: "wall-b", name: "Wall B", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        app.programSceneId = "wall-a"; app.previewSceneId = "wall-b"
+        app.syncScenes()
+        rig.wait(3)
+        func surface() -> (width: Int, height: Int, bytes: [UInt8])? {
+            programPixels(((rig.snapshot["programSharedTexture"] as? JSONObject)?["iosurfaceId"] as? NSNumber)?.uint32Value ?? 0)
+        }
+        func px(_ img: (width: Int, height: Int, bytes: [UInt8]), _ x: Int, _ y: Int) -> (b: Int, g: Int, r: Int) {
+            let cx = min(max(x, 0), img.width - 1), cy = min(max(y, 0), img.height - 1)
+            let i = (cy * img.width + cx) * 4
+            return (Int(img.bytes[i]), Int(img.bytes[i + 1]), Int(img.bytes[i + 2]))
+        }
+        for (preset, border) in [(TilesStylePreset.rounded, (r: 0x65, g: 0x7D, b: 0x87)), (.broadcast, (r: 0x8A, g: 0xE0, b: 0xCA))] {
+            do { try app.applyTilesPreset(preset) } catch { expect(false, "\(w): \(preset) applies on Preview"); continue }
+            rig.wait(1)
+            _ = awaitMain(10) { await app.take() }
+            rig.wait(1.5)
+            guard let img = surface(),
+                  let rect = (((rig.snapshot["tiles"] as? JSONObject)?["members"] as? [JSONObject])?.first?["rect"] as? JSONObject),
+                  let x = rect["x"] as? Double, let y = rect["y"] as? Double, let width = rect["width"] as? Double,
+                  let height = rect["height"] as? Double else { expect(false, "\(w): \(preset) Program wall and pixels"); continue }
+            let left = Int((x * Double(img.width)).rounded()), top = Int((y * Double(img.height)).rounded())
+            let midY = Int(((y + height / 2) * Double(img.height)).rounded())
+            let corner = px(img, left + 2, top + 2), edge = px(img, left + 1, midY), outside = px(img, left - 6, midY)
+            log("\(preset): tile0 at (\(left),\(top)) w=\(Int(width * Double(img.width))) corner=\(corner) edge=\(edge) outside=\(outside)")
+            log("\(preset): exact left=\(x * Double(img.width)) scan=\((-3...6).map { px(img, left + $0, midY) })")
+            // The rounded mask: the tile's colour never reaches its corner. Without glow
+            // the corner is the #000000 wall background; Broadcast's 12 px white glow
+            // fills the masked-off corner (glow is drawn outside the tile shape), so
+            // there it is neutral grey, never the tile's primary colour.
+            if preset == .broadcast {
+                expect(abs(corner.r - corner.g) <= 8 && abs(corner.g - corner.b) <= 8 && corner.g > 8,
+                       "\(w): broadcast the corner is masked off and filled by the white glow (\(corner))")
+            } else {
+                expect(corner.r <= 8 && corner.g <= 8 && corner.b <= 8, "\(w): \(preset) the rounded mask shows the #000000 background at the corner")
+            }
+            // The border: Broadcast's 5 px border has pure pixels (within 6). Rounded's
+            // 2 px border sits at a fractional x with a ~1 px anti-aliased ramp on each
+            // side, so no pixel is pure: the best of the first two is within 14.
+            let tolerance = preset == .broadcast ? 6 : 14
+            let candidates = preset == .broadcast ? [edge] : [px(img, left, midY), edge]
+            let best = candidates.map { max(abs($0.r - border.r), abs($0.g - border.g), abs($0.b - border.b)) }.min() ?? 255
+            expect(best <= tolerance, "\(w): \(preset) the border colour at the left edge (off by \(best), tolerance \(tolerance))")
+            if preset == .broadcast {
+                expect(outside.g > 8, "\(w): broadcast glow lifts the background beside the tile (\(outside))")
+            }
+        }
     }
 }

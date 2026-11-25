@@ -448,3 +448,22 @@ No HIGH. The reviewer confirmed statement-level parity for identity, membership,
 | swap the Rounded and Broadcast radii | red: 3 failures |
 | a colour bypasses the normalizer | red |
 | the picker keeps its own colour copy | not built as a mutant: there is no stored colour anywhere to drift. The truth test's "the picker follows a hex edit" pins the property |
+
+### Task 18 — S4 pixel proofs
+
+`tiles-live/presets-change-program-pixels` runs against the real Metal core with the fake engine: 4 participants in primary colours. Wall A is on Program and wall B on Preview. Rounded is applied on Preview and taken, then Broadcast is applied to the other wall and taken. Program pixels are read at `tiles.members[0].rect`. **5/5 passed.**
+
+The measurements:
+- **Rounded** (2 px `#657D87`, radius 24): corner (2,2) is `(0,0,0)`, the background.
+  - Scanline across the left edge at mid-height (x = 28.08): `bg bg bg (80,100,108) (90,113,147) (26,43,222) tile…`.
+  - A 2 px border at a fractional position, with the shader's ~1 px anti-aliasing ramp on each side, has **no pure pixel**. The best one is 12 off the border colour.
+- **Broadcast** (5 px `#8AE0CA`, radius 12, 12 px white glow):
+  - Left edge: three pure `(138,224,202)` pixels, then the anti-aliasing ramp into the tile. 6 px outside the edge is `(72,72,72)`, the glow.
+  - Corner (2,2) is `(183,183,183)`. The corner is masked off the tile, but the glow, which is drawn outside the tile shape, fills it.
+
+**Plan fixture corrections (recorded as deviations; Windows thresholds are untouched).** The plan's Task 18 numbers were hand-written, not Windows-derived:
+- "The corner equals the wall background" holds only without glow. With Broadcast the test asserts a neutral grey glow corner, never the tile's colour.
+- "The border colour within 6 at 1 px inside" holds for the 5 px border. For the 2 px border the best of the first two pixels must be within 14, because anti-aliasing makes a pure pixel impossible at that width.
+- I treated the measurements as evidence of correct rendering, not as a defect. They are consistent with Task 2's Windows-derived decoration proof (border 8 px pure at its centre) and with the glow being clipped only by the wall rect.
+
+Tab snapshots of Layout and Style were rendered with the Task 15 harness and checked by eye (Task 17 entry). The S4 independent review is next.
