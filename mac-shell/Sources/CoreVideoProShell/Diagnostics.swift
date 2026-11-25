@@ -17,8 +17,8 @@
 //     every byte it produced and re-checks it. File PATHS are not secrets and
 //     are emitted verbatim — they carry most of the diagnostic value.
 //
-// Local export only. There is deliberately no uploader and no telemetry here:
-// nothing in this file sends a byte off the machine.
+// Local export only: nothing in this file sends a byte off the machine. Uploads live in
+// Telemetry*.swift and CrashReport*.swift and need consent (and a configured key).
 
 import AppKit
 import Foundation

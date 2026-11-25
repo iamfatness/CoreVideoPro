@@ -692,6 +692,10 @@ final class AppModel: ObservableObject {
     /// Opt-in telemetry (Phase 4 R4). Created by start() outside the harness; tests install
     /// their own with a fake transport and a manual clock. nil = no telemetry at all.
     var telemetryService: TelemetryService?
+    /// The card's toggle (the stored consent, loaded without re-persisting).
+    @Published var telemetryConsentOn = false
+    /// The "Preview what's sent" block (empty = hidden).
+    @Published var telemetryPreviewJSON = ""
     /// Test seams (production leaves them at their defaults): the request path,
     /// the "core is gone" answer when that path is replaced, and the timings.
     var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
@@ -6157,6 +6161,7 @@ final class AppModel: ObservableObject {
             transport: TelemetryEventClient.urlSessionTransport(URLSession(configuration: .ephemeral)),
             clock: RealTelemetryClock(), log: { ShellLog.write($0) })
         telemetryService = service
+        loadTelemetryConsent()
         service.start()
     }
 

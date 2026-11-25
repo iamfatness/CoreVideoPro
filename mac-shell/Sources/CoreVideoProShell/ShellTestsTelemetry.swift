@@ -31,6 +31,9 @@ extension ShellTests {
             ("quit/idle-waits-for-session-end", testQuitIdleWaitsForSessionEnd),
             ("quit/idle-unchanged-without-consent", testQuitIdleUnchangedWithoutConsent),
             ("quit/idle-replies-when-send-finishes", testQuitIdleRepliesWhenSendFinishes),
+            ("telemetry/card-copy", testTelemetryCardCopy),
+            ("telemetry/toggle-persists-not-on-load", testTelemetryTogglePersistsNotOnLoad),
+            ("telemetry/preview-without-consent", testTelemetryPreviewWithoutConsent),
         ]
     }
 
@@ -543,5 +546,56 @@ extension ShellTests {
                "at 0.3 s on the manual clock (Date arithmetic: 1 ms tolerance)")
         clock.advance(by: 3)
         expectEqual(replies.count, 1, "the 2 s cap does not reply again")
+    }
+
+    // ── Task 9: the card ─────────────────────────────────────────────────────
+
+    /// The four strings, verbatim from Windows SettingsViewModel.cs:140-152 / SettingsPage.xaml.
+    static func testTelemetryCardCopy() {
+        expectEqual(TelemetryCardCopy.title, "Diagnostics & telemetry", "title")
+        expectEqual(TelemetryCardCopy.toggle, "Share anonymous health data", "toggle")
+        expectEqual(TelemetryCardCopy.body,
+                    "Send anonymous health data on app close and once a day: app version, session length, output counts (recording / streaming / virtual camera on-off, ISO / capture / participant counts), crashes since the last send, and a hardware class (CPU cores, RAM band, GPU tier). No names, meeting IDs, stream keys, URLs, or file paths are ever included.",
+                    "what-is-sent copy")
+        expectEqual(TelemetryCardCopy.status(configured: true), "Telemetry endpoint and API key configured.", "configured")
+        expectEqual(TelemetryCardCopy.status(configured: false),
+                    "Telemetry API key is missing in this build (endpoint is configured) — nothing is sent even when enabled.",
+                    "missing key")
+        expectEqual(TelemetryCardCopy.preview, "Preview what's sent", "preview button")
+    }
+
+    /// Loading a stored opt-in writes nothing; flipping writes once and logs the decision.
+    /// Mutation: persist during the initial load.
+    @MainActor
+    static func testTelemetryTogglePersistsNotOnLoad() {
+        let log = TransportLog()
+        let (service, _, files, _) = telemetryHarness(transport: fakeTransport(log, .init(status: .accepted)))
+        let model = AppModel()
+        model.telemetryService = service
+        let writes = files.writes
+        model.loadTelemetryConsent()
+        expectEqual(model.telemetryConsentOn, true, "the stored opt-in is shown")
+        expectEqual(files.writes, writes, "loading writes nothing")
+        model.setTelemetryConsent(false)
+        expectEqual(files.writes, writes + 1, "flipping writes once")
+        expectEqual(TelemetryConsentStore(path: "/fake/telemetry-consent.json", fileIO: files.io).load().enabled, false, "revoked on disk")
+        expect(harnessLines.lines.contains("telemetry: consent disabled by operator"), "the decision is logged")
+        model.setTelemetryConsent(false)
+        expectEqual(files.writes, writes + 1, "the same value writes nothing more")
+    }
+
+    /// The preview works with consent off and is the indented session-end payload.
+    /// Mutation: gate the preview on consent.
+    @MainActor
+    static func testTelemetryPreviewWithoutConsent() {
+        let log = TransportLog()
+        let (service, _, _, _) = telemetryHarness(consentOn: false, transport: fakeTransport(log, .init(status: .accepted)))
+        let model = AppModel()
+        model.telemetryService = service
+        model.loadTelemetryConsent()
+        expectEqual(model.telemetryConsentOn, false, "consent off")
+        model.previewTelemetry()
+        expect(model.telemetryPreviewJSON.contains("\"name\": \"session-end\""), "the session-end payload, indented (\(model.telemetryPreviewJSON.prefix(80)))")
+        expectEqual(log.calls.count, 0, "previewing sends nothing")
     }
 }

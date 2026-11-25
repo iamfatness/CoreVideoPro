@@ -147,6 +147,8 @@ final class TelemetryService {
     }
 
     var isConfigured: Bool { config.enabled }
+    /// A line in the telemetry log (the operator's consent decisions).
+    func note(_ line: String) { log(line) }
     var configuration: TelemetryConfig { config }
     var consentStore: TelemetryConsentStore { consent }
 
