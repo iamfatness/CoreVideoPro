@@ -362,7 +362,8 @@ extension AppModel {
 
 // ── views ────────────────────────────────────────────────────────────────────
 
-// The PLUG-INS surface of the audio console: host health, the scanned bundle
+// The content of SETUP's collapsed "Advanced · VST3 plug-in browser" disclosure
+// (A7 Task 5, OD-2; it was the Mac-only PLUG-INS pill): host health, the scanned bundle
 // browser, and the active selection's generic parameter sliders.
 struct VstInsertsSurface: View {
     @EnvironmentObject var model: AppModel

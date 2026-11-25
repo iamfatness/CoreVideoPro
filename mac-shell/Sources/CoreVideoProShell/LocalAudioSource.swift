@@ -97,16 +97,22 @@ extension AppModel {
     }
 }
 
-/// SETUP card (Windows AudioPage.xaml:158-176): title, status, device picker,
-/// Source toggle. A saved device that is unplugged stays listed and marked.
+/// SETUP card (Windows AudioPage.xaml:151-180): title 12 semibold, status
+/// 10 pt muted, the "Input / loopback" picker full width, then a full-width
+/// "Source" toggle. AudioSetupSurface draws the card chrome around it (left
+/// column, A7 Task 5). A saved device that is unplugged stays listed and marked.
 struct LocalAudioSourceCard: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Local audio source").font(.grotesk(13, .semibold))
-            Text(model.localAudioStatus).font(.plexMono(10)).foregroundStyle(Studio.secondary)
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Local audio source").font(.grotesk(12, .semibold))
+                Text(model.localAudioStatus).font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Input / loopback").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Picker("", selection: Binding(
                     get: { model.localAudio.deviceId },
                     set: { id in
@@ -123,13 +129,12 @@ struct LocalAudioSourceCard: View {
                     ForEach(model.audioInputs) { device in Text(device.name).tag(device.id) }
                 }
                 .labelsHidden()
-                .frame(width: 260)
+                .frame(maxWidth: .infinity)
                 .accessibilityLabel("Local audio input")
-                Toggle("Source", isOn: Binding(
-                    get: { model.localAudio.enabled },
-                    set: { model.setLocalAudio(enabled: $0) }))
-                    .toggleStyle(.switch).controlSize(.small)
             }
+            SetupToggleButton(title: "Source", isOn: Binding(
+                get: { model.localAudio.enabled },
+                set: { model.setLocalAudio(enabled: $0) }))
         }
     }
 }

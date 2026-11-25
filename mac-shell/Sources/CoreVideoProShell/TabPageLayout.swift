@@ -169,6 +169,10 @@ enum TabSnapshotHarness {
             inserts.eqBandsDb[1] = -3; inserts.eqBandsDb[5] = 4
         }
         model.selectAudioStrip("101")
+        // A7 Task 5: SETUP opens on bus:master carrying Compressor + Limiter.
+        // The SHOW strip selection stays on 101.
+        model.busInserts["master"] = ["Compressor", "Limiter"]
+        model.selectProcessingTarget(AudioProcessingTargetPolicy.defaultTargetId)
     }
 
     private static func seedSlots(_ model: AppModel) {

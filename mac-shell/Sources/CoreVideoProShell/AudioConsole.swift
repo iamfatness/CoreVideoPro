@@ -19,15 +19,25 @@ struct AudioPane: View {
     // The pop-out window hosts this same view; it just hides the pop-out button.
     var isPopout: Bool = false
     @EnvironmentObject var model: AppModel
-    @State private var surface = AudioPane.initialSurface
-    /// The offscreen tab renderer (COREVIDEO_SHELL_TAB_SNAPSHOT) may open another
-    /// surface with COREVIDEO_SHELL_AUDIO_SURFACE=ROUTING|SETUP|PLUG-INS; the
-    /// running app always opens on SHOW.
-    static var initialSurface: String {
-        guard ShellHarness.isActive,
-              let wanted = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUDIO_SURFACE"],
-              ["SHOW", "ROUTING", "PLUG-INS", "SETUP"].contains(wanted) else { return "SHOW" }
-        return wanted
+    @State private var surface = AudioPane.initialSurface.surface
+    @State private var vstBrowserOpen = AudioPane.initialSurface.vstBrowserOpen
+    /// XAML:62-73: the Windows pills. OD-2: the Mac-only PLUG-INS pill is
+    /// folded into SETUP's collapsed "Advanced · VST3 plug-in browser".
+    static let surfaces = ["SHOW", "ROUTING", "SETUP"]
+
+    /// COREVIDEO_SHELL_AUDIO_SURFACE for the offscreen tab renderer: SHOW,
+    /// ROUTING or SETUP; the retired PLUG-INS opens SETUP with the VST browser
+    /// open, so existing snapshot scripts keep working. Anything else is SHOW.
+    static func resolveSurface(_ wanted: String?) -> (surface: String, vstBrowserOpen: Bool) {
+        if wanted == "PLUG-INS" { return ("SETUP", true) }
+        guard let wanted, surfaces.contains(wanted) else { return ("SHOW", false) }
+        return (wanted, false)
+    }
+
+    /// The running app always opens on SHOW.
+    static var initialSurface: (surface: String, vstBrowserOpen: Bool) {
+        guard ShellHarness.isActive else { return ("SHOW", false) }
+        return resolveSurface(ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUDIO_SURFACE"])
     }
     // The selection is model state (AppModel.selectedAudioStripId, A7 Task 3):
     // the pop-out and the main window share it.
@@ -45,10 +55,8 @@ struct AudioPane: View {
             switch surface {
             case "ROUTING":
                 ScrollView(.vertical) { AudioRoutingSurface() }
-            case "PLUG-INS":
-                ScrollView(.vertical) { VstInsertsSurface().padding(.top, 2) }
             case "SETUP":
-                ScrollView(.vertical) { setupSurface }
+                AudioSetupSurface(vstBrowserOpen: $vstBrowserOpen)
             default:
                 showSurface
             }
@@ -61,7 +69,7 @@ struct AudioPane: View {
 
     var header: some View {
         HStack(spacing: 8) {
-            ForEach(["SHOW", "ROUTING", "PLUG-INS", "SETUP"], id: \.self) { name in
+            ForEach(Self.surfaces, id: \.self) { name in
                 Button(name) { surface = name }
                     .buttonStyle(.plain)
                     .font(.plexMono(10, .semibold))
@@ -91,42 +99,6 @@ struct AudioPane: View {
                     .help("Open the mixer on a second display")
             }
         }
-    }
-
-    // Task 5 redoes SETUP in the Windows two-column layout.
-    var setupSurface: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            MasteringGuideMeters()
-            MasteringRack()
-            LocalAudioSourceCard()
-            Text("Monitor output").font(.grotesk(13, .semibold))
-            MonitorDevicePicker()
-            Toggle("Monitor", isOn: Binding(
-                get: { model.monitorEnabled },
-                set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
-            HStack {
-                Text("Volume").font(.grotesk(12))
-                Slider(value: Binding(
-                    get: { model.monitorVolume },
-                    set: {
-                        model.setMonitor(enabled: model.monitorEnabled, volume: $0)
-                    }), in: 0...1)
-                    .frame(width: 220)
-                if !model.monitorStatus.isEmpty {
-                    Text(model.monitorStatus).font(.plexMono(10))
-                        .foregroundStyle(Studio.secondary)
-                }
-            }
-            if !model.monitorControlNotice.isEmpty {
-                Text(model.monitorControlNotice).font(.plexMono(10))
-                    .foregroundStyle(Studio.amber)
-            }
-            if model.monitorFeedbackRisk {
-                Text("Monitor output matches the loopback device — feedback risk")
-                    .font(.grotesk(12)).foregroundStyle(Studio.amber)
-            }
-        }
-        .padding(10)
     }
 
     /// XAML:919-1491: header, channel chips, the 255-tall workspace, then the

@@ -47,6 +47,11 @@ extension ShellTests {
             ("a7-pan-gain-tooltip-strings", testPanGainTooltipStrings),
             ("a7-param-specs-are-windows", testParamSpecsAreWindows),
             ("a7-show-not-in-page-scroll", testShowNotInPageScroll),
+            // Task 5: SETUP layout (two columns, Inserts & plug-ins, VST browser folded in).
+            ("a7-setup-add-buttons", testSetupAddButtons),
+            ("a7-surface-pills", testSurfacePills),
+            ("a7-setup-target-picker-drives-list", testSetupTargetPickerDrivesList),
+            ("a7-setup-unrouted-bus-note", testSetupUnroutedBusNote),
         ]
     }
 
@@ -941,5 +946,106 @@ extension ShellTests {
         expectEqual(TabPage.wrapsInScrollView(.settings), true, "a form tab keeps the page scroll")
         expectEqual(TabPage.wrapsInScrollView(.sources), true, "Sources keeps the page scroll")
         expect(TabPageLayout.maxWidth(for: .audio) == .infinity, "the Audio tab width is uncapped")
+    }
+
+    // ── Task 5: SETUP layout ────────────────────────────────────────────────
+
+    /// XAML:762-786: the 2x2 grid Add EQ / Add compressor / Add VST3 plug-in /
+    /// Clear chain. OD-1 dims Add EQ on a bus target with the refusal sentence.
+    /// Mutation: enable Add EQ on buses (red).
+    static func testSetupAddButtons() {
+        let status = "Plug-in host not running"
+        let titles = ["Add EQ", "Add compressor", "Add VST3 plug-in", "Clear chain"]
+        let bus = AudioSetupPolicy.addButtons(target: "bus:master", vstLive: false, vstStatusLine: status,
+                                              chain: ["Compressor"])
+        expectEqual(bus.map(\.title), titles, "the four buttons, in XAML order")
+        expectEqual(bus[0].enabled, false, "Add EQ is dimmed on a bus (OD-1)")
+        expectEqual(bus[0].reason, "Built-in EQ does not process on a bus yet; add a compressor or limiter.",
+                    "with the OD-1 sentence (AudioProcessingTargetPolicy.busRefusal)")
+        expectEqual(bus[1].enabled, true, "Add compressor is enabled on a bus")
+        expect(bus[1].reason == nil, "an enabled button gives no reason")
+        expectEqual(bus[2].enabled, false, "Add VST3 is dimmed while the host is not live")
+        expectEqual(bus[2].reason, status, "with the host status line")
+        expectEqual(bus[3].enabled, true, "Clear chain is enabled on a non-empty chain")
+        let channel = AudioSetupPolicy.addButtons(target: "channel:101", vstLive: false, vstStatusLine: status,
+                                                  chain: ["Built-in EQ"])
+        expectEqual(channel.map(\.enabled), [true, true, false, true], "a channel: all enabled except Add VST3")
+        expectEqual(channel[2].reason, status, "Add VST3 says why")
+        let live = AudioSetupPolicy.addButtons(target: "channel:101", vstLive: true, vstStatusLine: status,
+                                               chain: [])
+        expectEqual(live[2].enabled, true, "a live host enables Add VST3")
+        expectEqual(live[3].enabled, false, "Clear chain is dimmed on an empty chain")
+        expect(live[3].reason != nil, "and says why")
+        let emptyBus = AudioSetupPolicy.addButtons(target: "bus:aux-1", vstLive: true, vstStatusLine: status, chain: [])
+        expectEqual(emptyBus[3].enabled, false, "Clear chain is dimmed on an empty bus chain")
+    }
+
+    /// OD-2, XAML:62-73: three pills; the Mac-only PLUG-INS pill is gone and
+    /// its env value opens SETUP with the VST browser disclosure open.
+    /// Mutation: keep PLUG-INS (red).
+    static func testSurfacePills() {
+        expectEqual(AudioPane.surfaces, ["SHOW", "ROUTING", "SETUP"], "the Windows pills")
+        let plugins = AudioPane.resolveSurface("PLUG-INS")
+        expectEqual(plugins.surface, "SETUP", "PLUG-INS resolves to SETUP")
+        expectEqual(plugins.vstBrowserOpen, true, "with the VST browser open")
+        let setup = AudioPane.resolveSurface("SETUP")
+        expectEqual(setup.surface, "SETUP", "SETUP stays SETUP")
+        expectEqual(setup.vstBrowserOpen, false, "with the browser collapsed (XAML:647 IsExpanded=False)")
+        expectEqual(AudioPane.resolveSurface("ROUTING").surface, "ROUTING", "ROUTING")
+        expectEqual(AudioPane.resolveSurface(nil).surface, "SHOW", "no env opens SHOW")
+        expectEqual(AudioPane.resolveSurface("bogus").surface, "SHOW", "an unknown value opens SHOW")
+    }
+
+    /// XAML:636-643, 714-760: the target picker drives the SIGNAL FLOW list.
+    @MainActor
+    static func testSetupTargetPickerDrivesList() {
+        let model = targetModel()
+        model.selectProcessingTarget("bus:aux-1")
+        expectEqual(model.selectedProcessingTargetId, "bus:aux-1", "precondition: aux-1 is a target")
+        model.addProcessingInsert("Compressor")
+        let slots = model.selectedTargetSlots
+        expectEqual(slots.map(\.slotLabel), ["01"], "target-style slot label")
+        expectEqual(slots.map(\.name), ["Compressor"], "the bus chain")
+        expectEqual(slots.map(\.statusLabel), ["LIVE"], "a bus compressor processes")
+        expectEqual(model.selectedProcessingTarget?.insertLabel, "Compressor", "the insert label")
+        expectEqual(model.selectedProcessingTarget?.label, "AUX 1", "the target label")
+        // Switching the target switches the list.
+        model.selectProcessingTarget("channel:101")
+        expectEqual(model.selectedTargetSlots.map(\.name), [], "channel 101 has its own (empty) chain")
+        expectEqual(model.selectedProcessingTarget?.insertLabel, "No inserts", "SVM:11611")
+        expectEqual(AudioSetupPolicy.readouts(strip: model.strips.first { $0.id == "101" },
+                                              targetIsBus: true).gain, "—",
+                    "the readouts read a dash on a bus target")
+    }
+
+    /// Honest reporting (Task 3 review): the core reads a bus chain only from
+    /// sends TO that bus (MediaCore.cpp:7195-7212), so a chain on a bus nothing
+    /// is routed to never runs. Mutation: always hide the note (red).
+    @MainActor
+    static func testSetupUnroutedBusNote() {
+        let note = "Nothing is routed to this bus yet, so its inserts do not run."
+        expectEqual(AudioSetupPolicy.unroutedBusNote, note, "the sentence")
+        let model = targetModel()
+        model.selectProcessingTarget("bus:aux-1")
+        expectEqual(model.selectedTargetUnroutedNote, note, "aux-1 has no sends by default")
+        model.selectProcessingTarget("bus:master")
+        expect(model.selectedTargetUnroutedNote == nil, "master carries the default sends")
+        model.selectProcessingTarget("channel:101")
+        expect(model.selectedTargetUnroutedNote == nil, "a channel target never shows it")
+        // An operator route to aux-1 (the grid's audioSends) clears it.
+        model.selectProcessingTarget("bus:aux-1")
+        model.selectOrRouteSend(source: "101", bus: "aux-1")
+        expect(model.selectedTargetUnroutedNote == nil, "a routed source makes the chain run")
+        // A custom bus that only SENDS to master is still unrouted: its chain is
+        // read from source sends to it, and with no source its PCM is empty.
+        let custom = model.addCustomBus()
+        model.setBusSend(custom.id, target: "master", enabled: true)
+        model.selectProcessingTarget("bus:\(custom.id)")
+        expectEqual(model.selectedTargetUnroutedNote, note, "a bus-to-bus output does not feed its chain")
+        model.selectOrRouteSend(source: "102", bus: custom.id)
+        expect(model.selectedTargetUnroutedNote == nil, "a source routed to the custom bus clears it")
+        // Pure form.
+        expectEqual(AudioSetupPolicy.unroutedNote(target: "bus:aux-2", routedBusIds: ["master"]), note, "pure: unrouted")
+        expect(AudioSetupPolicy.unroutedNote(target: "bus:aux-2", routedBusIds: ["aux-2"]) == nil, "pure: routed")
     }
 }
