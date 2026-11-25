@@ -78,6 +78,15 @@ extension ShellTests {
             _ = absorb((try? await bridge.request(["type": "media-core-sync", "elapsedMs": app.elapsedMs(), "commands": []])) ?? [:])
         }
         func settle(_ seconds: Double = 0.8) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)); poll() }
+        /// A Program sample that must exist and match the baseline's size (review I4: an empty sample
+        /// would read as 100% changed and skip the bounds check).
+        func sample(_ what: String) -> [UInt8] {
+            guard let pixels = programPixels(surfaceId), pixels.bytes.count == baselineCount else {
+                expect(false, "live: no Program sample for \(what)"); return []
+            }
+            return pixels.bytes
+        }
+        var baselineCount = 0
         func data(_ file: String, key: String?) -> GraphicsLocalData? {
             try? GraphicsLocalData.read(url: repoRoot.appendingPathComponent("contracts/graphics-shell/data/" + file), key: key)
         }
@@ -87,6 +96,7 @@ extension ShellTests {
         guard waitFor("a Program surface", 10, { programPixels(surfaceId) != nil }) else { return }
         settle(0.5)
         guard let baseline = programPixels(surfaceId) else { return }
+        baselineCount = baseline.bytes.count
         log("Program surface \(baseline.width)x\(baseline.height)")
 
         // ── Task 10: table publish ─────────────────────────────────────────
@@ -106,7 +116,7 @@ extension ShellTests {
             return (i?.firstDrawSubmittedFrame ?? 0) > 0 && i?.isOnProgram == true
         }
         settle()
-        let beforePublish = programPixels(surfaceId)?.bytes ?? []
+        let beforePublish = sample("before publish")
         let lineage = app.graphics.state?.instance(tableEntry.instanceId)
         guard let v2 = data("scores-v2.csv", key: "team") else { expect(false, "scores-v2.csv"); return }
         let staged = awaitMain(10) { await app.graphics.stageData(rowId: tableRowId, binding: tableBinding, data: v2).value }
@@ -116,7 +126,7 @@ extension ShellTests {
         log("publish: \(published?.reason ?? "nil")")
         expectEqual(published?.reason, "Data revision 2 is on Program.", "live: Program adopts the published revision")
         for _ in 0..<6 { settle(0.15); visibilities.append(app.graphics.state?.instance(tableEntry.instanceId)?.visibility ?? "gone") }
-        let afterPublish = programPixels(surfaceId)?.bytes ?? []
+        let afterPublish = sample("after publish")
         let delta = changedFraction(beforePublish, afterPublish)
         let box = changedBox(beforePublish, afterPublish, width: baseline.width)
         log(String(format: "publish changed %.3f%% of Program; changed box %@", delta * 100, String(describing: box)))
@@ -124,13 +134,14 @@ extension ShellTests {
         // The table is 1440x(5+1)*56 = 1440x336 design pixels, centred on a 1920x1080 canvas.
         let sx = Double(baseline.width) / 1920, sy = Double(baseline.height) / 1080
         let table = (minX: Int(240 * sx) - 2, minY: Int(372 * sy) - 2, maxX: Int(1680 * sx) + 2, maxY: Int(708 * sy) + 2)
+        expect(box != nil || delta == 0, "live: a change has a bounding box")
         if let box {
             expect(box.minX >= table.minX && box.maxX <= table.maxX && box.minY >= table.minY && box.maxY <= table.maxY,
                    "live: the change stays inside the table bounds \(table): \(box)")
         }
         let after = app.graphics.state?.instance(tableEntry.instanceId)
         expectEqual(after?.instanceId, lineage?.instanceId, "live: the same instance")
-        expect(visibilities.allSatisfy { $0 != "hidden" && $0 != "building-in" && $0 != "gone" }, "live: no In motion replays (\(visibilities))")
+        expect(visibilities.allSatisfy { $0 == "on-air" }, "live: no In motion replays, on-air throughout (\(visibilities))")
         _ = awaitMain(10) { await app.graphics.playout.hide(tableEntry.instanceId) }
         _ = waitFor("the table off Program", 10) { app.graphics.state?.instance(tableEntry.instanceId)?.isOnProgram == false }
 
@@ -148,6 +159,7 @@ extension ShellTests {
         expectEqual(crawlShown?.accepted, true, "live: the crawl shows (\(crawlShown?.reason ?? ""))")
         guard waitFor("the crawl playing", 10, { app.graphics.state?.instance(crawlEntry.instanceId)?.crawlPlayback == "playing" }) else { return }
         let crawlLineage = app.graphics.state?.instance(crawlEntry.instanceId)
+        expectEqual(crawlLineage?.programFields?[GraphicsCrawlData.revisionField].map { "\($0)" }, "1", "live: Program starts on crawl revision 1")
         guard let v2Crawl = data("crawl-v2.csv", key: nil) else { expect(false, "crawl-v2.csv"); return }
         _ = awaitMain(10) { await app.graphics.stageData(rowId: crawlRowId, binding: crawlBinding, data: v2Crawl).value }
         let queued = awaitMain(15) { await app.graphics.publishData(rowId: crawlRowId).value }
@@ -166,30 +178,30 @@ extension ShellTests {
         let adoptedInstance = app.graphics.state?.instance(crawlEntry.instanceId)
         log("adopted=\(adopted) programFields=\(String(describing: adoptedInstance?.programFields)) pending=\(adoptedInstance?.crawlPendingRevision ?? -1)")
         expectEqual(adoptedInstance?.instanceId, crawlLineage?.instanceId, "live: the same crawl instance")
-        expect(crawlVisibilities.allSatisfy { $0 != "hidden" && $0 != "gone" }, "live: the crawl never left Program (\(Set(crawlVisibilities)))")
+        expect(crawlVisibilities.allSatisfy { $0 == "on-air" }, "live: the crawl never left on-air (\(Set(crawlVisibilities)))")
         let paused = awaitMain(10) { await app.graphics.controlCrawl(rowId: crawlRowId, action: "pause").value }
         expectEqual(paused?.accepted, true, "live: Pause accepted")
         _ = waitFor("the crawl paused", 5) { app.graphics.state?.instance(crawlEntry.instanceId)?.crawlPlayback == "paused" }
         settle(0.3)
-        let p1 = programPixels(surfaceId)?.bytes ?? []
+        let p1 = sample("paused 1")
         settle(0.5)
-        let p2 = programPixels(surfaceId)?.bytes ?? []
+        let p2 = sample("paused 2")
         let pausedDelta = changedFraction(p1, p2)
         log(String(format: "paused: %.4f%% differ across 0.5 s", pausedDelta * 100))
         expect(pausedDelta == 0, "live: a paused crawl holds Program still")
         _ = awaitMain(10) { await app.graphics.controlCrawl(rowId: crawlRowId, action: "resume").value }
         _ = waitFor("the crawl playing again", 5) { app.graphics.state?.instance(crawlEntry.instanceId)?.crawlPlayback == "playing" }
         settle(0.3)
-        let r1 = programPixels(surfaceId)?.bytes ?? []
+        let r1 = sample("resumed 1")
         settle(0.5)
-        let r2 = programPixels(surfaceId)?.bytes ?? []
+        let r2 = sample("resumed 2")
         let resumedDelta = changedFraction(r1, r2)
         log(String(format: "resumed: %.3f%% differ across 0.5 s", resumedDelta * 100))
         expect(resumedDelta > 0, "live: a resumed crawl moves")
         _ = awaitMain(10) { await app.graphics.playout.hide(crawlEntry.instanceId) }
         _ = waitFor("the crawl off Program", 10) { app.graphics.state?.instance(crawlEntry.instanceId)?.isOnProgram == false }
         settle(1.0)
-        let afterHide = changedFraction(baseline.bytes, programPixels(surfaceId)?.bytes ?? [])
+        let afterHide = changedFraction(baseline.bytes, sample("after hide"))
         log(String(format: "after Hide %.3f%% differ from baseline", afterHide * 100))
         expect(afterHide < 0.001, "live: Hide returns Program to the baseline")
     }

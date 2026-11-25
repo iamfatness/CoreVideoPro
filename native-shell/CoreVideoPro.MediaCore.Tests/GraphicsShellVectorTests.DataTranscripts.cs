@@ -10,7 +10,11 @@ namespace CoreVideoPro.MediaCore.Tests;
 /// applies what the real core would for the commands playout sends (create, update on cue or
 /// Program, cue, show/hide/uncue, crawl pause/resume/restart, clock control) and records each
 /// command as the wire command the gateway builds plus the graphics node after it. Scripts:
-/// "accept-all", "never-adopt" (a Program update is accepted but never adopted).</summary>
+/// "accept-all", "never-adopt" (a Program update is accepted but never adopted),
+/// "adopt-after-3-polls" (Program adopts after the third 50 ms wait, as a real core prepares first),
+/// "fail-preparation" (the Program update's preparation fails at the first wait). Every wait after a
+/// command (for the two preparing scripts) appends the node it leaves to that step's "pollsAfter", so a
+/// replay serves them in order; otherwise the node after the command stands for every wait.</summary>
 internal sealed class TranscriptCore
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
@@ -21,7 +25,37 @@ internal sealed class TranscriptCore
 
     public TranscriptCore(NativeGraphicsState initial) => State = initial;
 
-    public Task Delay(TimeSpan span, CancellationToken _) { Clock += span; return Task.CompletedTask; }
+    private int _polls;
+    private (string Id, long Revision, NativeGraphicsFields Fields)? _pendingAdoption;
+
+    public Task Delay(TimeSpan span, CancellationToken _)
+    {
+        Clock += span;
+        if (_pendingAdoption is { } pending)
+        {
+            _polls++;
+            if (Script == "adopt-after-3-polls" && _polls == 3)
+            {
+                State = State with { Instances = State.Instances.Select(i => i.InstanceId == pending.Id
+                    ? i with { ProgramRevision = pending.Revision, ProgramFields = pending.Fields, Preparation = "ready" } : i).ToArray() };
+                _pendingAdoption = null;
+            }
+            else if (Script == "fail-preparation" && _polls == 1)
+            {
+                State = State with { Instances = State.Instances.Select(i => i.InstanceId == pending.Id
+                    ? i with { Preparation = "failed", Warning = "Font missing" } : i).ToArray() };
+                _pendingAdoption = null;
+            }
+        }
+        // Only a state that CHANGED during the waits is worth serving; an unchanged poll is the previous node.
+        if (Steps.Count > 0 && Script is "adopt-after-3-polls" or "fail-preparation")
+        {
+            var step = Steps[^1]!.AsObject();
+            if (step["pollsAfter"] is not JsonArray polls) step["pollsAfter"] = polls = new JsonArray();
+            polls.Add(JsonSerializer.SerializeToNode(State, Web));
+        }
+        return Task.CompletedTask;
+    }
 
     public Task<NativeGraphicsOperationResult> Invoke(string action, string body, CancellationToken cancellation)
     {
@@ -46,6 +80,7 @@ internal sealed class TranscriptCore
                 State = State with { Instances = Map(i => {
                     var updated = i with { Revision = revision, Fields = fields };
                     if (!program || Script == "never-adopt") return updated;
+                    if (Script is "adopt-after-3-polls" or "fail-preparation") { _pendingAdoption = (id, revision, fields); return updated with { Preparation = "preparing" }; }
                     // A playing loop crawl adopts at its loop boundary: the update is pending until then.
                     if (i.CrawlPlayback.Length > 0) return updated with { CrawlPendingRevision = revision };
                     return updated with { ProgramRevision = revision, ProgramFields = fields };
@@ -103,6 +138,12 @@ public sealed partial class GraphicsShellVectorTests
             var session = new GraphicsWorkspaceSession(core.Invoke, () => core.State); session.Observe(initial);
             var library = new GraphicsWorkspaceLibrary(new GraphicsDocumentStore(path), session);
             library.LoadAsync().GetAwaiter().GetResult();
+            if (intent["crawlMode"] is JsonValue mode)
+            {
+                var target = library.Document.Playlist.Single(r => r.Id == (string)intent["rowId"]!);
+                var patched = target with { DataBinding = target.DataBinding! with { Crawl = target.DataBinding.Crawl! with { Mode = mode.GetValue<string>() } } };
+                Assert.True(library.SavePlaylistAsync(GraphicsBuilder.Upsert(library.Document.Playlist, patched)).GetAwaiter().GetResult());
+            }
             var service = new GraphicsPlayoutService(library, core.Invoke, () => core.State, core.Delay, () => core.Clock);
             var result = run(service, library).GetAwaiter().GetResult();
             var rowId = (string)intent["rowId"]!;
@@ -153,6 +194,9 @@ public sealed partial class GraphicsShellVectorTests
             (s, l) => s.StageDataAsync("leaderboard", Bound(l, "leaderboard"), Read("data/scores-v2.csv", table))));
         rows.Add(RunTranscript("stage-table-columns-no-longer-fit", [tableLive], Intent("stage", "leaderboard", "data/scores-no-points.csv"), "accept-all",
             (s, l) => s.StageDataAsync("leaderboard", Bound(l, "leaderboard"), Read("data/scores-no-points.csv", table))));
+        rows.Add(RunTranscript("publish-table-adopted-after-polls", [tableLive], Intent("publish", "leaderboard"), "adopt-after-3-polls", (s, _) => s.PublishDataAsync("leaderboard")));
+        rows.Add(RunTranscript("publish-table-preparation-fails", [tableLive], Intent("publish", "leaderboard"), "fail-preparation", (s, _) => s.PublishDataAsync("leaderboard")));
+
         // Task 11: crawls.
         var crawlLive = OnProgram("headlines", crawl.TemplateId, crawl: "playing");
         rows.Add(RunTranscript("show-crawl", [], Intent("show", "headlines"), "accept-all", (s, _) => s.PlayInAsync(GraphicsPlayoutService.EntryFor(crawl))));
@@ -162,6 +206,12 @@ public sealed partial class GraphicsShellVectorTests
         rows.Add(RunTranscript("crawl-pause-not-on-program", [], Intent("crawl", "headlines", action: "pause"), "accept-all", (s, _) => s.ControlCrawlAsync("headlines", "pause")));
         rows.Add(RunTranscript("crawl-bad-action", [crawlLive], Intent("crawl", "headlines", action: "stop"), "accept-all", (s, _) => s.ControlCrawlAsync("headlines", "stop")));
         rows.Add(RunTranscript("publish-crawl-loop-playing", [crawlLive], Intent("publish", "headlines"), "accept-all", (s, _) => s.PublishDataAsync("headlines")));
+        var single = Intent("publish", "headlines"); single["crawlMode"] = "single";
+        rows.Add(RunTranscript("publish-crawl-single-pass", [crawlLive], single, "accept-all", (s, _) => s.PublishDataAsync("headlines")));
+        rows.Add(RunTranscript("crawl-pause-while-exiting", [crawlLive with { Visibility = "exiting" }], Intent("crawl", "headlines", action: "pause"), "accept-all",
+            (s, _) => s.ControlCrawlAsync("headlines", "pause")));
+        rows.Add(RunTranscript("crawl-pause-on-a-table-without-playback", [tableLive], Intent("crawl", "leaderboard", action: "pause"), "accept-all",
+            (s, _) => s.ControlCrawlAsync("leaderboard", "pause")));
         rows.Add(RunTranscript("stage-crawl-live-follow", [crawlLive], Intent("stage", "headlines", "data/crawl-v2.csv"), "accept-all",
             (s, l) => s.StageDataAsync("headlines", Bound(l, "headlines"), Read("data/crawl-v2.csv", crawl))));
         rows.Add(RunTranscript("live-follow-on-a-table-row", [], Intent("liveFollow", "leaderboard", enabled: true), "accept-all", (s, _) => s.SetDataLiveFollowAsync("leaderboard", true)));

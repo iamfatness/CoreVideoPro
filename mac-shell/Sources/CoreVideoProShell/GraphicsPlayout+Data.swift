@@ -155,7 +155,9 @@ extension GraphicsModel {
         perform { await $0.setLiveFollow(rowId: rowId, enabled: enabled) }
     }
 
-    /// The playout's document write: apply, save, and put the document back if the save fails.
+    /// The playout's document write: apply, save, and undo only the playout's own change if the save
+    /// fails (review I3): rows and sections the operator edited while the write ran are kept, and a
+    /// save is scheduled again for them.
     func applyAndSave(_ next: GraphicsDocument) async -> String? {
         let before = document
         document = next
@@ -163,9 +165,28 @@ extension GraphicsModel {
         saveTask?.cancel()
         if await saveNow() { return nil }
         let message = documentStatus
-        document = before
+        document = Self.undo(from: document, before: before, next: next)
         reproject()
+        if !(document.json as NSDictionary).isEqual(to: before.json) { scheduleSave() }
         return message
+    }
+
+    /// `current` with the change `before -> next` taken back out: playlist rows by id, every other
+    /// top-level section whole.
+    nonisolated static func undo(from current: GraphicsDocument, before: GraphicsDocument, next: GraphicsDocument) -> GraphicsDocument {
+        var out = current
+        func same(_ a: Any?, _ b: Any?) -> Bool { (a as AnyObject?)?.isEqual(b) ?? (b == nil) }
+        for key in Set(before.json.keys).union(next.json.keys) where key != "playlist" && !same(before.json[key], next.json[key]) {
+            out.json[key] = before.json[key]
+        }
+        let beforeRows = Dictionary(before.playlist.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let nextRows = Dictionary(next.playlist.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var rows = out.playlist
+        for (id, row) in nextRows where beforeRows[id] != row {
+            if let old = beforeRows[id] { rows = rows.map { $0.id == id ? old : $0 } } else { rows.removeAll { $0.id == id } }
+        }
+        out.playlist = rows
+        return out
     }
 }
 

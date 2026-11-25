@@ -10,6 +10,7 @@ extension ShellTests {
             ("graphics-data-publish/transcripts", testDataTranscriptsReplay),
             ("graphics-data-publish/data-line", testDataLine),
             ("graphics-data-publish/publish-carries-typed-text", testPublishCommitsTypedTextFirst),
+            ("graphics-data-publish/failed-save-leaves-the-document", testFailedDataSaveLeavesTheDocument),
             ("graphics-crawl/rows-no-longer-refuse", testCrawlRowsNoLongerRefuse),
             ("graphics-crawl/remote-rows-still-refuse", testRemoteRowsStillRefuse),
             ("graphics-crawl/form-defaults-and-sample", testCrawlFormDefaultsAndSample),
@@ -35,6 +36,7 @@ extension ShellTests {
         model.playout.sleep = { [weak core, weak model] ns in
             dataSleeps.n += 1
             clock = clock.addingTimeInterval(Double(ns) / 1e9)
+            core?.advanceReplayPoll()
             if let core { model?.observe(snapshot: ["graphics": core.node]) }
         }
         return (model, core)
@@ -43,6 +45,12 @@ extension ShellTests {
     @MainActor
     static func runDataIntent(_ model: GraphicsModel, _ intent: JSONObject) -> GraphicsOperationResult? {
         let rowId = intent["rowId"] as? String ?? ""
+        if let mode = intent["crawlMode"] as? String, var row = model.document.row(rowId),
+           var binding = row.dataBinding.flatMap(GraphicsDataBinding.init(json:)) {
+            binding.crawl?.mode = mode   // the exporter saved the same patch before recording
+            row.json["dataBinding"] = binding.json
+            model.document.playlist = model.document.playlist.map { $0.id == rowId ? row : $0 }
+        }
         switch intent["op"] as? String {
         case "publish": return awaitMain(10) { await model.publishData(rowId: rowId).value }
         case "stage":
@@ -76,7 +84,8 @@ extension ShellTests {
                 expect((100...101).contains(dataSleeps.n), "\(id): the 5 s adoption budget runs on the injected clock (100 x 50 ms), never wall time (\(dataSleeps.n) sleeps)")
             }
             let after = expected["documentAfter"] as? JSONObject ?? [:]
-            if let wantRow = after["row"] as? JSONObject, let row = model.document.row(intent["rowId"] as? String ?? "") {
+            if let wantRow = after["row"] as? JSONObject {
+                guard let row = model.document.row(intent["rowId"] as? String ?? "") else { expect(false, "\(id): the row is gone"); continue }
                 expect(jsonEqual(row.fields, wantRow["fields"]), "\(id): row fields after")
                 expect(jsonEqual(row.dataBinding, wantRow["dataBinding"]), "\(id): binding after \(row.dataBinding ?? [:])")
             }
@@ -90,7 +99,7 @@ extension ShellTests {
             }
             checked += 1
         }
-        expect(checked >= 6, "every data transcript replayed (\(checked))")
+        expect(checked >= 21, "every data transcript replayed (\(checked))")
     }
 
     @MainActor
@@ -168,5 +177,35 @@ extension ShellTests {
         expectEqual(GraphicsCrawlControls.programLine(quiet), "Crawl playing · Program data 1 · Font fallback", "no pending, a warning")
         quiet.programFields = nil
         expectEqual(GraphicsCrawlControls.programLine(quiet), "Crawl playing · Program data unknown · Font fallback", "unknown Program data")
+    }
+
+    /// A stage whose save fails leaves the document as it was, sends nothing, and keeps an edit the
+    /// operator made while the write was in flight (review I3).
+    @MainActor
+    static func testFailedDataSaveLeavesTheDocument() {
+        guard let vector = loadGraphicsVectors("data-transcripts").first(where: { $0["id"] as? String == "stage-table-manual" }) else {
+            expect(false, "vector"); return
+        }
+        let (model, core) = dataTranscriptModel(vector)
+        let sourcesBefore = model.document.json["dataSources"] as? [JSONObject] ?? []
+        final class Once: @unchecked Sendable { var first = true }
+        let once = Once()
+        model.writeDocument = { _, _ in
+            // Only the stage's own save renames (a later debounced save must not re-apply the edit).
+            if once.first {
+                once.first = false
+                DispatchQueue.main.sync { MainActor.assumeIsolated { model.setName("headlines", "Renamed during the save") } }
+            }
+            throw GraphicsDocumentError(message: "disk full")
+        }
+        guard let binding = model.document.row("leaderboard")?.dataBinding.flatMap(GraphicsDataBinding.init(json:)),
+              let data = try? GraphicsLocalData.read(url: repoRoot.appendingPathComponent("contracts/graphics-shell/data/scores-v2.csv"), key: "team")
+        else { expect(false, "input"); return }
+        let result = awaitMain(10) { await model.stageData(rowId: "leaderboard", binding: binding, data: data).value }
+        expectEqual(result?.accepted, false, "refused")
+        expectEqual(result?.reason, "Graphics playlist not saved: disk full", "the save failure is the reason")
+        expect(jsonEqual(model.document.json["dataSources"], sourcesBefore), "the datasets are as they were")
+        expectEqual(model.document.row("headlines")?.name, "Renamed during the save", "an edit made during the save is kept")
+        expectEqual(core.commands.count, 0, "nothing sent")
     }
 }

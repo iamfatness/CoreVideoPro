@@ -155,6 +155,7 @@ extension ShellTests {
         let before = core.commands.count
         let crawlShow = awaitMain(5) { await model.playout.show(GraphicsPlayout.entry(for: crawl)) }
         expect(crawlShow?.reason != GraphicsPlayout.unsupportedDataText("Ticker"), "a local crawl is no longer refused (G4-G7 Task 11)")
+        expectEqual(crawlShow?.accepted, true, "and it plays (\(crawlShow?.reason ?? ""))")
         let afterCrawl = core.commands.count
         let refusedRemote = awaitMain(5) { await model.playout.show(GraphicsPlayout.entry(for: remote)) }
         expectEqual(refusedRemote?.reason, GraphicsPlayout.unsupportedDataText("Feed"), "a live feed row is refused")

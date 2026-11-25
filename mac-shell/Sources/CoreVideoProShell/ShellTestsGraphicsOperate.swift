@@ -42,11 +42,22 @@ final class ScriptedGraphicsCore {
             let operations = node["operations"]
             node = step["nodeAfter"] as? JSONObject ?? node
             node["operations"] = operations ?? [] as [Any]
+            self.replayPolls = step["pollsAfter"] as? [JSONObject] ?? []
             return (true, "accepted")
         }
     }
 
     var replayFaults: [String] = []
+    /// The nodes the recorded core left at each wait after the last replayed command (pollsAfter).
+    var replayPolls: [JSONObject] = []
+
+    /// One wait passed: serve the next recorded node, if the core changed during the waits.
+    func advanceReplayPoll() {
+        guard !replayPolls.isEmpty else { return }
+        let operations = node["operations"]
+        node = replayPolls.removeFirst()
+        node["operations"] = operations ?? [] as [Any]
+    }
 
     static func normalized(_ graphics: JSONObject) -> JSONObject {
         graphics.filter { !["requestId", "clientId", "schemaVersion", "coreEpoch"].contains($0.key) }
