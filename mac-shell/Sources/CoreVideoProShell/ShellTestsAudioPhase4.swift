@@ -63,6 +63,11 @@ extension ShellTests {
             ("a7-fix5-rack-stage-columns", testFix5RackStageColumns),
             ("a7-fix5-setup-vst-menu-state", testFix5SetupVstMenuState),
             ("a7-fix5-effective-strip-shared", testFix5EffectiveStripShared),
+            // Review fix-ups 7: VST scan state, pop-out window constants.
+            ("a7-fix7-scan-reply-applied", testFix7ScanReplyApplied),
+            ("a7-fix7-unscanned-is-not-host-missing", testFix7UnscannedIsNotHostMissing),
+            ("a7-fix7-failed-scan-retries", testFix7FailedScanRetries),
+            ("a7-fix7-popout-window-uses-layout", testFix7PopoutWindowUsesLayout),
         ]
     }
 
@@ -1206,11 +1211,22 @@ extension ShellTests {
     }
 
     /// The rack reflows: the seven stages fit one row in the capped column
-    /// (820 - 2 x 16 = 788) and fall to fewer columns in the 900 pop-out's
-    /// column (~456). Mutation: a fixed 7 columns (red at 456).
+    /// (820 - 2 x 16 = 788) and fall to fewer columns in the minimum-width
+    /// pop-out's right column, derived from the layout constants: window 900,
+    /// AudioPane padding 2 x 10, SETUP trailing 8, left column 340, spacing 12
+    /// -> right column 520; minus the section padding 2 x 16 -> 488 for the
+    /// stage grid. Mutation: a fixed 7 columns (red at the pop-out width).
     static func testFix5RackStageColumns() {
-        expectEqual(MasteringRackLayout.stageColumns(width: 788), 7, "one row in the capped column")
-        expectEqual(MasteringRackLayout.stageColumns(width: 456), 4, "four columns at the pop-out minimum")
+        let L = AudioLayout.self
+        let capped = L.setupRightMaxWidth - 2 * L.setupSectionPadding
+        expectEqual(capped, 788, "the capped column's grid width")
+        expectEqual(MasteringRackLayout.stageColumns(width: capped), 7, "one row in the capped column")
+        let rightColumn = L.popoutMin.width - 2 * L.panePadding - L.setupTrailingPadding
+            - L.setupLeftWidth - L.setupColumnSpacing
+        expectEqual(rightColumn, 520, "the pop-out minimum's SETUP right column")
+        let popoutGrid = min(rightColumn, L.setupRightMaxWidth) - 2 * L.setupSectionPadding
+        expectEqual(popoutGrid, 488, "the pop-out minimum's stage grid width")
+        expectEqual(MasteringRackLayout.stageColumns(width: popoutGrid), 4, "four columns at the pop-out minimum")
         expectEqual(MasteringRackLayout.stageColumns(width: 100), 1, "never zero columns")
         expectEqual(MasteringRackLayout.stageColumns(width: 5000), 7, "never more columns than stages")
     }
@@ -1241,14 +1257,18 @@ extension ShellTests {
     @MainActor
     static func testFix5EffectiveStripShared() {
         let model = targetModel()
+        // Fixture gains that tell the two strips apart in the readouts.
+        model.editStrip("101") { $0.manualGainDb = 4 }
+        model.editStrip("102") { $0.manualGainDb = -2 }
         expect(model.selectedAudioStripId == nil, "precondition: nothing explicitly selected")
         expectEqual(AudioPane.selectedStrip(model)?.id, "101", "SHOW falls back to the first strip")
         expectEqual(model.setupSelectedStrip?.id, "101", "SETUP shows the same strip")
-        expect(model.setupReadouts.gain != "—", "SETUP readouts are live for the fallback strip")
+        expectEqual(model.setupReadouts.gain, "+4 dB", "SETUP readouts show the fallback strip 101's gain")
         expectEqual(model.selectedProcessingTargetId, "bus:master", "the fallback leaves the target on bus:master")
         model.selectAudioStrip("102")
         expectEqual(AudioPane.selectedStrip(model)?.id, "102", "SHOW: explicit 102")
         expectEqual(model.setupSelectedStrip?.id, "102", "SETUP: explicit 102")
+        expectEqual(model.setupReadouts.gain, "-2 dB", "SETUP readouts show strip 102's gain")
         model.zoomAudioSourceIds = ["101"]
         model.refreshStrips()
         expectEqual(AudioPane.selectedStrip(model)?.id, "101", "SHOW: 102 gone, back to 101")
@@ -1261,5 +1281,125 @@ extension ShellTests {
         expect(model.setupSelectedStrip == nil, "SETUP: no strips, nil")
         let r = model.setupReadouts
         expectEqual([r.gain, r.manual, r.output], ["—", "—", "—"], "no strips reads dashes")
+    }
+
+    // ── Review fix-ups 7 ────────────────────────────────────────────────────
+
+    private static func pluginHostReply(_ status: String) -> JSONObject {
+        ["snapshot": ["pluginHost": ["status": status, "plugins": [] as [JSONObject]] as JSONObject] as JSONObject]
+    }
+
+    /// The scan request's reply snapshot (taken after the core set "scanning",
+    /// MediaCore.cpp startPluginHostScan) is applied before the scan counts as
+    /// returned: with the model's state still the stale pre-scan "absent", the
+    /// menus say "scanning", never "none found"; a later absent + zero plug-ins
+    /// snapshot after completion says "none found".
+    /// Mutation: discard the reply (`_ = try await ...`, returned = true) (red).
+    @MainActor
+    static func testFix7ScanReplyApplied() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        expectEqual(model.vstHost.status, "absent", "precondition: the stale pre-scan status")
+        var sent: [JSONObject] = []
+        model.vstScanRequestForTesting = { body, _ in
+            await MainActor.run { sent.append(body) }
+            return pluginHostReply("scanning")
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(sent.map { $0["type"] as? String ?? "" }, ["scan-vst-plugins"], "one scan request")
+        expect(model.vstScanRequestReturned, "the request returned")
+        expectEqual(model.vstHost.status, "scanning", "the reply's pluginHost state is applied")
+        expect(!model.vstScanCompleted, "a scan the core still runs has not completed")
+        expectEqual(model.vstAddMenuState, .scanning, "SHOW's menu: scanning")
+        expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "SETUP's menu: scanning, not 'none found'")
+        model.applyPluginHostSnapshot(["status": "absent", "plugins": [] as [JSONObject]])
+        expect(model.vstScanCompleted, "absent after the scan: completed")
+        expectEqual(model.setupVstMenuEmptyLine, P.noneFoundLine, "a completed scan found nothing")
+        expectEqual(model.vstCapability, .missing, "and the host is really missing")
+    }
+
+    /// Before any scan, the core's default "absent" is not "host missing":
+    /// SETUP's Add VST3 hint and the VST3 insert control's note say the scan
+    /// has not run; after a completed scan that leaves "absent" they say the
+    /// host was not found.
+    /// Mutation: vstCapability maps "absent" to .missing regardless of the scan (red).
+    @MainActor
+    static func testFix7UnscannedIsNotHostMissing() {
+        let model = AppModel()
+        expectEqual(model.vstCapability, .notScanned, "a fresh model has not scanned")
+        expectEqual(model.vstStatusLine, "Plug-in scan has not run yet.", "the unscanned status line")
+        let hint = AudioSetupPolicy.addButtons(target: "channel:101", vstLive: model.vstInsertsLive,
+                                               vstStatusLine: model.vstStatusLine, chain: [])
+            .first { $0.title == "Add VST3 plug-in" }
+        expectEqual(hint?.reason, "Plug-in scan has not run yet.", "SETUP's Add VST3 hint")
+        expectEqual(model.vstUnavailableNote, "Plug-in scan has not run yet.", "the insert control's note")
+        // A completed scan (the request returned, its reply then a later poll) leaving "absent".
+        model.vstScanRequestForTesting = { _, _ in pluginHostReply("scanning") }
+        model.scanVstPlugins()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        model.applyPluginHostSnapshot(["status": "absent", "plugins": [] as [JSONObject]])
+        expectEqual(model.vstCapability, .missing, "after a scan: missing")
+        expect(model.vstStatusLine.hasPrefix("Plug-in host not found — build corevideo-plugin-host"),
+               "the host-missing status line: \(model.vstStatusLine)")
+        expectEqual(model.vstUnavailableNote, "Plug-in host not found.", "the insert control's host-missing note")
+    }
+
+    /// A failed scan request clears the kicked flag so the next kick retries,
+    /// and the menus and status line say the request failed instead of "has
+    /// not run yet — reopen in a moment" forever.
+    /// Mutation: the catch leaves scanKicked true / sets no failure (red).
+    @MainActor
+    static func testFix7FailedScanRetries() {
+        typealias P = VstAddMenuPolicy
+        struct ScanDown: Error {}
+        let model = AppModel()
+        var attempts = 0
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { attempts += 1 }
+            throw ScanDown()
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestFailed }, limit: 2)
+        expectEqual(attempts, 1, "one request")
+        expect(model.vstScanRequestFailed, "the failure is recorded")
+        expect(!model.vstScratch.scanKicked, "the kicked flag is cleared")
+        expectEqual(model.vstAddMenuState, .scanFailed, "SHOW's menu: the request failed")
+        expectEqual(model.setupVstMenuEmptyLine, "Plug-in scan request failed — click to retry", "SETUP's menu line")
+        expectEqual(model.vstStatusLine, "Plug-in scan request failed — rescan to retry.", "the status line")
+        expect(model.setupVstMenuEmptyLine != P.notScannedLine, "not stuck on 'has not run yet'")
+        // Reopening retries; a good reply clears the failure.
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { attempts += 1 }
+            return pluginHostReply("scanning")
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(attempts, 2, "the next kick sent a second request")
+        expect(!model.vstScanRequestFailed, "a new request clears the failure")
+        expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "and the menu follows the reply")
+    }
+
+    /// The Audio Mixer pop-out window takes its sizes from AudioLayout and no
+    /// literal: ShellApp's Window block names popoutMin and popoutDefault and
+    /// carries no number, so a literal that could drift from the constants is red.
+    /// Mutation: write `minWidth: 900` (or any literal size) in ShellApp (red).
+    static func testFix7PopoutWindowUsesLayout() {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("ShellApp.swift")
+        guard let source = try? String(contentsOf: file, encoding: .utf8),
+              let start = source.range(of: "Window(\"Audio Mixer\""),
+              let end = source.range(of: ".defaultSize(", range: start.upperBound..<source.endIndex),
+              let close = source.range(of: ")", range: end.upperBound..<source.endIndex) else {
+            expect(false, "ShellApp.swift's Audio Mixer Window block must be readable from the harness"); return
+        }
+        // Comment lines (the Windows citation carries "1080 x 700") are not code.
+        let code = source[start.lowerBound..<close.upperBound].split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+        for name in ["minWidth: AudioLayout.popoutMin.width", "minHeight: AudioLayout.popoutMin.height",
+                     "width: AudioLayout.popoutDefault.width", "height: AudioLayout.popoutDefault.height"] {
+            expect(code.contains(name), "the pop-out window reads \(name)")
+        }
+        expect(code.range(of: "[0-9]", options: .regularExpression) == nil,
+               "no numeric literal in the pop-out window's sizes")
     }
 }

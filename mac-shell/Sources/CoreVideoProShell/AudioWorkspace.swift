@@ -22,6 +22,13 @@ enum AudioLayout {
     static let setupRightMaxWidth: CGFloat = 820
     static let columnSpacing: CGFloat = 10
     static let setupColumnSpacing: CGFloat = 12
+    /// AudioPane's padding around the header and surface (main tab and pop-out).
+    static let panePadding: CGFloat = 10
+    /// XAML:38 Padding="0,0,8,16": SETUP's trailing and bottom padding.
+    static let setupTrailingPadding: CGFloat = 8
+    static let setupBottomPadding: CGFloat = 16
+    /// W/Views/OperatorTabResources.xaml:8-14 OperatorSectionBorder padding 16.
+    static let setupSectionPadding: CGFloat = 16
 
     /// The pop-out mixer window. Windows opens it at 1080 x 700
     /// (W/Views/AudioMixerWindow.xaml.cs:17-18 WindowWidth/WindowHeight, applied
@@ -301,10 +308,13 @@ struct ProcessingWorkspace: View {
             }
             Divider()
             Button("VST3 PLUG-INS") {}.disabled(true)
-            let state = VstAddMenuPolicy.state(status: model.vstHost.status, pluginCount: model.vstPlugins.count,
-                                               scanCompleted: model.vstScanCompleted)
+            let state = model.vstAddMenuState
             if let line = VstAddMenuPolicy.emptyLine(state) {
-                Button(line) {}.disabled(true)
+                if state == .scanFailed {
+                    Button(line) { model.scanVstPlugins() }
+                } else {
+                    Button(line) {}.disabled(true)
+                }
             } else {
                 if !model.vstInsertsLive {
                     // The host cannot run an insert on this machine: say why, and

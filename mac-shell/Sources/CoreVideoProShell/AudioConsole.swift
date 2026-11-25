@@ -61,7 +61,7 @@ struct AudioPane: View {
                 showSurface
             }
         }
-        .padding(10)
+        .padding(AudioLayout.panePadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // XAML:915: the SHOW console is #070B10; the other surfaces keep the panel.
         .background(RoundedRectangle(cornerRadius: 6)

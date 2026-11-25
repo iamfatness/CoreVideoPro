@@ -522,6 +522,10 @@ final class AppModel: ObservableObject {
     @Published var vstPlugins: [VstPlugin] = []
     /// The shell's scan-vst-plugins request came back (VstAddMenuPolicy.scanCompleted).
     @Published var vstScanRequestReturned = false
+    /// The shell's last scan-vst-plugins request failed (no reply); cleared on the next request.
+    @Published var vstScanRequestFailed = false
+    /// Test seam for the scan-vst-plugins request (production: nil = bridge).
+    var vstScanRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
     @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
     let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
     // #870: the core's audioObservation envelope + when the shell received it.
@@ -4886,6 +4890,11 @@ final class AppModel: ObservableObject {
     /// Windows (SVM:11592-11597) falls back to the FIRST target; the Mac uses
     /// bus:master, the documented default, because the first target is a
     /// channel and moves with roster churn.
+    // KNOWN DIVERGENCE (recorded, not changed): Windows HOLDS a selection that
+    // is momentarily missing from the channel map and auto-selects only when the
+    // selection is empty (SVM:8846-8858, the 0xc000027b selection ping-pong
+    // lesson). The Mac clears a vanished selection here, so SHOW and SETUP fall
+    // back to the first strip (effectiveAudioStrip) until it is chosen again.
     private func reconcileAudioSelection() {
         let stripIds = Set(strips.map(\.id))
         if let selected = selectedAudioStripId, !stripIds.contains(selected) { selectedAudioStripId = nil }

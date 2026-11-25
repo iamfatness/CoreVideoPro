@@ -111,8 +111,7 @@ extension AppModel {
     /// SETUP's add-VST menu says the same scan state as SHOW's add menu
     /// (VstAddMenuPolicy): not run yet / scanning / none found, nil = list.
     var setupVstMenuEmptyLine: String? {
-        VstAddMenuPolicy.emptyLine(VstAddMenuPolicy.state(status: vstHost.status, pluginCount: vstPlugins.count,
-                                                          scanCompleted: vstScanCompleted))
+        VstAddMenuPolicy.emptyLine(vstAddMenuState)
     }
 
     var setupReadouts: (gain: String, manual: String, output: String) {
@@ -142,7 +141,8 @@ struct AudioSetupSurface: View {
                     .frame(maxWidth: AudioLayout.setupRightMaxWidth, alignment: .topLeading)
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(.trailing, 8).padding(.bottom, 16)   // XAML:38 Padding="0,0,8,16"
+            .padding(.trailing, AudioLayout.setupTrailingPadding)   // XAML:38 Padding="0,0,8,16"
+            .padding(.bottom, AudioLayout.setupBottomPadding)
         }
     }
 
@@ -359,7 +359,11 @@ struct InsertsAndPlugins: View {
     func vstMenu(_ spec: AudioSetupPolicy.AddButton) -> some View {
         Menu {
             if let line = model.setupVstMenuEmptyLine {
-                Button(line) {}.disabled(true)
+                if model.vstAddMenuState == .scanFailed {
+                    Button(line) { model.scanVstPlugins() }
+                } else {
+                    Button(line) {}.disabled(true)
+                }
             } else {
                 ForEach(model.vstPlugins.filter { $0.probe != "fail" }) { plugin in
                     Button(plugin.name) {
@@ -421,7 +425,7 @@ struct SetupSlotFlyout: View {
 
 /// W/Views/OperatorTabResources.xaml:8-14 OperatorSectionBorder: StudioPanelBrush
 /// (#101315, W/App.xaml:21 = Studio.panel), StudioBorderBrush, corner 8, padding 16.
-private let setupSectionPadding: CGFloat = 16
+private let setupSectionPadding = AudioLayout.setupSectionPadding
 
 private struct SetupSection<Content: View>: View {
     @ViewBuilder let content: Content
