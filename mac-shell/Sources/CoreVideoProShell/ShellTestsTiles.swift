@@ -45,6 +45,14 @@ extension ShellTests {
             ("tiles/bus-caption", testBusCaptionCarriesTheCoresNotice),
             ("tiles/iso-arming-repushes-spine", testArmingIsoRepushesTheSpine),
             ("tiles/mac-multiview-kind-label", testAnOverBudgetMacMultiviewTileCarriesTheLabel),
+            // Task 14: membership actions on the Preview wall.
+            ("tiles/member-choices-windows-facts", testTilesMemberChoicesPortTheWindowsFacts),
+            ("tiles/workspace-membership-rules", testTilesWorkspaceMembershipRules),
+            ("tiles/actions-refuse-without-a-preview-wall", testEveryTilesActionRefusesWhenPreviewIsNotATilesScene),
+            ("tiles/assign-slot-windows-facts", testTilesSlotAssignmentPortsTheWindowsFacts),
+            ("tiles/assign-moves-not-duplicates", testAssigningAGuestMovesThemNotDuplicatesThem),
+            ("tiles/include-manual-first-empty-slot", testIncludeInManualModeTakesTheFirstEmptySlot),
+            ("tiles/membership-summary", testTilesMembershipSummaryReadsLikeWindows),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1201,5 +1209,169 @@ extension ShellTests {
         let parts = ZoomSourceBudget.spineParts(input, names: [:])
         expectEqual(parts.multiviewSources.last?["label"] as? String, "Guest 10 · no video: subscription limit (10)", "\(w): label")
         expectEqual(parts.shortfall.first?["participantId"] as? String, "g10", "\(w): shortfall")
+    }
+
+    // ── Task 14 ──────────────────────────────────────────────────────────────
+
+    static func testTilesMemberChoicesPortTheWindowsFacts() {
+        let t = "TilesMemberChoicePolicyTests"
+        let locals = [TilesLocalSource(id: "capture:screen:1", name: "Input 02", group: "Screen"),
+                      TilesLocalSource(id: "capture:ndi-1", name: "Studio NDI", group: "NDI"),
+                      TilesLocalSource(id: "capture:cam-b", name: "Cam B", group: "Camera"),
+                      TilesLocalSource(id: "capture:cam-a", name: "Cam A", group: "Camera")]
+        let roster = [RosterParticipant(id: "2", name: "Zed", hasVideo: true, muted: false, talking: false, assigned: false),
+                      RosterParticipant(id: "1", name: "Amy", hasVideo: true, muted: false, talking: false, assigned: false)]
+        let choices = TilesMemberChoicePolicy.build(roster: roster, local: locals)
+        expectEqual(choices.map(\.id), ["zoom:2", "zoom:1", "capture:cam-b", "capture:cam-a", "capture:screen:1", "capture:ndi-1"],
+                    "\(t).Build_ListsZoomInRosterOrderThenLocalsInPickerGroupOrderThenSlotOrder")
+        expectEqual(choices.map(\.group), ["Zoom", "Zoom", "Camera", "Camera", "Screen", "NDI"], "\(t).Build_Lists…: groups")
+        let labelled = TilesMemberChoicePolicy.build(roster: [roster[1]], local: [TilesLocalSource(id: "capture:cam-1", name: "Logitech Brio", group: "Camera")])
+        expectEqual(labelled.map(\.label), ["Amy", "Camera · Logitech Brio"], "\(t).Build_LabelsALocalSourceAsGroupDotNameAndAZoomGuestByNameAlone")
+        expectEqual(labelled[1].name, "Logitech Brio", "\(t).Build_Labels…: name")
+        let dup = TilesMemberChoicePolicy.build(
+            roster: [roster[1], RosterParticipant(id: "zoom:1", name: "Amy again", hasVideo: true, muted: false, talking: false, assigned: false)],
+            local: [TilesLocalSource(id: "capture:cam-1", name: "Cam", group: "Camera"), TilesLocalSource(id: "capture:cam-1", name: "Cam dup", group: "Camera")])
+        expectEqual(dup.map(\.id), ["zoom:1", "capture:cam-1"], "\(t).Build_QualifiesBareZoomIdsAndDeduplicatesById")
+        let c = TilesMemberChoicePolicy.build(roster: [roster[1]], local: [TilesLocalSource(id: "capture:cam-1", name: "Cam", group: "Camera")])
+        expect(TilesMemberChoicePolicy.contains(c, "zoom:1") && TilesMemberChoicePolicy.contains(c, "capture:cam-1")
+               && !TilesMemberChoicePolicy.contains(c, "capture:cam-2") && !TilesMemberChoicePolicy.contains(c, "cam-1")
+               && !TilesMemberChoicePolicy.contains(c, "media:clip-7") && !TilesMemberChoicePolicy.contains(c, "")
+               && !TilesMemberChoicePolicy.contains(c, nil), "\(t).Contains_AcceptsOnlyCurrentChoicesSoSettersTakeInShowLocalIds")
+        let off = TilesMemberChoicePolicy.build(roster: [RosterParticipant(id: "5", name: "Off", hasVideo: false, muted: false, talking: false, assigned: false)], local: [])
+        expect(off.isEmpty, "Windows builds choices from RoomVideoParticipants: a camera-off guest is not offered")
+    }
+
+    static func testTilesWorkspaceMembershipRules() {
+        let t = "SceneWorkspaceParityTests.CapacityDoesNotSilentlyUncheckConfiguredMembers"
+        var wall = TilesSettings(); wall.membershipMode = "eligible"; wall.maxTiles = 1
+        var states = TilesWorkspaceMembership.build(wall, members: ["zoom:1", "zoom:2"], routed: [], roster: [], meetingId: nil)
+        expect(states.values.allSatisfy(\.selected) && states.values.allSatisfy { !$0.canSelect }, "\(t): eligible selects all, edits none")
+        wall.membershipMode = "routed"
+        states = TilesWorkspaceMembership.build(wall, members: ["zoom:1", "zoom:2"], routed: ["zoom:1"], roster: [], meetingId: nil)
+        expect(states["zoom:1"]?.selected == true && states["zoom:2"]?.canSelect == false, t)
+        var manual = TilesSettings(); manual.membershipMode = "manual"; manual.manualSlots = ["zoom-name:Ann"]
+        manual.excludedSourceIds = ["zoom:5"]; manual.overrides = ["zoom:7": TilesMemberOverride(rect: TilesRect())]
+        let people = [person("7", "Ann")]
+        states = TilesWorkspaceMembership.build(manual, members: ["zoom:7", "zoom:8"], routed: [], roster: people, meetingId: nil)
+        expectEqual(states["zoom:7"], TilesMemberState(selected: true, canSelect: true, excluded: false, pinned: true), "SceneWorkspaceMembershipPolicy: a manual slot by name, pinned")
+        expectEqual(states["zoom:8"], TilesMemberState(selected: false, canSelect: true, excluded: false, pinned: false), "SceneWorkspaceMembershipPolicy: unslotted")
+        expect(TilesWorkspaceMembership.build(nil, members: ["zoom:1"], routed: [], roster: [], meetingId: nil).isEmpty, "no wall, no states")
+    }
+
+    /// Preview t-pvw (a wall), Program s2; roster 7 (pid P7), 2 (pid P2), 9; capture cam-a in show.
+    @MainActor
+    private static func tilesActionModel() -> AppModel {
+        let model = sceneEditModel()
+        model.scenes.append(SceneDef(id: "t-pvw", name: "Wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.previewSceneId = "t-pvw"
+        model.roster = [RosterParticipant(id: "7", name: "Ann", hasVideo: true, muted: false, talking: false, assigned: false, persistentId: "P7"),
+                        RosterParticipant(id: "2", name: "Bo", hasVideo: true, muted: false, talking: false, assigned: false, persistentId: "P2"),
+                        RosterParticipant(id: "9", name: "Cy", hasVideo: true, muted: false, talking: false, assigned: false)]
+        model.joinMeetingId = "8675309"
+        return model
+    }
+
+    @MainActor static func testEveryTilesActionRefusesWhenPreviewIsNotATilesScene() {
+        let w = "Task 14: every action is Preview-wall only"
+        let model = tilesActionModel()
+        model.previewSceneId = "s1"   // not a wall
+        let program = model.programSceneId, syncs = model.sceneSyncRequestCount
+        let before = model.currentPrefs()
+        let actions: [(String, () throws -> Void)] = [
+            ("mode", { try model.setTilesMembershipMode("manual") }),
+            ("assign", { try model.assignTilesSlot(1, sourceId: "zoom:7") }),
+            ("exclude", { try model.setTilesExclusion("zoom:7", excluded: true) }),
+            ("include", { try model.includeTilesMember("zoom:7", included: true) }),
+            ("clear stale", { try model.clearStaleTiles() }),
+            ("update", { try model.updateTiles { $0.maxTiles = 3 } }),
+        ]
+        for (name, action) in actions {
+            model.studioCommandStatus = ""
+            var thrown: TilesEditError?
+            do { try action() } catch let e as TilesEditError { thrown = e } catch {}
+            expectEqual(thrown, .notTilesPreview, "\(w): \(name) throws notTilesPreview")
+            expectEqual(model.studioCommandStatus, "Queue a CoreVideo Tiles scene in Preview first.", "\(w): \(name) says why")
+        }
+        // Program is never the target, even when it is a wall.
+        model.programSceneId = "t-pvw"; model.previewSceneId = "t-pvw"
+        expect((try? model.assignTilesSlot(1, sourceId: "zoom:7")) == nil, "\(w): a wall on Program (Preview == Program) is not edited")
+        model.programSceneId = program; model.previewSceneId = "s1"
+        expectEqual(model.sceneSyncRequestCount, syncs, "\(w): nothing synced")
+        expectEqual(model.currentPrefs().scenes, before.scenes, "\(w): persisted scenes unchanged")
+        expectEqual(model.programSceneId, program, "\(w): Program unchanged")
+    }
+
+    @MainActor static func testTilesSlotAssignmentPortsTheWindowsFacts() {
+        let t = "TilesMembershipPolicyTests"
+        let model = tilesActionModel()
+        for slot in [0, 65] {
+            let before = model.scenes.first { $0.id == "t-pvw" }?.tiles, syncs = model.sceneSyncRequestCount
+            var thrown: TilesEditError?
+            do { try model.assignTilesSlot(slot, sourceId: "zoom:7") } catch let e as TilesEditError { thrown = e } catch {}
+            expectEqual(thrown, .slotOutOfRange, "\(t).InvalidApiSlotNeverMutates(\(slot))")
+            expectEqual(model.studioCommandStatus, "Tiles slot must be 1–64.", "\(t).InvalidApiSlotNeverMutates: message")
+            expect(model.scenes.first { $0.id == "t-pvw" }?.tiles == before && model.sceneSyncRequestCount == syncs,
+                   "\(t).InvalidApiSlotNeverMutates(\(slot)): nothing changed")
+        }
+        do { try model.assignTilesSlot(64, sourceId: "zoom:7") } catch { expect(false, "\(t).ApiSlotPasses…: slot 64 accepted") }
+        let tiles = model.scenes.first { $0.id == "t-pvw" }?.tiles
+        expectEqual(tiles?.manualSlots.count, 64, "\(t).ApiSlotPassesCanonicalIdentityAndReportsMutationFailure: slot 64 exists")
+        expectEqual(tiles?.manualSlots.last ?? nil, "zoom-pid:P7", "\(t).ApiSlotPasses…: saved as a stable identity")
+        expectEqual(tiles?.boundMeetingId, "8675309", "\(t).ApiSlotPasses…: bound to the current meeting")
+        var thrown: TilesEditError?
+        do { try model.assignTilesSlot(1, sourceId: "zoom:404") } catch let e as TilesEditError { thrown = e } catch {}
+        expectEqual(thrown, .unavailableSource, "an unavailable source is refused")
+        expectEqual(model.studioCommandStatus, "Choose an available source for this Tiles slot.", "an unavailable source: message")
+        // Confirmatory (value types): a copy never aliases membership intent.
+        var copy = tiles!; copy.manualSlots[63] = "zoom:c"; copy.excludedSourceIds = []
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots.last ?? nil, "zoom-pid:P7",
+                    "\(t).CloneDoesNotAliasMembershipIntent (confirmatory: TilesSettings is a value type)")
+    }
+
+    @MainActor static func testAssigningAGuestMovesThemNotDuplicatesThem() {
+        let w = "Task 14: AssignTilesSlot moves"
+        let model = tilesActionModel()
+        try? model.assignTilesSlot(1, sourceId: "zoom:2")
+        try? model.assignTilesSlot(3, sourceId: "zoom:2")
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, [nil, nil, "zoom-pid:P2"], "\(w): one seat, the last one")
+        try? model.assignTilesSlot(3, sourceId: "")
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, [nil, nil, nil], "\(w): \"\" clears the slot")
+        try? model.setTilesExclusion("zoom:9", excluded: true)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.excludedSourceIds, ["zoom-name:Cy"], "\(w): never-show by name when there is no pid")
+        try? model.setTilesExclusion("zoom:9", excluded: false)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.excludedSourceIds, [], "\(w): allowed again")
+    }
+
+    @MainActor static func testIncludeInManualModeTakesTheFirstEmptySlot() {
+        let w = "Task 14: WorkspaceIncludeMember"
+        let model = tilesActionModel()
+        try? model.setTilesMembershipMode("manual")
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.autoFill, false, "\(w): manual mode turns autoFill off")
+        try? model.assignTilesSlot(2, sourceId: "zoom:7")
+        try? model.includeTilesMember("zoom:2", included: true)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-pid:P2", "zoom-pid:P7"], "\(w): the first empty slot")
+        try? model.includeTilesMember("zoom:9", included: true)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-pid:P2", "zoom-pid:P7", "zoom-name:Cy"], "\(w): else a new slot")
+        try? model.includeTilesMember("zoom:9", included: false)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.omittedSourceIds, ["zoom-name:Cy"], "\(w): excluding records an omission")
+        // 64 full slots refuse with the Windows text.
+        try? model.updateTiles { $0.manualSlots = (0..<64).map { "capture:x\($0)" } }
+        var thrown: TilesEditError?
+        do { try model.includeTilesMember("zoom:2", included: true) } catch let e as TilesEditError { thrown = e } catch {}
+        expectEqual(thrown, .slotsFull, "\(w): a full wall refuses")
+        expectEqual(model.studioCommandStatus, "Clear a manual slot before adding another member; a wall supports 64 slots.", "\(w): message")
+    }
+
+    @MainActor static func testTilesMembershipSummaryReadsLikeWindows() {
+        let w = "GalleryMembershipSummary"
+        let model = tilesActionModel()
+        try? model.assignTilesSlot(1, sourceId: "zoom:7")
+        try? model.setTilesExclusion("zoom:9", excluded: true)
+        expectEqual(model.tilesMembershipSummary, "Manual slots: 1: Ann · Never show: Cy", "\(w): names from the choices")
+        try? model.updateTiles { $0.manualSlots.append("zoom-name:Gone") }
+        expectEqual(model.tilesMembershipSummary, "Manual slots: 1: Ann, 2: Gone · Never show: Cy · Stale: 2: Gone: not in this meeting",
+                    "\(w): stale entries listed")
+        try? model.clearStaleTiles()
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-pid:P7", nil], "\(w): clear stale")
     }
 }

@@ -319,3 +319,44 @@ No HIGH. The reviewer confirmed tier-for-tier parity of the source set, the payl
   - The Mac spine sends no "Media core is not running"/OAuth warnings, no `directorExcludedParticipantIds` and no breakout filter. That is the Mac shell's existing payload and out of Tiles scope; candidate follow-up.
 - **CI fix:** `busCaption` concatenated `String + Substring`, which Xcode 27.2 accepts and CI's older Swift rejects (`mac-shell-tests` failed to compile). Now `String(label[…])`. I found no other instance of the pattern on the branch.
 - Full suite: **8177 checks, 2 failed**, the known `.m4a` pair. `tiles/` filter: 318/318. `tiles-live/`: 20/20.
+
+### Rebase onto `origin/main` `1f0075d8` (2026-11-25)
+
+- 41 upstream commits. The Phase 3 plans commit was already on main, so it was dropped.
+- Conflicts were resolved by keeping both sides:
+  - `native/CMakeLists.txt`: the test list, with `MetalGraphicsBoundsTest` from main.
+  - The `ShellTests.swift` case list: the comms cases from main.
+  - `AppModel.onConnected`: the comms re-arm from main.
+- After the rebase:
+  - Shell: 8658 checks, 2 failed (the known `.m4a` pair).
+  - `TilesSpineFixtureTests` 1/1.
+  - Metal `ctest -LE realtime`: 100% (5/5 ctest entries).
+  - Design lint passes.
+- Force-pushed; the PR body notes it.
+
+### Task 14 — AppModel Tiles actions (Preview wall only)
+
+- `TilesPolicies.swift`: `TilesMemberChoice`/`TilesMemberChoicePolicy` (`GalleryMemberChoice`; group order Zoom, Camera, Screen, Browser, Media, SRT, NDI), `TilesMemberState`/`TilesWorkspaceMembership` (`SceneWorkspaceMembershipPolicy.Build`, verbatim).
+- `AppModel+Tiles.swift`:
+  - `TilesEditError`, carrying the Windows strings;
+  - `tilesEditTargetId`: the Preview scene only when it is an editable wall, never Program;
+  - `tilesMemberChoices`, `updateTiles`, `setTilesMembershipMode` (which also sets `autoFill`);
+  - `assignTilesSlot`: the guest moves, is saved as a stable identity, and the wall is bound to the meeting;
+  - `setTilesExclusion`, `includeTilesMember` (`WorkspaceIncludeMember`), `clearStaleTiles`;
+  - `tilesLiveLocalSourceIds`, `tilesMembershipSummary`, `tilesMemberStates`.
+- Tests:
+  - the 4 `TilesMemberChoicePolicyTests` facts;
+  - the `SceneWorkspaceParityTests` capacity rule plus the manual and pinned rules;
+  - `InvalidApiSlotNeverMutates` (0 and 65) and `ApiSlotPassesCanonicalIdentity…`;
+  - `CloneDoesNotAliasMembershipIntent` (confirmatory, because these are value types);
+  - `testEveryTilesActionRefusesWhenPreviewIsNotATilesScene`;
+  - `testAssigningAGuestMovesThemNotDuplicatesThem` (`[nil, nil, "zoom-pid:P2"]`);
+  - `testIncludeInManualModeTakesTheFirstEmptySlot`, including a full 64-slot wall;
+  - the summary and clear-stale behaviour.
+- `tiles/` filter: 371/371. Full suite: **8711 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 14) | Result |
+|---|---|
+| skip the Preview-only guard (edit a wall on Program) | red: 3 failures |
+| persist the session id instead of `persist()` | red: 8 failures |
+| a reassign keeps the old slot | red: 2 failures |

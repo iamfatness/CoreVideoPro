@@ -86,3 +86,161 @@ extension AppModel {
         return caption + separator + String(label[range.upperBound...])
     }
 }
+
+// MARK: - Tiles membership actions (Task 14): the PREVIEW Tiles scene only
+
+enum TilesEditError: Error, Equatable {
+    case notTilesPreview, slotOutOfRange, unavailableSource, slotsFull
+
+    /// The Windows strings (StudioViewModel.Tiles.cs / SceneWorkspace.cs).
+    var message: String {
+        switch self {
+        case .notTilesPreview: return "Queue a CoreVideo Tiles scene in Preview first."
+        case .slotOutOfRange: return "Tiles slot must be 1–64."
+        case .unavailableSource: return "Choose an available source for this Tiles slot."
+        case .slotsFull: return "Clear a manual slot before adding another member; a wall supports 64 slots."
+        }
+    }
+}
+
+extension AppModel {
+    /// The Preview scene when it is an editable Tiles scene (never Program).
+    var tilesEditTargetId: String? {
+        guard let id = sceneEditTargetId, isTilesScene(id) else { return nil }
+        return id
+    }
+
+    /// Windows `GalleryMemberChoices`: video-on guests, then in-show local sources.
+    var tilesMemberChoices: [TilesMemberChoice] {
+        TilesMemberChoicePolicy.build(roster: roster,
+                                      local: TilesLocalSourcePolicy.localVideoSources(slots, devices: captureDevices))
+    }
+
+    /// Edits the Preview wall, then syncs scenes. Refuses (status + throw) when
+    /// Preview is not a Tiles scene; nothing is synced then.
+    func updateTiles(_ edit: (inout TilesSettings) -> Void) throws {
+        guard let id = tilesEditTargetId, let index = scenes.firstIndex(where: { $0.id == id }),
+              var settings = scenes[index].tiles else { throw refuseTiles(.notTilesPreview) }
+        edit(&settings)
+        scenes[index].tiles = settings
+        syncScenes()
+    }
+
+    @discardableResult
+    private func refuseTiles(_ error: TilesEditError) -> TilesEditError {
+        studioCommandStatus = error.message
+        return error
+    }
+
+    /// `GalleryMembershipMode` setter: also `autoFill = mode != "manual"`.
+    func setTilesMembershipMode(_ mode: String) throws {
+        try updateTiles { s in
+            s.membershipMode = TilesMembershipPolicy.normalizeMode(mode)
+            s.autoFill = s.membershipMode != "manual"
+        }
+    }
+
+    /// `AssignTilesSlot` (StudioViewModel.Tiles.cs): slot 1-64, "" clears; the
+    /// guest MOVES (any slot already holding them is cleared), saved as a stable
+    /// identity, and the wall is bound to the current meeting.
+    func assignTilesSlot(_ slot: Int, sourceId: String) throws {
+        guard tilesEditTargetId != nil else { throw refuseTiles(.notTilesPreview) }
+        guard (1...64).contains(slot) else { throw refuseTiles(.slotOutOfRange) }
+        if !sourceId.isEmpty, !TilesMemberChoicePolicy.contains(tilesMemberChoices, sourceId) { throw refuseTiles(.unavailableSource) }
+        let roster = tilesIdentityRoster, meetingId = currentTilesMeetingId
+        try updateTiles { s in
+            let persisted: String? = sourceId.isEmpty ? nil : TilesIdentityPolicy.persist(sourceId, roster: roster)
+            if let meetingId { s.boundMeetingId = meetingId }
+            while s.manualSlots.count < slot { s.manualSlots.append(nil) }
+            for index in s.manualSlots.indices {
+                let existing = s.manualSlots[index]
+                if existing == sourceId || existing == persisted
+                    || TilesIdentityPolicy.resolveLiveSourceId(existing, roster: roster, currentMeetingId: meetingId,
+                                                               boundMeetingId: s.boundMeetingId) == sourceId {
+                    s.manualSlots[index] = nil
+                }
+            }
+            s.manualSlots[slot - 1] = persisted
+        }
+    }
+
+    /// `SetTilesExclusion` (never show).
+    func setTilesExclusion(_ sourceId: String, excluded: Bool) throws {
+        guard tilesEditTargetId != nil else { throw refuseTiles(.notTilesPreview) }
+        guard !sourceId.trimmingCharacters(in: .whitespaces).isEmpty,
+              !excluded || TilesMemberChoicePolicy.contains(tilesMemberChoices, sourceId) else {
+            studioCommandStatus = excluded ? "Choose an available source to exclude." : "Choose a source to exclude or allow."
+            throw TilesEditError.unavailableSource
+        }
+        let roster = tilesIdentityRoster, meetingId = currentTilesMeetingId
+        try updateTiles { s in
+            let persisted = TilesIdentityPolicy.persist(sourceId, roster: roster)
+            if let meetingId { s.boundMeetingId = meetingId }
+            s.excludedSourceIds.removeAll { id in
+                id == sourceId || id == persisted
+                    || TilesIdentityPolicy.resolveLiveSourceId(id, roster: roster, currentMeetingId: meetingId,
+                                                               boundMeetingId: s.boundMeetingId) == sourceId
+            }
+            if excluded { s.excludedSourceIds.append(persisted) }
+        }
+    }
+
+    /// `WorkspaceIncludeMember` (StudioViewModel.SceneWorkspace.cs): eligible mode
+    /// ignores it; manual mode seats a newly included member in the first empty
+    /// slot (or a new one, up to 64); the omitted list follows the choice.
+    func includeTilesMember(_ sourceId: String, included: Bool) throws {
+        guard let id = tilesEditTargetId, let wall = scenes.first(where: { $0.id == id })?.tiles else {
+            throw refuseTiles(.notTilesPreview)
+        }
+        let mode = TilesMembershipPolicy.normalizeMode(wall.membershipMode)
+        if mode == "eligible" { return }
+        if mode == "manual", included,
+           !((tilesPayload(for: id)?["members"] as? [String])?.contains(sourceId) ?? false) {
+            let empty = wall.manualSlots.firstIndex { ($0 ?? "").isEmpty }
+            if empty == nil, wall.manualSlots.count >= 64 { throw refuseTiles(.slotsFull) }
+            try assignTilesSlot(empty.map { $0 + 1 } ?? wall.manualSlots.count + 1, sourceId: sourceId)
+        }
+        let roster = tilesIdentityRoster, meetingId = currentTilesMeetingId
+        try updateTiles { s in
+            if let meetingId { s.boundMeetingId = meetingId }
+            s.omittedSourceIds.removeAll { saved in
+                saved == sourceId || TilesIdentityPolicy.resolveLiveSourceId(saved, roster: roster, currentMeetingId: meetingId,
+                                                                             boundMeetingId: s.boundMeetingId) == sourceId
+            }
+            if !included { s.omittedSourceIds.append(TilesIdentityPolicy.persist(sourceId, roster: roster)) }
+        }
+    }
+
+    /// `ClearStaleTilesEntries`.
+    func clearStaleTiles() throws {
+        let roster = tilesIdentityRoster, meetingId = currentTilesMeetingId, live = tilesLiveLocalSourceIds
+        try updateTiles { s in TilesIdentityPolicy.clearStale(&s, roster: roster, meetingId: meetingId, liveLocal: live) }
+    }
+
+    /// Windows `TilesLiveLocalSourceIds`: the in-show local sources the wall can seat now.
+    var tilesLiveLocalSourceIds: Set<String> {
+        Set(TilesLocalSourcePolicy.localVideoSources(slots, devices: captureDevices).map(\.id))
+    }
+
+    /// `GalleryMembershipSummary`: "Manual slots: … · Never show: …" (+ " · Stale: …").
+    var tilesMembershipSummary: String {
+        guard let id = tilesEditTargetId, let s = scenes.first(where: { $0.id == id })?.tiles else { return "" }
+        let roster = tilesIdentityRoster, choices = tilesMemberChoices
+        func name(_ id: String) -> String { choices.first { $0.id == id }?.name ?? TilesIdentityPolicy.label(id, roster: roster) }
+        let slots = s.manualSlots.enumerated().compactMap { index, id -> String? in
+            guard let id, !id.isEmpty else { return nil }
+            return "\(index + 1): \(name(id))"
+        }
+        let summary = "Manual slots: " + slots.joined(separator: ", ") + " · Never show: " + s.excludedSourceIds.map(name).joined(separator: ", ")
+        let stale = TilesIdentityPolicy.describeStale(s, roster: roster, meetingId: currentTilesMeetingId, liveLocal: tilesLiveLocalSourceIds)
+        return stale.isEmpty ? summary : summary + " · Stale: " + stale.map(\.label).joined(separator: ", ")
+    }
+
+    /// Windows `WorkspaceMemberStates`.
+    var tilesMemberStates: [String: TilesMemberState] {
+        guard let id = tilesEditTargetId else { return [:] }
+        return TilesWorkspaceMembership.build(scenes.first { $0.id == id }?.tiles, members: tilesMemberChoices.map(\.id),
+                                              routed: TilesLocalSourcePolicy.routedSourceIds(slots),
+                                              roster: tilesIdentityRoster, meetingId: currentTilesMeetingId)
+    }
+}

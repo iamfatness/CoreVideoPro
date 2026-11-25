@@ -230,3 +230,63 @@ enum TilesIdentityPolicy {
         return persisted
     }
 }
+
+/// One choice in the Tiles member picker (Windows `GalleryMemberChoice`).
+struct TilesMemberChoice: Equatable, Identifiable {
+    let id: String
+    let name: String
+    var group = "Zoom"
+    var label: String { group == "Zoom" ? name : "\(group) · \(name)" }
+}
+
+/// `TilesMemberChoicePolicy`: video-on Zoom guests in roster order, then in-show
+/// local sources by picker group order, slot order within a group; deduped by id.
+enum TilesMemberChoicePolicy {
+    /// `ShowInputRosterService.UnifiedSourceGroups`.
+    static let groupOrder = ["Zoom", "Camera", "Screen", "Browser", "Media", "SRT", "NDI"]
+
+    static func build(roster: [RosterParticipant], local: [TilesLocalSource]) -> [TilesMemberChoice] {
+        let zoom = roster.filter(\.hasVideo).map { TilesMemberChoice(id: TilesLayerPayload.qualify($0.id), name: $0.name) }
+        let rank = { (group: String) in groupOrder.firstIndex(of: group) ?? Int.max }
+        let locals = local.enumerated()
+            .sorted { rank($0.element.group) != rank($1.element.group) ? rank($0.element.group) < rank($1.element.group) : $0.offset < $1.offset }
+            .map { TilesMemberChoice(id: $0.element.id, name: $0.element.name, group: $0.element.group) }
+        var seen = Set<String>()
+        return (zoom + locals).filter { seen.insert($0.id).inserted }
+    }
+
+    static func contains(_ choices: [TilesMemberChoice], _ sourceId: String?) -> Bool {
+        guard let sourceId, !sourceId.isEmpty else { return false }
+        return choices.contains { $0.id == sourceId }
+    }
+}
+
+/// `WorkspaceMemberState`.
+struct TilesMemberState: Equatable {
+    let selected: Bool
+    let canSelect: Bool
+    let excluded: Bool
+    let pinned: Bool
+}
+
+/// `SceneWorkspaceMembershipPolicy.Build`, verbatim.
+enum TilesWorkspaceMembership {
+    static func build(_ s: TilesSettings?, members: [String], routed: Set<String>,
+                      roster: [TilesIdentityPolicy.Person], meetingId: String?) -> [String: TilesMemberState] {
+        guard let wall = s else { return [:] }
+        func keys(_ saved: [String?]) -> Set<String> {
+            Set(saved.compactMap { TilesIdentityPolicy.resolveLiveSourceId($0, roster: roster, currentMeetingId: meetingId,
+                                                                           boundMeetingId: wall.boundMeetingId) }.filter { !$0.isEmpty })
+        }
+        let excluded = keys(wall.excludedSourceIds), omitted = keys(wall.omittedSourceIds), manual = keys(wall.manualSlots)
+        let mode = TilesMembershipPolicy.normalizeMode(wall.membershipMode)
+        var out: [String: TilesMemberState] = [:]
+        for id in members where out[id] == nil {
+            let blocked = excluded.contains(id)
+            let selected = !blocked && (mode == "eligible" || !omitted.contains(id) && (mode == "routed" ? routed.contains(id) : manual.contains(id)))
+            let editable = !blocked && (mode == "manual" || mode == "routed" && routed.contains(id))
+            out[id] = TilesMemberState(selected: selected, canSelect: editable, excluded: blocked, pinned: wall.overrides[id]?.rect != nil)
+        }
+        return out
+    }
+}
