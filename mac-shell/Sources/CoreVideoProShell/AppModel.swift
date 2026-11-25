@@ -201,7 +201,7 @@ struct ShowInputSlot: Identifiable, Equatable {
 // is silently ignored, so these names/keys must stay exact.
 //
 // A7 (Task 2): `chain` is the Windows `PluginInserts` list, in the order the
-// operator built it (SVM:5493-5516 ToggleSelectedRackInsert, SVM:5520-5542
+// operator built it (SVM:5493-5517 ToggleSelectedRackInsert, SVM:5520-5542
 // AddSelectedAudioInsert).
 // The three enable flags are now views of it. A VST name ("vst:<plugin>")
 // lives in the chain too; AppModel.pluginInsertNames drops it while the host
@@ -245,7 +245,7 @@ struct ChannelInserts: Equatable {
     var compEnabled: Bool { contains(Self.compName) }
     var limiterEnabled: Bool { contains(Self.limiterName) }
 
-    /// SVM:5493-5516 (ToggleSelectedRackInsert): remove it if present (case-insensitive),
+    /// SVM:5493-5517 (ToggleSelectedRackInsert): remove it if present (case-insensitive),
     /// else append it at the END of the chain.
     mutating func toggle(_ name: String) {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }

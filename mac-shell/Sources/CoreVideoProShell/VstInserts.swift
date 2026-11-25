@@ -242,6 +242,7 @@ extension AppModel {
     // silently does nothing in the audio path. "Plug-in name" is the CORE's
     // rule (InsertChainPolicy.isHostHandled: contains "vst" or "host"), not the
     // narrower Windows isVst: "Host Test" or "vst pro" go to the host too.
+    // A host going live does not re-send by itself: the full chain waits for the next mix push.
     func pluginInsertNames(for stripId: String) -> [String] {
         let chain = (channelInserts[stripId] ?? ChannelInserts()).chain
         return vstInsertsLive ? chain : chain.filter { !InsertChainPolicy.isHostHandled($0) }
@@ -252,6 +253,7 @@ extension AppModel {
     // the host is not live, exactly as pluginInsertNames does for a channel.
     // Wire-only: busInserts itself keeps the operator's chain, and the slot
     // for a dropped name reads BYPASS (InsertChainPolicy.slots).
+    // A host going live does not re-send by itself: the full chain waits for the next routing push.
     var wireBusInserts: [String: [String]] {
         vstInsertsLive ? busInserts
             : busInserts.mapValues { $0.filter { !InsertChainPolicy.isHostHandled($0) } }

@@ -682,6 +682,10 @@ extension ShellTests {
         expectEqual(inserts.add("\n\t"), .rejectedBlank, "a newline/tab name is rejected")
         expectEqual(inserts.chain, [], "nothing entered the chain")
         // The SETUP path says nothing for a blank name, on a channel or a bus.
+        // Coverage note: this half pins the observable behaviour only. It
+        // never reaches the ChannelInserts.add guard above, because
+        // addProcessingInsert returns early on a blank raw name; the mutation
+        // named above is caught by the first half alone.
         let model = targetModel()
         model.selectProcessingTarget(AudioProcessingTargetPolicy.channelId("101"))
         expectEqual(model.selectedProcessingTargetId, "channel:101", "precondition: channel target")
@@ -814,7 +818,9 @@ extension ShellTests {
     @MainActor
     private static func testFixBusVstGatedOnHost() {
         let model = targetModel()
-        model.busInserts = ["master": ["Compressor", "vst:Test"]]
+        // "Host Test" is host-handled (contains "host") but NOT Windows isVst,
+        // so swapping the wire filter back to isVst keeps it and turns red.
+        model.busInserts = ["master": ["Compressor", "vst:Test", "Host Test"]]
         expect(!model.vstInsertsLive, "precondition: no live host")
         // Base matrix (routingBaseCommand -> baseRoutingSends).
         // Mutation: pass busInserts instead of wireBusInserts there -> red.
@@ -843,16 +849,16 @@ extension ShellTests {
             expectEqual(chainOf(send), ["Compressor"], "legacy master send: the plug-in is dropped without a host")
         }
         // Wire-only: the operator's chain is kept, and its slot says why.
-        expectEqual(model.busInserts["master"], ["Compressor", "vst:Test"], "busInserts keeps the operator's chain")
+        expectEqual(model.busInserts["master"], ["Compressor", "vst:Test", "Host Test"], "busInserts keeps the operator's chain")
         let slots = InsertChainPolicy.slots(chain: model.busInserts["master"] ?? [], onBus: true,
                                             vstLive: model.vstInsertsLive, vstStatusLine: model.vstStatusLine,
                                             labelStyle: .target)
-        expectEqual(slots.map(\.statusLabel), ["LIVE", "BYPASS"], "the bus plug-in slot reads BYPASS")
+        expectEqual(slots.map(\.statusLabel), ["LIVE", "BYPASS", "BYPASS"], "the bus plug-in slots read BYPASS")
         expectEqual(slots.last?.tooltip, model.vstStatusLine, "with the host status line")
         // A live host gets the full chain in the base matrix.
         model.vstHost.serveRunning = true
         for send in sends(model.routingBaseCommand()) where send["busId"] as? String == "master" {
-            expectEqual(chainOf(send), ["Compressor", "vst:Test"], "a live host gets the bus plug-in")
+            expectEqual(chainOf(send), ["Compressor", "vst:Test", "Host Test"], "a live host gets the bus plug-ins")
         }
     }
 

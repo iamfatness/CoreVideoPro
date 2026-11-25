@@ -4,7 +4,7 @@
 // DspCurveMath is a line-for-line port of
 // native-shell/CoreVideoPro.WinUI/Services/DspCurveMath.cs: the drawn responses
 // are computed from the SAME filter formulas the core runs (RBJ audio-EQ-cookbook
-// biquads mirroring native AudioDsp.h:1407-1435 eqHighpass/eqPeaking; the
+// biquads mirroring native AudioDsp.h:1408-1435 eqHighpass/eqPeaking; the
 // compressor/gate static transfer functions mirroring the gain computer at
 // AudioDsp.h:1549-1567), so a
 // graph shows the actual processing, not an illustration. Every function returns
