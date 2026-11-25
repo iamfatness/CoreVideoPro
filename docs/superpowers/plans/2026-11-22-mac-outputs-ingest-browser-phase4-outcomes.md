@@ -557,3 +557,9 @@ Branch `mac-outputs-phase4-o4d`, stacked on `-o4c`.
   - Taken: `close()` of the unused audio pipe is now guarded.
   - Kept: the start event's `audioInput:"pcm"` label in unified mode matches Windows.
   - Noted gap: nothing feeds an encoded AAC packet through the POSIX unified writer in a unit test. The live clap gate is that coverage.
+- **Defect found afterwards by the Task 6 end-to-end gate, and fixed on this branch.**
+  - **What failed.** The first real run of the Mac GPU-direct stream failed: ffmpeg could not probe the video ("unspecified size") and decoded the AAC as garbage.
+  - **Cause.** `config.audioInTransportStream = unifiedTsInput_` had stayed inside `#if defined(_WIN32)`, even though the plan named that line. So on POSIX the unified-TS sender still declared a second `-f aac -i pipe:0` input, and ffmpeg split stdin between the TS and an AAC demuxer.
+  - **Why the test missed it.** `PosixGpuDirectUsesUnifiedTs` checked only that `pipe:3` was absent. It asserted a proxy, not the property (rule 10).
+  - **The test now asserts the property:** exactly one ` -i `, no `-f aac`, and `-map 0:a:0`. Mutation **M5e** (the guard put back) turns it red.
+  - **After the fix**, `scripts/validate-gpu-encode.mjs --build-dir native/build-metal --codec h264 --sink-protocol rtmp` **passes on this Mac**: GPU-direct, decoded h264 1920x1080, 58.4 fps of 60 received, sink speed 1.07x. That run was on a loaded machine, so it is functional evidence only; the quiet-machine gate is still owed.

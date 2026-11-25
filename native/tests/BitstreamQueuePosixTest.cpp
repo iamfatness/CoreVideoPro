@@ -315,7 +315,15 @@ TEST(OutputSenderAdapter, PosixGpuDirectUsesUnifiedTs) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   ASSERT_NE(argv.find("pipe:0"), std::string::npos) << "fixture invariant: the stream ffmpeg's argv was captured";
-  EXPECT_EQ(argv.find("pipe:3"), std::string::npos) << "no second audio input: " << argv;
+  // ONE input. Checking only for "pipe:3" missed the real defect: on POSIX the
+  // stray second input was `-f aac -i pipe:0`, and FFmpeg then split stdin
+  // between the TS and an AAC demuxer (found by the Task 6 end-to-end gate).
+  size_t inputs = 0;
+  for (size_t at = argv.find(" -i "); at != std::string::npos; at = argv.find(" -i ", at + 1)) ++inputs;
+  EXPECT_EQ(inputs, 1u) << "exactly one FFmpeg input (the TS): " << argv;
+  EXPECT_EQ(argv.find("-f aac"), std::string::npos) << "no separate AAC demuxer: " << argv;
+  EXPECT_NE(argv.find("-map 0:a:0"), std::string::npos) << "audio is mapped from the TS itself: " << argv;
+  EXPECT_EQ(argv.find("pipe:3"), std::string::npos) << "no second audio pipe: " << argv;
 }
 
 }  // namespace

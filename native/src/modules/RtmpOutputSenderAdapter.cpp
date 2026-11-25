@@ -1581,9 +1581,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     config.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 48000;
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
     config.audioBitstreamInput = useGpuDirect_ && useSharedAac_ && config.hasAudio;
-#if defined(_WIN32)
+    // Every platform (Phase 4 O5): with the unified TS the AAC rides pipe:0 and
+    // FFmpeg must get NO second input. (Left Windows-only, POSIX declared
+    // `-f aac -i pipe:0` beside the TS and FFmpeg split stdin between the two.)
     config.audioInTransportStream = unifiedTsInput_;
-#endif
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
