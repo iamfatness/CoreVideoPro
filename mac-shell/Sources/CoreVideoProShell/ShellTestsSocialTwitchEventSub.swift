@@ -20,6 +20,14 @@ extension ShellTests {
             ("social/twitch-feed-revocation-clears-approved-without-retry", testTwitchFeedRevocation),
             ("social/twitch-feed-unexpected-disconnect-and-migration-clear-approvals", testTwitchFeedGaps),
             ("social/twitch-feed-gap-retires-on-air-card", testTwitchFeedGapRetiresCard),
+            ("social/twitch-session-reconnect-url-every-check", testTwitchSessionReconnectURL),
+            ("social/twitch-session-maps-before-dedupe", testTwitchSessionMapsBeforeDedupe),
+            ("social/twitch-socket-utf8-and-exact-limit", testTwitchRealSocketEdges),
+            ("social/twitch-socket-owner-cancel-is-prompt", testTwitchSocketCancel),
+            ("social/twitch-feed-reconnect-budget-1-2-4-with-forced-refresh", testTwitchFeedReconnectBudget),
+            ("social/twitch-feed-reconnects-into-a-fresh-review", testTwitchFeedReconnects),
+            ("social/twitch-feed-disconnects-before-draining", testTwitchFeedDisconnectsBeforeDrain),
+            ("social/twitch-feed-owner-cancel-during-welcome-no-reconnect", testTwitchFeedCancelDuringWelcome),
         ]
     }
 
@@ -156,6 +164,12 @@ extension ShellTests {
         expect((try? e.read("{}")) == nil, "empty envelope")
         expect((try? e.read(String(repeating: "x", count: 65537))) == nil, "65537 bytes refused")
         expect((try? TwitchEventSubSession.welcome(twWelcome(keepalive: 0), channel: twChannel, user: twUser)) == nil, "keepalive 0 refused")
+        let ten = twWelcome(keepalive: 10)
+        expect(ten.contains(#""keepalive_timeout_seconds":10"#), "fixture shape")
+        expect((try? TwitchEventSubSession.welcome(ten, channel: twChannel, user: twUser)) != nil, "keepalive 10 accepted")
+        let tenPointZero = ten.replacingOccurrences(of: #""keepalive_timeout_seconds":10"#, with: #""keepalive_timeout_seconds":10.0"#)
+        expect((try? TwitchEventSubSession.welcome(tenPointZero, channel: twChannel, user: twUser)) == nil,
+               "keepalive 10.0 refused (C# TryGetInt32)")
     }
 
     static func testTwitchSessionSharedChat() {
@@ -277,6 +291,16 @@ extension ShellTests {
         var connections = 0
         var reports: [String] = []
         var retried = false
+        var retrySleeps: [UInt64] = []
+        var parkRetries = true           // false: a reconnect backoff returns at once
+        var releaseMaintain = false      // true: the next 30 s maintain wait returns once
+        var validations = 0
+        var validationsAtFirstConnect = -1
+        var blockValidation = false
+        var validationGate: CheckedContinuation<Void, Never>?
+        var failConnect = false
+        var connectOverride: (() async throws -> TwitchSocket)?
+        var nextSockets: [ScriptedTwitchSocket] = []   // reconnects take these in turn
         let socket = ScriptedTwitchSocket()
         let playout: SocialPlayout
         var auth: TwitchAuthorization!
@@ -288,7 +312,13 @@ extension ShellTests {
                                     observe: observe ?? { nil }, sleep: { _ in }, now: { socialNow })
             saved = ShellTests.twTokens(clock)
             http = FnHTTP { [unowned self] request in
-                if request.url.host == "id.twitch.tv" { return (200, ShellTests.twValidation()) }
+                if request.url.host == "id.twitch.tv" {
+                    await MainActor.run { self.validations += 1 }
+                    if await MainActor.run(body: { self.blockValidation }) {
+                        await withCheckedContinuation { c in Task { @MainActor in self.validationGate = c } }
+                    }
+                    return (200, ShellTests.twValidation())
+                }
                 expectEqual(request.url.host, "api.twitch.tv", "helix host")
                 expectEqual(request.headers["Client-Id"], ShellTests.twClient, "client id header")
                 if request.method == "GET" { return (200, #"{"data":[{"id":"1234","login":"fixturechannel"}]}"#) }
@@ -315,15 +345,38 @@ extension ShellTests {
         func run() {
             feed = Task { @MainActor in
                 await TwitchSocialFeed.run(channel: "fixturechannel", clientId: ShellTests.twClient, auth: auth, playout: playout, http: http,
-                                           connect: { [unowned self] in await MainActor.run { self.connections += 1 }; return self.socket },
+                                           connect: { [unowned self] in try await self.connect() },
                                            sleep: { [unowned self] ns in
-                                               if ns != 30_000_000_000 { await MainActor.run { self.retried = true } }
-                                               // park: a retry or maintain wait never elapses in these cases
-                                               while !Task.isCancelled { try? await Task.sleep(nanoseconds: 20_000_000) }
+                                               let park: Bool = await MainActor.run {
+                                                   if ns == 30_000_000_000 {
+                                                       if self.releaseMaintain { self.releaseMaintain = false; return false }
+                                                       return true
+                                                   }
+                                                   self.retried = true
+                                                   self.retrySleeps.append(ns)
+                                                   return self.parkRetries
+                                               }
+                                               // park: unless released, a retry or maintain wait never elapses
+                                               while park && !Task.isCancelled {
+                                                   try? await Task.sleep(nanoseconds: 20_000_000)
+                                                   if ns == 30_000_000_000, await MainActor.run(body: {
+                                                       if self.releaseMaintain { self.releaseMaintain = false; return true }
+                                                       return false
+                                                   }) { return }
+                                               }
                                            },
                                            report: { [unowned self] in self.reports.append($0) },
                                            prompt: { _ in expect(false, "unexpected device prompt") })
             }
+        }
+
+        func connect() async throws -> TwitchSocket {
+            connections += 1
+            if validationsAtFirstConnect < 0 { validationsAtFirstConnect = validations }
+            if failConnect { throw TwitchFailure.retry }
+            if let connectOverride { return try await connectOverride() }
+            if connections > 1, !nextSockets.isEmpty { return nextSockets.removeFirst() }
+            return socket
         }
 
         func stop() { feed?.cancel(); _ = ShellTests.awaitMain(5) { await self.feed?.value; return true } }
@@ -428,5 +481,202 @@ extension ShellTests {
         expect(core.state.instances.isEmpty, "the card is gone")
         feed.cancel()
         _ = awaitMain(5) { await feed.value; return true }
+    }
+
+    // ── review follow-ups (Task 17) ─────────────────────────────────────
+
+    static func twReconnect(_ url: String, id: String = twSession, status: String = "reconnecting") -> String {
+        jsonString(["metadata": ["message_id": "move", "message_type": "session_reconnect", "message_timestamp": "2026-11-05T06:00:05Z"],
+                    "payload": ["session": ["id": id, "status": status, "reconnect_url": url]]])
+    }
+
+    /// Every reconnect_url check (TwitchEventSubSession.cs): only wss to
+    /// eventsub.wss.twitch.tv on 443, no userinfo or fragment, at most 4096,
+    /// for THIS session in status reconnecting.
+    static func testTwitchSessionReconnectURL() {
+        let good = "wss://eventsub.wss.twitch.tv/ws?fixture=next"
+        for ok in [good, "wss://EventSub.WSS.Twitch.TV:443/ws"] {
+            var s = twReady()
+            expectEqual(try? s.read(twReconnect(ok)), .reconnect, "accepted: \(ok)")
+        }
+        let long = "wss://eventsub.wss.twitch.tv/ws?" + String(repeating: "a", count: 4096)
+        let bad: [(String, String)] = [
+            (twReconnect("ws://eventsub.wss.twitch.tv/ws"), "ws scheme"),
+            (twReconnect("wss://eventsub.wss.twitch.tv:8443/ws"), "another port"),
+            (twReconnect("wss://user:pw@eventsub.wss.twitch.tv/ws"), "userinfo"),
+            (twReconnect("wss://user@eventsub.wss.twitch.tv/ws"), "user only"),
+            (twReconnect(good + "#frag"), "fragment"),
+            (twReconnect(long), "over 4096"),
+            (twReconnect(good, id: "other-session"), "another session"),
+            (twReconnect(good, status: "connected"), "status not reconnecting"),
+        ]
+        for (json, what) in bad {
+            var s = twReady()
+            expect((try? s.read(json)) == nil, "refused: \(what)")
+        }
+    }
+
+    /// Map before dedupe: a repeated delivery id carrying an invalid payload
+    /// still fails closed; it is not swallowed as a duplicate.
+    static func testTwitchSessionMapsBeforeDedupe() {
+        var s = twReady()
+        expectEqual(events(try? s.read(twNotification("d1", twTypes[3], twMessage("m1")))).count, 1, "first delivery")
+        expectEqual(events(try? s.read(twNotification("d1", twTypes[3], twMessage("m1")))).count, 0, "valid duplicate dropped")
+        expect((try? s.read(twNotification("d1", twTypes[3], twMessage("m1", author: "not-a-user")))) == nil,
+               "an invalid payload under a seen delivery id still throws")
+    }
+
+    @MainActor static func testTwitchRealSocketEdges() {
+        let exact = receiveOne([(Data(String(repeating: "x", count: 65536).utf8), .text)])
+        expectEqual(exact.0?.utf8.count, 65536, "exactly 65536 bytes is accepted")
+        let utf8 = receiveOne([(Data([0x7B, 0xC3, 0x28, 0x7D]), .text)])
+        expect(utf8.0 == nil, "invalid UTF-8 never reaches the session")
+        expectEqual(utf8.1 as? TwitchFailure, .invalid, "invalid UTF-8 fails closed like C# (EPROTO), not a reconnect")
+    }
+
+    /// A TCP listener that accepts and never answers: the WebSocket handshake hangs.
+    final class SilentTCP: @unchecked Sendable {
+        let listener: NWListener
+        var ready = false
+        var held: [NWConnection] = []
+        init?() {
+            guard let l = try? NWListener(using: .tcp, on: .any) else { return nil }
+            listener = l
+            l.stateUpdateHandler = { [weak self] in if case .ready = $0 { self?.ready = true } }
+            l.newConnectionHandler = { [weak self] c in c.start(queue: .global()); self?.held.append(c) }
+            l.start(queue: .global())
+        }
+        var url: URL? { listener.port.flatMap { URL(string: "ws://127.0.0.1:\($0.rawValue)/ws") } }
+    }
+
+    /// The owner's disconnect cancels a hung connect or a pending receive at
+    /// once, not after the 12 s connect or 10 s welcome deadline.
+    @MainActor static func testTwitchSocketCancel() {
+        if let tcp = SilentTCP() {
+            defer { tcp.listener.cancel() }
+            spin(until: { tcp.ready }, limit: 3)
+            if let url = tcp.url {
+                let start = Date()
+                var failure: Error?
+                let task = Task { @MainActor in
+                    do { _ = try await URLSessionTwitchSocket.connect(url: url, deadline: 12) } catch { failure = error }
+                }
+                spin(until: { false }, limit: 0.3)
+                task.cancel()
+                _ = awaitMain(5) { await task.value; return true }
+                expect(Date().timeIntervalSince(start) < 3, "a cancelled connect returns at once")
+                expectEqual(failure as? TwitchFailure, .retry, "as a gap the feed ignores once cancelled")
+            } else { expect(false, "silent listener port") }
+        } else { expect(false, "silent listener") }
+        guard let server = WSServer(frames: [], thenClose: false) else { expect(false, "server"); return }
+        defer { server.listener.cancel() }
+        spin(until: { server.ready }, limit: 3)
+        guard let url = server.url else { expect(false, "server port"); return }
+        var opened = false, failure: Error?
+        let start = Date()
+        let task = Task { @MainActor in
+            do {
+                let socket = try await URLSessionTwitchSocket.connect(url: url, deadline: 5)
+                opened = true
+                defer { socket.close() }
+                _ = try await socket.receive(deadline: 10)
+            } catch { failure = error }
+        }
+        spin(until: { opened }, limit: 5)
+        expect(opened, "precondition: connected")
+        spin(until: { false }, limit: 0.3)
+        task.cancel()
+        _ = awaitMain(5) { await task.value; return true }
+        expect(Date().timeIntervalSince(start) < 6, "a cancelled receive returns at once, not at the 10 s deadline")
+        expectEqual(failure as? TwitchFailure, .retry, "a cancelled receive is a gap")
+    }
+
+    /// Global constraint: reconnect budget 3 at 1, 2, 4 s, each reconnect
+    /// forcing a token check first; the fourth failure stops with the fixed text.
+    @MainActor static func testTwitchFeedReconnectBudget() {
+        let f = TwitchFeedFixture()
+        f.failConnect = true
+        f.parkRetries = false
+        f.run()
+        _ = awaitMain(5) { await f.feed?.value; return true }
+        expectEqual(f.retrySleeps, [1_000_000_000, 2_000_000_000, 4_000_000_000], "backoff 1, 2, 4 s")
+        expectEqual(f.connections, 4, "the first try and three reconnects, no more")
+        expectEqual(f.validations - f.validationsAtFirstConnect, 3, "every reconnect forces a token check")
+        expectEqual(f.reports.filter { $0 == "Twitch chat disconnected. Review decisions cleared. Reconnecting…" }.count, 3,
+                    "one reconnect notice per retry")
+        expectEqual(f.reports.last, "Twitch chat disconnected. Review decisions cleared.", "the budget spent: fixed text")
+        expect(!f.playout.isConnected, "review stays closed")
+    }
+
+    @MainActor static func testTwitchFeedReconnects() {
+        let f = TwitchFeedFixture()
+        f.parkRetries = false
+        let second = ScriptedTwitchSocket()
+        f.nextSockets = [second]
+        f.run()
+        spin(until: { f.socket.reads >= 2 }, limit: 5)
+        f.socket.post(twNotification("a", "channel.chat.message", twMessage("a")))
+        spin(until: { f.socket.reads >= 3 }, limit: 5)
+        guard let item = f.playout.items.first else { expect(false, "item"); f.stop(); return }
+        expect(f.playout.approve(item.key), "approve")
+        f.socket.lose()
+        spin(until: { second.reads >= 2 && f.playout.isConnected }, limit: 5)
+        expectEqual(f.connections, 2, "a second connection")
+        expectEqual(f.retrySleeps, [1_000_000_000], "after the first backoff")
+        expect(f.playout.isConnected, "review reopens on the new session")
+        expect(f.playout.items.isEmpty && !f.playout.approve(item.key), "a fresh review: the old approval is gone")
+        second.post(twNotification("b", "channel.chat.message", twMessage("b")))
+        spin(until: { second.reads >= 3 }, limit: 5)
+        expectEqual(f.playout.items.count, 1, "the new session feeds review")
+        f.stop()
+    }
+
+    /// C# finally order: approval is invalidated before waiting on a child
+    /// stuck in a token call (the hourly validation here).
+    @MainActor static func testTwitchFeedDisconnectsBeforeDrain() {
+        let f = TwitchFeedFixture()
+        f.run()
+        spin(until: { f.socket.reads >= 2 }, limit: 5)
+        f.socket.post(twNotification("a", "channel.chat.message", twMessage("a")))
+        spin(until: { f.socket.reads >= 3 }, limit: 5)
+        guard let item = f.playout.items.first else { expect(false, "item"); f.stop(); return }
+        expect(f.playout.approve(item.key), "approve")
+        f.blockValidation = true
+        f.clock.now += 3601                  // the hourly validation is due
+        f.releaseMaintain = true             // the next 30 s maintain wait elapses
+        spin(until: { f.validationGate != nil }, limit: 5)
+        expect(f.validationGate != nil, "precondition: maintain is inside a token call")
+        f.socket.lose()
+        spin(until: { !f.playout.isConnected }, limit: 2)
+        expect(!f.playout.isConnected && f.playout.items.isEmpty, "review disconnects while the token call is still out")
+        expect(!f.playout.approve(item.key), "the approval is unusable at once")
+        f.blockValidation = false
+        f.validationGate?.resume(); f.validationGate = nil
+        f.stop()
+    }
+
+    /// The owner disconnects while the feed waits for the welcome: it ends at
+    /// once and never reports a reconnect.
+    @MainActor static func testTwitchFeedCancelDuringWelcome() {
+        guard let server = WSServer(frames: [], thenClose: false) else { expect(false, "server"); return }
+        defer { server.listener.cancel() }
+        spin(until: { server.ready }, limit: 3)
+        guard let url = server.url else { expect(false, "server port"); return }
+        let f = TwitchFeedFixture()
+        var opened = false
+        f.connectOverride = {
+            let socket = try await URLSessionTwitchSocket.connect(url: url, deadline: 5)
+            await MainActor.run { opened = true }
+            return socket
+        }
+        f.run()
+        spin(until: { opened }, limit: 5)
+        expect(opened, "precondition: connected, waiting for the welcome")
+        spin(until: { false }, limit: 0.3)
+        let start = Date()
+        f.stop()
+        expect(Date().timeIntervalSince(start) < 3, "the feed ends at once, not at the 10 s welcome deadline")
+        expect(!f.reports.contains { $0.hasSuffix("Reconnecting…") }, "a cancel is not a reconnect")
+        expectEqual(f.connections, 1, "and nothing reconnects")
     }
 }

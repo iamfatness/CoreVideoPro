@@ -54,41 +54,77 @@ final class URLSessionTwitchSocket: NSObject, TwitchSocket, URLSessionWebSocketD
     static func connect(url: URL = endpoint, deadline: TimeInterval = 12) async throws -> URLSessionTwitchSocket {
         let socket = URLSessionTwitchSocket(url: url)
         socket.task.resume()
-        let ok = await socket.opened.wait(timeout: deadline)
-        guard ok else { socket.close(); throw TwitchFailure.retry }
+        // Owner cancel closes the socket at once (close() fires `opened` false),
+        // instead of waiting out the 12 s deadline (C# passes its token).
+        let ok = await withTaskCancellationHandler {
+            await socket.opened.wait(timeout: deadline)
+        } onCancel: { socket.close() }
+        guard ok, !Task.isCancelled else { socket.close(); throw TwitchFailure.retry }
         return socket
     }
 
     func receive(deadline: TimeInterval) async throws -> String {
         let task = self.task!
         // The callback form plus a one-shot gate: whichever comes first wins —
-        // the message, an error, or the deadline (which also closes the socket:
-        // a missed keepalive is a connection gap). The async receive() wrapper
-        // was observed never to resume after a cancel, so it is not used.
+        // the message, an error, the deadline (which also closes the socket: a
+        // missed keepalive is a connection gap), or the owner's cancel. Neither
+        // receive form was observed to resume after a cancel, so the deadline
+        // and the cancel resume the continuation themselves through the gate.
+        typealias Message = URLSessionWebSocketTask.Message
         final class Gate: @unchecked Sendable {
-            let lock = NSLock(); var done = false
-            func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+            private let lock = NSLock()
+            private var done = false
+            private var cont: CheckedContinuation<Message, Error>?
+            /// false: already finished (a cancel before the wait began).
+            func arm(_ c: CheckedContinuation<Message, Error>) -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                if done { return false }
+                cont = c; return true
+            }
+            /// The first finish wins; later ones are ignored.
+            @discardableResult func finish(_ result: Result<Message, Error>) -> Bool {
+                lock.lock()
+                if done { lock.unlock(); return false }
+                done = true
+                let c = cont; cont = nil
+                lock.unlock()
+                c?.resume(with: result)
+                return true
+            }
         }
         let gate = Gate()
-        let message: URLSessionWebSocketTask.Message = try await withCheckedThrowingContinuation { cont in
-            let timer = Task.detached { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(max(0, deadline) * 1_000_000_000))
-                guard gate.claim() else { return }
-                cont.resume(throwing: TwitchFailure.retry)
-                self?.close()
-            }
-            task.receive { result in
-                timer.cancel()
-                guard gate.claim() else { return }
-                switch result {
-                case .success(let m): cont.resume(returning: m)
-                case .failure(let error):
-                    // Over maximumMessageSize: an invalid message (fail closed), not a gap.
-                    let ns = error as NSError
-                    let tooBig = task.closeCode == .messageTooBig || (ns.domain == NSPOSIXErrorDomain && ns.code == Int(EMSGSIZE))
-                    cont.resume(throwing: tooBig ? TwitchFailure.invalid : TwitchFailure.retry)
+        let message: Message = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                guard gate.arm(cont) else { cont.resume(throwing: TwitchFailure.retry); return }
+                let timer = Task.detached { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(max(0, deadline) * 1_000_000_000))
+                    // Cancelled = the receive already won; a woken timer must
+                    // not steal the gate and drop the real message.
+                    guard !Task.isCancelled, gate.finish(.failure(TwitchFailure.retry)) else { return }
+                    self?.close()
+                }
+                task.receive { result in
+                    // The message wins a tie: finish first, then stop the timer.
+                    switch result {
+                    case .success(let m): gate.finish(.success(m))
+                    case .failure(let error):
+                        // Over maximumMessageSize, or a frame the server got wrong
+                        // (a text frame that is not UTF-8 arrives as EPROTO; C#
+                        // TwitchChatSocket: invalid): an invalid message (fail
+                        // closed, no reconnect), not a gap.
+                        let ns = error as NSError
+                        let posix = ns.domain == NSPOSIXErrorDomain
+                        let tooBig = task.closeCode == .messageTooBig || (posix && ns.code == Int(EMSGSIZE))
+                        let notUTF8 = task.closeCode == .invalidFramePayloadData || (posix && ns.code == Int(EPROTO))
+                        gate.finish(.failure(tooBig || notUTF8 ? TwitchFailure.invalid : TwitchFailure.retry))
+                    }
+                    timer.cancel()
                 }
             }
+        } onCancel: { [weak self] in
+            // The owner disconnected: a gap now, not at the deadline.
+            gate.finish(.failure(TwitchFailure.retry))
+            self?.close()
         }
         switch message {
         case .string(let text):
@@ -213,7 +249,7 @@ struct TwitchEventSubSession {
               TwitchJSON.identifier(TwitchJSON.text(metadata, "message_id")), TwitchJSON.identifier(id),
               TwitchJSON.userId(channel), TwitchJSON.userId(user), TwitchJSON.text(session, "status") == "connected",
               let timeout = session?["keepalive_timeout_seconds"] as? NSNumber, CFGetTypeID(timeout) != CFBooleanGetTypeID(),
-              timeout.doubleValue == timeout.doubleValue.rounded(), (10...600).contains(timeout.intValue),
+              !CFNumberIsFloatType(timeout), (10...600).contains(timeout.intValue), // C# TryGetInt32: 10.0 refused
               TwitchTimestamp.nanoseconds(TwitchJSON.text(metadata, "message_timestamp")) != nil
         else { throw TwitchFailure.invalid }
         return TwitchEventSubSession(id: id, channel: channel, user: user, keepalive: timeout.intValue)
@@ -337,6 +373,7 @@ enum TwitchSocialFeed {
                         try await TwitchHttpTransport.subscribe(&session, type: type, channel: broadcaster,
                                                                 credentials: credentials, http: http)
                     }
+                    try Task.checkCancellation()
                     source = await playout.connect(provider: "Twitch")
                     report("Connected to Twitch live chat: " + channel + ".")
                     let opened = source
@@ -351,15 +388,26 @@ enum TwitchSocialFeed {
                                 }
                             }
                             defer { group.cancelAll(); socket.close() }
-                            try await group.next()
+                            // Invalidate approval BEFORE the group drains (C# finally:
+                            // cancel, DisconnectAsync, then WhenAll): a maintain child
+                            // inside a 12 s token call must not keep an approved card
+                            // showable through the gap.
+                            do { try await group.next() } catch {
+                                group.cancelAll(); socket.close()
+                                await playout.disconnect(source: opened)
+                                throw error
+                            }
+                            group.cancelAll(); socket.close()
+                            await playout.disconnect(source: opened)
                         }
                     } catch {
-                        // Invalidate approval before anything else (C# finally).
                         await playout.disconnect(source: opened)
                         throw error
                     }
                     await playout.disconnect(source: opened)
                 } catch TwitchFailure.retry where retry < 3 {
+                    // A gap that came from the owner's cancel is not a reconnect.
+                    try Task.checkCancellation()
                     if source != 0 { await playout.disconnect(source: source) }
                     report("Twitch chat disconnected. Review decisions cleared. Reconnecting…")
                     await sleep(UInt64(1 << retry) * 1_000_000_000)
