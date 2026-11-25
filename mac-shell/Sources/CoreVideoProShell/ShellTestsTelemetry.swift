@@ -20,6 +20,17 @@ extension ShellTests {
             ("telemetry/revoke-lands-when-unreadable", testTelemetryRevokeLandsWhenUnreadable),
             ("telemetry/marksent-never-revokes", testTelemetryMarkSentNeverRevokes),
             ("telemetry/crash-count", testTelemetryCrashCount),
+            ("telemetry/client-classify", testTelemetryClientClassify),
+            ("telemetry/client-request-shape", testTelemetryClientRequestShape),
+            ("telemetry/no-send-without-consent", testTelemetryNoSendWithoutConsent),
+            ("telemetry/no-send-without-key", testTelemetryNoSendWithoutKey),
+            ("telemetry/session-end-once", testTelemetrySessionEndOnce),
+            ("telemetry/heartbeat-cadence", testTelemetryHeartbeatCadence),
+            ("telemetry/audit-log-precedes-send", testTelemetryAuditLogPrecedesSend),
+            ("telemetry/marks-sent-only-on-accept", testTelemetryMarksSentOnlyOnAccept),
+            ("quit/idle-waits-for-session-end", testQuitIdleWaitsForSessionEnd),
+            ("quit/idle-unchanged-without-consent", testQuitIdleUnchangedWithoutConsent),
+            ("quit/idle-replies-when-send-finishes", testQuitIdleRepliesWhenSendFinishes),
         ]
     }
 
@@ -121,13 +132,13 @@ extension ShellTests {
         var reads = 0, writes = 0, sleeps = 0
         var io: TelemetryFileIO {
             TelemetryFileIO(
-                read: { [unowned self] path in
-                    reads += 1
-                    if let readError { throw readError }
-                    return files[path]
+                read: { path in
+                    self.reads += 1
+                    if let error = self.readError { throw error }
+                    return self.files[path]
                 },
-                write: { [unowned self] data, path in writes += 1; files[path] = data },
-                sleep: { [unowned self] _ in sleeps += 1 })
+                write: { data, path in self.writes += 1; self.files[path] = data },
+                sleep: { _ in self.sleeps += 1 })
         }
     }
 
@@ -222,5 +233,315 @@ extension ShellTests {
         let reports = [t1, t2, t3].enumerated().map { CrashReportRecord(reportId: "r\($0.offset)", sentAtUtc: $0.element, dumpFiles: []) }
         expectEqual(TelemetryCrashCount.countSince(reports: reports, lastSentUtc: Date(timeIntervalSince1970: 1500)), 2, "after t1")
         expectEqual(TelemetryCrashCount.countSince(reports: reports, lastSentUtc: nil), 3, "never sent: all")
+    }
+
+    // ── Task 8: event client, service, quit ──────────────────────────────────
+
+    /// A manual clock: `advance(by:)` fires due timers in time order, on the main actor.
+    final class ManualTelemetryClock: TelemetryClock, @unchecked Sendable {
+        final class Token: TelemetryTimerToken {
+            var cancelled = false
+            func cancel() { cancelled = true }
+        }
+        var now = Date(timeIntervalSince1970: 1_795_341_600)
+        private var timers: [(at: Date, token: Token, fire: @MainActor () -> Void)] = []
+        func schedule(after: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> TelemetryTimerToken {
+            let token = Token()
+            timers.append((now.addingTimeInterval(after), token, fire))
+            return token
+        }
+        var pending: [Date] { timers.filter { !$0.token.cancelled }.map(\.at).sorted() }
+        /// Moves time forward, firing every due timer (and any it schedules) in order, and lets
+        /// the main actor run the Tasks they start. Call from the main thread.
+        func advance(by seconds: TimeInterval) {
+            let target = now.addingTimeInterval(seconds)
+            ShellTests.drainMainActor()
+            while let next = timers.enumerated().filter({ !$0.element.token.cancelled && $0.element.at <= target })
+                .min(by: { $0.element.at < $1.element.at }) {
+                timers.remove(at: next.offset)
+                now = next.element.at
+                let fire = next.element.fire
+                MainActor.assumeIsolated { fire() }
+                ShellTests.drainMainActor()
+            }
+            now = target
+            ShellTests.drainMainActor()
+        }
+    }
+
+    /// Lets queued main-actor Tasks run (no wall-clock wait beyond a few run-loop turns).
+    static func drainMainActor() {
+        for _ in 0..<20 { RunLoop.main.run(until: Date().addingTimeInterval(0.002)) }
+    }
+
+    /// A recorded call to a fake transport.
+    final class TransportLog: @unchecked Sendable {
+        var calls: [(url: URL, key: String, body: String, timeout: TimeInterval)] = []
+    }
+
+    static func fakeTransport(_ log: TransportLog, _ result: TelemetrySendResult) -> TelemetryTransport {
+        { url, key, body, timeout in log.calls.append((url, key, body, timeout)); return result }
+    }
+
+    @MainActor
+    static func telemetryHarness(key: String? = "k", consentOn: Bool = true, transport: @escaping TelemetryTransport)
+        -> (TelemetryService, ManualTelemetryClock, FakeTelemetryFiles, [String]) {
+        let files = FakeTelemetryFiles()
+        let path = "/fake/telemetry-consent.json"
+        if consentOn { files.files[path] = Data(#"{"enabled":true}"#.utf8) }
+        let clock = ManualTelemetryClock()
+        let box = LinesBox()
+        let service = TelemetryService(
+            config: .resolve(endpointOverride: "https://t.example/base", apiKey: key),
+            consent: TelemetryConsentStore(path: path, fileIO: files.io),
+            snapshot: { nil }, crashReports: { [] }, version: { "1.2.3" },
+            machine: { TelemetryMachineClass(label: "mac-arm64-cpu12-ram36gb", cpuCores: 12, ramBand: "32-64GB", gpuTier: nil) },
+            transport: transport, clock: clock, log: { box.lines.append($0) })
+        harnessLines = box
+        return (service, clock, files, [])
+    }
+
+    final class LinesBox { var lines: [String] = [] }
+    nonisolated(unsafe) static var harnessLines = LinesBox()
+
+    /// Windows TelemetryEventClient's classes. Mutation: honour 400 as RetryLater.
+    static func testTelemetryClientClassify() {
+        let now = Date(timeIntervalSince1970: 1_795_341_600)
+        let ok = TelemetryEventClient.classify(status: 202, headers: [:], body: Data(#"{"reportId":"r1"}"#.utf8), now: now)
+        expectEqual(ok.status, .accepted, "202 accepted"); expectEqual(ok.reportId, "r1", "reportId read")
+        let busy = TelemetryEventClient.classify(status: 429, headers: ["Retry-After": "30"], body: Data(), now: now)
+        expectEqual(busy.status, .retryLater, "429 retry later"); expectEqual(busy.retryAfter, 30, "Retry-After delta")
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        let date = formatter.string(from: now.addingTimeInterval(90))
+        let unavailable = TelemetryEventClient.classify(status: 503, headers: ["retry-after": date], body: Data(), now: now)
+        expectEqual(unavailable.status, .retryLater, "503 retry later")
+        expectEqual(unavailable.retryAfter, 90, "an HTTP-date Retry-After is relative to the injected now (\(date))")
+        let rejected = TelemetryEventClient.classify(status: 400, headers: [:], body: Data(String(repeating: "x", count: 400).utf8), now: now)
+        expectEqual(rejected.status, .rejected, "400 rejected")
+        expectEqual(rejected.message, "Server rejected the event (HTTP 400): " + String(repeating: "x", count: 300), "body cut to 300")
+    }
+
+    /// A URLProtocol that records the request and answers 202.
+    final class RecordingURLProtocol: URLProtocol {
+        nonisolated(unsafe) static var requests: [(URLRequest, Data)] = []
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() {
+            var body = request.httpBody ?? Data()
+            if body.isEmpty, let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while stream.hasBytesAvailable { let n = stream.read(&buffer, maxLength: buffer.count); if n <= 0 { break }; body.append(buffer, count: n) }
+            }
+            Self.requests.append((request, body))
+            let response = HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: "HTTP/1.1", headerFields: [:])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"reportId":"stub-1"}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        override func stopLoading() {}
+    }
+
+    /// The real transport against an in-process stub (no network): POST /v1/events (a base path
+    /// is replaced, as Windows' new Uri(endpoint, "/v1/events")), Bearer, JSON, body = wire.
+    @MainActor
+    static func testTelemetryClientRequestShape() {
+        RecordingURLProtocol.requests = []
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RecordingURLProtocol.self]
+        let transport = TelemetryEventClient.urlSessionTransport(URLSession(configuration: configuration))
+        let box = Box<TelemetrySendResult>()
+        Task { box.value = await transport(URL(string: "https://t.example/base")!, "k", #"{"name":"heartbeat"}"#, 5) }
+        spin(until: { box.value != nil }, limit: 5)
+        expectEqual(box.value?.status, .accepted, "stub answered 202")
+        expectEqual(box.value?.reportId, "stub-1", "reportId")
+        guard let (request, body) = RecordingURLProtocol.requests.first else { expect(false, "a request was made"); return }
+        expectEqual(request.httpMethod, "POST", "POST")
+        expectEqual(request.url?.absoluteString, "https://t.example/v1/events", "/v1/events replaces the base path")
+        expectEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer k", "Bearer key")
+        expectEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json", "JSON")
+        expectEqual(String(decoding: body, as: UTF8.self), #"{"name":"heartbeat"}"#, "body is the wire JSON")
+    }
+
+    /// Consent off: the transport is never called, by heartbeat or session-end.
+    @MainActor
+    static func testTelemetryNoSendWithoutConsent() {
+        let log = TransportLog()
+        let (service, clock, _, _) = telemetryHarness(consentOn: false, transport: fakeTransport(log, .init(status: .accepted)))
+        service.start()
+        clock.advance(by: 49 * 3600)
+        expect(service.fireSessionEnd() == nil, "no session-end without consent")
+        drainMainActor()
+        expectEqual(log.calls.count, 0, "nothing sent without consent")
+        expect(!service.previewJSON().isEmpty, "the preview still works with consent off")
+    }
+
+    /// No key: nothing sent, and the heartbeat timer is not even scheduled.
+    /// Mutation: schedule the heartbeat without a key.
+    @MainActor
+    static func testTelemetryNoSendWithoutKey() {
+        let log = TransportLog()
+        let (service, clock, _, _) = telemetryHarness(key: nil, transport: fakeTransport(log, .init(status: .accepted)))
+        service.start()
+        expectEqual(clock.pending.count, 0, "no heartbeat scheduled without a key")
+        clock.advance(by: 49 * 3600)
+        expect(service.fireSessionEnd() == nil, "no session-end without a key")
+        expectEqual(log.calls.count, 0, "nothing sent without a key")
+    }
+
+    /// Session-end is sent once per process, with the 2 s cap. Mutation: send it twice.
+    @MainActor
+    static func testTelemetrySessionEndOnce() {
+        let log = TransportLog()
+        let (service, _, _, _) = telemetryHarness(transport: fakeTransport(log, .init(status: .retryLater, retryAfter: 30)))
+        service.start()
+        let first = service.fireSessionEnd()
+        expect(first != nil, "session-end fires")
+        expect(service.fireSessionEnd() == nil, "a second call does nothing")
+        drainMainActor()
+        expectEqual(log.calls.count, 1, "one POST")
+        expectEqual(log.calls.first?.timeout, 2, "the 2 s session-end timeout")
+        expect(log.calls.first?.body.contains(#""name":"session-end""#) == true, "the session-end event")
+    }
+
+    /// Nothing before 24 h; one at 24 h; consent off at 30 h -> the 48 h fire sends nothing; a
+    /// RetryLater of 600 s moves the next fire to +600 s. Session-end never reschedules.
+    /// Mutation: honour Retry-After on session-end (it would schedule a fire).
+    @MainActor
+    static func testTelemetryHeartbeatCadence() {
+        let log = TransportLog()
+        var result = TelemetrySendResult(status: .accepted)
+        let (service, clock, files, _) = telemetryHarness(transport: { url, key, body, timeout in
+            log.calls.append((url, key, body, timeout)); return result })
+        service.start()
+        clock.advance(by: 24 * 3600 - 1)
+        expectEqual(log.calls.count, 0, "nothing before 24 h")
+        clock.advance(by: 1)
+        expectEqual(log.calls.count, 1, "one heartbeat at 24 h")
+        expectEqual(log.calls.first?.timeout, 15, "the 15 s heartbeat timeout")
+        expect(log.calls.first?.body.contains(#""name":"heartbeat""#) == true, "a heartbeat event")
+        clock.advance(by: 6 * 3600)                                   // 30 h
+        files.files["/fake/telemetry-consent.json"] = Data(#"{"enabled":false}"#.utf8)
+        clock.advance(by: 18 * 3600)                                  // 48 h
+        expectEqual(log.calls.count, 1, "consent off at 30 h: the 48 h fire sends nothing")
+        files.files["/fake/telemetry-consent.json"] = Data(#"{"enabled":true}"#.utf8)
+        result = TelemetrySendResult(status: .retryLater, httpStatus: 429, retryAfter: 600)
+        clock.advance(by: 24 * 3600)                                  // 72 h
+        expectEqual(log.calls.count, 2, "the 72 h heartbeat")
+        expectEqual(clock.pending.first, clock.now.addingTimeInterval(600), "RetryLater 600 s: the next fire is at +600 s")
+        result = TelemetrySendResult(status: .accepted)
+        clock.advance(by: 600)
+        expectEqual(log.calls.count, 3, "the retry fires at +600 s")
+        let before = clock.pending
+        result = TelemetrySendResult(status: .retryLater, retryAfter: 5)
+        _ = service.fireSessionEnd()
+        drainMainActor()
+        expectEqual(clock.pending, before, "session-end never honours Retry-After (no timer moved)")
+    }
+
+    /// The exact wire is logged BEFORE the POST. Mutation: log after the POST.
+    @MainActor
+    static func testTelemetryAuditLogPrecedesSend() {
+        var linesAtSend: [String] = []
+        let (service, _, _, _) = telemetryHarness(transport: { _, _, _, _ in
+            linesAtSend = harnessLines.lines; return TelemetrySendResult(status: .accepted, reportId: "r9") })
+        service.start()
+        _ = service.fireSessionEnd()
+        drainMainActor()
+        let wire = TelemetryPayloadBuilder.serializeWire(service.buildPayload(TelemetryEventNames.sessionEnd))
+        expect(linesAtSend.contains { $0.hasPrefix("telemetry: sending 'session-end' (") && $0.hasSuffix(wire) },
+               "the exact wire was logged before the transport ran (\(linesAtSend))")
+        expect(harnessLines.lines.contains("telemetry: 'session-end' accepted (reportId=r9)"), "the outcome line")
+        expect(!harnessLines.lines.joined().contains("Bearer"), "the key never reaches the log")
+    }
+
+    /// markSent only on Accepted. Mutation: mark on RetryLater.
+    @MainActor
+    static func testTelemetryMarksSentOnlyOnAccept() {
+        let log = TransportLog()
+        let (rejected, _, rejectedFiles, _) = telemetryHarness(transport: fakeTransport(log, .init(status: .rejected, httpStatus: 400, message: "no")))
+        rejected.start(); _ = rejected.fireSessionEnd(); drainMainActor()
+        expectEqual(TelemetryConsentStore(path: "/fake/telemetry-consent.json", fileIO: rejectedFiles.io).load().lastSentUtc, nil,
+                    "a rejected send records nothing")
+        expect(harnessLines.lines.contains("telemetry: 'session-end' not accepted (Rejected, http=400): no"), "Windows' outcome line")
+        let (accepted, clock, acceptedFiles, _) = telemetryHarness(transport: fakeTransport(log, .init(status: .accepted)))
+        accepted.start(); _ = accepted.fireSessionEnd(); drainMainActor()
+        expectEqual(TelemetryConsentStore(path: "/fake/telemetry-consent.json", fileIO: acceptedFiles.io).load().lastSentUtc, clock.now,
+                    "an accepted send records the clock's time")
+    }
+
+    /// A transport that never returns: one ignores its timeout, one honours it by answering
+    /// RetryLater at the deadline on the manual clock (rule 9). The quit must reply after
+    /// exactly 2 s against both. Mutation: reply only when the send finishes.
+    @MainActor
+    static func testQuitIdleWaitsForSessionEnd() {
+        for honoursTimeout in [false, true] {
+            var clockRef: ManualTelemetryClock?
+            let transport: TelemetryTransport = { _, _, _, timeout in
+                await withCheckedContinuation { (resume: CheckedContinuation<TelemetrySendResult, Never>) in
+                    guard honoursTimeout, let clock = clockRef else { return }   // ignores the timeout: never resumes
+                    _ = clock.schedule(after: timeout) { resume.resume(returning: TelemetrySendResult(status: .retryLater, message: "timeout")) }
+                }
+            }
+            let (service, clock, _, _) = telemetryHarness(transport: transport)
+            clockRef = clock
+            service.start()
+            let model = AppModel()
+            model.telemetryService = service
+            var replies: [(Bool, Date)] = []
+            model.quitReplyForTesting = { replies.append(($0, clock.now)) }
+            let label = honoursTimeout ? "timeout-honouring transport" : "timeout-ignoring transport"
+            expectEqual(model.handleQuitRequest(), .terminateLater, "\(label): an idle quit with consent and a key waits")
+            let start = clock.now
+            clock.advance(by: 1.9)
+            expectEqual(replies.count, 0, "\(label): no reply before 2 s")
+            clock.advance(by: 0.1)
+            expectEqual(replies.count, 1, "\(label): one reply at 2 s")
+            expectEqual(replies.first?.0, true, "\(label): the quit proceeds")
+            expectEqual(replies.first.map { $0.1.timeIntervalSince(start) }, 2, "\(label): at exactly 2 s")
+            clock.advance(by: 5)
+            expectEqual(replies.count, 1, "\(label): never a second reply")
+        }
+    }
+
+    /// No consent: the idle quit is exactly as before.
+    @MainActor
+    static func testQuitIdleUnchangedWithoutConsent() {
+        let log = TransportLog()
+        let (service, _, _, _) = telemetryHarness(consentOn: false, transport: fakeTransport(log, .init(status: .accepted)))
+        service.start()
+        let model = AppModel()
+        model.telemetryService = service
+        expectEqual(model.handleQuitRequest(), .terminateNow, "no consent: terminate now")
+        let bare = AppModel()
+        expectEqual(bare.handleQuitRequest(), .terminateNow, "no telemetry service: terminate now")
+    }
+
+    /// The transport returns at 0.3 s: the quit replies at 0.3 s, not 2 s.
+    @MainActor
+    static func testQuitIdleRepliesWhenSendFinishes() {
+        var clockRef: ManualTelemetryClock?
+        let transport: TelemetryTransport = { _, _, _, _ in
+            await withCheckedContinuation { (resume: CheckedContinuation<TelemetrySendResult, Never>) in
+                _ = clockRef?.schedule(after: 0.3) { resume.resume(returning: TelemetrySendResult(status: .accepted)) }
+            }
+        }
+        let (service, clock, _, _) = telemetryHarness(transport: transport)
+        clockRef = clock
+        service.start()
+        let model = AppModel()
+        model.telemetryService = service
+        var replies: [Date] = []
+        model.quitReplyForTesting = { _ in replies.append(clock.now) }
+        let start = clock.now
+        expectEqual(model.handleQuitRequest(), .terminateLater, "waits")
+        clock.advance(by: 0.3)
+        expectEqual(replies.count, 1, "replied when the send finished")
+        expect(replies.first.map { abs($0.timeIntervalSince(start) - 0.3) < 0.001 } == true,
+               "at 0.3 s on the manual clock (Date arithmetic: 1 ms tolerance)")
+        clock.advance(by: 3)
+        expectEqual(replies.count, 1, "the 2 s cap does not reply again")
     }
 }

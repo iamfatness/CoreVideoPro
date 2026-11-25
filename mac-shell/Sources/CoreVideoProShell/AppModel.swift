@@ -689,6 +689,9 @@ final class AppModel: ObservableObject {
     /// Test seam: replaces the real stop/finish/shutdown so the flow can be driven
     /// without a core. Production leaves it nil.
     var quitReplyForTesting: ((Bool) -> Void)?
+    /// Opt-in telemetry (Phase 4 R4). Created by start() outside the harness; tests install
+    /// their own with a fake transport and a manual clock. nil = no telemetry at all.
+    var telemetryService: TelemetryService?
     /// Test seams (production leaves them at their defaults): the request path,
     /// the "core is gone" answer when that path is replaced, and the timings.
     var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
@@ -1079,6 +1082,7 @@ final class AppModel: ObservableObject {
     private func performStart() {
         refreshMediaBin()
         restorePrefs()
+        startTelemetry()
         // Local control API (Companion / Stream Deck): 127.0.0.1:8011 by default.
         // Never in the TESTS/SELFCHECK harness; a bind failure is a warning.
         controlApi.start(model: self)
@@ -5944,15 +5948,16 @@ final class AppModel: ObservableObject {
         persistPrefsNow()
         switch quitGate.request(quitOutputs) {
         case .quitNow:
-            // In a meeting, the Comms release-all goes out first (bounded), so a
-            // held key never outlives the shell. Otherwise nothing can be held.
-            guard comms.inMeeting || graphics.socialReviewIfStarted?.isConnected == true, !quitCoreGone else {
-                return .terminateNow
-            }
-            Task { @MainActor in
-                await self.sendCommsReleaseAllBounded()
-                self.replyToQuit(true)
-            }
+            // Two things may hold an idle quit, and they run side by side; the reply comes once,
+            // when both are done:
+            // - in a meeting (or with a connected social review), the Comms release-all
+            //   (bounded), so a held key never outlives the shell;
+            // - D-T4: with consent and a key, session-end, at most 2 s on the telemetry clock.
+            // With neither, the quit is exactly as fast as before.
+            let releaseComms = (comms.inMeeting || graphics.socialReviewIfStarted?.isConnected == true) && !quitCoreGone
+            let send = telemetryService?.fireSessionEnd()
+            guard releaseComms || send != nil else { return .terminateNow }
+            finishIdleQuit(releaseComms: releaseComms, send: send, clock: telemetryService?.clock)
             return .terminateLater
         case .ask:
             quitPromptVisible = true
@@ -5994,6 +5999,8 @@ final class AppModel: ObservableObject {
     /// the stdin-EOF grace.
     func confirmQuit() {
         guard quitGate.confirm() else { return }
+        // D-T4: start session-end FIRST so it runs alongside the output teardown.
+        _ = telemetryService?.fireSessionEnd()
         quitFinishing = true        // before the prompt flips off: the panel stays up
         quitPromptVisible = false
         let recordingWasLive = QuitGuardPolicy.recordingLive(quitOutputs)
@@ -6097,6 +6104,61 @@ final class AppModel: ObservableObject {
     func handleEventForTesting(_ event: JSONObject) { handleEvent(event) }
     /// Test seam: feed a zoom-snapshot through the real read path.
     func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }
+
+    /// Replies to a deferred idle quit exactly once, when the Comms release-all (if any) has
+    /// finished AND session-end (if any) has finished or hit its 2 s cap.
+    private func finishIdleQuit(releaseComms: Bool, send: Task<Void, Never>?, clock: TelemetryClock?) {
+        final class Pending { var comms = false; var telemetry = false; var replied = false }
+        let pending = Pending()
+        pending.comms = !releaseComms
+        pending.telemetry = send == nil
+        func replyIfDone() {
+            guard pending.comms, pending.telemetry, !pending.replied else { return }
+            pending.replied = true
+            replyToQuit(true)
+        }
+        if releaseComms {
+            Task { @MainActor in
+                await self.sendCommsReleaseAllBounded()
+                pending.comms = true
+                replyIfDone()
+            }
+        }
+        if let send, let clock {
+            let timer = clock.schedule(after: TelemetryService.sessionEndSendTimeout) {
+                guard !pending.telemetry else { return }
+                pending.telemetry = true
+                ShellLog.write("telemetry: session-end still in flight at quit; quitting anyway")
+                replyIfDone()
+            }
+            Task { @MainActor in
+                await send.value
+                guard !pending.telemetry else { return }
+                pending.telemetry = true
+                timer.cancel()
+                replyIfDone()
+            }
+        }
+    }
+
+    /// Opt-in telemetry: the key comes only from COREVIDEO_TELEMETRY_API_KEY (D-T1). Never in
+    /// the test harness, which installs its own service.
+    private func startTelemetry() {
+        guard telemetryService == nil, !ShellHarness.isActive else { return }
+        let config = TelemetryConfig.fromEnvironment()
+        ShellLog.write("telemetry: \(config)")   // endpoint host and key presence only, never the key
+        let machine = MachineClassProbe.probe()
+        let service = TelemetryService(
+            config: config, consent: TelemetryConsentStore(path: TelemetryConsentStore.defaultPath()),
+            snapshot: { [weak self] in self?.controlSnapshotBox.read()?.0 },
+            crashReports: { [] },
+            version: { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev" },
+            machine: { machine },
+            transport: TelemetryEventClient.urlSessionTransport(URLSession(configuration: .ephemeral)),
+            clock: RealTelemetryClock(), log: { ShellLog.write($0) })
+        telemetryService = service
+        service.start()
+    }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
         if let seam = quitReplyForTesting { seam(shouldTerminate); return }
