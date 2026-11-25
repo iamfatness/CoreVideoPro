@@ -403,3 +403,24 @@ No HIGH. The reviewer confirmed statement-level parity for identity, membership,
   - `testEditTilesCuesPreviewOpensTheInspectorAndNeverTouchesProgram`: a non-Tiles or unknown id does nothing, and the status text is exact;
   - `testTheScenesTabStopsScrollingAndWidensOnlyWhileEditingTiles`: a table over every `StudioTab` × editing.
 - `tiles/` filter: 451/451.
+
+### Task 16 — Layout tab
+
+- `TilesLayoutTab` follows Windows `SourcesPage.xaml` Layout order:
+  - AUTOMATIC LAYOUT: tile aspect ratio with the 7 Windows labels, custom aspect ratio (shown only for custom), tile spacing and outer margin (format `0.###`), and the help text.
+  - WALL CAPACITY: maximum visible tiles, and the ceiling help text.
+  - "Advanced layout": animate roster changes and animation duration.
+  - Everything is disabled with "Queue this scene in Preview to edit it." when no Preview wall is being edited.
+- Setters follow the Windows `Gallery*` setters, clamp for clamp, with C# banker's rounding (`Math.Round`) for the integer ones.
+- `updateTiles` changes:
+  - A **re-entrancy guard**: a re-entrant edit is dropped, never recursed into. This answers the Windows `_galleryEditGuard` stack overflow. The depth is observable for tests.
+  - `save: .now | .debounced`. Continuous controls save once, 500 ms after the drag settles, through the timer seam. Discrete actions still save at once.
+- Tests:
+  - `testLayoutSettersClampLikeWindows`: 0 → 1, 99.6 → 64, 3.4 → 3, 4.5 → 4; 21:9 → 16:9; custom 9 → 4; gutter −1 → 0; margin 30 → 20; duration 50 → 100 and 1234.6 → 1235; a refusal without a Preview wall.
+  - `testAFortyTickSliderDragSendsOneSceneSyncWithTheLastValue` (Review Focus 2): 40 requests and a re-entrancy depth ≤ 1. Nothing is sent before the timer fires; then exactly **one** `set-preview-scene` with gutter 3.9, saved once.
+- `tiles/` filter: 471/471. Full suite: **8811 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 16) | Result |
+|---|---|
+| the scene-sync debounce does not cancel (a sync per tick) | red: "expected 1, got 40" |
+| drop the gutter clamp | red |

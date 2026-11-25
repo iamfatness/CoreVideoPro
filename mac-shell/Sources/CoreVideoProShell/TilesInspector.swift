@@ -174,8 +174,72 @@ struct TilesSliderRow: View {
 }
 
 // Tab bodies: filled by Tasks 16 (Layout), 17 (Style) and 19 (Members).
+/// The settings the dock edits (the Preview wall), or the defaults.
+extension AppModel {
+    var tilesEditSettings: TilesSettings {
+        tilesEditTargetId.flatMap { id in scenes.first { $0.id == id }?.tiles } ?? TilesSettings()
+    }
+}
+
+/// Windows SourcesPage.xaml Layout PivotItem, control for control.
 struct TilesLayoutTab: View {
-    var body: some View { TilesHelp("Layout controls arrive with Task 16.") }
+    @EnvironmentObject var model: AppModel
+    @State private var advanced = false
+
+    var s: TilesSettings { model.tilesEditSettings }
+    var enabled: Bool { model.tilesEditTargetId != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !enabled { TilesHelp("Queue this scene in Preview to edit it.") }
+            TilesSection(title: "Automatic layout") {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Tile aspect ratio").font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                    Picker("", selection: Binding(get: { s.tileAspect }, set: { try? model.setTilesAspect($0) })) {
+                        ForEach(AppModel.tilesAspectOptions, id: \.value) { Text($0.label).tag($0.value) }
+                    }
+                    .labelsHidden().controlSize(.small)
+                }
+                if s.tileAspect == "custom" {
+                    TilesSliderRow(label: "Custom aspect ratio", value: s.customAspectRatio, range: 0.25...4, step: 0.01,
+                                   format: { String(format: "%.2f", $0) }, defaultValue: 16.0 / 9.0, enabled: enabled) {
+                        try? model.setTilesCustomAspect($0)
+                    }
+                }
+                TilesSliderRow(label: "Tile spacing", value: s.gutterPercent, range: 0...10, step: 0.01, unit: "%",
+                               format: TilesFormat.threePlaces, defaultValue: 0.741, enabled: enabled) { try? model.setTilesGutter($0) }
+                TilesSliderRow(label: "Outer margin", value: s.marginPercent, range: 0...20, step: 0.01, unit: "%",
+                               format: TilesFormat.threePlaces, defaultValue: 0.741, enabled: enabled) { try? model.setTilesMargin($0) }
+                TilesHelp("Spacing and margin are percentages of wall width. Tiles keep their aspect ratio as members join or leave.")
+            }
+            Divider().overlay(Studio.border)
+            TilesSection(title: "Wall capacity") {
+                TilesSliderRow(label: "Maximum visible tiles", value: Double(s.maxTiles), range: 1...64, step: 1, unit: "tiles",
+                               format: { String(Int($0)) }, defaultValue: 16, enabled: enabled) { try? model.setTilesMaxTiles($0) }
+                TilesHelp("The maximum is a ceiling, not empty placeholders.")
+            }
+            DisclosureGroup(isExpanded: $advanced) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Animate roster changes", isOn: Binding(get: { s.animateLayout }, set: { try? model.setTilesAnimateLayout($0) }))
+                        .font(.grotesk(11)).toggleStyle(.switch).controlSize(.small).tint(Studio.accent)
+                    TilesSliderRow(label: "Animation duration", value: Double(s.animationDurationMs), range: 100...2000, step: 1, unit: "ms",
+                                   format: { String(Int($0)) }, defaultValue: 350, enabled: enabled) { try? model.setTilesAnimationDuration($0) }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("Advanced layout").font(.grotesk(11, .medium)).foregroundStyle(Studio.textPrimary)
+            }
+        }
+        .disabled(!enabled)
+    }
+}
+
+enum TilesFormat {
+    /// Windows `Format="0.###"`.
+    static let threePlaces: (Double) -> String = { v in
+        let f = NumberFormatter(); f.minimumFractionDigits = 0; f.maximumFractionDigits = 3; f.minimumIntegerDigits = 1
+        return f.string(from: NSNumber(value: v)) ?? String(v)
+    }
 }
 
 struct TilesStyleTab: View {

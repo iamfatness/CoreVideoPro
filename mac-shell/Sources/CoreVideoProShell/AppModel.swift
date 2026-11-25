@@ -400,6 +400,10 @@ struct RosterParticipant: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
+    /// Re-entrancy guard for `updateTiles` (current and highest depth seen).
+    var tilesEditDepth = 0
+    var tilesEditMaxDepth = 0
+    var tilesSaveTask: Task<Void, Never>?
     /// The Tiles inspector's selected tab (Windows Pivot: Layout | Style | Members).
     @Published var tilesInspectorTab: TilesInspectorTab = .layout
     /// Sticky Tiles audio (Windows TilesAudioSourceLatch), observed once per spine build.

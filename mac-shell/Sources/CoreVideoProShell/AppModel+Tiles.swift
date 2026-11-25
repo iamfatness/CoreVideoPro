@@ -128,14 +128,72 @@ extension AppModel {
 
     /// Edits the Preview wall, then syncs scenes. Refuses (status + throw) when
     /// Preview is not a Tiles scene; nothing is synced then.
-    func updateTiles(_ edit: (inout TilesSettings) -> Void) throws {
+    /// `save: .now` (discrete actions: membership intent is saved at once, S3
+    /// review); `.debounced` for continuous controls, so a 40-tick slider drag
+    /// writes the prefs file once, after the drag settles.
+    enum TilesSave { case now, debounced }
+
+    func updateTiles(save: TilesSave = .now, _ edit: (inout TilesSettings) -> Void) throws {
         guard let id = tilesEditTargetId, let index = scenes.firstIndex(where: { $0.id == id }),
               var settings = scenes[index].tiles else { throw refuseTiles(.notTilesPreview) }
+        // Windows hit a stack overflow from a two-way binding echo re-entering the
+        // gallery setter (StudioViewModel `_galleryEditGuard`). A re-entrant edit is
+        // dropped here, never recursed into; the depth is observable for the test.
+        guard tilesEditDepth == 0 else { return }
+        tilesEditDepth += 1
+        defer { tilesEditDepth -= 1 }
+        tilesEditMaxDepth = max(tilesEditMaxDepth, tilesEditDepth)
         edit(&settings)
         scenes[index].tiles = settings
-        syncScenes()
-        saveScenes()   // membership intent is saved at once, like the starter (S3 review)
+        syncScenes()   // debounced (120 ms): a drag sends one sync with the last value
+        switch save {
+        case .now: saveScenes()
+        case .debounced: scheduleTilesSave()
+        }
     }
+
+    private func scheduleTilesSave() {
+        tilesSaveTask?.cancel()
+        tilesSaveTask = Task { [weak self] in
+            await self?.timerSleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.saveScenes()
+        }
+    }
+
+    // MARK: Layout tab setters (Windows Gallery* setters, clamp for clamp)
+
+    /// C# `Math.Round` (banker's rounding) then clamp.
+    private static func windowsRound(_ v: Double) -> Double { v.rounded(.toNearestOrEven) }
+
+    func setTilesMaxTiles(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.maxTiles = Int(min(max(Self.windowsRound(v), 1), 64)) }
+    }
+    func setTilesAspect(_ v: String) throws { try updateTiles { $0.tileAspect = TilesLayerPayload.normalizeAspect(v) } }
+    func setTilesCustomAspect(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.customAspectRatio = min(max(v, 0.25), 4) }
+    }
+    func setTilesGutter(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.gutterPercent = min(max(v, 0), 10) }
+    }
+    func setTilesMargin(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.marginPercent = min(max(v, 0), 20) }
+    }
+    func setTilesAnimateLayout(_ on: Bool) throws { try updateTiles { $0.animateLayout = on } }
+    func setTilesAnimationDuration(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.animationDurationMs = Int(min(max(Self.windowsRound(v), 100), 2000)) }
+    }
+
+    /// Windows `GalleryTileAspectOptions`.
+    static let tilesAspectOptions: [(value: String, label: String)] = [
+        ("16:9", "16:9"), ("4:3", "4:3"), ("5:4", "5:4"), ("1:1", "Square"),
+        ("3:4", "Portrait 3:4"), ("9:16", "Portrait 9:16"), ("custom", "Custom"),
+    ]
 
     @discardableResult
     private func refuseTiles(_ error: TilesEditError) -> TilesEditError {

@@ -59,6 +59,9 @@ extension ShellTests {
             // Task 15: Edit Tiles and the two-column workspace.
             ("tiles/edit-tiles-entry", testEditTilesCuesPreviewOpensTheInspectorAndNeverTouchesProgram),
             ("tiles/scenes-tab-layout-rules", testTheScenesTabStopsScrollingAndWidensOnlyWhileEditingTiles),
+            // Task 16: the Layout tab.
+            ("tiles/layout-setters-clamp", testLayoutSettersClampLikeWindows),
+            ("tiles/forty-tick-drag-one-sync", testAFortyTickSliderDragSendsOneSceneSyncWithTheLastValue),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1485,5 +1488,57 @@ extension ShellTests {
         expect(!TabPageLayout.scrolls(.scenes, tilesEditing: true) && TabPageLayout.scrolls(.scenes, tilesEditing: false),
                "\(w): only the Tiles workspace stops the page scroll")
         expectEqual(TilesWorkspaceMetrics.dockWidth, 292, "\(w): the Windows 292 pt dock")
+    }
+
+    // ── Task 16 ──────────────────────────────────────────────────────────────
+
+    @MainActor static func testLayoutSettersClampLikeWindows() {
+        let w = "StudioViewModel Gallery* setters"
+        let model = tilesActionModel()
+        func tiles() -> TilesSettings { model.scenes.first { $0.id == "t-pvw" }!.tiles! }
+        try? model.setTilesMaxTiles(0); expectEqual(tiles().maxTiles, 1, "\(w): max tiles 0 -> 1")
+        try? model.setTilesMaxTiles(99.6); expectEqual(tiles().maxTiles, 64, "\(w): 99.6 -> 64")
+        try? model.setTilesMaxTiles(3.4); expectEqual(tiles().maxTiles, 3, "\(w): 3.4 -> 3")
+        try? model.setTilesMaxTiles(4.5); expectEqual(tiles().maxTiles, 4, "\(w): 4.5 -> 4 (C# banker's rounding)")
+        try? model.setTilesAspect("21:9"); expectEqual(tiles().tileAspect, "16:9", "\(w): aspect 21:9 -> 16:9")
+        try? model.setTilesAspect("custom"); expectEqual(tiles().tileAspect, "custom", "\(w): custom passes")
+        try? model.setTilesCustomAspect(9); expectEqual(tiles().customAspectRatio, 4, "\(w): custom 9 -> 4")
+        try? model.setTilesGutter(-1); expectEqual(tiles().gutterPercent, 0, "\(w): gutter -1 -> 0")
+        try? model.setTilesMargin(30); expectEqual(tiles().marginPercent, 20, "\(w): margin 30 -> 20")
+        try? model.setTilesAnimationDuration(50); expectEqual(tiles().animationDurationMs, 100, "\(w): duration 50 -> 100")
+        try? model.setTilesAnimationDuration(1234.6); expectEqual(tiles().animationDurationMs, 1235, "\(w): 1234.6 -> 1235")
+        try? model.setTilesAnimateLayout(true); expect(tiles().animateLayout, "\(w): animate on")
+        expectEqual(AppModel.tilesAspectOptions.map(\.label), ["16:9", "4:3", "5:4", "Square", "Portrait 3:4", "Portrait 9:16", "Custom"],
+                    "\(w): GalleryTileAspectOptions labels")
+        model.previewSceneId = "s1"
+        var thrown: TilesEditError?
+        do { try model.setTilesGutter(2) } catch let e as TilesEditError { thrown = e } catch {}
+        expectEqual(thrown, .notTilesPreview, "\(w): a setter refuses without a Preview wall")
+    }
+
+    @MainActor static func testAFortyTickSliderDragSendsOneSceneSyncWithTheLastValue() {
+        let w = "Review Focus 2: a 40-tick slider drag"
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.scenes.append(SceneDef(id: "t-pvw", name: "Wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.previewSceneId = "t-pvw"
+        let timers = ManualTimers()
+        model.timerSleepForTesting = { await timers.sleep($0) }
+        let syncs = model.sceneSyncRequestCount
+        for tick in 0..<40 {   // the run loop turns between ticks; no timer elapses
+            try? model.setTilesGutter(Double(tick) / 10)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.002))
+        }
+        expect(core.bodies.isEmpty, "\(w): nothing is sent while the debounce has not elapsed")
+        expectEqual(model.sceneSyncRequestCount - syncs, 40, "\(w): 40 requests, each coalesced")
+        expect(model.tilesEditMaxDepth <= 1, "\(w): no re-entrant edit (depth \(model.tilesEditMaxDepth))")
+        spin(until: { timers.fireAll(); return !core.bodies.isEmpty }, limit: 3)
+        spin(until: { timers.fireAll(); return false }, limit: 0.3)
+        let previews = core.bodies.flatMap { $0["commands"] as? [JSONObject] ?? [] }.filter { $0["type"] as? String == "set-preview-scene" }
+        expectEqual(previews.count, 1, "\(w): exactly one scene sync")
+        let gutter = ((previews.first?["tiles"] as? JSONObject)?["style"] as? JSONObject)?["gutterPercent"] as? Double
+        expectEqual(gutter, 3.9, "\(w): it carries the last value")
+        expectEqual(model.lastSavedPrefs.scenes.first { $0.id == "t-pvw" }?.tiles?.gutterPercent, 3.9,
+                    "\(w): the drag is saved once, after it settles")
     }
 }
