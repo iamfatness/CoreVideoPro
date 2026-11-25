@@ -792,14 +792,16 @@ extension ShellTests {
 
         func read() -> CameraDeviceStatus {
             let main = Thread.isMainThread
-            locked {
+            // What the probe saw when it looked; the answer arrives `delay` later.
+            // Counted in the same lock, so a test that sees `reads == n` knows
+            // probe n has already looked.
+            let seen: CameraDeviceStatus = locked {
                 _reads += 1
                 if main { _mainThreadReads += 1 }
                 _active += 1
                 _maxActive = max(_maxActive, _active)
+                return _status
             }
-            // What the probe saw when it looked; the answer arrives `delay` later.
-            let seen = locked { _status }
             Thread.sleep(forTimeInterval: delay)
             locked { _active -= 1 }
             return seen
@@ -867,16 +869,20 @@ extension ShellTests {
     /// question).
     @MainActor
     static func testDeviceReadsNeverOverlap() {
-        let probe = SlowSpyCameraDeviceProbe(ourDevice(running: true), delay: 0.1)
+        // Waits on the real conditions, not fixed sleeps: on a loaded CI runner
+        // a fixed 0.02 s wait overran a 0.1 s probe, the four reads then found
+        // it finished and cost a third probe.
+        let probe = SlowSpyCameraDeviceProbe(ourDevice(running: true), delay: 0.5)
         let reader = CameraDeviceReader(probe: probe)
         var first: CameraDeviceStatus?
         var later: [CameraDeviceStatus] = []
         reader.read { first = $0 }
         expect(first == nil && reader.isReading, "read returns at once with the probe still out")
-        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        spin(until: { probe.reads >= 1 }, limit: 2)             // the first probe has looked
+        expect(first == nil && reader.isReading, "precondition: the first probe is still out")
         probe.status = ourDevice(running: false)   // the world changes while the first probe is out
         for _ in 0..<4 { reader.read { later.append($0) } }
-        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        spin(until: { later.count == 4 && !reader.isReading }, limit: 5)
         expectEqual(first, ourDevice(running: true), "the first caller gets the first reading")
         expectEqual(later, Array(repeating: ourDevice(running: false), count: 4),
                     "everyone who asked meanwhile gets a reading that started after they asked")
@@ -894,29 +900,30 @@ extension ShellTests {
     /// "free", nor the reverse.
     @MainActor
     static func testASupersededDeviceReadDoesNotOverwriteANewerOne() {
-        let probe = SlowSpyCameraDeviceProbe(ourDevice(running: false), delay: 0.15)
+        let probe = SlowSpyCameraDeviceProbe(ourDevice(running: false), delay: 0.5)
         let reader = CameraDeviceReader(probe: probe)
         var asynchronous: CameraDeviceStatus?
         reader.read { asynchronous = $0 }           // looks now: free
-        RunLoop.current.run(until: Date().addingTimeInterval(0.03))
+        spin(until: { probe.reads >= 1 }, limit: 2) // it has looked (not a fixed sleep that can overrun it)
         probe.status = ourDevice(running: true)     // Zoom opens the camera
         let inPlace = reader.readNow()              // the newer reading: in use
         expectEqual(inPlace, ourDevice(running: true), "the in-place read sees the camera in use")
         expect(asynchronous == nil, "precondition: the earlier probe has not been delivered yet")
-        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        spin(until: { asynchronous != nil && !reader.isReading }, limit: 5)
         expectEqual(reader.latest, ourDevice(running: true), "the earlier probe's 'free' did not overwrite 'in use'")
         expectEqual(asynchronous, ourDevice(running: true), "and its caller got the newer reading, not the stale one")
 
         // The same through the model: the published reading and the in-use answer.
         let model = AppModel()
-        let slow = SlowSpyCameraDeviceProbe(ourDevice(running: false), delay: 0.15)
+        let slow = SlowSpyCameraDeviceProbe(ourDevice(running: false), delay: 0.5)
         model.cameraDeviceProbe = slow
         var staleAnswer: Bool?
         model.checkCameraInUse { staleAnswer = $0 }
-        RunLoop.current.run(until: Date().addingTimeInterval(0.03))
+        spin(until: { slow.reads >= 1 }, limit: 2)
+        expect(staleAnswer == nil, "precondition: the earlier question is still out")
         slow.status = ourDevice(running: true)
         expect(model.cameraInUseNow(), "in use at the moment macOS offers the replacement")
-        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        spin(until: { staleAnswer != nil && !model.cameraDeviceReader.isReading }, limit: 5)
         expectEqual(model.cameraDeviceStatus, ourDevice(running: true), "the model keeps the newer reading")
         expectEqual(staleAnswer, true, "and the earlier question is answered from it")
         model.stopTimersForTesting()
