@@ -77,6 +77,7 @@ extension ShellTests {
             // Task 20: live background and live badges.
             ("tiles/live-background", testLiveBackgroundOnlyAcceptsACurrentChoiceAndReachesTheWireAndTheBudget),
             ("tiles/live-badges", testLiveBadgesComeOnlyFromTheProgramWallSnapshot),
+            ("tiles/active-member-fallback", testTheEditorFallsBackToTheFirstMemberLikeWindows),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1706,7 +1707,8 @@ extension ShellTests {
         _ = runTake(model)
         let values = TilesOverridePolicy.editorValues(model.scenes.first { $0.id == "t-pvw" }?.tiles, sourceId: model.tilesSelectedMemberId)
         expect(values.rect?.width == 0.5 && values.cropLeftPercent == 0, "\(w): defaults, no trap")
-        expect(!model.tilesCanEditSelectedMember && model.tilesSelectedOverride == nil, "\(w): nothing is editable with no selection")
+        // After the Take the wall is on Program, so the editor edits nothing.
+        expect(!model.tilesCanEditSelectedMember && model.tilesSelectedOverride == nil, "\(w): nothing is editable after the Take")
         model.setTilesCrop(left: 20); model.setTilesPinned(true)
         expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.overrides, saved, "\(w): overrides byte-equal")
     }
@@ -1802,11 +1804,32 @@ extension ShellTests {
         // The core describes a DIFFERENT wall (the Program one): the Preview wall's rows carry nothing.
         model.applySnapshotForTesting(["tiles": ["layerId": "tiles:other", "members": members]])
         expect(model.tilesMemberRows.allSatisfy { !$0.status.contains("·") }, "\(w): no suffix while the edited wall is only on Preview")
-        // When the node is this wall, the rows read it.
+        // The gate's positive branch: the node naming THIS wall. A real core names the
+        // Program wall, which the Preview-only editor never edits, so this branch is
+        // reachable only once S6 adds the read-only on-air dock (owner decision pending).
         model.applySnapshotForTesting(["tiles": ["layerId": "tiles:t-pvw", "members": members]])
         expectEqual(model.tilesMemberRows.first { $0.id == "zoom:2" }?.status, "Auto · held", "\(w): Auto · held")
         expectEqual(model.tilesMemberRows.first { $0.id == "zoom:7" }?.status, "Auto · black", "\(w): Auto · black")
         model.applySnapshotForTesting(["meetingState": "idle"])   // a snapshot with no tiles node
         expectEqual(model.tilesLive, [], "\(w): the node gone clears the badges")
+    }
+
+    @MainActor static func testTheEditorFallsBackToTheFirstMemberLikeWindows() {
+        let w = "S5 review: SceneWorkspaceViewModel selection fallback"
+        let model = tilesActionModel()
+        model.tilesSelectedMemberId = ""
+        expectEqual(model.tilesActiveMemberId, "zoom:7", "\(w): nothing selected -> the first member")
+        expect(model.tilesCanEditSelectedMember, "\(w): and it is editable")
+        model.tilesSelectedMemberId = "zoom:2"
+        expectEqual(model.tilesActiveMemberId, "zoom:2", "\(w): a current selection is kept")
+        model.roster.removeAll { $0.id == "2" }   // the selected guest leaves
+        expectEqual(model.tilesActiveMemberId, "zoom:7", "\(w): a departed selection falls back to the first member")
+        model.roster = []
+        expectEqual(model.tilesActiveMemberId, "", "\(w): no members -> nothing")
+        expect(!model.tilesCanEditSelectedMember, "\(w): nothing to edit")
+        // Member sliders save debounced; pin/unpin saves at once.
+        model.roster = [RosterParticipant(id: "7", name: "Ann", hasVideo: true, muted: false, talking: false, assigned: false, persistentId: "P7")]
+        model.setTilesPinned(true)
+        expect(model.lastSavedPrefs.scenes.first { $0.id == "t-pvw" }?.tiles?.overrides["zoom:7"]?.rect != nil, "\(w): a pin is saved at once")
     }
 }

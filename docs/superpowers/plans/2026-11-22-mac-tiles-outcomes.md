@@ -541,3 +541,22 @@ No HIGH. The reviewer confirmed that Layout and Style match the XAML in order an
 |---|---|
 | badges without the Program-wall gate | red |
 | any id accepted as background | red: 2 failures |
+
+### Rebases and the stacked PR (2026-11-25)
+
+- `mac-tiles` (N1 + S1-S3) was rebased twice more as main moved, the last time onto `bf92530d`. The conflicts were the `ShellTests.swift` case list and `TabPageLayout` (the Comms fill-height from main); I kept both sides. At that tip the shell has 9586 checks, 2 failed (`.m4a`), and the lint passes. #1229 was force-pushed and is MERGEABLE.
+- S4/S5 moved to the stacked branch `mac-tiles-s4s5`, draft PR #1252 based on `mac-tiles`, so the green part can land first.
+- Seen once on the S4/S5 tip and not reproduced in 2 of 3 reruns: `ShellTestsGrade.swift:441` ("the store says the binding broke"). It comes from main and waits on a wall-clock `RunLoop.run(0.3)`. It is a timing flake, not caused by this lane. Candidate issue.
+
+### S5 slice review (independent; Tasks 19-20)
+
+- **HIGH (owner decision, recorded): the D2 badge gate can never pass in the real app.** The core's `tiles` node names the Program wall, and the editor edits Preview only; the S4 review made an on-air wall refuse editing. The gate is kept as the plan specifies. The positive-branch test is now labelled as reachable only once S6 adds the read-only on-air dock. **Decision needed:** keep the gate until S6, or badge Members rows from the Program wall's state for guests who are on it.
+- **MEDIUM (fixed): member sliders saved the prefs file on every tick.** Crop, tile X/Y/width/height and order now save debounced. Pin/unpin and reset crop still save at once.
+- **MEDIUM (fixed): the pinned-pixel proof was weak.** It now also asserts the colour is member 101's (blue), and that the core places 101 at (0,0,0.5,1). Re-run live: 5/5. The 25/25 crop itself cannot be seen in a solid fake frame; the edge-to-edge fill of the 8:9 rect is what the crop makes possible.
+- **MEDIUM (fixed): the selection fallback ran only on appear.** `tilesActiveMemberId` is derived on every read: the stored id while it is a current choice, else the first member, else "", like Windows `RefreshMembers`. A guest who leaves, or a roster that fills later, no longer strands the editor. Test: `testTheEditorFallsBackToTheFirstMemberLikeWindows`.
+- **MEDIUM (fixed): the Live background picker could hold a selection not in its list.** It is now bound to the active member, and its button is enabled by `tilesCanEditSelectedMember`.
+- **LOW (fixed):** Tile X/Y slider ranges only span what fits beside the tile's size, and the placement sliders hide on a wall under 2 px.
+- **LOW (recorded):**
+  - The Review Focus 3 test holds because the Take makes the wall Program, and nothing is editable then. `editorValues` is the Windows editor's loader and is only used by tests on Mac.
+  - `tilesMemberStates` recomputes per render; this is a performance note only.
+- `tiles/` filter: 575/575.

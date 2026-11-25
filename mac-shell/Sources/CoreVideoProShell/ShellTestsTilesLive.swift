@@ -422,7 +422,13 @@ extension ShellTests {
         log("left-half samples (r,g,b): \(samples)")
         let first = samples[0]
         let uniform = samples.allSatisfy { abs($0.0 - first.0) <= 24 && abs($0.1 - first.1) <= 24 && abs($0.2 - first.2) <= 24 }
-        let lit = max(first.0, first.1, first.2) > 60
-        expect(uniform && lit, "\(w): the left half is member 1's colour edge to edge (cropped 25/25 to fill 8:9)")
+        // Member 101's primary colour is BLUE (fake engine channel (pid-101)%3 == 0).
+        let isBlue = first.2 > 200 && first.0 < 60 && first.1 < 60
+        expect(uniform && isBlue, "\(w): the left half is member 101's blue edge to edge (\(first))")
+        let pinnedRect = members.first { $0["sourceId"] as? String == pinned }?["rect"] as? JSONObject
+        expect(abs((pinnedRect?["x"] as? Double ?? -1)) < 1e-6 && abs((pinnedRect?["width"] as? Double ?? 0) - 0.5) < 1e-6
+               && abs((pinnedRect?["height"] as? Double ?? 0) - 1) < 1e-6, "\(w): the core places 101 at (0,0,0.5,1)")
+        // The 25/25 crop cannot be seen in a solid frame; edge-to-edge fill of the 8:9
+        // rect is what the crop makes possible for a 16:9 source (no letterbox bars).
     }
 }

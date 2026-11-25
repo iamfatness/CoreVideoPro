@@ -335,15 +335,16 @@ struct TilesLiveBackground: View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Meeting source").font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
-                Picker("", selection: $model.tilesSelectedMemberId) {
+                // Bound to the active member, which is always a current choice or "".
+                Picker("", selection: Binding(get: { model.tilesActiveMemberId }, set: { model.tilesSelectedMemberId = $0 })) {
                     Text("—").tag("")
                     ForEach(model.tilesMemberChoices) { Text($0.label).tag($0.id) }
                 }
                 .labelsHidden().controlSize(.small)
             }
-            Button("Use selected member as background") { try? model.setTilesBackgroundSource(model.tilesSelectedMemberId) }
+            Button("Use selected member as background") { try? model.setTilesBackgroundSource(model.tilesActiveMemberId) }
                 .buttonStyle(GhostButtonStyle())
-                .disabled(model.tilesSelectedMemberId.isEmpty)
+                .disabled(!model.tilesCanEditSelectedMember)
             Button("Clear live background") { try? model.setTilesBackgroundSource("") }
                 .buttonStyle(GhostButtonStyle())
             if !model.tilesEditSettings.backgroundSourceId.isEmpty {
@@ -444,7 +445,7 @@ struct TilesMembersTab: View {
                             }
                             .padding(.vertical, 3).padding(.horizontal, 4)
                             .background(RoundedRectangle(cornerRadius: 4)
-                                .fill(row.id == model.tilesSelectedMemberId ? Studio.accent.opacity(0.12) : Studio.field))
+                                .fill(row.id == model.tilesActiveMemberId ? Studio.accent.opacity(0.12) : Studio.field))
                             .contentShape(Rectangle())
                             .onTapGesture { model.tilesSelectedMemberId = row.id }
                         }
@@ -455,7 +456,7 @@ struct TilesMembersTab: View {
             Divider().overlay(Studio.border)
             TilesSection(title: model.tilesFramingTitle) {
                 Toggle("Never show this member", isOn: Binding(
-                    get: { model.tilesMemberStates[model.tilesSelectedMemberId]?.excluded ?? false },
+                    get: { model.tilesMemberStates[model.tilesActiveMemberId]?.excluded ?? false },
                     set: { model.setTilesNeverShow($0) }))
                     .font(.grotesk(11)).toggleStyle(.checkbox)
                 TilesSliderRow(label: "Crop left", value: override?.cropLeftPercent ?? 0, range: 0...45, step: 0.01, unit: "%",
@@ -469,11 +470,12 @@ struct TilesMembersTab: View {
             TilesSection(title: "Tile placement") {
                 Toggle("Pin this member in wall", isOn: Binding(get: { model.tilesSelectedPinned }, set: { model.setTilesPinned($0) }))
                     .font(.grotesk(11)).toggleStyle(.checkbox)
-                if model.tilesSelectedPinned, let rect = override?.rect {
+                if model.tilesSelectedPinned, let rect = override?.rect, model.tilesWallPixels.width >= 2, model.tilesWallPixels.height >= 2 {
                     let wall = model.tilesWallPixels
-                    TilesSliderRow(label: "Tile X", value: rect.x * wall.width, range: 0...wall.width, step: 1, unit: "px",
+                    // X/Y only range over what still fits beside the tile's size.
+                    TilesSliderRow(label: "Tile X", value: rect.x * wall.width, range: 0...max(1, wall.width * (1 - rect.width)), step: 1, unit: "px",
                                    format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesPin(field: .x, pixels: $0) }
-                    TilesSliderRow(label: "Tile Y", value: rect.y * wall.height, range: 0...wall.height, step: 1, unit: "px",
+                    TilesSliderRow(label: "Tile Y", value: rect.y * wall.height, range: 0...max(1, wall.height * (1 - rect.height)), step: 1, unit: "px",
                                    format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesPin(field: .y, pixels: $0) }
                     TilesSliderRow(label: "Tile width", value: rect.width * wall.width, range: 1...wall.width, step: 1, unit: "px",
                                    format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesPin(field: .width, pixels: $0) }
@@ -505,7 +507,7 @@ struct TilesMembersTab: View {
                                    format: { String(Int($0)) }, defaultValue: nil) { manualSlot = $0 }
                     HStack(spacing: 6) {
                         Button("Assign selected member to slot") {
-                            try? model.assignTilesSlot(Int(manualSlot), sourceId: model.tilesSelectedMemberId)
+                            try? model.assignTilesSlot(Int(manualSlot), sourceId: model.tilesActiveMemberId)
                         }
                         .buttonStyle(GhostButtonStyle())
                         Button("Clear slot") { try? model.assignTilesSlot(Int(manualSlot), sourceId: "") }
@@ -517,12 +519,6 @@ struct TilesMembersTab: View {
                 .padding(.top, 6)
             } label: {
                 Text("Advanced membership").font(.grotesk(11, .medium)).foregroundStyle(Studio.textPrimary)
-            }
-        }
-        .onAppear {
-            // Windows: the selection falls back to the first member when it is gone.
-            if !model.tilesMemberRows.contains(where: { $0.id == model.tilesSelectedMemberId }) {
-                model.tilesSelectedMemberId = model.tilesMemberRows.first?.id ?? ""
             }
         }
     }

@@ -460,20 +460,30 @@ extension AppModel {
         return Self.liveSuffix(tilesLive.first { $0.sourceId == sourceId })
     }
 
+    /// The member the editor acts on: the stored selection while it is a current
+    /// choice, else the first member (Windows `RefreshMembers`:
+    /// `Members.FirstOrDefault(selected) ?? Members.FirstOrDefault()`), else "".
+    /// Derived on every read, so a guest who leaves or a roster that fills later
+    /// never strands the editor (S5 review).
+    var tilesActiveMemberId: String {
+        let choices = tilesMemberChoices
+        if choices.contains(where: { $0.id == tilesSelectedMemberId }) { return tilesSelectedMemberId }
+        return choices.first?.id ?? ""
+    }
+
     /// The selected member's saved override, or the Windows editor default.
     var tilesSelectedOverride: TilesMemberOverride? {
-        tilesEditTargetId.flatMap { _ in tilesEditSettings.overrides[tilesSelectedMemberId] }
+        tilesEditTargetId.flatMap { _ in tilesEditSettings.overrides[tilesActiveMemberId] }
     }
 
     /// `SceneWorkspaceMemberEditor.CanEdit`: a Preview wall and an available member.
     var tilesCanEditSelectedMember: Bool {
-        tilesEditTargetId != nil && !tilesSelectedMemberId.isEmpty
-            && TilesMemberChoicePolicy.contains(tilesMemberChoices, tilesSelectedMemberId)
+        tilesEditTargetId != nil && !tilesActiveMemberId.isEmpty
     }
 
     /// `FramingTitle`.
     var tilesFramingTitle: String {
-        (tilesMemberChoices.first { $0.id == tilesSelectedMemberId }?.label ?? "Select a member") + " · framing"
+        (tilesMemberChoices.first { $0.id == tilesActiveMemberId }?.label ?? "Select a member") + " · framing"
     }
 
     /// The wall in pixels (`wallRect` × the 1920×1080 canvas), never below 1.
@@ -482,10 +492,10 @@ extension AppModel {
         return (max(1, r.width * 1920), max(1, r.height * 1080))
     }
 
-    private func editSelectedOverride(_ change: (inout TilesMemberOverride) -> Void) {
-        let id = tilesSelectedMemberId
+    private func editSelectedOverride(save: TilesSave = .now, _ change: (inout TilesMemberOverride) -> Void) {
+        let id = tilesActiveMemberId
         guard tilesCanEditSelectedMember else { return }
-        try? updateTiles { w in
+        try? updateTiles(save: save) { w in
             var value = w.overrides[id] ?? TilesMemberOverride()
             change(&value)
             w.overrides[id] = value
@@ -495,7 +505,7 @@ extension AppModel {
     /// `NeverShow`.
     func setTilesNeverShow(_ on: Bool) {
         guard tilesCanEditSelectedMember else { return }
-        try? setTilesExclusion(tilesSelectedMemberId, excluded: on)
+        try? setTilesExclusion(tilesActiveMemberId, excluded: on)
     }
 
     /// `Crop`: 0-45 each, ignored out of range.
@@ -504,7 +514,7 @@ extension AppModel {
             guard let v = value, v.isFinite, (0...45).contains(v) else { continue }
             let current = isLeft ? (tilesSelectedOverride?.cropLeftPercent ?? 0) : (tilesSelectedOverride?.cropRightPercent ?? 0)
             if v == current { continue }
-            editSelectedOverride { if isLeft { $0.cropLeftPercent = v } else { $0.cropRightPercent = v } }
+            editSelectedOverride(save: .debounced) { if isLeft { $0.cropLeftPercent = v } else { $0.cropRightPercent = v } }
         }
     }
 
@@ -535,13 +545,13 @@ extension AppModel {
             studioCommandStatus = "The tile position and size must fit inside this wall."
             return
         }
-        editSelectedOverride { $0.rect = rect }
+        editSelectedOverride(save: .debounced) { $0.rect = rect }
     }
 
     /// `Order`: only when pinned; an integer 0-63.
     func setTilesOrder(_ z: Double) {
         guard tilesSelectedPinned, z.isFinite, (0...63).contains(z), z == z.rounded(.towardZero) else { return }
-        editSelectedOverride { $0.z = Int(z) }
+        editSelectedOverride(save: .debounced) { $0.z = Int(z) }
     }
 }
 
