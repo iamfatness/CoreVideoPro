@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "notes": "Written by native-shell/CoreVideoPro.MediaCore.Tests/TelemetryFixtureExportTests.cs from the Windows telemetry code. payloads[].response is a core sync response parsed on the LIVE path (CoreProtocolParser.TryParseWireState + NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot); participants come from the core's own participants node there (no Zoom merger on this path). Do not edit by hand.",
+  "payloads": [
+    {
+      "name": "secret-laden",
+      "response": "{\"ok\":true,\"snapshot\":{\"health\":null,\"profile\":null,\"meetingState\":\"https://zoom.us/j/98765432100?pwd=secretmeetingpassword\",\"recording\":{\"sessionId\":\"rec-1\",\"active\":true,\"status\":\"recording\",\"writerStatus\":\"writing\",\"targetFolder\":\"/Users/producer/Movies/Confidential Client Show\",\"filenamePrefix\":\"Show\",\"format\":\"mp4\",\"quality\":\"high\",\"programPath\":\"/Users/producer/Movies/Confidential Client Show/Program.mp4\"},\"outputSenderSession\":{\"status\":\"live\",\"activeSenderCount\":1,\"senders\":[{\"senderId\":\"rtmp-1\",\"destination\":\"rtmp://a.rtmp.youtube.com/live2/live_SUPERSECRETSTREAMKEY_9f3a2b\",\"status\":\"live\",\"warning\":\"srt-passphrase-do-not-leak-42\"}]},\"virtualCamera\":{\"enabled\":true,\"status\":\"live\"},\"isoParticipantIds\":[\"zoom:pid-secret-1\"],\"captureDevices\":[{\"id\":\"cam-a\",\"name\":\"CAM-A\",\"connectionState\":\"connected\"},{\"id\":\"cam-b\",\"name\":\"CAM-B\",\"connectionState\":\"connected\"},{\"id\":\"cam-b\",\"name\":\"CAM-B\",\"connectionState\":\"connected\"},{\"id\":\"screen:0\",\"name\":\"SCREEN:0\",\"connectionState\":\"detected\"}],\"participants\":[{\"userId\":\"pid-secret-1\",\"displayName\":\"Alice Q. Attendee\"},{\"userId\":\"pid-secret-2\",\"displayName\":\"Bob Secret\"}]}}",
+      "version": "1.2.3",
+      "sessionLengthSeconds": 3600,
+      "crashCount": 2,
+      "machine": {
+        "label": "mac-arm64-cpu12-ram36gb",
+        "cpuCores": 12,
+        "ramBand": "32-64GB",
+        "gpuTier": "apple-m3-pro"
+      },
+      "wire": "{\"name\":\"session-end\",\"version\":\"1.2.3\",\"sessionLengthSeconds\":3600,\"outputConfigShape\":{\"recordingEnabled\":true,\"streamingEnabled\":true,\"vcamEnabled\":true,\"isoSourceCount\":1,\"captureSourceCount\":2,\"zoomParticipantCount\":2},\"crashCountSinceLastSend\":2,\"machineClass\":\"mac-arm64-cpu12-ram36gb\",\"machine\":{\"label\":\"mac-arm64-cpu12-ram36gb\",\"cpuCores\":12,\"ramBand\":\"32-64GB\",\"gpuTier\":\"apple-m3-pro\"}}",
+      "preview": "{\n  \"name\": \"session-end\",\n  \"version\": \"1.2.3\",\n  \"sessionLengthSeconds\": 3600,\n  \"outputConfigShape\": {\n    \"recordingEnabled\": true,\n    \"streamingEnabled\": true,\n    \"vcamEnabled\": true,\n    \"isoSourceCount\": 1,\n    \"captureSourceCount\": 2,\n    \"zoomParticipantCount\": 2\n  },\n  \"crashCountSinceLastSend\": 2,\n  \"machineClass\": \"mac-arm64-cpu12-ram36gb\",\n  \"machine\": {\n    \"label\": \"mac-arm64-cpu12-ram36gb\",\n    \"cpuCores\": 12,\n    \"ramBand\": \"32-64GB\",\n    \"gpuTier\": \"apple-m3-pro\"\n  }\n}"
+    },
+    {
+      "name": "engine-off",
+      "response": null,
+      "version": "1.2.3",
+      "sessionLengthSeconds": 3600,
+      "crashCount": 2,
+      "machine": {
+        "label": "mac-arm64-cpu12-ram36gb",
+        "cpuCores": 12,
+        "ramBand": "32-64GB",
+        "gpuTier": null
+      },
+      "wire": "{\"name\":\"session-end\",\"version\":\"1.2.3\",\"sessionLengthSeconds\":3600,\"outputConfigShape\":{\"recordingEnabled\":false,\"streamingEnabled\":false,\"vcamEnabled\":false,\"isoSourceCount\":0,\"captureSourceCount\":0,\"zoomParticipantCount\":0},\"crashCountSinceLastSend\":2,\"machineClass\":\"mac-arm64-cpu12-ram36gb\",\"machine\":{\"label\":\"mac-arm64-cpu12-ram36gb\",\"cpuCores\":12,\"ramBand\":\"32-64GB\"}}",
+      "preview": "{\n  \"name\": \"session-end\",\n  \"version\": \"1.2.3\",\n  \"sessionLengthSeconds\": 3600,\n  \"outputConfigShape\": {\n    \"recordingEnabled\": false,\n    \"streamingEnabled\": false,\n    \"vcamEnabled\": false,\n    \"isoSourceCount\": 0,\n    \"captureSourceCount\": 0,\n    \"zoomParticipantCount\": 0\n  },\n  \"crashCountSinceLastSend\": 2,\n  \"machineClass\": \"mac-arm64-cpu12-ram36gb\",\n  \"machine\": {\n    \"label\": \"mac-arm64-cpu12-ram36gb\",\n    \"cpuCores\": 12,\n    \"ramBand\": \"32-64GB\"\n  }\n}"
+    },
+    {
+      "name": "ndi-only",
+      "response": "{\"ok\":true,\"snapshot\":{\"health\":null,\"profile\":null,\"outputSenderSession\":{\"status\":\"live\",\"activeSenderCount\":1,\"senders\":[{\"senderId\":\"ndi\",\"destination\":\"ndi\",\"status\":\"live\"}]}}}",
+      "version": "1.2.3",
+      "sessionLengthSeconds": 3600,
+      "crashCount": 2,
+      "machine": {
+        "label": "mac-arm64-cpu12-ram36gb",
+        "cpuCores": 12,
+        "ramBand": "32-64GB",
+        "gpuTier": "apple-m3-pro"
+      },
+      "wire": "{\"name\":\"session-end\",\"version\":\"1.2.3\",\"sessionLengthSeconds\":3600,\"outputConfigShape\":{\"recordingEnabled\":false,\"streamingEnabled\":false,\"vcamEnabled\":false,\"isoSourceCount\":0,\"captureSourceCount\":0,\"zoomParticipantCount\":0},\"crashCountSinceLastSend\":2,\"machineClass\":\"mac-arm64-cpu12-ram36gb\",\"machine\":{\"label\":\"mac-arm64-cpu12-ram36gb\",\"cpuCores\":12,\"ramBand\":\"32-64GB\",\"gpuTier\":\"apple-m3-pro\"}}",
+      "preview": "{\n  \"name\": \"session-end\",\n  \"version\": \"1.2.3\",\n  \"sessionLengthSeconds\": 3600,\n  \"outputConfigShape\": {\n    \"recordingEnabled\": false,\n    \"streamingEnabled\": false,\n    \"vcamEnabled\": false,\n    \"isoSourceCount\": 0,\n    \"captureSourceCount\": 0,\n    \"zoomParticipantCount\": 0\n  },\n  \"crashCountSinceLastSend\": 2,\n  \"machineClass\": \"mac-arm64-cpu12-ram36gb\",\n  \"machine\": {\n    \"label\": \"mac-arm64-cpu12-ram36gb\",\n    \"cpuCores\": 12,\n    \"ramBand\": \"32-64GB\",\n    \"gpuTier\": \"apple-m3-pro\"\n  }\n}"
+    }
+  ],
+  "ramBands": [
+    {
+      "gb": 0,
+      "band": "unknown"
+    },
+    {
+      "gb": 4,
+      "band": "<8GB"
+    },
+    {
+      "gb": 7,
+      "band": "<8GB"
+    },
+    {
+      "gb": 8,
+      "band": "8-16GB"
+    },
+    {
+      "gb": 15,
+      "band": "8-16GB"
+    },
+    {
+      "gb": 16,
+      "band": "16-32GB"
+    },
+    {
+      "gb": 31,
+      "band": "16-32GB"
+    },
+    {
+      "gb": 32,
+      "band": "32-64GB"
+    },
+    {
+      "gb": 63,
+      "band": "32-64GB"
+    },
+    {
+      "gb": 64,
+      "band": "64-128GB"
+    },
+    {
+      "gb": 127,
+      "band": "64-128GB"
+    },
+    {
+      "gb": 128,
+      "band": "128GB+"
+    },
+    {
+      "gb": 256,
+      "band": "128GB+"
+    }
+  ],
+  "ramRounding": [
+    {
+      "bytes": 8053063680,
+      "gb": 8
+    },
+    {
+      "bytes": 9126805504,
+      "gb": 8
+    },
+    {
+      "bytes": 17716632721,
+      "gb": 16
+    },
+    {
+      "bytes": 38547331481,
+      "gb": 36
+    }
+  ],
+  "consentFiles": [
+    {
+      "name": "enabled-with-last-sent",
+      "json": "{\n  \"enabled\": true,\n  \"lastSentUtc\": \"2026-11-22T10:00:00+00:00\"\n}"
+    },
+    {
+      "name": "default",
+      "json": "{\n  \"enabled\": false\n}"
+    }
+  ],
+  "config": [
+    {
+      "endpointOverride": null,
+      "apiKey": null,
+      "endpoint": "https://telemetry.corevideo.io",
+      "enabled": false,
+      "endpointHost": "telemetry.corevideo.io"
+    },
+    {
+      "endpointOverride": "",
+      "apiKey": "k",
+      "endpoint": "https://telemetry.corevideo.io",
+      "enabled": true,
+      "endpointHost": "telemetry.corevideo.io"
+    },
+    {
+      "endpointOverride": "  https://staging.example/  ",
+      "apiKey": " k ",
+      "endpoint": "https://staging.example/",
+      "enabled": true,
+      "endpointHost": "staging.example"
+    },
+    {
+      "endpointOverride": "ftp://x",
+      "apiKey": "k",
+      "endpoint": "ftp://x",
+      "enabled": false,
+      "endpointHost": "x"
+    },
+    {
+      "endpointOverride": "not a url",
+      "apiKey": "k",
+      "endpoint": "not a url",
+      "enabled": false,
+      "endpointHost": "(invalid)"
+    }
+  ]
+}
