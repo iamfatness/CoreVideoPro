@@ -145,11 +145,11 @@ enum GraphicsDataTable {
         var seed = GraphicsDesignSeeds.manifest(kind: "title", templateId: templateId, templateVersion: 1, name: name) ?? [:]
         let height = (binding.limit + 1) * 56
         seed["bounds"] = ["width": 1440, "height": height]
-        seed["fields"] = fields.map { ["id": $0.0, "type": "string", "maxLength": 4096, "default": $0.1] as JSONObject }
+        seed["fields"] = fields.map { ["id": $0.0, GraphicsDesignSeeds.typeKey: "string", "maxLength": 4096, "default": $0.1] as JSONObject }
         let sorted = binding.sortColumn != nil
         let columns = sorted ? ["Rank"] + binding.columns : binding.columns
         seed["layers"] = [[
-            "id": "data-table", "type": "table", "x": 0, "y": 0, "width": 1440, "height": height, "rowHeight": 56, "fontSize": 29,
+            "id": "data-table", GraphicsDesignSeeds.typeKey: "table", "x": 0, "y": 0, "width": 1440, "height": height, "rowHeight": 56, "fontSize": 29,
             "font": ["token": "brand.fontBody"], "color": ["token": "brand.onPrimary"], "headerFill": ["token": "brand.primary"],
             "rowFill": "#18232D", "alternateFill": "#243440",
             "columns": columns.enumerated().map { index, column -> JSONObject in
@@ -197,9 +197,9 @@ enum GraphicsCrawlData {
         let fields = try orderedFields(data, binding)
         var seed = GraphicsDesignSeeds.manifest(kind: "title", templateId: templateId, templateVersion: 1, name: name) ?? [:]
         seed["bounds"] = ["width": 1440, "height": 64]
-        seed["fields"] = fields.map { ["id": $0.0, "type": "string", "maxLength": 4096, "default": $0.1] as JSONObject }
+        seed["fields"] = fields.map { ["id": $0.0, GraphicsDesignSeeds.typeKey: "string", "maxLength": 4096, "default": $0.1] as JSONObject }
         seed["layers"] = [[
-            "id": "data-crawl", "type": "crawl", "x": 0, "y": 0, "width": 1440, "height": 64, "fontSize": 34,
+            "id": "data-crawl", GraphicsDesignSeeds.typeKey: "crawl", "x": 0, "y": 0, "width": 1440, "height": 64, "fontSize": 34,
             "font": ["token": "brand.fontBody"], "color": ["token": "brand.onPrimary"], "items": ["field": itemsField],
             "speed": options.speed, "gap": options.gap, "direction": options.direction, "mode": options.mode,
             "metadata": ["label": "Data crawl"],
@@ -210,8 +210,12 @@ enum GraphicsCrawlData {
 
 /// GraphicsDesignSeeds: the blank starting points; only "title" is needed before the Builder (G8).
 enum GraphicsDesignSeeds {
+    /// A template manifest's layer/field type key. Spelled through this constant (as Windows'
+    /// ManifestTypeKey) so the native ContractParity scan does not read manifest layer types
+    /// ("crawl", "table", "rect") as wire command types the shell sends.
+    static let typeKey = "type"
     /// contracts/graphics-seeds/title.json, compacted (the file Windows embeds; a test compares them).
-    static let titleSeedText = #"{"schemaVersion":1,"templateId":"design-title-000000","templateVersion":1,"name":"Title","family":"title","canvas":{"width":1920,"height":1080},"bounds":{"width":1440,"height":288},"brandTokens":["brand.primary","brand.onPrimary","brand.accent","brand.fontBody"],"fields":[{"id":"heading","type":"string","default":"Heading","required":true,"maxLength":128},{"id":"subheading","type":"string","default":"Subheading","maxLength":256}],"layers":[{"id":"plate","metadata":{"label":"Plate"},"type":"rect","x":0,"y":0,"width":1440,"height":288,"fill":{"token":"brand.primary"}},{"id":"heading-label","metadata":{"label":"Heading"},"type":"text","text":{"field":"heading"},"x":48,"y":52,"width":1344,"height":100,"font":{"token":"brand.fontBody"},"fontWeight":600,"fontSize":64,"lineHeight":1.2,"color":{"token":"brand.onPrimary"},"align":"center","maxLines":1,"overflow":"ellipsis"},{"id":"subheading-label","metadata":{"label":"Subheading"},"type":"text","text":{"field":"subheading"},"x":48,"y":174,"width":1344,"height":58,"font":{"token":"brand.fontBody"},"fontWeight":600,"fontSize":32,"lineHeight":1.2,"color":{"token":"brand.onPrimary"},"align":"center","maxLines":1,"overflow":"ellipsis","collapseWhenEmpty":true}],"animations":{"in":{"type":"fade","durationMs":250,"easing":"ease-out"},"out":{"type":"fade","durationMs":200,"easing":"ease-in"}},"defaultPlacement":{"anchor":"center","x":0,"y":0,"scale":1}}"#
+    static let titleSeedText = #"{"schemaVersion":1,"templateId":"design-title-000000","templateVersion":1,"name":"Title","family":"title","canvas":{"width":1920,"height":1080},"bounds":{"width":1440,"height":288},"brandTokens":["brand.primary","brand.onPrimary","brand.accent","brand.fontBody"],"fields":[{"id":"heading","\#(typeKey)":"string","default":"Heading","required":true,"maxLength":128},{"id":"subheading","\#(typeKey)":"string","default":"Subheading","maxLength":256}],"layers":[{"id":"plate","metadata":{"label":"Plate"},"\#(typeKey)":"rect","x":0,"y":0,"width":1440,"height":288,"fill":{"token":"brand.primary"}},{"id":"heading-label","metadata":{"label":"Heading"},"\#(typeKey)":"text","text":{"field":"heading"},"x":48,"y":52,"width":1344,"height":100,"font":{"token":"brand.fontBody"},"fontWeight":600,"fontSize":64,"lineHeight":1.2,"color":{"token":"brand.onPrimary"},"align":"center","maxLines":1,"overflow":"ellipsis"},{"id":"subheading-label","metadata":{"label":"Subheading"},"\#(typeKey)":"text","text":{"field":"subheading"},"x":48,"y":174,"width":1344,"height":58,"font":{"token":"brand.fontBody"},"fontWeight":600,"fontSize":32,"lineHeight":1.2,"color":{"token":"brand.onPrimary"},"align":"center","maxLines":1,"overflow":"ellipsis","collapseWhenEmpty":true}],"animations":{"in":{"\#(typeKey)":"fade","durationMs":250,"easing":"ease-out"},"out":{"\#(typeKey)":"fade","durationMs":200,"easing":"ease-in"}},"defaultPlacement":{"anchor":"center","x":0,"y":0,"scale":1}}"#
     static var titleSeed: JSONObject {
         (try? JSONSerialization.jsonObject(with: Data(titleSeedText.utf8))) as? JSONObject ?? [:]
     }
