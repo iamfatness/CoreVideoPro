@@ -46,6 +46,8 @@ final class GraphicsModel: ObservableObject {
     let documentStore: GraphicsDocumentStore
     let documentQueue = DispatchQueue(label: "us.iamfatness.corevideopro.graphics-document")
     var saveTask: Task<Void, Never>?
+    /// The show's scene ids (AppModel supplies them; a layout must name one of them or none).
+    var sceneIds: () -> [String] = { [] }
     /// Six hex digits for a new design template id (tests inject a fixed value).
     var designHex6: () -> String = GraphicsDesignIds.randomHex6
     /// The document write (tests replace it to make a save fail on demand).

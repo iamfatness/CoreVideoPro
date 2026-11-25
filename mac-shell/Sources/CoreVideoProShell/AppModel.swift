@@ -729,6 +729,7 @@ final class AppModel: ObservableObject {
         })
         model.gateway.elapsedMs = { [weak self] in self?.elapsedMs() ?? 0 }
         // Guest rows expand over the Show Input slots, as Windows' ShowInputEditors.
+        model.sceneIds = { [weak self] in self?.scenes.map(\.id) ?? [] }
         model.rosterSlots = { [weak self] in
             (self?.slots ?? []).map {
                 GraphicsRosterSlot(slotNumber: $0.id, sourceId: ControlSourceId.canonical(kind: $0.kind, sourceId: $0.sourceId),

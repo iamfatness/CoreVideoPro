@@ -1,0 +1,1335 @@
+{
+  "area": "layouts",
+  "description": "Shot Layouts: ShotLayout.IsValid / ShotLayoutRowSettings.IsValid (each clause), the layout slug, and set-layout outcomes (GraphicsPlayoutActions LayoutSet + SaveShotLayoutsAsync) over documents/windows-layouts.json with the Mac scene ids.",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "valid-base",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-fixture-open",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "open",
+          "name": "Open",
+          "sceneId": "intro",
+          "rowIds": [
+            "title",
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-fixture-two-up",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "two-up",
+          "name": "Two-up",
+          "sceneId": "interview",
+          "rowIds": [
+            "guest"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F2",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-fixture-panel",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "panel",
+          "name": "Panel",
+          "sceneId": "panel",
+          "rowIds": [
+            "guest",
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F3",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-fixture-clean",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "clean",
+          "name": "Clean",
+          "sceneId": "",
+          "rowIds": [],
+          "rowSettings": {},
+          "hotkey": "Shift+F11",
+          "playOutOthers": true
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-fixture-final-scores",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "final-scores",
+          "name": "Final scores",
+          "sceneId": "",
+          "rowIds": [
+            "leaderboard",
+            "logo"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final"
+              }
+            }
+          },
+          "hotkey": "Shift+F4",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-fixture-bad-override",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "bad-override",
+          "name": "Bad override",
+          "sceneId": "",
+          "rowIds": [
+            "title"
+          ],
+          "rowSettings": {
+            "title": {
+              "dataPin": null,
+              "overrides": {
+                "text-size": "huge"
+              }
+            }
+          },
+          "hotkey": "",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-fixture-ghost-row",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "ghost-row",
+          "name": "Ghost row",
+          "sceneId": "",
+          "rowIds": [
+            "nowhere"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F5",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-bad-id",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "Bad Id",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-id-49",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-name-empty",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-name-129",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-scene-65",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-hotkey-shift-f12",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F12",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-hotkey-f1",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-hotkey-shift-f11",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F11",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-rows-17",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "row-1",
+            "row-2",
+            "row-3",
+            "row-4",
+            "row-5",
+            "row-6",
+            "row-7",
+            "row-8",
+            "row-9",
+            "row-10",
+            "row-11",
+            "row-12",
+            "row-13",
+            "row-14",
+            "row-15",
+            "row-16",
+            "row-17"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-rows-16",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "row-1",
+            "row-2",
+            "row-3",
+            "row-4",
+            "row-5",
+            "row-6",
+            "row-7",
+            "row-8",
+            "row-9",
+            "row-10",
+            "row-11",
+            "row-12",
+            "row-13",
+            "row-14",
+            "row-15",
+            "row-16"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-rows-duplicate",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "title"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-rows-bad-id",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "Title"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-settings-key-not-in-rows",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-pin-bad-source",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "Bad Source",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-pin-revision-0",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 0
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-no-pin-no-overrides",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": null,
+              "overrides": {}
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-overrides-only",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": null,
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-overrides-33",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "k1": 1,
+                "k2": 2,
+                "k3": 3,
+                "k4": 4,
+                "k5": 5,
+                "k6": 6,
+                "k7": 7,
+                "k8": 8,
+                "k9": 9,
+                "k10": 10,
+                "k11": 11,
+                "k12": 12,
+                "k13": 13,
+                "k14": 14,
+                "k15": 15,
+                "k16": 16,
+                "k17": 17,
+                "k18": 18,
+                "k19": 19,
+                "k20": 20,
+                "k21": 21,
+                "k22": 22,
+                "k23": 23,
+                "k24": 24,
+                "k25": 25,
+                "k26": 26,
+                "k27": 27,
+                "k28": 28,
+                "k29": 29,
+                "k30": 30,
+                "k31": 31,
+                "k32": 32,
+                "k33": 33
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-override-bad-key",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "Final",
+                "text-size": 40,
+                "show-logo": true,
+                "Bad Key": "x"
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-override-object",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": {
+                  "a": 1
+                },
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-override-array",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": [
+                  1
+                ],
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-override-null",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": null,
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-override-4097-bytes",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "valid-override-4096-bytes",
+      "operation": "layoutValid",
+      "input": {
+        "layout": {
+          "id": "base",
+          "name": "Base",
+          "sceneId": "",
+          "rowIds": [
+            "title",
+            "leaderboard"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {
+                "heading": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+                "text-size": 40,
+                "show-logo": true
+              }
+            }
+          },
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "slug-two-up",
+      "operation": "slug",
+      "input": {
+        "name": "Two-up!",
+        "taken": []
+      },
+      "expected": {
+        "slug": "two-up"
+      }
+    },
+    {
+      "id": "slug-digit-first",
+      "operation": "slug",
+      "input": {
+        "name": "9 Panel",
+        "taken": []
+      },
+      "expected": {
+        "slug": "layout-9-panel"
+      }
+    },
+    {
+      "id": "slug-empty",
+      "operation": "slug",
+      "input": {
+        "name": "",
+        "taken": []
+      },
+      "expected": {
+        "slug": "layout"
+      }
+    },
+    {
+      "id": "slug-long",
+      "operation": "slug",
+      "input": {
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "taken": []
+      },
+      "expected": {
+        "slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbb"
+      }
+    },
+    {
+      "id": "slug-taken",
+      "operation": "slug",
+      "input": {
+        "name": "Open",
+        "taken": [
+          "open",
+          "open-2"
+        ]
+      },
+      "expected": {
+        "slug": "open-3"
+      }
+    },
+    {
+      "id": "slug-non-ascii",
+      "operation": "slug",
+      "input": {
+        "name": "Zoë Ç",
+        "taken": []
+      },
+      "expected": {
+        "slug": "zo"
+      }
+    },
+    {
+      "id": "set-new-layout-takes-a-hotkey",
+      "operation": "setLayout",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "pip-look",
+          "name": "PiP look",
+          "sceneId": "pip",
+          "rowIds": [
+            "guest"
+          ],
+          "hotkey": "Shift+F2"
+        },
+        "dropLayouts": [
+          "ghost-row"
+        ],
+        "scenes": [
+          "fullscreen",
+          "two-up",
+          "pip"
+        ]
+      },
+      "expected": {
+        "ok": true,
+        "error": null,
+        "layouts": [
+          {
+            "id": "open",
+            "hotkey": "Shift+F1"
+          },
+          {
+            "id": "two-up",
+            "hotkey": ""
+          },
+          {
+            "id": "panel",
+            "hotkey": "Shift+F3"
+          },
+          {
+            "id": "clean",
+            "hotkey": "Shift+F11"
+          },
+          {
+            "id": "final-scores",
+            "hotkey": "Shift+F4"
+          },
+          {
+            "id": "bad-override",
+            "hotkey": ""
+          },
+          {
+            "id": "pip-look",
+            "hotkey": "Shift+F2"
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-replace-existing",
+      "operation": "setLayout",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "clean",
+          "name": "Clean",
+          "sceneId": "",
+          "rowIds": [],
+          "hotkey": "Shift+F10",
+          "playOutOthers": true
+        },
+        "dropLayouts": [
+          "ghost-row"
+        ],
+        "scenes": [
+          "fullscreen",
+          "two-up",
+          "pip"
+        ]
+      },
+      "expected": {
+        "ok": true,
+        "error": null,
+        "layouts": [
+          {
+            "id": "open",
+            "hotkey": "Shift+F1"
+          },
+          {
+            "id": "two-up",
+            "hotkey": "Shift+F2"
+          },
+          {
+            "id": "panel",
+            "hotkey": "Shift+F3"
+          },
+          {
+            "id": "clean",
+            "hotkey": "Shift+F10"
+          },
+          {
+            "id": "final-scores",
+            "hotkey": "Shift+F4"
+          },
+          {
+            "id": "bad-override",
+            "hotkey": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-scene-not-on-mac",
+      "operation": "setLayout",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "open",
+          "name": "Open",
+          "sceneId": "intro",
+          "rowIds": [
+            "title"
+          ],
+          "hotkey": "Shift+F1"
+        },
+        "dropLayouts": [
+          "ghost-row"
+        ],
+        "scenes": [
+          "fullscreen",
+          "two-up",
+          "pip"
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "error": "Scene 'intro' is not in this show."
+      }
+    },
+    {
+      "id": "set-invalid",
+      "operation": "setLayout",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "x",
+          "name": "",
+          "sceneId": "",
+          "rowIds": []
+        },
+        "dropLayouts": [
+          "ghost-row"
+        ],
+        "scenes": [
+          "fullscreen",
+          "two-up",
+          "pip"
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "error": "That shot layout is not valid."
+      }
+    },
+    {
+      "id": "set-missing-row-in-another-layout-blocks-save",
+      "operation": "setLayout",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "solo",
+          "name": "Solo",
+          "sceneId": "",
+          "rowIds": [
+            "logo"
+          ]
+        },
+        "dropLayouts": [],
+        "scenes": [
+          "fullscreen",
+          "two-up",
+          "pip"
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "error": "Shot layouts reference playlist rows that do not exist: nowhere. Previous layouts retained.",
+        "layouts": [
+          {
+            "id": "open",
+            "hotkey": "Shift+F1"
+          },
+          {
+            "id": "two-up",
+            "hotkey": "Shift+F2"
+          },
+          {
+            "id": "panel",
+            "hotkey": "Shift+F3"
+          },
+          {
+            "id": "clean",
+            "hotkey": "Shift+F11"
+          },
+          {
+            "id": "final-scores",
+            "hotkey": "Shift+F4"
+          },
+          {
+            "id": "bad-override",
+            "hotkey": ""
+          },
+          {
+            "id": "ghost-row",
+            "hotkey": "Shift+F5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-row-not-in-playlist",
+      "operation": "setLayout",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "solo",
+          "name": "Solo",
+          "sceneId": "",
+          "rowIds": [
+            "missing-row"
+          ]
+        },
+        "dropLayouts": [
+          "ghost-row"
+        ],
+        "scenes": [
+          "fullscreen",
+          "two-up",
+          "pip"
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "error": "Shot layouts reference playlist rows that do not exist: missing-row. Previous layouts retained.",
+        "layouts": [
+          {
+            "id": "open",
+            "hotkey": "Shift+F1"
+          },
+          {
+            "id": "two-up",
+            "hotkey": "Shift+F2"
+          },
+          {
+            "id": "panel",
+            "hotkey": "Shift+F3"
+          },
+          {
+            "id": "clean",
+            "hotkey": "Shift+F11"
+          },
+          {
+            "id": "final-scores",
+            "hotkey": "Shift+F4"
+          },
+          {
+            "id": "bad-override",
+            "hotkey": ""
+          }
+        ]
+      }
+    }
+  ]
+}
