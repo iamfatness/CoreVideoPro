@@ -360,3 +360,20 @@ No HIGH. The reviewer confirmed tier-for-tier parity of the source set, the payl
 | skip the Preview-only guard (edit a wall on Program) | red: 3 failures |
 | persist the session id instead of `persist()` | red: 8 failures |
 | a reassign keeps the old slot | red: 2 failures |
+
+### S3 slice review (independent; Tasks 13-14)
+
+No HIGH. The reviewer confirmed statement-level parity for identity, membership, member choices, workspace states and the action semantics, and found the Preview-only guard sound. Findings:
+
+- **MEDIUM (fixed): nothing asserted that an edit is re-sent.** `testEveryTilesEditIsSentAndSaved` covers assign, exclude, mode, include and clear-stale. Mutation: drop `syncScenes()` from `updateTiles` and it goes red (5 failures).
+- **MEDIUM (fixed): edits were not saved at once.** They relied on the 5 s autosave, so a crash could lose a fresh "Never show". `updateTiles` now calls `saveScenes()`, like the starter, and the same test checks `lastSavedPrefs` (now `private(set)`). Mutation: drop the save and it goes red (5 failures).
+- **MEDIUM (fixed): the identity roster was not pinned to the full roster.** `testACameraOffGuestsSavedSlotIsNotStale`. Mutation: a video-on-only identity roster turns red (2 failures).
+- **LOW (fixed):** a blank exclude now shows the Windows "Choose a source to exclude or allow."
+- **LOW (fixed):** `testTilesMoveAndIncludeCoverEveryPath` covers:
+  - a move clearing a raw-id copy and a name-keyed copy;
+  - exclusion binding the meeting;
+  - include being a no-op in eligible mode;
+  - routed include changing only the omitted list;
+  - an existing member keeping one slot.
+- **LOW (recorded):** `currentTilesMeetingId` reads the typed field like Windows, and no code reads meeting ids today. Case folding is `caseInsensitiveCompare`, not ordinal-ignore-case, and only differs for exotic names.
+- `tiles/` filter: 392/392. Full suite: **8732 checks, 2 failed**, the known `.m4a` pair.

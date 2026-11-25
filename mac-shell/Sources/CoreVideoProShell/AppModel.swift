@@ -758,7 +758,7 @@ final class AppModel: ObservableObject {
     private var programOutputStarted = false
     private var joinInFlight = false
 
-    private var lastSavedPrefs = ShellPrefs()
+    private(set) var lastSavedPrefs = ShellPrefs()
     /// True once restorePrefs() ran; persistPrefsNow() refuses before that.
     private var prefsRestored = false
 

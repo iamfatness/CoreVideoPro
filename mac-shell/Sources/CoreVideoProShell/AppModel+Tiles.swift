@@ -124,6 +124,7 @@ extension AppModel {
         edit(&settings)
         scenes[index].tiles = settings
         syncScenes()
+        saveScenes()   // membership intent is saved at once, like the starter (S3 review)
     }
 
     @discardableResult
@@ -167,9 +168,14 @@ extension AppModel {
     /// `SetTilesExclusion` (never show).
     func setTilesExclusion(_ sourceId: String, excluded: Bool) throws {
         guard tilesEditTargetId != nil else { throw refuseTiles(.notTilesPreview) }
-        guard !sourceId.trimmingCharacters(in: .whitespaces).isEmpty,
-              !excluded || TilesMemberChoicePolicy.contains(tilesMemberChoices, sourceId) else {
-            studioCommandStatus = excluded ? "Choose an available source to exclude." : "Choose a source to exclude or allow."
+        // Windows: a blank id is "Choose a source to exclude or allow."; an
+        // unavailable one to exclude is "Choose an available source to exclude."
+        if sourceId.trimmingCharacters(in: .whitespaces).isEmpty {
+            studioCommandStatus = "Choose a source to exclude or allow."
+            throw TilesEditError.unavailableSource
+        }
+        if excluded, !TilesMemberChoicePolicy.contains(tilesMemberChoices, sourceId) {
+            studioCommandStatus = "Choose an available source to exclude."
             throw TilesEditError.unavailableSource
         }
         let roster = tilesIdentityRoster, meetingId = currentTilesMeetingId

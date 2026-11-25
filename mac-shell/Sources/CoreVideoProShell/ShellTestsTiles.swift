@@ -53,6 +53,9 @@ extension ShellTests {
             ("tiles/assign-moves-not-duplicates", testAssigningAGuestMovesThemNotDuplicatesThem),
             ("tiles/include-manual-first-empty-slot", testIncludeInManualModeTakesTheFirstEmptySlot),
             ("tiles/membership-summary", testTilesMembershipSummaryReadsLikeWindows),
+            ("tiles/edits-sync-and-save", testEveryTilesEditIsSentAndSaved),
+            ("tiles/identity-roster-is-full", testACameraOffGuestsSavedSlotIsNotStale),
+            ("tiles/move-and-include-paths", testTilesMoveAndIncludeCoverEveryPath),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1373,5 +1376,73 @@ extension ShellTests {
                     "\(w): stale entries listed")
         try? model.clearStaleTiles()
         expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-pid:P7", nil], "\(w): clear stale")
+    }
+
+    @MainActor static func testEveryTilesEditIsSentAndSaved() {
+        let w = "S3 review: a successful edit is re-sent and saved"
+        let model = tilesActionModel()
+        let edits: [(String, () throws -> Void)] = [
+            ("assign", { try model.assignTilesSlot(1, sourceId: "zoom:7") }),
+            ("exclude", { try model.setTilesExclusion("zoom:9", excluded: true) }),
+            ("mode", { try model.setTilesMembershipMode("manual") }),
+            ("include", { try model.includeTilesMember("zoom:2", included: true) }),
+            ("clear stale", { try model.clearStaleTiles() }),
+        ]
+        for (name, edit) in edits {
+            let syncs = model.sceneSyncRequestCount
+            do { try edit() } catch { expect(false, "\(w): \(name) succeeds") }
+            expect(model.sceneSyncRequestCount > syncs, "\(w): \(name) syncs scenes")
+            let saved = model.lastSavedPrefs.scenes.first { $0.id == "t-pvw" }?.tiles
+            expectEqual(saved, model.scenes.first { $0.id == "t-pvw" }?.tiles?.persisted, "\(w): \(name) is saved at once")
+        }
+    }
+
+    @MainActor static func testACameraOffGuestsSavedSlotIsNotStale() {
+        let w = "S3 review: identities resolve against the FULL roster"
+        let model = tilesActionModel()
+        try? model.assignTilesSlot(1, sourceId: "zoom:7")
+        model.roster[0].hasVideo = false   // Ann turns her camera off
+        expect(!model.tilesMembershipSummary.contains("Stale"), "\(w): a camera-off guest's pid slot is not stale")
+        try? model.clearStaleTiles()
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-pid:P7"], "\(w): clear stale keeps it")
+    }
+
+    @MainActor static func testTilesMoveAndIncludeCoverEveryPath() {
+        let w = "S3 review: move and include paths"
+        let model = tilesActionModel()
+        // A legacy raw id and a name-keyed entry for the same guest are both cleared on a move.
+        try? model.updateTiles { $0.manualSlots = ["zoom:2", "zoom-name:Cy"] }
+        try? model.assignTilesSlot(3, sourceId: "zoom:2")
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, [nil, "zoom-name:Cy", "zoom-pid:P2"],
+                    "\(w): the raw-id copy is cleared")
+        try? model.assignTilesSlot(1, sourceId: "zoom:9")
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-name:Cy", nil, "zoom-pid:P2"],
+                    "\(w): the name-keyed copy is cleared (Cy has no pid, so the new key is the name)")
+        // Exclusion binds the wall to the meeting too.
+        try? model.updateTiles { $0.boundMeetingId = nil }
+        try? model.setTilesExclusion("zoom:7", excluded: true)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.boundMeetingId, "8675309", "\(w): exclusion binds the meeting")
+        var thrown: TilesEditError?
+        do { try model.setTilesExclusion(" ", excluded: true) } catch let e as TilesEditError { thrown = e } catch {}
+        expectEqual(thrown, .unavailableSource, "\(w): a blank exclude is refused")
+        expectEqual(model.studioCommandStatus, "Choose a source to exclude or allow.", "\(w): with the Windows blank-id text")
+        // Eligible mode: include is a no-op.
+        let before = model.scenes.first { $0.id == "t-pvw" }?.tiles
+        try? model.setTilesMembershipMode("eligible")
+        let eligible = model.scenes.first { $0.id == "t-pvw" }?.tiles
+        try? model.includeTilesMember("zoom:2", included: false)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles, eligible, "\(w): eligible mode ignores include/omit")
+        _ = before
+        // Routed mode: only the omitted list changes.
+        try? model.setTilesMembershipMode("routed")
+        let routedBefore = model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots
+        try? model.includeTilesMember("zoom:2", included: false)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.omittedSourceIds, ["zoom-pid:P2"], "\(w): routed omit recorded")
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, routedBefore, "\(w): routed include never takes a slot")
+        // Manual mode: including someone already on the wall takes no new slot.
+        try? model.setTilesMembershipMode("manual")
+        try? model.updateTiles { $0.manualSlots = ["zoom-pid:P7"]; $0.excludedSourceIds = []; $0.omittedSourceIds = [] }
+        try? model.includeTilesMember("zoom:7", included: true)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-pid:P7"], "\(w): an existing member keeps one slot")
     }
 }
