@@ -485,3 +485,37 @@ No HIGH. The reviewer confirmed that Layout and Style match the XAML in order an
   - The live preset test does not check Clean or the spacing values on Program.
   - Nothing exercises the views themselves beyond the snapshots.
 - `tiles/` filter: 513/513.
+
+## Slice S5
+
+### Task 19 — Members tab
+
+- `TilesOverridePolicy` (`editorValues`, `create` with the 4 Windows messages verbatim).
+- `AppModel+Tiles` (the `SceneWorkspaceMemberEditor` port):
+  - `tilesSelectedMemberId` is a non-optional `String`, "" when nothing is selected;
+  - `tilesMemberRows` uses the Windows status words Excluded, Unused, Pinned and Auto;
+  - `tilesCanEditSelectedMember`, `tilesFramingTitle`, `tilesWallPixels` (`wallRect` × 1920×1080);
+  - `setTilesNeverShow`;
+  - `setTilesCrop`: 0-45, ignored out of range;
+  - `resetTilesCrop`;
+  - `setTilesPinned`: on gives (0,0,0.48,1) and keeps the crop; off clears the rect and z and keeps the crop;
+  - `setTilesPin`: pixels relative to the wall; out of the wall gives the Windows message and no edit;
+  - `setTilesOrder`: only when pinned, an integer 0-63.
+- `TilesMembersTab` follows Windows `SourcesPage.xaml` Members order:
+  - WHO APPEARS: the mode picker with the 3 Windows labels and help, and the member list (max 220 pt, its own scroll; checkbox include, name, status; click selects).
+  - "<name> · framing": never show, crop left/right, reset crop.
+  - TILE PLACEMENT: pin; X/Y/width/height in px when pinned; return to automatic; "Advanced placement" with tile order; the help text.
+  - NAMES: "Name each tile" disabled with the D3 caption, plus the Windows help.
+  - "Advanced membership": manual slot, assign/clear slot, the summary, clear stale.
+  - The snapshot was checked by eye.
+- Tests:
+  - the 4 Windows facts: `TakeRefreshWithClearedSelection…` (3 ids), `SwitchingEditorSource…`, `OverrideRoundTrip…`, and `InvalidOverrideIsRejectedBeforeMutation` (4 rows, NaN included) plus the messages;
+  - `testATakeWithAnEmptyMemberSelectionLoadsDefaultsAndKeepsOverrides` (Review Focus 3): no trap, defaults, nothing editable, overrides byte-equal;
+  - `testUnpinKeepsCropAndClearsOrder`, `testAPinOutsideTheWallIsRefusedWithTheWindowsMessage`, `testMemberStatusWordsAreTheWindowsWords`, `testNameEachTileIsDisabledAndTheWireStaysFalse`.
+- `tiles/` filter: 556/556. Full suite: **8896 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 19) | Result |
+|---|---|
+| unpin clears the crop | red |
+| order allowed while unpinned | red |
+| make the selection optional and force-unwrap it | not representable. The selection is a non-optional `String` by type, so Review Focus 3's trap cannot be written. The RF3 test pins the behaviour (defaults, nothing editable, overrides untouched) |

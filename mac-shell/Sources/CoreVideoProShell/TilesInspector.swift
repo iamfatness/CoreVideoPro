@@ -380,6 +380,127 @@ struct TilesColorField: View {
     }
 }
 
+/// Windows SourcesPage.xaml Members PivotItem, control for control.
 struct TilesMembersTab: View {
-    var body: some View { TilesHelp("Members controls arrive with Task 19.") }
+    @EnvironmentObject var model: AppModel
+    @State private var advancedPlacement = false
+    @State private var advancedMembership = false
+    @State private var manualSlot = 1.0
+
+    var s: TilesSettings { model.tilesEditSettings }
+    var canEdit: Bool { model.tilesCanEditSelectedMember }
+    var override: TilesMemberOverride? { model.tilesSelectedOverride }
+
+    static let modes: [(value: String, label: String)] = [
+        ("routed", "Routed show sources only"),
+        ("eligible", "All eligible: meeting participants + in-show local sources"),
+        ("manual", "Manual slots only"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TilesSection(title: "Who appears") {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Membership mode").font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                    Picker("", selection: Binding(get: { TilesMembershipPolicy.normalizeMode(s.membershipMode) },
+                                                  set: { try? model.setTilesMembershipMode($0) })) {
+                        ForEach(Self.modes, id: \.value) { Text($0.label).tag($0.value) }
+                    }
+                    .labelsHidden().controlSize(.small)
+                }
+                TilesHelp("Routed follows show assignments. All eligible follows the meeting. Manual lets you choose individual feeds. Never show excludes a member from every mode.")
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.tilesMemberRows) { row in
+                            HStack(spacing: 6) {
+                                Toggle("", isOn: Binding(get: { row.included }, set: { try? model.includeTilesMember(row.id, included: $0) }))
+                                    .toggleStyle(.checkbox).labelsHidden().disabled(!row.canInclude)
+                                Text(row.label).font(.grotesk(11)).foregroundStyle(Studio.textPrimary).lineLimit(1).truncationMode(.tail)
+                                Spacer(minLength: 4)
+                                Text(row.status).font(.plexMono(9)).foregroundStyle(Studio.secondary).lineLimit(1)
+                            }
+                            .padding(.vertical, 3).padding(.horizontal, 4)
+                            .background(RoundedRectangle(cornerRadius: 4)
+                                .fill(row.id == model.tilesSelectedMemberId ? Studio.accent.opacity(0.12) : Studio.field))
+                            .contentShape(Rectangle())
+                            .onTapGesture { model.tilesSelectedMemberId = row.id }
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+            }
+            Divider().overlay(Studio.border)
+            TilesSection(title: model.tilesFramingTitle) {
+                Toggle("Never show this member", isOn: Binding(
+                    get: { model.tilesMemberStates[model.tilesSelectedMemberId]?.excluded ?? false },
+                    set: { model.setTilesNeverShow($0) }))
+                    .font(.grotesk(11)).toggleStyle(.checkbox)
+                TilesSliderRow(label: "Crop left", value: override?.cropLeftPercent ?? 0, range: 0...45, step: 0.01, unit: "%",
+                               format: TilesFormat.threePlaces, defaultValue: nil, enabled: canEdit) { model.setTilesCrop(left: $0) }
+                TilesSliderRow(label: "Crop right", value: override?.cropRightPercent ?? 0, range: 0...45, step: 0.01, unit: "%",
+                               format: TilesFormat.threePlaces, defaultValue: nil, enabled: canEdit) { model.setTilesCrop(right: $0) }
+                Button("Reset this tile crop") { model.resetTilesCrop() }.buttonStyle(GhostButtonStyle())
+            }
+            .disabled(!canEdit)
+            Divider().overlay(Studio.border)
+            TilesSection(title: "Tile placement") {
+                Toggle("Pin this member in wall", isOn: Binding(get: { model.tilesSelectedPinned }, set: { model.setTilesPinned($0) }))
+                    .font(.grotesk(11)).toggleStyle(.checkbox)
+                if model.tilesSelectedPinned, let rect = override?.rect {
+                    let wall = model.tilesWallPixels
+                    TilesSliderRow(label: "Tile X", value: rect.x * wall.width, range: 0...wall.width, step: 1, unit: "px",
+                                   format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesPin(field: .x, pixels: $0) }
+                    TilesSliderRow(label: "Tile Y", value: rect.y * wall.height, range: 0...wall.height, step: 1, unit: "px",
+                                   format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesPin(field: .y, pixels: $0) }
+                    TilesSliderRow(label: "Tile width", value: rect.width * wall.width, range: 1...wall.width, step: 1, unit: "px",
+                                   format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesPin(field: .width, pixels: $0) }
+                    TilesSliderRow(label: "Tile height", value: rect.height * wall.height, range: 1...wall.height, step: 1, unit: "px",
+                                   format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesPin(field: .height, pixels: $0) }
+                    Button("Return this tile to automatic") { model.setTilesPinned(false) }.buttonStyle(GhostButtonStyle())
+                    DisclosureGroup(isExpanded: $advancedPlacement) {
+                        TilesSliderRow(label: "Tile order", value: Double(override?.z ?? 0), range: 0...63, step: 1,
+                                       format: { String(Int($0)) }, defaultValue: nil, enabled: canEdit) { model.setTilesOrder($0) }
+                            .padding(.top, 6)
+                    } label: {
+                        Text("Advanced placement").font(.grotesk(11, .medium)).foregroundStyle(Studio.textPrimary)
+                    }
+                }
+                TilesHelp("Pixels are relative to this wall. Automatic tiles reflow in the remaining space. Unpinning keeps this member’s crop.")
+            }
+            .disabled(!canEdit)
+            Divider().overlay(Studio.border)
+            TilesSection(title: "Names") {
+                // Owner decision D3: disabled on Mac in Phase 3; the saved value is untouched.
+                Toggle("Name each tile", isOn: .constant(s.nameEachTile))
+                    .font(.grotesk(11)).toggleStyle(.switch).controlSize(.small).disabled(true)
+                TilesHelp("Not on Mac yet: names need the Metal name-line check (Phase 4).")
+                TilesHelp("One line per tile in the scene’s lower-third style: the source’s name from Sources, top line only. Zoom participants and capture devices are named; media and browser members are not yet. Names scale with their tiles; tiles too small for a readable line stay unlabelled.")
+            }
+            DisclosureGroup(isExpanded: $advancedMembership) {
+                VStack(alignment: .leading, spacing: 8) {
+                    TilesSliderRow(label: "Manual slot", value: manualSlot, range: 1...64, step: 1, unit: "slot",
+                                   format: { String(Int($0)) }, defaultValue: nil) { manualSlot = $0 }
+                    HStack(spacing: 6) {
+                        Button("Assign selected member to slot") {
+                            try? model.assignTilesSlot(Int(manualSlot), sourceId: model.tilesSelectedMemberId)
+                        }
+                        .buttonStyle(GhostButtonStyle())
+                        Button("Clear slot") { try? model.assignTilesSlot(Int(manualSlot), sourceId: "") }
+                            .buttonStyle(GhostButtonStyle())
+                    }
+                    TilesHelp(model.tilesMembershipSummary)
+                    Button("Clear stale memberships") { try? model.clearStaleTiles() }.buttonStyle(GhostButtonStyle())
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("Advanced membership").font(.grotesk(11, .medium)).foregroundStyle(Studio.textPrimary)
+            }
+        }
+        .onAppear {
+            // Windows: the selection falls back to the first member when it is gone.
+            if !model.tilesMemberRows.contains(where: { $0.id == model.tilesSelectedMemberId }) {
+                model.tilesSelectedMemberId = model.tilesMemberRows.first?.id ?? ""
+            }
+        }
+    }
 }

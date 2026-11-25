@@ -424,3 +424,119 @@ extension AppModel {
         }
     }
 }
+
+// MARK: - Members tab (Task 19): SceneWorkspaceMemberEditor + the member rows
+
+enum TilesPinField { case x, y, width, height }
+
+/// One row of the Members list (Windows `TilesMemberViewModel`).
+struct TilesMemberRow: Equatable, Identifiable {
+    let id: String
+    let label: String
+    let included: Bool
+    let canInclude: Bool
+    /// The Windows status word ("Excluded" | "Unused" | "Pinned" | "Auto"), plus
+    /// the Mac-only live suffix (D2) when the edited wall is on Program.
+    let status: String
+}
+
+extension AppModel {
+    /// Windows member rows: the member choices with their workspace state.
+    var tilesMemberRows: [TilesMemberRow] {
+        let states = tilesMemberStates
+        return tilesMemberChoices.map { choice in
+            let state = states[choice.id]
+            let excluded = state?.excluded == true, included = state?.selected == true
+            let word = excluded ? "Excluded" : !included ? "Unused" : state?.pinned == true ? "Pinned" : "Auto"
+            return TilesMemberRow(id: choice.id, label: choice.label, included: included,
+                                  canInclude: state?.canSelect == true, status: word + tilesLiveSuffix(for: choice.id))
+        }
+    }
+
+    /// Filled by Task 20 (live badges).
+    func tilesLiveSuffix(for sourceId: String) -> String { "" }
+
+    /// The selected member's saved override, or the Windows editor default.
+    var tilesSelectedOverride: TilesMemberOverride? {
+        tilesEditTargetId.flatMap { _ in tilesEditSettings.overrides[tilesSelectedMemberId] }
+    }
+
+    /// `SceneWorkspaceMemberEditor.CanEdit`: a Preview wall and an available member.
+    var tilesCanEditSelectedMember: Bool {
+        tilesEditTargetId != nil && !tilesSelectedMemberId.isEmpty
+            && TilesMemberChoicePolicy.contains(tilesMemberChoices, tilesSelectedMemberId)
+    }
+
+    /// `FramingTitle`.
+    var tilesFramingTitle: String {
+        (tilesMemberChoices.first { $0.id == tilesSelectedMemberId }?.label ?? "Select a member") + " · framing"
+    }
+
+    /// The wall in pixels (`wallRect` × the 1920×1080 canvas), never below 1.
+    var tilesWallPixels: (width: Double, height: Double) {
+        let r = tilesEditSettings.wallRect
+        return (max(1, r.width * 1920), max(1, r.height * 1080))
+    }
+
+    private func editSelectedOverride(_ change: (inout TilesMemberOverride) -> Void) {
+        let id = tilesSelectedMemberId
+        guard tilesCanEditSelectedMember else { return }
+        try? updateTiles { w in
+            var value = w.overrides[id] ?? TilesMemberOverride()
+            change(&value)
+            w.overrides[id] = value
+        }
+    }
+
+    /// `NeverShow`.
+    func setTilesNeverShow(_ on: Bool) {
+        guard tilesCanEditSelectedMember else { return }
+        try? setTilesExclusion(tilesSelectedMemberId, excluded: on)
+    }
+
+    /// `Crop`: 0-45 each, ignored out of range.
+    func setTilesCrop(left: Double? = nil, right: Double? = nil) {
+        for (value, isLeft) in [(left, true), (right, false)] {
+            guard let v = value, v.isFinite, (0...45).contains(v) else { continue }
+            let current = isLeft ? (tilesSelectedOverride?.cropLeftPercent ?? 0) : (tilesSelectedOverride?.cropRightPercent ?? 0)
+            if v == current { continue }
+            editSelectedOverride { if isLeft { $0.cropLeftPercent = v } else { $0.cropRightPercent = v } }
+        }
+    }
+
+    func resetTilesCrop() { editSelectedOverride { $0.cropLeftPercent = 0; $0.cropRightPercent = 0 } }
+
+    /// `Pinned`: on gives rect (0,0,0.48,1) and keeps the crop; off clears rect and z, keeps the crop.
+    var tilesSelectedPinned: Bool { tilesSelectedOverride?.rect != nil }
+    func setTilesPinned(_ on: Bool) {
+        guard on != tilesSelectedPinned else { return }
+        editSelectedOverride { v in
+            v.rect = on ? TilesRect(x: 0, y: 0, width: 0.48, height: 1) : nil
+            if !on { v.z = nil }
+        }
+    }
+
+    /// `Pin`: pixels relative to the wall; an out-of-wall result is refused with the Windows text.
+    func setTilesPin(field: TilesPinField, pixels: Double) {
+        guard tilesCanEditSelectedMember, tilesSelectedPinned, pixels.isFinite, var rect = tilesSelectedOverride?.rect else { return }
+        let wall = tilesWallPixels
+        switch field {
+        case .x: rect.x = pixels / wall.width
+        case .y: rect.y = pixels / wall.height
+        case .width: rect.width = pixels / wall.width
+        case .height: rect.height = pixels / wall.height
+        }
+        if rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0
+            || rect.x + rect.width > 1.00000001 || rect.y + rect.height > 1.00000001 {
+            studioCommandStatus = "The tile position and size must fit inside this wall."
+            return
+        }
+        editSelectedOverride { $0.rect = rect }
+    }
+
+    /// `Order`: only when pinned; an integer 0-63.
+    func setTilesOrder(_ z: Double) {
+        guard tilesSelectedPinned, z.isFinite, (0...63).contains(z), z == z.rounded(.towardZero) else { return }
+        editSelectedOverride { $0.z = Int(z) }
+    }
+}

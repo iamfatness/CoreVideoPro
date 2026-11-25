@@ -404,6 +404,9 @@ final class AppModel: ObservableObject {
     var tilesEditDepth = 0
     var tilesEditMaxDepth = 0
     var tilesSaveTask: Task<Void, Never>?
+    /// The Members tab's selected member id: "" when nothing is selected, never nil
+    /// (Review Focus 3: a Take with an empty selection must not trap).
+    @Published var tilesSelectedMemberId = ""
     /// The Tiles inspector's selected tab (Windows Pivot: Layout | Style | Members).
     @Published var tilesInspectorTab: TilesInspectorTab = .layout
     /// Sticky Tiles audio (Windows TilesAudioSourceLatch), observed once per spine build.

@@ -67,6 +67,13 @@ extension ShellTests {
             ("tiles/reset-style-is-windows", testResetWallStyleIsTheWindowsReset),
             ("tiles/hex-is-the-colour-truth", testTheHexStringIsTheOnlyColourTruth),
             ("tiles/opacity-transparency-payload", testWallOpacityAndTransparencyReachThePayload),
+            // Task 19: the Members tab.
+            ("tiles/override-policy-windows-facts", testTilesOverridePolicyPortsTheWindowsFacts),
+            ("tiles/take-with-empty-selection", testATakeWithAnEmptyMemberSelectionLoadsDefaultsAndKeepsOverrides),
+            ("tiles/unpin-keeps-crop", testUnpinKeepsCropAndClearsOrder),
+            ("tiles/pin-outside-wall-refused", testAPinOutsideTheWallIsRefusedWithTheWindowsMessage),
+            ("tiles/member-status-words", testMemberStatusWordsAreTheWindowsWords),
+            ("tiles/name-each-tile-disabled", testNameEachTileIsDisabledAndTheWireStaysFalse),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1639,5 +1646,122 @@ extension ShellTests {
         expectEqual(payload?["transparentBackground"] as? Bool, true, "\(w): transparent")
         try? model.setTilesWallOpacityPercent(140)
         expectEqual(model.tilesEditSettings.wallOpacity, 0.4, "\(w): out of 0-100 is ignored, like Windows")
+    }
+
+    // ── Task 19 ──────────────────────────────────────────────────────────────
+
+    static func testTilesOverridePolicyPortsTheWindowsFacts() {
+        let t = "TilesMembershipPolicyTests"
+        var scene = TilesSettings()
+        scene.overrides = ["zoom:a": try! TilesOverridePolicy.create(x: 0.1, y: 0.2, width: 0.3, height: 0.4, left: 10, right: 20, z: 5)]
+        for id in [nil, "", " "] as [String?] {
+            var empty = TilesOverridePolicy.editorValues(scene, sourceId: id)
+            expect(empty.rect?.x == 0 && empty.rect?.width == 0.5 && empty.rect?.height == 1 && empty.cropLeftPercent == 0,
+                   "\(t).TakeRefreshWithClearedSelectionLoadsDefaultsWithoutChangingOverrides(\(String(describing: id)))")
+            empty.cropLeftPercent = 30
+            expect(scene.overrides.count == 1 && TilesOverridePolicy.editorValues(scene, sourceId: "zoom:a").cropLeftPercent == 10,
+                   "\(t).TakeRefresh…: the saved override is untouched")
+            expectEqual(TilesOverridePolicy.editorValues(nil, sourceId: id).rect?.width, 0.5, "\(t).TakeRefresh…: no wall")
+        }
+        var selected = TilesOverridePolicy.editorValues(scene, sourceId: "zoom:a")
+        expect(selected.rect?.x == 0.1 && selected.cropLeftPercent == 10, "\(t).SwitchingEditorSourceOrSceneLoadsSavedValuesOrDefaultsWithoutMutation")
+        selected.cropLeftPercent = 30
+        expectEqual(scene.overrides["zoom:a"]?.cropLeftPercent, 10, "\(t).Switching…: no mutation")
+        expectEqual(TilesOverridePolicy.editorValues(scene, sourceId: "zoom:b").cropLeftPercent, 0, "\(t).Switching…: unknown id")
+        expectEqual(TilesOverridePolicy.editorValues(TilesSettings(), sourceId: "zoom:a").rect?.width, 0.5, "\(t).Switching…: empty wall")
+        var bg = TilesSettings(); bg.backgroundColor = "#123456"; bg.backgroundSourceId = "zoom:bg"
+        bg.overrides = ["zoom:a": try! TilesOverridePolicy.create(x: 0, y: 0, width: 0.4, height: 1, left: 10, right: 20, z: 3)]
+        let restored = TilesSettings(persisted: bg.persisted)
+        var clone = restored; clone.overrides["zoom:a"]?.cropLeftPercent = 1
+        expect(restored.overrides["zoom:a"]?.cropLeftPercent == 10 && restored.overrides["zoom:a"]?.rect?.width == 0.4
+               && restored.backgroundSourceId == "zoom:bg" && restored.backgroundColor == "#123456",
+               "\(t).OverrideRoundTripPreservesPinnedRectCropBackgroundAndDeepClone")
+        let rows: [(Double, Double, Double, Double, Double)] = [(0, 1, 60, 40, 0), (0.8, 0.5, 0, 0, 0), (0, 1, 0, 0, 1.5), (.nan, 1, 0, 0, 0)]
+        for (x, width, left, right, z) in rows {
+            expect((try? TilesOverridePolicy.create(x: x, y: 0, width: width, height: 1, left: left, right: right, z: z)) == nil,
+                   "\(t).InvalidOverrideIsRejectedBeforeMutation(\(x), \(width), \(left), \(right), \(z))")
+        }
+        do { _ = try TilesOverridePolicy.create(x: .nan, y: 0, width: 1, height: 1, left: 0, right: 0, z: 0) }
+        catch let e as TilesOverrideError { expectEqual(e.message, "Tiles values must be finite numbers.", "\(t): finite message") } catch {}
+        do { _ = try TilesOverridePolicy.create(x: 0, y: 0, width: 1, height: 1, left: 46, right: 0, z: 0) }
+        catch let e as TilesOverrideError { expectEqual(e.message, "Left and right crop must each be between 0 and 45 percent.", "\(t): crop message") } catch {}
+        do { _ = try TilesOverridePolicy.create(x: 0, y: 0, width: 1, height: 1, left: 0, right: 0, z: 64) }
+        catch let e as TilesOverrideError { expectEqual(e.message, "Tile order must be an integer from 0 to 63.", "\(t): order message") } catch {}
+    }
+
+    @MainActor static func testATakeWithAnEmptyMemberSelectionLoadsDefaultsAndKeepsOverrides() {
+        let w = "Review Focus 3: a Take with an empty member selection"
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        var wall = TilesSettings()
+        wall.overrides = ["zoom:7": TilesMemberOverride(rect: TilesRect(x: 0, y: 0, width: 0.5, height: 1), cropLeftPercent: 10, z: 2),
+                          "zoom:5": TilesMemberOverride(cropRightPercent: 5)]
+        model.scenes.append(SceneDef(id: "t-pvw", name: "Wall", layout: AppModel.tilesLayout, tiles: wall))
+        model.previewSceneId = "t-pvw"
+        model.tilesSelectedMemberId = ""
+        let saved = model.scenes.first { $0.id == "t-pvw" }?.tiles?.overrides
+        _ = runTake(model)
+        let values = TilesOverridePolicy.editorValues(model.scenes.first { $0.id == "t-pvw" }?.tiles, sourceId: model.tilesSelectedMemberId)
+        expect(values.rect?.width == 0.5 && values.cropLeftPercent == 0, "\(w): defaults, no trap")
+        expect(!model.tilesCanEditSelectedMember && model.tilesSelectedOverride == nil, "\(w): nothing is editable with no selection")
+        model.setTilesCrop(left: 20); model.setTilesPinned(true)
+        expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.overrides, saved, "\(w): overrides byte-equal")
+    }
+
+    @MainActor static func testUnpinKeepsCropAndClearsOrder() {
+        let w = "SceneWorkspaceMemberEditor.Pinned"
+        let model = tilesActionModel()
+        model.tilesSelectedMemberId = "zoom:7"
+        model.setTilesCrop(left: 12, right: 8)
+        model.setTilesOrder(3)
+        expect(model.tilesSelectedOverride?.z == nil, "\(w): order needs a pin")
+        model.setTilesPinned(true)
+        expectEqual(model.tilesSelectedOverride?.rect, TilesRect(x: 0, y: 0, width: 0.48, height: 1), "\(w): pin starts at (0,0,0.48,1)")
+        model.setTilesOrder(3); model.setTilesOrder(3.5); model.setTilesOrder(64)
+        expectEqual(model.tilesSelectedOverride?.z, 3, "\(w): integer order 0-63 only")
+        model.setTilesPinned(false)
+        expect(model.tilesSelectedOverride?.rect == nil && model.tilesSelectedOverride?.z == nil, "\(w): unpin clears rect and order")
+        expect(model.tilesSelectedOverride?.cropLeftPercent == 12 && model.tilesSelectedOverride?.cropRightPercent == 8, "\(w): unpin keeps the crop")
+        model.setTilesCrop(left: 50)
+        expectEqual(model.tilesSelectedOverride?.cropLeftPercent, 12, "\(w): crop above 45 is ignored")
+        model.resetTilesCrop()
+        expect(model.tilesSelectedOverride?.cropLeftPercent == 0 && model.tilesSelectedOverride?.cropRightPercent == 0, "\(w): reset crop")
+    }
+
+    @MainActor static func testAPinOutsideTheWallIsRefusedWithTheWindowsMessage() {
+        let w = "SceneWorkspaceMemberEditor.Pin"
+        let model = tilesActionModel()
+        model.tilesSelectedMemberId = "zoom:7"
+        model.setTilesPinned(true)
+        model.setTilesPin(field: .width, pixels: 960)
+        expectEqual(model.tilesSelectedOverride?.rect?.width, 0.5, "\(w): 960 px of a 1920 px wall is 0.5")
+        model.setTilesPin(field: .x, pixels: 1200)
+        expectEqual(model.studioCommandStatus, "The tile position and size must fit inside this wall.", "\(w): out of the wall is refused")
+        expectEqual(model.tilesSelectedOverride?.rect?.x, 0, "\(w): and nothing changes")
+        try? model.updateTiles { $0.wallRect = TilesRect(x: 0, y: 0, width: 0.5, height: 1) }
+        expectEqual(model.tilesWallPixels.width, 960, "\(w): pixels are relative to the wall")
+    }
+
+    @MainActor static func testMemberStatusWordsAreTheWindowsWords() {
+        let w = "SceneWorkspaceViewModel member status"
+        let model = tilesActionModel()
+        func status(_ id: String) -> String { model.tilesMemberRows.first { $0.id == id }?.status ?? "?" }
+        expectEqual(status("zoom:7"), "Auto", "\(w): eligible member is Auto")
+        try? model.setTilesExclusion("zoom:9", excluded: true)
+        expectEqual(status("zoom:9"), "Excluded", "\(w): never-show is Excluded")
+        model.tilesSelectedMemberId = "zoom:7"; model.setTilesPinned(true)
+        expectEqual(status("zoom:7"), "Pinned", "\(w): a pinned member")
+        try? model.setTilesMembershipMode("manual")
+        expectEqual(status("zoom:2"), "Unused", "\(w): manual mode, not in a slot")
+        expect(model.tilesMemberRows.allSatisfy { $0.canInclude || $0.status == "Excluded" }, "\(w): manual members are includable")
+    }
+
+    @MainActor static func testNameEachTileIsDisabledAndTheWireStaysFalse() {
+        let w = "D3: Name each tile"
+        let model = tilesActionModel()
+        try? model.updateTiles { $0.nameEachTile = true }   // e.g. a show file from Windows
+        expectEqual((model.tilesPayload(for: "t-pvw")?["style"] as? JSONObject)?["nameEachTile"] as? Bool, false, "\(w): the wire stays false")
+        expectEqual(model.tilesEditSettings.nameEachTile, true, "\(w): the saved value is kept")
+        expectEqual(TilesSettings(persisted: model.tilesEditSettings.persisted).nameEachTile, true, "\(w): and survives a save")
     }
 }
