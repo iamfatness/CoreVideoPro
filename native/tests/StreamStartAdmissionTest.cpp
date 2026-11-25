@@ -134,3 +134,28 @@ TEST(StreamStartAdmission, ANotDeliverableRefusalWithNoDetailStillReadsAsASenten
   EXPECT_NE(a.message.find("known defect"), std::string::npos);
   EXPECT_EQ(a.message.find("()"), std::string::npos);
 }
+
+#if defined(__APPLE__)
+// Phase 4 O3: Apple now has an HEVC encoder POLICY, but admission is unchanged
+// (D1: HEVC is GPU-direct or nothing), and the refusal must not send a Mac
+// operator to buy an NVIDIA card.
+TEST(StreamStartAdmission, AppleRefusalSentencesNameTheMacNotNvidia) {
+  auto hevc = healthy("h265");
+  hevc.gpuPathChosen = false;
+  hevc.gpuPathReason = "no-encoder-texture";
+  const auto h = admitStreamStart(hevc);
+  EXPECT_TRUE(h.refused);
+  EXPECT_EQ(h.resultCode, "no-hardware-encoder");
+  EXPECT_EQ(h.message,
+            "H.265 needs the GPU-direct hardware encoder, which is not available on this Mac "
+            "(no-encoder-texture). Choose H.264.");
+
+  auto av1 = healthy("av1");
+  av1.codecHasHardwareEncoder = false;
+  av1.gpuPathChosen = false;
+  av1.gpuPathReason = "no-hardware-encoder";
+  EXPECT_EQ(admitStreamStart(av1).message,
+            "AV1 needs the GPU-direct hardware encoder, which is not available on this Mac "
+            "(no-hardware-encoder). Choose H.264: Apple Silicon has no AV1 encoder.");
+}
+#endif

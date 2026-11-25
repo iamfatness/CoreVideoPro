@@ -54,10 +54,11 @@ TEST(EncoderPolicy, NeverOffersUnsupportedGpuVendors) {
 
 // OWNER REVERSAL 2026-09-20: HEVC encode SHIPS on Windows (NVENC). The
 // 2026-08-06 exclusion (patent exposure) was reversed by the owner with that
-// exposure accepted; macOS still has no HEVC path in this product.
+// exposure accepted. macOS gained HEVC through VideoToolbox in Phase 4 (O3);
+// see AppleOffersHevcThroughVideoToolbox.
 TEST(EncoderPolicy, HevcShipsOnWindowsNvencOnly) {
 #if defined(__APPLE__)
-  EXPECT_FALSE(codecHasSupportedHardwareEncoder("h265"));
+  // Windows policy only; the Apple HEVC policy is AppleOffersHevcThroughVideoToolbox.
 #else
   EXPECT_TRUE(codecHasSupportedHardwareEncoder("h265"));
   EXPECT_TRUE(isSupportedEncoder("hevc_nvenc"));
@@ -94,12 +95,37 @@ TEST(EncoderPolicy, WindowsAv1IsNvencOnlyWithNoFallback) {
   EXPECT_EQ(candidates[0], "av1_nvenc");
   EXPECT_FALSE(contains(candidates, "h264_mf"));
 }
+// Phase 4 O3 changed only the Apple branch: Windows HEVC and H.264 candidates
+// are exactly what they were.
+TEST(EncoderPolicy, WindowsHevcPolicyIsUnchanged) {
+  EXPECT_EQ(encoderCandidatesFor("h265", "auto"), std::vector<std::string>{"hevc_nvenc"});
+  EXPECT_EQ(encoderCandidatesFor("h264", "auto"), (std::vector<std::string>{"h264_nvenc", "h264_mf"}));
+}
 #else
 // Apple Silicon's media engine DECODES AV1 (from M3) but cannot encode it, so an
 // AV1 request has no hardware to land on and must be reported, not substituted.
 TEST(EncoderPolicy, AppleSiliconHasNoAv1Encoder) {
   EXPECT_FALSE(codecHasSupportedHardwareEncoder("av1"));
   EXPECT_EQ(preferredEncoderFor("av1", "auto"), "h264_videotoolbox");
+}
+
+// Phase 4 O3: HEVC encode on Apple through VideoToolbox. Admission still keeps
+// HEVC GPU-direct-only (D1, StreamStartAdmission.h), so this is the encoder
+// POLICY, not permission to stream HEVC off the GPU path.
+TEST(EncoderPolicy, AppleOffersHevcThroughVideoToolbox) {
+  EXPECT_TRUE(isSupportedEncoder("hevc_videotoolbox"));
+  EXPECT_TRUE(isSupportedEncoder("h264_videotoolbox"));
+  EXPECT_TRUE(codecHasSupportedHardwareEncoder("h264"));
+  EXPECT_TRUE(codecHasSupportedHardwareEncoder("h265"));
+  EXPECT_FALSE(codecHasSupportedHardwareEncoder("av1"));
+  EXPECT_EQ(preferredEncoderFor("h265", "videotoolbox"), "hevc_videotoolbox");
+  EXPECT_EQ(preferredEncoderFor("h265", "auto"), "hevc_videotoolbox");
+  EXPECT_EQ(preferredEncoderFor("h264", "videotoolbox"), "h264_videotoolbox");
+  EXPECT_EQ(preferredEncoderFor("h264", "auto"), "h264_videotoolbox");
+  EXPECT_EQ(encoderCandidatesFor("h265", "auto"), std::vector<std::string>{"hevc_videotoolbox"});
+  EXPECT_EQ(encoderCandidatesFor("h265", "videotoolbox"), std::vector<std::string>{"hevc_videotoolbox"});
+  EXPECT_EQ(encoderCandidatesFor("h264", "auto"), std::vector<std::string>{"h264_videotoolbox"});
+  EXPECT_EQ(encoderCandidatesFor("h264", "videotoolbox"), std::vector<std::string>{"h264_videotoolbox"});
 }
 
 TEST(EncoderPolicy, MacUsesVideoToolboxOnly) {

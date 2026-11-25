@@ -43,6 +43,7 @@
 #if !defined(_WIN32)
 #include "modules/PosixExecutableLocator.h"
 #include "modules/PosixChildProcess.h"
+#include "modules/PosixFfmpegEncoderProbe.h"
 #endif
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
@@ -603,10 +604,9 @@ bool ffmpegEncoderIsAvailable(const std::string& executable, const std::string& 
   CloseHandle(processInfo.hProcess);
   return waitResult == WAIT_OBJECT_0 && exitCode == 0;
 #else
-  // Release packaging on non-Windows supplies the documented software encoders.
-  (void)executable;
-  (void)encoderName;
-  return true;
+  // Same trial encode as Windows, through the child guard with the same 5 s
+  // budget (PosixFfmpegEncoderProbe.h). It used to answer true for everything.
+  return posixFfmpegEncoderIsAvailable(executable, encoderName);
 #endif
 }
 

@@ -12,10 +12,14 @@
 //                                   core's fork/exec children start), then sleeps: a core the test
 //                                   can SIGKILL. The sibling must not hold the lifeline open.
 //
+//   argv-to <file>                  writes argv[1..] joined by single spaces to <file>, exits 0
+//
 // When COREVIDEO_TEST_PROBE_MODE is set the mode comes from it and argv is
 // ignored, so a copy named "ffmpeg" can stand in for the sender's transport
 // child (FfmpegChildRetirementTest): COREVIDEO_TEST_PROBE_MODE=stubborn with
-// the pidfile in COREVIDEO_TEST_FFMPEG_PID_FILE.
+// the pidfile in COREVIDEO_TEST_FFMPEG_PID_FILE. The variable may also carry
+// the mode's own arguments after a space ("exit 1", "stubborn <pidfile>",
+// "argv-to <file>"), because the stand-in's argv is the caller's ffmpeg argv.
 
 #include "modules/PosixChildProcess.h"
 
@@ -54,6 +58,15 @@ int eofExit() {
   }
 }
 
+int argvTo(const char* path, int argc, char** argv) {
+  std::ofstream out(path, std::ios::trunc);
+  for (int i = 1; i < argc; ++i) {
+    if (i > 1) out << ' ';
+    out << argv[i];
+  }
+  return 0;
+}
+
 int fakeCore(const char* probe, const char* guard, const char* pidfile) {
   corevideo::modules::posix_child::SpawnRequest request;
   request.executable = probe;
@@ -77,8 +90,16 @@ int fakeCore(const char* probe, const char* guard, const char* pidfile) {
 
 int main(int argc, char** argv) {
   if (const char* mode = std::getenv("COREVIDEO_TEST_PROBE_MODE"); mode && *mode) {
-    if (std::string(mode) == "stubborn") return stubborn(std::getenv("COREVIDEO_TEST_FFMPEG_PID_FILE"));
-    if (std::string(mode) == "eof-exit") return eofExit();
+    const std::string spec(mode);
+    const auto space = spec.find(' ');
+    const std::string name = spec.substr(0, space);
+    const std::string arg = space == std::string::npos ? std::string() : spec.substr(space + 1);
+    if (name == "stubborn") {
+      return stubborn(arg.empty() ? std::getenv("COREVIDEO_TEST_FFMPEG_PID_FILE") : arg.c_str());
+    }
+    if (name == "eof-exit") return eofExit();
+    if (name == "exit" && !arg.empty()) return std::atoi(arg.c_str());
+    if (name == "argv-to" && !arg.empty()) return argvTo(arg.c_str(), argc, argv);
     return 2;
   }
   if (argc < 2) return 2;

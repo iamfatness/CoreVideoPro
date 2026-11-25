@@ -83,10 +83,18 @@ inline const char* operatorCodecLabel(const std::string& codec) {
   if (!in.codecHasHardwareEncoder || (!isH264 && !in.gpuPathChosen)) {
     out.refused = true;
     out.resultCode = "no-hardware-encoder";
+#if defined(__APPLE__)
+    // Apple (Phase 4 O3): VideoToolbox has H.265 but not AV1, and no NVIDIA
+    // card can be the answer on a Mac.
+    out.message = label + " needs the GPU-direct hardware encoder, which is not available on this Mac (" +
+                  std::string(in.gpuPathReason ? in.gpuPathReason : "unknown") + "). Choose H.264" +
+                  (in.requestedCodec == "av1" ? std::string(": Apple Silicon has no AV1 encoder.") : std::string("."));
+#else
     out.message = label + " needs a hardware encoder on the GPU-direct path and this machine cannot provide one (" +
                   std::string(in.gpuPathReason ? in.gpuPathReason : "unknown") +
                   "). Choose H.264 or stream from a machine with an NVIDIA " +
                   (in.requestedCodec == "av1" ? "RTX 40-series or newer" : "GPU") + ".";
+#endif
     return out;
   }
   if (in.gpuEncoderStartFailed) {
