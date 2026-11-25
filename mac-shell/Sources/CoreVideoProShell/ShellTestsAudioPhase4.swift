@@ -42,6 +42,11 @@ extension ShellTests {
             ("a7-fix-vst-repick-is-noop", testFixVstRepickIsNoop),
             ("a7-fix-empty-prefs-clears-vst", testFixEmptyPrefsClearsVst),
             ("a7-fix-bus-vst-gated-on-host", testFixBusVstGatedOnHost),
+            // Task 4: SHOW layout (fixed viewport, Windows workspace, strip bank).
+            ("a7-layout-cell-widths", testLayoutCellWidths),
+            ("a7-pan-gain-tooltip-strings", testPanGainTooltipStrings),
+            ("a7-param-specs-are-windows", testParamSpecsAreWindows),
+            ("a7-show-not-in-page-scroll", testShowNotInPageScroll),
         ]
     }
 
@@ -849,5 +854,86 @@ extension ShellTests {
         for send in sends(model.routingBaseCommand()) where send["busId"] as? String == "master" {
             expectEqual(chainOf(send), ["Compressor", "vst:Test"], "a live host gets the bus plug-in")
         }
+    }
+
+    // ── Task 4: SHOW layout ─────────────────────────────────────────────────
+
+    /// XAML:988-994: columns 190 | * | * | 1.4*, ColumnSpacing 10. A 1000 pt
+    /// workspace leaves 1000 - 190 - 3*10 = 780 for the cells: 780 / 3.4 each
+    /// star. Mutation: equal thirds (eq / gate == 1, red).
+    static func testLayoutCellWidths() {
+        let widths = AudioLayout.cellWidths(total: 1000)
+        expectEqual(AudioLayout.rackWidth, 190, "rack column 190 (XAML:990)")
+        expectEqual(AudioLayout.columnSpacing, 10, "column spacing 10 (XAML:988)")
+        expect(abs(widths.gate - widths.comp) < 0.01, "gate == comp (\(widths.gate), \(widths.comp))")
+        expect(abs(widths.eq / widths.gate - 1.4) < 0.01, "eq / gate == 1.4 (got \(widths.eq / widths.gate))")
+        let sum: CGFloat = widths.gate + widths.comp + widths.eq
+        expect(abs(sum - 780) < 0.01, "gate + comp + eq == 1000 - 190 - 30 (got \(sum))")
+        // Too narrow to hold the rack: no negative widths.
+        let tiny = AudioLayout.cellWidths(total: 100)
+        expect(tiny.gate >= 0 && tiny.comp >= 0 && tiny.eq >= 0, "no negative cell widths")
+        expectEqual(AudioLayout.workspaceHeight, 255, "workspace height 255 (XAML:986)")
+        expectEqual(AudioLayout.stripWidth, 120, "strip width 120 (XAML:1326)")
+        expectEqual(AudioLayout.railWidth, 150, "rail width 150 (XAML:1435)")
+    }
+
+    /// SVM:11451-11456 (GainLabel, PanLabel) and SVM:11464 (MuteStateLabel).
+    static func testPanGainTooltipStrings() {
+        expectEqual(ConsoleStripLabels.pan(0.004), "C", "pan 0.004 -> C")
+        expectEqual(ConsoleStripLabels.pan(0), "C", "pan 0 -> C")
+        expectEqual(ConsoleStripLabels.pan(-0.25), "L 0.25", "pan -0.25")
+        expectEqual(ConsoleStripLabels.pan(0.5), "R 0.50", "pan 0.5")
+        expectEqual(ConsoleStripLabels.pan(-1), "L 1.00", "pan -1")
+        expectEqual(ConsoleStripLabels.gain(3), "+3.0 dB", "gain +3")
+        expectEqual(ConsoleStripLabels.gain(-2.5), "-2.5 dB", "gain -2.5")
+        expectEqual(ConsoleStripLabels.gain(0), "0.0 dB", "gain 0 has no sign")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: true, sourceMuted: false), "Muted in mix", "muted")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: true, sourceMuted: true), "Muted in mix",
+                    "the console mute wins over the Zoom mute")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: false, sourceMuted: true), "Source muted", "Zoom-muted")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: false, sourceMuted: false), "Live", "live")
+    }
+
+    /// W/Views/AudioPage.xaml.cs:137-166 (InsertParamSpecs), less the EQ
+    /// presence rows (dead keys since C6b). Mutation: port the presence rows
+    /// (red on the EQ count).
+    static func testParamSpecsAreWindows() {
+        typealias S = InsertParamSpec
+        expectEqual(InsertChainPolicy.paramSpecs("Noise Gate"), [
+            S(label: "Threshold (dBFS)", key: "thresholdDb", min: -80, max: -12, step: 1, defaultValue: -48),
+            S(label: "Release (ms)", key: "releaseMs", min: 20, max: 500, step: 5, defaultValue: 120),
+        ], "gate specs")
+        let highpass = [S(label: "High-pass (Hz)", key: "highpassHz", min: 20, max: 400, step: 5, defaultValue: 90)]
+        expectEqual(InsertChainPolicy.paramSpecs("High-pass"), highpass, "high-pass specs")
+        expectEqual(InsertChainPolicy.paramSpecs("Built-in EQ"), highpass, "EQ: the high-pass row only")
+        expectEqual(InsertChainPolicy.paramSpecs("Built-in EQ").count, 1, "EQ has exactly one spec")
+        expectEqual(InsertChainPolicy.paramSpecs("Compressor"), [
+            S(label: "Threshold (dBFS)", key: "thresholdDb", min: -40, max: -6, step: 1, defaultValue: -18),
+            S(label: "Ratio", key: "ratio", min: 1, max: 20, step: 0.5, defaultValue: 4),
+        ], "compressor specs")
+        expectEqual(InsertChainPolicy.paramSpecs("Limiter"), [
+            S(label: "Ceiling (dBFS)", key: "ceilingDb", min: -12, max: -0.1, step: 0.1, defaultValue: -1),
+        ], "limiter specs")
+        expectEqual(InsertChainPolicy.paramSpecs("vst:Some Plugin"), [], "a plug-in has no built-in specs")
+        expectEqual(InsertChainPolicy.paramSpecs("Mystery"), [], "an unknown name has none")
+        // The slot popover writes the same field the cell reads.
+        var inserts = ChannelInserts()
+        inserts.setParam("Compressor", key: "ratio", 8)
+        expectEqual(inserts.compRatio, 8, "popover ratio edits the COMP cell's ratio")
+        expectEqual(inserts.param("Compressor", key: "ratio"), 8, "and reads it back")
+        inserts.setParam("Limiter", key: "ceilingDb", -3)
+        expectEqual(inserts.limiterCeilingDb, -3, "popover ceiling edits limiterCeilingDb")
+        inserts.setParam("Built-in EQ", key: "highpassHz", 150)
+        expectEqual(inserts.eqHighpassHz, 150, "popover high-pass edits the EQ cell's low cut")
+    }
+
+    /// OD-3, XAML:31-36: SHOW is a fixed viewport, so the Audio tab is not in
+    /// the page ScrollView and its width is uncapped. Mutation: revert the
+    /// TabPage change (red).
+    static func testShowNotInPageScroll() {
+        expectEqual(TabPage.wrapsInScrollView(.audio), false, "the Audio tab brings its own scrolling")
+        expectEqual(TabPage.wrapsInScrollView(.settings), true, "a form tab keeps the page scroll")
+        expectEqual(TabPage.wrapsInScrollView(.sources), true, "Sources keeps the page scroll")
+        expect(TabPageLayout.maxWidth(for: .audio) == .infinity, "the Audio tab width is uncapped")
     }
 }

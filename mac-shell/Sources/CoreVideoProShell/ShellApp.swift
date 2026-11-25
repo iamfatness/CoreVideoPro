@@ -1355,13 +1355,21 @@ struct TabPage: View {
     // Width per tab comes from TabPageLayout (a flat 720 pt cap clipped the
     // Sources rows and the Routing grid).
     var body: some View {
-        if TabPageLayout.fillsHeight(model.selectedTab) {
+        if !Self.wrapsInScrollView(model.selectedTab) {
             TabPageContent(tab: model.selectedTab).frame(maxHeight: .infinity, alignment: .top)
         } else {
             ScrollView {
                 TabPageContent(tab: model.selectedTab)
             }
         }
+    }
+
+    /// OD-3 (Windows AudioPage.xaml:31-36): the Audio tab's SHOW surface is a
+    /// fixed viewport that fills the window and never scrolls, so the Audio tab
+    /// is not wrapped in the page ScrollView; its other surfaces scroll inside
+    /// AudioPane. Every other tab keeps the page scroll.
+    static func wrapsInScrollView(_ tab: StudioTab) -> Bool {
+        !TabPageLayout.fillsHeight(tab)
     }
 }
 
