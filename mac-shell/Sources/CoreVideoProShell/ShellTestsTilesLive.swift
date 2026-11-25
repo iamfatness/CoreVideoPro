@@ -14,7 +14,8 @@ extension ShellTests {
         [("tiles-live/wall-cuts-and-owns-an-empty-scene", testTilesLiveWallCutsAndOwnsAnEmptyScene),
          ("tiles-live/take-and-speaker-change-churn-nothing", testTilesLiveTakeAndSpeakerChangeChurnNothing),
          ("tiles-live/follow-speaker-evidence", testTilesLiveFollowSpeakerEvidence),
-         ("tiles-live/presets-change-program-pixels", testTilesLivePresetsChangeProgramPixels)]
+         ("tiles-live/presets-change-program-pixels", testTilesLivePresetsChangeProgramPixels),
+         ("tiles-live/pinned-and-cropped-member-pixels", testTilesLivePinnedAndCroppedMemberPixels)]
     }
 
     /// Pixel (BGRA) at a normalized point of a surface's bytes.
@@ -372,5 +373,56 @@ extension ShellTests {
                 expect(outside.g > 8, "\(w): broadcast glow lifts the background beside the tile (\(outside))")
             }
         }
+    }
+
+    // ── Task 20: a pinned, cropped member on Program ──
+
+    @MainActor
+    static func testTilesLivePinnedAndCroppedMemberPixels() {
+        let w = "tiles live pinned member"
+        guard let rig = TilesLiveRig(participants: 4, extra: ["COREVIDEO_FAKE_PRIMARY_COLORS": "1", "COREVIDEO_FAKE_NO_CHURN": "1"]) else {
+            FileHandle.standardError.write(Data("  [skip] tiles live pinned member: set COREVIDEO_SHELL_LIVE_CORE and COREVIDEO_SHELL_LIVE_ENGINE\n".utf8))
+            return
+        }
+        defer { rig.stop() }
+        func log(_ s: String) { FileHandle.standardError.write(Data("  [tiles-live] \(s)\n".utf8)) }
+        let app = rig.app
+        app.joinMeetingId = "1234567890"
+        _ = awaitMain(15) { await app.performJoin() }
+        guard rig.wait(30, until: { app.roster.filter(\.hasVideo).count >= 4 }) else { expect(false, "\(w): roster"); return }
+        app.setCapture(enabled: true)
+        app.scenes.append(SceneDef(id: "wall-a", name: "Wall A", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        app.scenes.append(SceneDef(id: "wall-b", name: "Wall B", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        app.programSceneId = "wall-a"; app.previewSceneId = "wall-b"
+        app.syncScenes()
+        rig.wait(2)
+        let pinned = "zoom:101"
+        app.tilesSelectedMemberId = pinned
+        app.setTilesPinned(true)
+        app.setTilesPin(field: .width, pixels: 960)
+        app.setTilesPin(field: .height, pixels: 1080)
+        app.setTilesCrop(left: 25, right: 25)
+        expectEqual(app.tilesSelectedOverride?.rect, TilesRect(x: 0, y: 0, width: 0.5, height: 1), "\(w): pinned at (0,0,960,1080)")
+        rig.wait(1)
+        _ = awaitMain(10) { await app.take() }
+        rig.wait(2)
+        let members = (rig.snapshot["tiles"] as? JSONObject)?["members"] as? [JSONObject] ?? []
+        let others = members.filter { $0["sourceId"] as? String != pinned }
+        let xs = others.compactMap { ($0["rect"] as? JSONObject)?["x"] as? Double }
+        log("members: \(members.map { "\($0["sourceId"] ?? "?") \(($0["rect"] as? JSONObject).map { "\($0["x"] ?? 0),\($0["width"] ?? 0)" } ?? "")" })")
+        expectEqual(others.count, 3, "\(w): three automatic tiles")
+        expect(xs.count == 3 && xs.allSatisfy { $0 >= 0.5 - 1e-6 }, "\(w): the automatic tiles reflow into the right half (\(xs))")
+        guard let img = programPixels(((rig.snapshot["programSharedTexture"] as? JSONObject)?["iosurfaceId"] as? NSNumber)?.uint32Value ?? 0) else {
+            expect(false, "\(w): a Program surface"); return
+        }
+        var samples: [(Int, Int, Int)] = []
+        for fx in [0.005, 0.25, 0.495] { for fy in [0.01, 0.5, 0.99] {
+            let p = pixelAt(img, fx, fy); samples.append((p.r, p.g, p.b))
+        } }
+        log("left-half samples (r,g,b): \(samples)")
+        let first = samples[0]
+        let uniform = samples.allSatisfy { abs($0.0 - first.0) <= 24 && abs($0.1 - first.1) <= 24 && abs($0.2 - first.2) <= 24 }
+        let lit = max(first.0, first.1, first.2) > 60
+        expect(uniform && lit, "\(w): the left half is member 1's colour edge to edge (cropped 25/25 to fill 8:9)")
     }
 }

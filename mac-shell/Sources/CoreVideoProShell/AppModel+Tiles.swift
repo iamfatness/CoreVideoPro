@@ -453,8 +453,12 @@ extension AppModel {
         }
     }
 
-    /// Filled by Task 20 (live badges).
-    func tilesLiveSuffix(for sourceId: String) -> String { "" }
+    /// The Mac-only live badge (D2): only when the core's `tiles` node (which
+    /// describes PROGRAM only) is the wall these rows belong to.
+    func tilesLiveSuffix(for sourceId: String) -> String {
+        guard let id = tilesEditTargetId, tilesLiveLayerId == TilesLayerPayload.layerId(sceneId: id) else { return "" }
+        return Self.liveSuffix(tilesLive.first { $0.sourceId == sourceId })
+    }
 
     /// The selected member's saved override, or the Windows editor default.
     var tilesSelectedOverride: TilesMemberOverride? {
@@ -538,5 +542,44 @@ extension AppModel {
     func setTilesOrder(_ z: Double) {
         guard tilesSelectedPinned, z.isFinite, (0...63).contains(z), z == z.rounded(.towardZero) else { return }
         editSelectedOverride { $0.z = Int(z) }
+    }
+}
+
+// MARK: - Live background and live badges (Task 20)
+
+/// One member of the PROGRAM wall as the core reports it (`sessionState.tiles.members`).
+struct TilesLiveMember: Equatable {
+    let sourceId: String
+    let held: Bool
+    let black: Bool
+}
+
+extension AppModel {
+    /// `SetTilesBackground`: "" clears; otherwise the id must be a current member choice.
+    func setTilesBackgroundSource(_ sourceId: String) throws {
+        guard tilesEditTargetId != nil else {
+            studioCommandStatus = TilesEditError.notTilesPreview.message
+            throw TilesEditError.notTilesPreview
+        }
+        if !sourceId.isEmpty, !TilesMemberChoicePolicy.contains(tilesMemberChoices, sourceId) {
+            studioCommandStatus = "Choose an available background source."
+            throw TilesEditError.unavailableSource
+        }
+        try updateTiles { s in s.backgroundColor = TilesHex.normalize(s.backgroundColor); s.backgroundSourceId = sourceId }
+    }
+
+    /// The core's `tiles` node (it describes PROGRAM only): `[]` when absent.
+    static func tilesLiveMembers(from snapshot: JSONObject) -> [TilesLiveMember] {
+        guard let node = snapshot["tiles"] as? JSONObject else { return [] }
+        return (node["members"] as? [JSONObject] ?? []).compactMap { m in
+            guard let id = m["sourceId"] as? String else { return nil }
+            return TilesLiveMember(sourceId: id, held: m["held"] as? Bool ?? false, black: (m["showing"] as? String) == "black")
+        }
+    }
+
+    /// "" | " · held" | " · black" (black wins).
+    static func liveSuffix(_ m: TilesLiveMember?) -> String {
+        guard let m else { return "" }
+        return m.black ? " · black" : m.held ? " · held" : ""
     }
 }

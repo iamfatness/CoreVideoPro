@@ -74,6 +74,9 @@ extension ShellTests {
             ("tiles/pin-outside-wall-refused", testAPinOutsideTheWallIsRefusedWithTheWindowsMessage),
             ("tiles/member-status-words", testMemberStatusWordsAreTheWindowsWords),
             ("tiles/name-each-tile-disabled", testNameEachTileIsDisabledAndTheWireStaysFalse),
+            // Task 20: live background and live badges.
+            ("tiles/live-background", testLiveBackgroundOnlyAcceptsACurrentChoiceAndReachesTheWireAndTheBudget),
+            ("tiles/live-badges", testLiveBadgesComeOnlyFromTheProgramWallSnapshot),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1763,5 +1766,47 @@ extension ShellTests {
         expectEqual((model.tilesPayload(for: "t-pvw")?["style"] as? JSONObject)?["nameEachTile"] as? Bool, false, "\(w): the wire stays false")
         expectEqual(model.tilesEditSettings.nameEachTile, true, "\(w): the saved value is kept")
         expectEqual(TilesSettings(persisted: model.tilesEditSettings.persisted).nameEachTile, true, "\(w): and survives a save")
+    }
+
+    // ── Task 20 ──────────────────────────────────────────────────────────────
+
+    @MainActor static func testLiveBackgroundOnlyAcceptsACurrentChoiceAndReachesTheWireAndTheBudget() {
+        let w = "SetTilesBackground"
+        let model = tilesActionModel()
+        model.roster.append(RosterParticipant(id: "8", name: "Backdrop", hasVideo: true, muted: false, talking: false, assigned: false))
+        var thrown: TilesEditError?
+        do { try model.setTilesBackgroundSource("zoom:404") } catch let e as TilesEditError { thrown = e } catch {}
+        expectEqual(thrown, .unavailableSource, "\(w): an unknown source is refused")
+        expectEqual(model.studioCommandStatus, "Choose an available background source.", "\(w): Windows message")
+        try? model.setTilesBackgroundSource("zoom:8")
+        let style = model.tilesPayload(for: "t-pvw")?["style"] as? JSONObject
+        expectEqual(style?["backgroundSourceId"] as? String, "zoom:8", "\(w): on the wire")
+        // Taken to Program, the background guest is a Program source.
+        model.programSceneId = "t-pvw"; model.previewSceneId = "s1"
+        let sources = ZoomSourceBudget.resolve(model.spineSourceInput())
+        expect(sources.contains { $0.participantId == "8" && $0.purpose == "program-tiles" }, "\(w): the budget lists 8 at program-tiles")
+        model.programSceneId = "s2"; model.previewSceneId = "t-pvw"
+        try? model.setTilesBackgroundSource("")
+        expectEqual((model.tilesPayload(for: "t-pvw")?["style"] as? JSONObject)?["backgroundSourceId"] as? String, "", "\(w): \"\" clears")
+    }
+
+    @MainActor static func testLiveBadgesComeOnlyFromTheProgramWallSnapshot() {
+        let w = "D2: live badges"
+        let members: [JSONObject] = [["sourceId": "zoom:2", "held": true, "showing": "picture"],
+                                     ["sourceId": "zoom:7", "held": true, "showing": "black"]]
+        let live = AppModel.tilesLiveMembers(from: ["tiles": ["layerId": "tiles:x", "members": members]])
+        expectEqual(live.map { AppModel.liveSuffix($0) }, [" · held", " · black"], "\(w): held, and black wins")
+        expectEqual(AppModel.tilesLiveMembers(from: [:]), [], "\(w): node absent gives []")
+        expectEqual(AppModel.liveSuffix(nil), "", "\(w): no member, no suffix")
+        let model = tilesActionModel()
+        // The core describes a DIFFERENT wall (the Program one): the Preview wall's rows carry nothing.
+        model.applySnapshotForTesting(["tiles": ["layerId": "tiles:other", "members": members]])
+        expect(model.tilesMemberRows.allSatisfy { !$0.status.contains("·") }, "\(w): no suffix while the edited wall is only on Preview")
+        // When the node is this wall, the rows read it.
+        model.applySnapshotForTesting(["tiles": ["layerId": "tiles:t-pvw", "members": members]])
+        expectEqual(model.tilesMemberRows.first { $0.id == "zoom:2" }?.status, "Auto · held", "\(w): Auto · held")
+        expectEqual(model.tilesMemberRows.first { $0.id == "zoom:7" }?.status, "Auto · black", "\(w): Auto · black")
+        model.applySnapshotForTesting(["meetingState": "idle"])   // a snapshot with no tiles node
+        expectEqual(model.tilesLive, [], "\(w): the node gone clears the badges")
     }
 }

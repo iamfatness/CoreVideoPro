@@ -326,9 +326,32 @@ struct TilesStyleTab: View {
     }
 }
 
-/// Filled by Task 20 (Live background).
+/// Windows Style tab "Live background": a meeting source (the member picker's
+/// selection), "Use selected member as background", "Clear live background".
 struct TilesLiveBackground: View {
-    var body: some View { TilesHelp("Arrives with the Members tab.") }
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Meeting source").font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                Picker("", selection: $model.tilesSelectedMemberId) {
+                    Text("—").tag("")
+                    ForEach(model.tilesMemberChoices) { Text($0.label).tag($0.id) }
+                }
+                .labelsHidden().controlSize(.small)
+            }
+            Button("Use selected member as background") { try? model.setTilesBackgroundSource(model.tilesSelectedMemberId) }
+                .buttonStyle(GhostButtonStyle())
+                .disabled(model.tilesSelectedMemberId.isEmpty)
+            Button("Clear live background") { try? model.setTilesBackgroundSource("") }
+                .buttonStyle(GhostButtonStyle())
+            if !model.tilesEditSettings.backgroundSourceId.isEmpty {
+                TilesHelp("Live background: " + (model.tilesMemberChoices.first { $0.id == model.tilesEditSettings.backgroundSourceId }?.label
+                                                  ?? model.tilesEditSettings.backgroundSourceId))
+            }
+        }
+    }
 }
 
 /// Windows grid `Auto | *`: a 36 pt colour well beside a hex field. The hex

@@ -519,3 +519,25 @@ No HIGH. The reviewer confirmed that Layout and Style match the XAML in order an
 | unpin clears the crop | red |
 | order allowed while unpinned | red |
 | make the selection optional and force-unwrap it | not representable. The selection is a non-optional `String` by type, so Review Focus 3's trap cannot be written. The RF3 test pins the behaviour (defaults, nothing editable, overrides untouched) |
+
+### Task 20 — live background, live badges, pinned-member pixels
+
+- `setTilesBackgroundSource` is Windows `SetTilesBackground`: "" clears; otherwise the id must be a current member choice, else "Choose an available background source.". The Style tab's "Live background" disclosure has the meeting source picker, "Use selected member as background" and "Clear live background".
+- Live badges (D2):
+  - `AppModel.tilesLive` and `tilesLiveLayerId` are read from the snapshot's `tiles` node; `[]` when the node is absent.
+  - `liveSuffix` gives "", " · held" or " · black", with black winning.
+  - A row gets the suffix only when the core's `tiles` node is the edited wall.
+  - **Note for the owner:** `sessionState.tiles` describes Program only, and the Mac editor edits Preview only (an on-air wall is refused, per the S4 review). So the gate as specified means badges cannot appear until S6 adds a read-only on-air dock. Taking the plan's default, I kept the gate. The alternative, badging the Preview wall's rows from the Program wall's state, would misattribute: different scenes have different walls.
+- Tests:
+  - `testLiveBackgroundOnlyAcceptsACurrentChoiceAndReachesTheWireAndTheBudget`: payload `style.backgroundSourceId == "zoom:8"`; on Program the budget lists 8 at `program-tiles`; "" clears.
+  - `testLiveBadgesComeOnlyFromTheProgramWallSnapshot`.
+- **Live pixel proof** `tiles-live/pinned-and-cropped-member-pixels` (real Metal core + fake engine, primary colours), 4/4 passed:
+  - Member 101 is pinned at px (0,0,960,1080) with crop 25/25 and taken.
+  - The core reports 101 at `x 0, width 0.5`. The other three sit at `x 0.588` (≥ 0.5), reflowed into the right half.
+  - All nine left-half samples (corners, edges, centre) are `(13,28,250)`, member 1's colour edge to edge: a 16:9 source cropped 25/25 fills the 8:9 rect.
+- `tiles/` filter: 568/568. Full suite: **8908 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 20) | Result |
+|---|---|
+| badges without the Program-wall gate | red |
+| any id accepted as background | red: 2 failures |
