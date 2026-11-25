@@ -4831,6 +4831,17 @@ final class AppModel: ObservableObject {
     /// reassertAudioConsole() re-sends.
     @Published var busInserts: [String: [String]] = [:]
 
+    /// The strip SHOW (chips, workspace, strip highlight) and SETUP (readouts,
+    /// Mute) both show as selected: the explicit selection while that strip
+    /// still exists, else the first strip, else nil. Windows auto-selects the
+    /// first channel when the selection is empty (SVM:8856-8859); the Mac
+    /// resolves it here instead of writing it, so the fallback never moves
+    /// selectedProcessingTargetId off its bus:master default.
+    var effectiveAudioStrip: AudioStrip? {
+        if let id = selectedAudioStripId, let strip = strips.first(where: { $0.id == id }) { return strip }
+        return strips.first
+    }
+
     /// SVM:4688-4693 (SelectParticipant): selecting a strip also selects
     /// its channel processing target.
     func selectAudioStrip(_ id: String) {

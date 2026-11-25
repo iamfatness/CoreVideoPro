@@ -104,9 +104,15 @@ extension AppModel {
     }
 
     /// SVM:2195-2198 (SelectedAudioMix): the SHOW-selected strip, which the
-    /// SETUP readouts and Mute follow whatever the processing target.
-    var setupSelectedStrip: AudioStrip? {
-        selectedAudioStripId.flatMap { id in strips.first { $0.id == id } }
+    /// SETUP readouts and Mute follow whatever the processing target. The
+    /// same effective strip SHOW highlights (first strip when none is chosen).
+    var setupSelectedStrip: AudioStrip? { effectiveAudioStrip }
+
+    /// SETUP's add-VST menu says the same scan state as SHOW's add menu
+    /// (VstAddMenuPolicy): not run yet / scanning / none found, nil = list.
+    var setupVstMenuEmptyLine: String? {
+        VstAddMenuPolicy.emptyLine(VstAddMenuPolicy.state(status: vstHost.status, pluginCount: vstPlugins.count,
+                                                          scanCompleted: vstScanCompleted))
     }
 
     var setupReadouts: (gain: String, manual: String, output: String) {
@@ -273,6 +279,8 @@ struct InsertsAndPlugins: View {
             .disabled(strip == nil)
             .opacity(strip == nil ? 0.45 : 1)
         }
+        // SHOW's workspace kicks the scan on appear; SETUP may be opened first.
+        .onAppear { model.kickVstScanIfNeeded() }
     }
 
     var readouts: some View {
@@ -350,12 +358,13 @@ struct InsertsAndPlugins: View {
     /// OnAddProcessingVstFlyoutOpening: the scanned plug-ins.
     func vstMenu(_ spec: AudioSetupPolicy.AddButton) -> some View {
         Menu {
-            if model.vstPlugins.isEmpty {
-                Button("No VST3 plugins found on this machine") {}.disabled(true)
-            }
-            ForEach(model.vstPlugins.filter { $0.probe != "fail" }) { plugin in
-                Button(plugin.name) {
-                    model.addProcessingInsert(AppModel.vstInsertName(plugin: plugin, className: plugin.classNames.first))
+            if let line = model.setupVstMenuEmptyLine {
+                Button(line) {}.disabled(true)
+            } else {
+                ForEach(model.vstPlugins.filter { $0.probe != "fail" }) { plugin in
+                    Button(plugin.name) {
+                        model.addProcessingInsert(AppModel.vstInsertName(plugin: plugin, className: plugin.classNames.first))
+                    }
                 }
             }
         } label: {

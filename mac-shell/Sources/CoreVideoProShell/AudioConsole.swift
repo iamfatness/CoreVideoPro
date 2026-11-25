@@ -41,9 +41,9 @@ struct AudioPane: View {
     }
     // The selection is model state (AppModel.selectedAudioStripId, A7 Task 3):
     // the pop-out and the main window share it.
-    var selected: AudioStrip? {
-        model.strips.first { $0.id == (model.selectedAudioStripId ?? model.strips.first?.id) }
-    }
+    // SHOW and SETUP share AppModel.effectiveAudioStrip.
+    var selected: AudioStrip? { Self.selectedStrip(model) }
+    static func selectedStrip(_ model: AppModel) -> AudioStrip? { model.effectiveAudioStrip }
 
     // OD-3 (XAML:31-36, :914-917): SHOW is a fixed viewport that fills the tab
     // and never scrolls; the page ScrollView made the console jump on every

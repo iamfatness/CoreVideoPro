@@ -61,6 +61,8 @@ extension ShellTests {
             ("a7-fix5-bus-to-bus-feed-is-unrouted", testFix5BusToBusFeedIsUnrouted),
             ("a7-fix5-readout-strings", testFix5ReadoutStrings),
             ("a7-fix5-rack-stage-columns", testFix5RackStageColumns),
+            ("a7-fix5-setup-vst-menu-state", testFix5SetupVstMenuState),
+            ("a7-fix5-effective-strip-shared", testFix5EffectiveStripShared),
         ]
     }
 
@@ -1032,8 +1034,10 @@ extension ShellTests {
                "precondition: the model's selected target is a bus")
         expectEqual(model.setupReadouts.gain, "+3 dB", "the readouts follow the selected strip on a bus target")
         expectEqual(model.setupReadouts.manual, "+3 dB", "manual gain too")
+        // No explicit selection: the effective strip is the first one (101), as
+        // SHOW shows it (a7-fix5-effective-strip-shared covers the empty case).
         model.selectedAudioStripId = nil
-        expectEqual(model.setupReadouts.gain, "—", "no selected strip reads a dash")
+        expectEqual(model.setupReadouts.gain, "+3 dB", "no explicit selection reads the first strip")
     }
 
     /// Honest reporting (Task 3 review): the core reads a bus chain only from
@@ -1209,5 +1213,53 @@ extension ShellTests {
         expectEqual(MasteringRackLayout.stageColumns(width: 456), 4, "four columns at the pop-out minimum")
         expectEqual(MasteringRackLayout.stageColumns(width: 100), 1, "never zero columns")
         expectEqual(MasteringRackLayout.stageColumns(width: 5000), 7, "never more columns than stages")
+    }
+
+    /// SETUP's add-VST menu reads the same scan state as SHOW's (honest
+    /// reporting): before any scan it never claims "No VST3 plugins found".
+    /// Mutation: setupVstMenuEmptyLine is the old literal path
+    /// (vstPlugins.isEmpty ? noneFoundLine : nil) (red).
+    @MainActor
+    static func testFix5SetupVstMenuState() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        expectEqual(model.setupVstMenuEmptyLine, P.notScannedLine, "never scanned: not 'none found'")
+        model.applyPluginHostSnapshot(["status": "scanning", "plugins": [] as [JSONObject]])
+        expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "scanning")
+        model.applyPluginHostSnapshot(["status": "ready", "plugins": [] as [JSONObject]])
+        expectEqual(model.setupVstMenuEmptyLine, P.noneFoundLine, "a completed scan found nothing")
+        // SHOW and SETUP agree in every state.
+        let show = P.emptyLine(P.state(status: model.vstHost.status, pluginCount: model.vstPlugins.count,
+                                       scanCompleted: model.vstScanCompleted))
+        expectEqual(model.setupVstMenuEmptyLine, show, "SETUP says what SHOW says")
+    }
+
+    /// SHOW and SETUP resolve the same effective strip: the explicit selection
+    /// while it exists, else the first strip, else nil (Windows auto-selects
+    /// the first channel, SVM:8856-8859). The fallback never moves the target.
+    /// Mutation: setupSelectedStrip reads the raw selectedAudioStripId (red).
+    @MainActor
+    static func testFix5EffectiveStripShared() {
+        let model = targetModel()
+        expect(model.selectedAudioStripId == nil, "precondition: nothing explicitly selected")
+        expectEqual(AudioPane.selectedStrip(model)?.id, "101", "SHOW falls back to the first strip")
+        expectEqual(model.setupSelectedStrip?.id, "101", "SETUP shows the same strip")
+        expect(model.setupReadouts.gain != "—", "SETUP readouts are live for the fallback strip")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "the fallback leaves the target on bus:master")
+        model.selectAudioStrip("102")
+        expectEqual(AudioPane.selectedStrip(model)?.id, "102", "SHOW: explicit 102")
+        expectEqual(model.setupSelectedStrip?.id, "102", "SETUP: explicit 102")
+        model.zoomAudioSourceIds = ["101"]
+        model.refreshStrips()
+        expectEqual(AudioPane.selectedStrip(model)?.id, "101", "SHOW: 102 gone, back to 101")
+        expectEqual(model.setupSelectedStrip?.id, "101", "SETUP: 102 gone, back to 101")
+        model.zoomAudioSourceIds = []
+        model.refreshStrips()
+        // refreshStrips may keep non-Zoom strips; clear them for the empty case.
+        model.strips = []
+        expect(AudioPane.selectedStrip(model) == nil, "SHOW: no strips, nil")
+        expect(model.setupSelectedStrip == nil, "SETUP: no strips, nil")
+        let r = model.setupReadouts
+        expectEqual([r.gain, r.manual, r.output], ["—", "—", "—"], "no strips reads dashes")
     }
 }
