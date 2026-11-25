@@ -31,6 +31,7 @@ extension ShellTests {
             ("quit/idle-waits-for-session-end", testQuitIdleWaitsForSessionEnd),
             ("quit/idle-unchanged-without-consent", testQuitIdleUnchangedWithoutConsent),
             ("quit/idle-replies-when-send-finishes", testQuitIdleRepliesWhenSendFinishes),
+            ("quit/idle-waits-for-comms-and-session-end", testQuitIdleWaitsForCommsAndSessionEnd),
             ("telemetry/card-copy", testTelemetryCardCopy),
             ("telemetry/toggle-persists-not-on-load", testTelemetryTogglePersistsNotOnLoad),
             ("telemetry/preview-without-consent", testTelemetryPreviewWithoutConsent),
@@ -597,5 +598,43 @@ extension ShellTests {
         model.previewTelemetry()
         expect(model.telemetryPreviewJSON.contains("\"name\": \"session-end\""), "the session-end payload, indented (\(model.telemetryPreviewJSON.prefix(80)))")
         expectEqual(log.calls.count, 0, "previewing sends nothing")
+    }
+
+    /// In a meeting AND with consent and a key: the Comms release-all and session-end run side
+    /// by side, and the quit replies ONCE, after both. (The two holds were merged when #1236's
+    /// Comms release-first quit met this batch.) Mutations: reply after the release alone;
+    /// reply twice (once per hold).
+    @MainActor
+    static func testQuitIdleWaitsForCommsAndSessionEnd() {
+        let (m, _) = heldOnComms()
+        m.quitCoreGoneForTesting = false
+        var clockRef: ManualTelemetryClock?
+        let transport: TelemetryTransport = { _, _, _, _ in
+            await withCheckedContinuation { (resume: CheckedContinuation<TelemetrySendResult, Never>) in
+                _ = clockRef?.schedule(after: 0.3) { resume.resume(returning: TelemetrySendResult(status: .accepted)) }
+            }
+        }
+        let (service, clock, _, _) = telemetryHarness(transport: transport)
+        clockRef = clock
+        service.start()
+        m.telemetryService = service
+        var released = false
+        let wrapped = m.quitRequestForTesting
+        m.quitRequestForTesting = { body, t in
+            if body["type"] as? String == "comms-release-all" { released = true }
+            return try await wrapped!(body, t)
+        }
+        var replies: [Bool] = []
+        m.quitReplyForTesting = { replies.append($0) }
+        expectEqual(m.handleQuitRequest(), .terminateLater, "in a meeting with telemetry on, the quit waits")
+        spin(until: { released }, limit: 2)
+        drainMainActor()
+        expect(released, "the Comms release-all went out")
+        expectEqual(replies.count, 0, "released, but session-end is still in flight: no reply yet")
+        clock.advance(by: 0.3)
+        expectEqual(replies, [true], "both done: ONE reply, and the quit proceeds")
+        clock.advance(by: 3)
+        drainMainActor()
+        expectEqual(replies.count, 1, "never a second reply")
     }
 }
