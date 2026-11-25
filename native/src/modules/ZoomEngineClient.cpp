@@ -225,6 +225,20 @@ std::string buildZoomEngineUnsubscribeCommand(const std::string& sourceUuid) {
   return commandLine({{"cmd", IPC_CMD_UNSUBSCRIBE}, {"source_uuid", sourceUuid}});
 }
 
+bool zoomEngineDebugLineIsProductionLogged(const std::string& line) {
+  // Low-rate, one-shot debug stages that explain picture quality belong in the
+  // production log; the rest of the helper's debug telemetry stays verbose-only.
+  static constexpr const char* kStages[] = {
+      R"("stage":"video_range_excursion")",
+      R"("stage":"video_range_classified")",
+      R"("stage":"enable_hd_video")",
+      R"("stage":"create_setting_service_failed")",
+  };
+  for (const char* stage : kStages)
+    if (line.find(stage) != std::string::npos) return true;
+  return false;
+}
+
 std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   std::string error;
   auto parsed = Json::parse(line, &error);
@@ -309,9 +323,7 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   // Preserve lifecycle and error events in the production log. The helper's
   // debug telemetry and heartbeat are high-rate evidence for a diagnostic
   // session and must not compete with show work by default.
-  if (event.kind == ZoomEngineEventKind::Debug &&
-      (line.find(R"("stage":"video_range_excursion")") != std::string::npos ||
-       line.find(R"("stage":"video_range_classified")") != std::string::npos)) {
+  if (event.kind == ZoomEngineEventKind::Debug && zoomEngineDebugLineIsProductionLogged(line)) {
     ::corevideo::core::nativeLogf("[zoom-engine] %s\n", line.c_str());
   } else if (event.kind == ZoomEngineEventKind::Debug || event.kind == ZoomEngineEventKind::Ping ||
       event.kind == ZoomEngineEventKind::Participants || event.kind == ZoomEngineEventKind::ActiveSpeaker) {
