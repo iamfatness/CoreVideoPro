@@ -5961,6 +5961,10 @@ final class AppModel: ObservableObject {
             let releaseComms = (comms.inMeeting || graphics.socialReviewIfStarted?.isConnected == true) && !quitCoreGone
             let send = telemetryService?.fireSessionEnd()
             guard releaseComms || send != nil else { return .terminateNow }
+            // The app is quitting: no second quit, and no remote or local output start, in
+            // the window (canSetOutputs reads quitFinishing).
+            quitGate.beginDeferredQuit()
+            quitFinishing = true
             finishIdleQuit(releaseComms: releaseComms, send: send, clock: telemetryService?.clock)
             return .terminateLater
         case .ask:
@@ -6158,7 +6162,7 @@ final class AppModel: ObservableObject {
             crashReports: { [] },
             version: { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev" },
             machine: { machine },
-            transport: TelemetryEventClient.urlSessionTransport(URLSession(configuration: .ephemeral)),
+            transport: TelemetryEventClient.urlSessionTransport(),
             clock: RealTelemetryClock(), log: { ShellLog.write($0) })
         telemetryService = service
         loadTelemetryConsent()

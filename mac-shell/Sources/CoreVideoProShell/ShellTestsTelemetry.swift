@@ -26,6 +26,7 @@ extension ShellTests {
             ("telemetry/no-send-without-key", testTelemetryNoSendWithoutKey),
             ("telemetry/session-end-once", testTelemetrySessionEndOnce),
             ("telemetry/heartbeat-cadence", testTelemetryHeartbeatCadence),
+            ("telemetry/heartbeat-no-drift", testTelemetryHeartbeatNoDrift),
             ("telemetry/audit-log-precedes-send", testTelemetryAuditLogPrecedesSend),
             ("telemetry/marks-sent-only-on-accept", testTelemetryMarksSentOnlyOnAccept),
             ("quit/idle-waits-for-session-end", testQuitIdleWaitsForSessionEnd),
@@ -122,6 +123,11 @@ extension ShellTests {
             expectEqual(config.endpoint, row["endpoint"] as? String ?? "?", "\(label): endpoint")
             expectEqual(config.enabled, row["enabled"] as? Bool ?? !config.enabled, "\(label): enabled")
             expectEqual(config.endpointHost, row["endpointHost"] as? String ?? "?", "\(label): endpointHost")
+        }
+        for blank in ["", " ", "\t \n"] {
+            let config = TelemetryConfig.resolve(endpointOverride: nil, apiKey: blank)
+            expectEqual(config.apiKey, nil, "a blank key (\(blank.debugDescription)) is no key")
+            expect(!config.enabled, "a blank key never enables telemetry")
         }
         let env = TelemetryConfig.fromEnvironment(["COREVIDEO_TELEMETRY_API_KEY": "  env-key-sentinel  "])
         expect(env.enabled, "the key comes from COREVIDEO_TELEMETRY_API_KEY")
@@ -287,8 +293,11 @@ extension ShellTests {
         { url, key, body, timeout in log.calls.append((url, key, body, timeout)); return result }
     }
 
+    /// The harness key: distinctive, so any log line that carries it is caught.
+    static let harnessApiKey = "harness-api-key-sentinel-9d2c"
+
     @MainActor
-    static func telemetryHarness(key: String? = "k", consentOn: Bool = true, transport: @escaping TelemetryTransport)
+    static func telemetryHarness(key: String? = harnessApiKey, consentOn: Bool = true, transport: @escaping TelemetryTransport)
         -> (TelemetryService, ManualTelemetryClock, FakeTelemetryFiles, [String]) {
         let files = FakeTelemetryFiles()
         let path = "/fake/telemetry-consent.json"
@@ -329,6 +338,8 @@ extension ShellTests {
 
     /// A URLProtocol that records the request and answers 202.
     final class RecordingURLProtocol: URLProtocol {
+        enum Mode { case accept, redirectToOtherHost, hang }
+        nonisolated(unsafe) static var mode = Mode.accept
         nonisolated(unsafe) static var requests: [(URLRequest, Data)] = []
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -340,6 +351,18 @@ extension ShellTests {
                 while stream.hasBytesAvailable { let n = stream.read(&buffer, maxLength: buffer.count); if n <= 0 { break }; body.append(buffer, count: n) }
             }
             Self.requests.append((request, body))
+            switch Self.mode {
+            case .hang: return
+            case .redirectToOtherHost:
+                let target = URL(string: "https://elsewhere.example/v1/events")!
+                let redirect = HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: "HTTP/1.1",
+                                               headerFields: ["Location": target.absoluteString])!
+                client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: target), redirectResponse: redirect)
+                client?.urlProtocol(self, didReceive: redirect, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self)
+                return
+            case .accept: break
+            }
             let response = HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: "HTTP/1.1", headerFields: [:])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(#"{"reportId":"stub-1"}"#.utf8))
@@ -355,7 +378,8 @@ extension ShellTests {
         RecordingURLProtocol.requests = []
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [RecordingURLProtocol.self]
-        let transport = TelemetryEventClient.urlSessionTransport(URLSession(configuration: configuration))
+        RecordingURLProtocol.mode = .accept
+        let transport = TelemetryEventClient.urlSessionTransport(base: configuration)
         let box = Box<TelemetrySendResult>()
         Task { box.value = await transport(URL(string: "https://t.example/base")!, "k", #"{"name":"heartbeat"}"#, 5) }
         spin(until: { box.value != nil }, limit: 5)
@@ -367,6 +391,29 @@ extension ShellTests {
         expectEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer k", "Bearer key")
         expectEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json", "JSON")
         expectEqual(String(decoding: body, as: UTF8.self), #"{"name":"heartbeat"}"#, "body is the wire JSON")
+        expectEqual(request.value(forHTTPHeaderField: "User-Agent"), TelemetryEventClient.userAgent, "a neutral User-Agent")
+        expect(!(request.value(forHTTPHeaderField: "User-Agent") ?? "").contains("Darwin"), "no OS build in the User-Agent")
+        // A redirect is refused: the Bearer key never reaches another host.
+        RecordingURLProtocol.requests = []
+        RecordingURLProtocol.mode = .redirectToOtherHost
+        let redirected = Box<TelemetrySendResult>()
+        Task { redirected.value = await transport(URL(string: "https://t.example/")!, "k", "{}", 5) }
+        spin(until: { redirected.value != nil }, limit: 5)
+        expectEqual(RecordingURLProtocol.requests.map { $0.0.url?.host ?? "" }, ["t.example"], "only the configured host was contacted")
+        expectEqual(redirected.value?.status, .rejected, "the 3xx is the answer: Rejected")
+        expectEqual(redirected.value?.httpStatus, 302, "302")
+        // A hard total timeout: a server that never answers ends the send at the deadline.
+        RecordingURLProtocol.mode = .hang
+        let hung = Box<TelemetrySendResult>()
+        let started = Date()
+        Task { hung.value = await transport(URL(string: "https://t.example/")!, "k", "{}", 0.5) }
+        spin(until: { hung.value != nil }, limit: 5)
+        expectEqual(hung.value?.status, .retryLater, "a hung server is RetryLater")
+        expect(Date().timeIntervalSince(started) < 4, "the 0.5 s timeout ends the send (took \(Date().timeIntervalSince(started)) s)")
+        let session = TelemetryEventClient.session(timeout: 2, base: .ephemeral)
+        expectEqual(session.configuration.timeoutIntervalForResource, 2, "the timeout is total (resource), as Windows' HttpClient.Timeout")
+        session.invalidateAndCancel()
+        RecordingURLProtocol.mode = .accept
     }
 
     /// Consent off: the transport is never called, by heartbeat or session-end.
@@ -438,6 +485,9 @@ extension ShellTests {
         result = TelemetrySendResult(status: .accepted)
         clock.advance(by: 600)
         expectEqual(log.calls.count, 3, "the retry fires at +600 s")
+        expectEqual(clock.pending.count, 1, "after the retry exactly one heartbeat timer is armed")
+        clock.advance(by: 25 * 3600)
+        expectEqual(log.calls.count, 4, "the next 25 h hold exactly one more heartbeat (no stale timer, no drift)")
         let before = clock.pending
         result = TelemetrySendResult(status: .retryLater, retryAfter: 5)
         _ = service.fireSessionEnd()
@@ -449,8 +499,10 @@ extension ShellTests {
     @MainActor
     static func testTelemetryAuditLogPrecedesSend() {
         var linesAtSend: [String] = []
-        let (service, _, _, _) = telemetryHarness(transport: { _, _, _, _ in
-            linesAtSend = harnessLines.lines; return TelemetrySendResult(status: .accepted, reportId: "r9") })
+        var postedBody = "", postedKey = ""
+        let (service, _, _, _) = telemetryHarness(transport: { _, key, body, _ in
+            linesAtSend = harnessLines.lines; postedBody = body; postedKey = key
+            return TelemetrySendResult(status: .accepted, reportId: "r9") })
         service.start()
         _ = service.fireSessionEnd()
         drainMainActor()
@@ -458,7 +510,12 @@ extension ShellTests {
         expect(linesAtSend.contains { $0.hasPrefix("telemetry: sending 'session-end' (") && $0.hasSuffix(wire) },
                "the exact wire was logged before the transport ran (\(linesAtSend))")
         expect(harnessLines.lines.contains("telemetry: 'session-end' accepted (reportId=r9)"), "the outcome line")
-        expect(!harnessLines.lines.joined().contains("Bearer"), "the key never reaches the log")
+        expect(!harnessLines.lines.joined().contains("Bearer"), "no Authorization header reaches the log")
+        expectEqual(postedKey, harnessApiKey, "the configured key is the one POSTed")
+        expect(!harnessLines.lines.contains { $0.contains(harnessApiKey) }, "the API key appears in NO log line")
+        let logged = linesAtSend.first { $0.hasPrefix("telemetry: sending 'session-end' (") }
+            .flatMap { line in line.range(of: "): ").map { String(line[$0.upperBound...]) } }
+        expectEqual(logged, postedBody, "the POSTed body is the logged wire, byte for byte")
     }
 
     /// markSent only on Accepted. Mutation: mark on RetryLater.
@@ -496,8 +553,12 @@ extension ShellTests {
             model.telemetryService = service
             var replies: [(Bool, Date)] = []
             model.quitReplyForTesting = { replies.append(($0, clock.now)) }
+            model.quitRequestForTesting = { _, _ in [:] }   // a core is present: outputs could start
             let label = honoursTimeout ? "timeout-honouring transport" : "timeout-ignoring transport"
+            expect(model.canSetOutputs, "\(label): fixture: outputs can start before the quit (so the next check can fail)")
             expectEqual(model.handleQuitRequest(), .terminateLater, "\(label): an idle quit with consent and a key waits")
+            expectEqual(model.handleQuitRequest(), .terminateCancel, "\(label): a second quit in the window is ignored")
+            expect(!model.canSetOutputs, "\(label): no output may start while the quit is held")
             let start = clock.now
             clock.advance(by: 1.9)
             expectEqual(replies.count, 0, "\(label): no reply before 2 s")
@@ -636,5 +697,24 @@ extension ShellTests {
         clock.advance(by: 3)
         drainMainActor()
         expectEqual(replies.count, 1, "never a second reply")
+    }
+
+    /// The heartbeat cadence is from each FIRE, not from when the send finishes (Windows
+    /// Timer period): a send that takes 10 s does not push the next fire. Mutation: reschedule
+    /// after the send.
+    @MainActor
+    static func testTelemetryHeartbeatNoDrift() {
+        var clockRef: ManualTelemetryClock?
+        let transport: TelemetryTransport = { _, _, _, _ in
+            await withCheckedContinuation { (resume: CheckedContinuation<TelemetrySendResult, Never>) in
+                _ = clockRef?.schedule(after: 10) { resume.resume(returning: TelemetrySendResult(status: .accepted)) }
+            }
+        }
+        let (service, clock, _, _) = telemetryHarness(transport: transport)
+        clockRef = clock
+        let start = clock.now
+        service.start()
+        clock.advance(by: 24 * 3600 + 20)   // the fire at 24 h, its send done at 24 h + 10 s
+        expectEqual(clock.pending.first, start.addingTimeInterval(48 * 3600), "the next fire is 24 h after the FIRE, not after the send")
     }
 }

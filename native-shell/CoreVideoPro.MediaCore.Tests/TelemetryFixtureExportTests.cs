@@ -150,6 +150,7 @@ public sealed class TelemetryFixtureExportTests
         foreach (var (endpoint, key) in new (string?, string?)[]
                  {
                      (null, null), ("", "k"), ("  https://staging.example/  ", " k "), ("ftp://x", "k"), ("not a url", "k"),
+                     (null, " "),
                  })
         {
             var resolved = CrashReportingConfig.Resolve(endpoint, key);

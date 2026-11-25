@@ -64,14 +64,41 @@ enum TelemetryEventClient {
         return max(0, date.timeIntervalSince(now))
     }
 
-    /// The real transport: an HTTPS POST on `session` (an ephemeral session in production).
-    static func urlSessionTransport(_ session: URLSession, now: @escaping () -> Date = Date.init) -> TelemetryTransport {
+    /// The User-Agent every telemetry request carries: a product name, no OS build or model
+    /// (URLSession's default names CFNetwork and the Darwin build).
+    static let userAgent = "CoreVideoPro-Telemetry/1"
+
+    /// Refuses every redirect, so the Bearer key can never be forwarded to another host.
+    final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)   // the 3xx itself becomes the answer: Rejected
+        }
+    }
+
+    /// One ephemeral session per send: no cookies or cache, the redirect refusal, and a HARD
+    /// total timeout (timeoutIntervalForResource), as Windows' HttpClient.Timeout is total.
+    static func session(timeout: TimeInterval, base: URLSessionConfiguration) -> URLSession {
+        let configuration = base.copy() as? URLSessionConfiguration ?? .ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        configuration.httpCookieStorage = nil
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+    }
+
+    /// The real transport. `base` is .ephemeral in production; tests add a URLProtocol stub.
+    static func urlSessionTransport(base: URLSessionConfiguration = .ephemeral,
+                                    now: @escaping () -> Date = Date.init) -> TelemetryTransport {
         { endpoint, apiKey, body, timeout in
             var request = URLRequest(url: eventsURL(endpoint), timeoutInterval: timeout)
             request.httpMethod = "POST"
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             request.httpBody = Data(body.utf8)
+            let session = session(timeout: timeout, base: base)
+            defer { session.finishTasksAndInvalidate() }
             do {
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else {

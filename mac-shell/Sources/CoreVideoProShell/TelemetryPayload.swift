@@ -48,8 +48,10 @@ struct TelemetryConfig: Equatable, CustomStringConvertible {
     /// Windows Resolve: a non-blank override wins (trimmed); the key is trimmed.
     static func resolve(endpointOverride: String?, apiKey: String?) -> TelemetryConfig {
         let override = endpointOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // A blank or whitespace key is NO key (Windows Enabled tests IsNullOrWhiteSpace).
+        let key = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         return TelemetryConfig(endpoint: override.isEmpty ? defaultEndpoint : override,
-                               apiKey: apiKey?.trimmingCharacters(in: .whitespacesAndNewlines))
+                               apiKey: (key?.isEmpty ?? true) ? nil : key)
     }
 
     static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> TelemetryConfig {

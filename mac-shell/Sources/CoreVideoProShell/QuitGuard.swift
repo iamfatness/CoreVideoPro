@@ -83,6 +83,10 @@ struct QuitGate {
     }
 
     mutating func reset() { phase = .idle }
+
+    /// An idle quit that is being held (Comms release-all, telemetry session-end): a second
+    /// quit is ignored, exactly as while outputs finish.
+    mutating func beginDeferredQuit() { phase = .finishing }
 }
 
 /// Where the quit prompt is shown.

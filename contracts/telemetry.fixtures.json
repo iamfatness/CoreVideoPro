@@ -165,6 +165,13 @@
       "endpoint": "not a url",
       "enabled": false,
       "endpointHost": "(invalid)"
+    },
+    {
+      "endpointOverride": null,
+      "apiKey": " ",
+      "endpoint": "https://telemetry.corevideo.io",
+      "enabled": false,
+      "endpointHost": "telemetry.corevideo.io"
     }
   ]
 }
