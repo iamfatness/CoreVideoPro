@@ -783,6 +783,14 @@ final class AppModel: ObservableObject {
     var cameraRegistrationTimeout: TimeInterval = 10
     var cameraRegistrationPollInterval: TimeInterval = 0.5
     private var cameraRegistrationToken: UUID?
+
+    /// True while a camera-extension check is still out: an installs query, a
+    /// device read, an activation, the registration check, or an operator's
+    /// Update camera. Tests wait on this instead of sleeping a fixed time.
+    var cameraExtensionCheckPending: Bool {
+        cameraExtensionInstallsToken != nil || cameraRegistrationToken != nil || cameraDeviceReader.isReading
+            || cameraExtensionState == .activating || cameraUpdateInProgress
+    }
     /// The last HAL reading of our device (diagnostics; nil = never read).
     @Published private(set) var cameraDeviceStatus: CameraDeviceStatus?
     /// The last activation outcome, with the time (diagnostics).
