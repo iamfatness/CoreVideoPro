@@ -118,6 +118,10 @@ struct Rig {
   int64_t frameNumber = 0;
   std::string priorGuard;
   bool hadGuard = false;
+  // Program audio handed to sync(): real audio is what selects the unified TS
+  // mux (realAudioEnabledForProcess needs activeAudioPresent_).
+  bool withAudio = false;
+  std::vector<float> pcm = std::vector<float>(1600 * 2, 0.0f);  // 33 ms at 48 kHz stereo
 
   Rig(const std::string& tag, const std::string& probeMode, size_t payloadBytes, int gop) {
     dir = fs::temp_directory_path() / ("cvp-bitstream-posix-" + tag + "-" + std::to_string(::getpid()));
@@ -167,7 +171,9 @@ struct Rig {
     frame.encoderSharedTexture.width = 320;
     frame.encoderSharedTexture.height = 180;
     frame.encoderSharedTexture.frameNumber = frame.frameNumber;
-    const auto session = sender.sender->sync({"rtmp"}, &frame, elapsedMs, {settings});
+    const auto session = withAudio
+        ? sender.sender->sync({"rtmp"}, &frame, elapsedMs, {settings}, &pcm, 2, 48000)
+        : sender.sender->sync({"rtmp"}, &frame, elapsedMs, {settings});
     elapsedMs += 34.0;
     return session;
   }
@@ -284,6 +290,32 @@ TEST(BitstreamQueuePosix, AnFfmpegThatExitsBreaksThePipeAndFailsTheSender) {
   const auto started = Clock::now();
   (void)rig.sender.sender->sync({}, nullptr, rig.elapsedMs, {});
   EXPECT_LT(Clock::now() - started, std::chrono::milliseconds(1500)) << "stop after a broken pipe is prompt";
+}
+
+// Phase 4 O5: with GPU-direct and the shared AAC on, POSIX takes the Windows
+// one-clock mux (#538 Slice 8): audio rides the TS on stdin, so FFmpeg gets no
+// second (pipe:3) input. The fake ffmpeg writes its argv and exits.
+TEST(OutputSenderAdapter, PosixGpuDirectUsesUnifiedTs) {
+  Rig rig("unified", "argv-to @DIR@/argv.txt", 256, 0);
+  rig.sender.sender->setSharedAacEnabled(true);
+  rig.withAudio = true;
+  OutputSenderSession last;
+  for (int i = 0; i < 4; ++i) last = rig.tick();
+  ASSERT_FALSE(last.senders.empty());
+  const auto& row = last.senders.front();
+  ASSERT_TRUE(row.streamClock.has_value()) << "the stream clock is published on POSIX now";
+  EXPECT_EQ(row.streamClock->muxInput, "unified-ts") << "status=" << row.status << " code=" << row.lastResultCode;
+  std::string argv;
+  for (const auto deadline = Clock::now() + std::chrono::seconds(3); Clock::now() < deadline;) {
+    std::ifstream in(rig.dir / "argv.txt");
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    argv = buffer.str();
+    if (argv.find("pipe:0") != std::string::npos) break;  // the stream ffmpeg, not the encoder probe
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_NE(argv.find("pipe:0"), std::string::npos) << "fixture invariant: the stream ffmpeg's argv was captured";
+  EXPECT_EQ(argv.find("pipe:3"), std::string::npos) << "no second audio input: " << argv;
 }
 
 }  // namespace
