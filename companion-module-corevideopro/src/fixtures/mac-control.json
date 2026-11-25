@@ -154,6 +154,54 @@
         "Title" : "Configure RTMP destination"
       },
       {
+        "Description" : "Save SRT settings without starting streaming. Refused while streaming or transitioning; omitted passphrase retains it, empty clears it.",
+        "Id" : "transport.stream.srt.configure",
+        "OscAddress" : "\/cvp\/transport\/stream\/srt\/configure",
+        "Params" : [
+          {
+            "Name" : "enabled",
+            "Required" : true,
+            "Type" : "bool"
+          },
+          {
+            "Name" : "mode",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "host",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "port",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "latencyMs",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "streamId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "keyLength",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Name" : "passphrase",
+            "Required" : false,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Configure SRT destination"
+      },
+      {
         "Description" : "Toggle the capture engine on\/off.",
         "Id" : "transport.engine.toggle",
         "OscAddress" : "\/cvp\/transport\/engine\/toggle",
@@ -237,6 +285,50 @@
         "Title" : "Select scene"
       },
       {
+        "Description" : "Cue a scene to Preview and point named routes at Show Input slots. JSON object: routeId → slot number or null (empty box). Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
+        "Id" : "scene.cueWithRoutes",
+        "OscAddress" : "\/cvp\/scene\/cueWithRoutes",
+        "Params" : [
+          {
+            "Name" : "sceneId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "JSON object {\"ohg-host\":1,\"ohg-box-1\":null}",
+            "Name" : "routes",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Cue scene with routes"
+      },
+      {
+        "Description" : "Cue a scene to Preview and point one named route at a Show Input slot. Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
+        "Id" : "scene.route.set",
+        "OscAddress" : "\/cvp\/scene\/route\/set",
+        "Params" : [
+          {
+            "Name" : "sceneId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Route id on that scene (for example ohg-host)",
+            "Name" : "routeId",
+            "Required" : true,
+            "Type" : "string"
+          },
+          {
+            "Description" : "Show Input slot 1-10",
+            "Name" : "slot",
+            "Required" : true,
+            "Type" : "int"
+          }
+        ],
+        "Title" : "Set scene route"
+      },
+      {
         "Description" : "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.",
         "Id" : "scene.list",
         "OscAddress" : "\/cvp\/scene\/list",
@@ -244,6 +336,15 @@
 
         ],
         "Title" : "List scenes"
+      },
+      {
+        "Description" : "Re-add any removed catalog scene (intro, interview, speaker-slides, panel, closing) at its catalog position with fresh starter routes. Existing scenes, Program and Preview are untouched.",
+        "Id" : "scene.restoreStarters",
+        "OscAddress" : "\/cvp\/scene\/restoreStarters",
+        "Params" : [
+
+        ],
+        "Title" : "Restore starter scenes"
       },
       {
         "Description" : "Refresh the local media bin and return the staged clip's source id.",
@@ -634,6 +735,58 @@
           }
         ],
         "Title" : "Multiview tiles"
+      },
+      {
+        "Description" : "Toggle multiview labels.",
+        "Id" : "multiview.showLabels.set",
+        "OscAddress" : "\/cvp\/multiview\/showLabels\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview labels"
+      },
+      {
+        "Description" : "Toggle multiview tally borders.",
+        "Id" : "multiview.showTally.set",
+        "OscAddress" : "\/cvp\/multiview\/showTally\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview tally"
+      },
+      {
+        "Description" : "Toggle multiview audio meters.",
+        "Id" : "multiview.showMeters.set",
+        "OscAddress" : "\/cvp\/multiview\/showMeters\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview meters"
+      },
+      {
+        "Description" : "Toggle the multiview clock.",
+        "Id" : "multiview.showClock.set",
+        "OscAddress" : "\/cvp\/multiview\/showClock\/set",
+        "Params" : [
+          {
+            "Name" : "on",
+            "Required" : true,
+            "Type" : "bool"
+          }
+        ],
+        "Title" : "Multiview clock"
       },
       {
         "Description" : "Toggle auto-assigning roster participants to Show Inputs.",

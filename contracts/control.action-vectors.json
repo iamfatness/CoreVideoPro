@@ -1,0 +1,1456 @@
+{
+  "version": 1,
+  "sections": {
+    "scene-routes": {
+      "source": "native-shell/CoreVideoPro.Control/SceneCueWithRoutesArgs.cs:10,74",
+      "writer": "CT",
+      "cases": [
+        {
+          "name": "parse-object-slot",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"cam\":2}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "routes": {
+                "cam": 2
+              },
+              "order": [
+                "cam"
+              ]
+            }
+          }
+        },
+        {
+          "name": "parse-object-null",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"cam\":null}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "routes": {
+                "cam": null
+              },
+              "order": [
+                "cam"
+              ]
+            }
+          }
+        },
+        {
+          "name": "parse-array",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "[1]"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes must be a JSON object of routeId to Show Input slot (or null)."
+          }
+        },
+        {
+          "name": "parse-string",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "\"x\""
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes must be a JSON object of routeId to Show Input slot (or null)."
+          }
+        },
+        {
+          "name": "parse-empty-key",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"\":1}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes keys must be non-empty route ids."
+          }
+        },
+        {
+          "name": "parse-string-slot",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"cam\":\"2\"}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes 'cam' must be an integer slot or null."
+          }
+        },
+        {
+          "name": "parse-fractional-slot",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"cam\":1.5}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes 'cam' must be an integer slot or null."
+          }
+        },
+        {
+          "name": "parse-not-json",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "not json"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes is not JSON: 'not json' is an invalid JSON literal. Expected the literal 'null'. LineNumber: 0 | BytePositionInLine: 1.",
+            "errorPrefix": "routes is not JSON: "
+          }
+        },
+        {
+          "name": "parse-blank",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "   "
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes must be a JSON object of routeId to Show Input slot (or null)."
+          }
+        },
+        {
+          "name": "parse-empty-object",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "routes": {},
+              "order": []
+            }
+          }
+        },
+        {
+          "name": "parse-bool-slot",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"cam\":true}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes 'cam' must be an integer slot or null."
+          }
+        },
+        {
+          "name": "parse-exponent-slot",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"cam\":1e2}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes 'cam' must be an integer slot or null."
+          }
+        },
+        {
+          "name": "parse-int32-overflow",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"cam\":3000000000}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": false,
+            "error": "routes 'cam' must be an integer slot or null."
+          }
+        },
+        {
+          "name": "parse-two-routes",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"a\":1,\"b\":null}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "routes": {
+                "a": 1,
+                "b": null
+              },
+              "order": [
+                "a",
+                "b"
+              ]
+            }
+          }
+        },
+        {
+          "name": "parse-duplicate-key",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"z\":1,\"a\":2,\"z\":3}"
+          ],
+          "given": {
+            "step": "parse"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "routes": {
+                "z": 3,
+                "a": 2
+              },
+              "order": [
+                "z",
+                "a"
+              ]
+            }
+          }
+        },
+        {
+          "name": "refuse-none",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"two-up-layer-0\":1,\"two-up-layer-1\":null}"
+          ],
+          "given": {
+            "step": "refuse",
+            "scenes": [
+              "two-up",
+              "solo"
+            ],
+            "routeIds": [
+              "two-up-layer-0",
+              "two-up-layer-1"
+            ],
+            "slots": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "expect": {
+            "ok": true
+          }
+        },
+        {
+          "name": "refuse-unknown-scene",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "gone",
+            "{\"two-up-layer-0\":1}"
+          ],
+          "given": {
+            "step": "refuse",
+            "scenes": [
+              "two-up",
+              "solo"
+            ],
+            "routeIds": [
+              "two-up-layer-0",
+              "two-up-layer-1"
+            ],
+            "slots": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "expect": {
+            "ok": false,
+            "error": "Unknown scene 'gone'."
+          }
+        },
+        {
+          "name": "refuse-blank-scene",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "",
+            "{}"
+          ],
+          "given": {
+            "step": "refuse",
+            "scenes": [
+              "two-up",
+              "solo"
+            ],
+            "routeIds": [
+              "two-up-layer-0",
+              "two-up-layer-1"
+            ],
+            "slots": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "expect": {
+            "ok": false,
+            "error": "Unknown scene ''."
+          }
+        },
+        {
+          "name": "refuse-unknown-route",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"two-up-layer-0\":1,\"b\":2}"
+          ],
+          "given": {
+            "step": "refuse",
+            "scenes": [
+              "two-up",
+              "solo"
+            ],
+            "routeIds": [
+              "two-up-layer-0",
+              "two-up-layer-1"
+            ],
+            "slots": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "expect": {
+            "ok": false,
+            "error": "Unknown route 'b' on scene 'two-up'."
+          }
+        },
+        {
+          "name": "refuse-unknown-slot",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"two-up-layer-0\":11}"
+          ],
+          "given": {
+            "step": "refuse",
+            "scenes": [
+              "two-up",
+              "solo"
+            ],
+            "routeIds": [
+              "two-up-layer-0",
+              "two-up-layer-1"
+            ],
+            "slots": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "expect": {
+            "ok": false,
+            "error": "Unknown Show Input slot 11 for route 'two-up-layer-0'."
+          }
+        },
+        {
+          "name": "refuse-route-before-slot",
+          "action": "scene.cueWithRoutes",
+          "args": [
+            "two-up",
+            "{\"two-up-layer-0\":11,\"b\":1}"
+          ],
+          "given": {
+            "step": "refuse",
+            "scenes": [
+              "two-up",
+              "solo"
+            ],
+            "routeIds": [
+              "two-up-layer-0",
+              "two-up-layer-1"
+            ],
+            "slots": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "expect": {
+            "ok": false,
+            "error": "Unknown route 'b' on scene 'two-up'."
+          }
+        }
+      ]
+    },
+    "restore-starters": {
+      "source": "native-shell/CoreVideoPro.WinUI/Services/SceneCatalogPolicy.cs RestoreStatus",
+      "writer": "WT",
+      "cases": [
+        {
+          "name": "none-missing",
+          "action": "scene.restoreStarters",
+          "args": [],
+          "given": {
+            "restoredNames": []
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "status": "All starter scenes are already present"
+            }
+          }
+        },
+        {
+          "name": "one-missing",
+          "action": "scene.restoreStarters",
+          "args": [],
+          "given": {
+            "restoredNames": [
+              "Two-up"
+            ]
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "status": "Two-up restored"
+            }
+          }
+        },
+        {
+          "name": "three-missing",
+          "action": "scene.restoreStarters",
+          "args": [],
+          "given": {
+            "restoredNames": [
+              "Two-up",
+              "Solo",
+              "Side by side"
+            ]
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "status": "3 starter scenes restored"
+            }
+          }
+        }
+      ]
+    },
+    "srt-configure": {
+      "source": "native-shell/CoreVideoPro.WinUI/Services/StreamDestinationControl.cs:9",
+      "writer": "WT",
+      "cases": [
+        {
+          "name": "valid-caller-with-passphrase",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "example.test",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "busy-refuses-first",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "invalid-mode-test-secret",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": true,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Stop streaming and wait for the transition to finish before configuring destinations."
+          }
+        },
+        {
+          "name": "schema-empty-args",
+          "action": "transport.stream.srt.configure",
+          "args": [],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Destination arguments do not match the action schema; see GET /manifest."
+          }
+        },
+        {
+          "name": "mode-invalid",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "invalid-mode-test-secret",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "SRT mode must be caller, listener, or rendezvous."
+          }
+        },
+        {
+          "name": "mode-trimmed-and-lowercased",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            " Listener ",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "listener",
+              "host": "example.test",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "host-with-scheme",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "srt://x",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "SRT host must be a hostname or IP address without a URL scheme or query."
+          }
+        },
+        {
+          "name": "host-with-query",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "h?x=1",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "SRT host must be a hostname or IP address without a URL scheme or query."
+          }
+        },
+        {
+          "name": "host-ipv4",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "192.168.1.20",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "192.168.1.20",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "host-ipv6-bracketed",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "[::1]",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "[::1]",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "host-ipv6-zone",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "fe80::1%en0",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "fe80::1%en0",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "host-superscript-digit",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "cam².example",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "cam².example",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "set"
+            }
+          }
+        },
+        {
+          "name": "port-zero",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "0",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Configure SRT port between 1 and 65535 before streaming."
+          }
+        },
+        {
+          "name": "port-65536",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "65536",
+            "120",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Configure SRT port between 1 and 65535 before streaming."
+          }
+        },
+        {
+          "name": "latency-19",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "19",
+            "test-stream-id",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Configure SRT latency of at least 20 ms before streaming."
+          }
+        },
+        {
+          "name": "stream-id-513",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "16",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "SRT stream ID must be 512 characters or less."
+          }
+        },
+        {
+          "name": "key-length-8",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "8",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Choose SRT encryption key length 0, 16, 24, or 32."
+          }
+        },
+        {
+          "name": "key-16-no-passphrase",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Configure an SRT passphrase when encryption is enabled."
+          }
+        },
+        {
+          "name": "passphrase-9",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "123456789"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "SRT passphrase must be 10 to 79 characters when encryption is enabled."
+          }
+        },
+        {
+          "name": "passphrase-80",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16",
+            "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "SRT passphrase must be 10 to 79 characters when encryption is enabled."
+          }
+        },
+        {
+          "name": "key-0-with-passphrase",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "0",
+            "test-passphrase-sentinel"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": false,
+            "effects": {
+              "saved": false,
+              "applied": false,
+              "steps": []
+            },
+            "error": "Choose an SRT key length before entering a passphrase."
+          }
+        },
+        {
+          "name": "omitted-passphrase-kept",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "test-stream-id",
+            "16"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": "stored-passphrase-1"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "example.test",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "test-stream-id",
+              "keyLength": "16",
+              "passphrase": "kept"
+            }
+          }
+        },
+        {
+          "name": "empty-passphrase-clears",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            true,
+            "caller",
+            "example.test",
+            "9000",
+            "120",
+            "",
+            "0",
+            ""
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": "stored-passphrase-1"
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": true,
+              "mode": "caller",
+              "host": "example.test",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "",
+              "keyLength": "0",
+              "passphrase": "cleared"
+            }
+          }
+        },
+        {
+          "name": "disabled-empty-host-saves",
+          "action": "transport.stream.srt.configure",
+          "args": [
+            false,
+            "caller",
+            "",
+            "9000",
+            "120",
+            "",
+            "0"
+          ],
+          "given": {
+            "busy": false,
+            "storedPassphrase": ""
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "saved": true,
+              "applied": true,
+              "steps": [
+                "save",
+                "apply"
+              ],
+              "enabled": false,
+              "mode": "caller",
+              "host": "",
+              "port": "9000",
+              "latencyMs": "120",
+              "streamId": "",
+              "keyLength": "0",
+              "passphrase": "cleared"
+            }
+          }
+        }
+      ]
+    },
+    "ndi-set": {
+      "source": "native-shell/CoreVideoPro.WinUI/Services/StudioStreamOutputValidation.cs:262",
+      "writer": "WT",
+      "cases": [
+        {
+          "name": "no-program-name",
+          "action": "transport.ndi.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "programName": "",
+            "graphicsName": null,
+            "graphicsKeyOn": false,
+            "coreHasNdiOutput": true,
+            "coreHasGraphicsKey": true
+          },
+          "expect": {
+            "ok": false,
+            "error": "Configure an NDI program name before turning on NDI output."
+          }
+        },
+        {
+          "name": "capability-missing",
+          "action": "transport.ndi.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "programName": "Studio A",
+            "graphicsName": null,
+            "graphicsKeyOn": false,
+            "coreHasNdiOutput": false,
+            "coreHasGraphicsKey": true
+          },
+          "expect": {
+            "ok": false,
+            "error": "NDI output is not available in this core build (missing ndi-output)."
+          }
+        },
+        {
+          "name": "graphics-key-equals-program",
+          "action": "transport.ndi.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "programName": "Studio A",
+            "graphicsName": "studio a",
+            "graphicsKeyOn": true,
+            "coreHasNdiOutput": true,
+            "coreHasGraphicsKey": true
+          },
+          "expect": {
+            "ok": false,
+            "error": "NDI graphics key name must differ from the NDI program name."
+          }
+        },
+        {
+          "name": "valid",
+          "action": "transport.ndi.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "programName": "Studio A",
+            "graphicsName": null,
+            "graphicsKeyOn": true,
+            "coreHasNdiOutput": true,
+            "coreHasGraphicsKey": true
+          },
+          "expect": {
+            "ok": true
+          }
+        },
+        {
+          "name": "core-not-up-defers",
+          "action": "transport.ndi.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "programName": "Studio A",
+            "graphicsName": null,
+            "graphicsKeyOn": false,
+            "coreHasNdiOutput": null,
+            "coreHasGraphicsKey": null
+          },
+          "expect": {
+            "ok": true
+          }
+        }
+      ]
+    },
+    "multiview-overlays": {
+      "source": "native-shell/CoreVideoPro.MediaCore/Services/MediaCoreCommandBuilder.cs BuildConfigureMultiviewerCommand",
+      "writer": "MCT",
+      "cases": [
+        {
+          "name": "all-default",
+          "action": "multiview.showLabels.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": true,
+            "showTally": true,
+            "showMeters": true,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": true,
+                "showTally": true,
+                "showMeters": true,
+                "showClock": false
+              }
+            }
+          }
+        },
+        {
+          "name": "all-off",
+          "action": "multiview.showTally.set",
+          "args": [
+            false
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": false,
+            "showTally": true,
+            "showMeters": false,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": false,
+                "showTally": false,
+                "showMeters": false,
+                "showClock": false
+              }
+            }
+          }
+        },
+        {
+          "name": "labels-off-only",
+          "action": "multiview.showLabels.set",
+          "args": [
+            false
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": true,
+            "showTally": true,
+            "showMeters": true,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": false,
+                "showTally": true,
+                "showMeters": true,
+                "showClock": false
+              }
+            }
+          }
+        },
+        {
+          "name": "clock-on-only",
+          "action": "multiview.showClock.set",
+          "args": [
+            true
+          ],
+          "given": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 10,
+            "showLabels": true,
+            "showTally": true,
+            "showMeters": true,
+            "showClock": false
+          },
+          "expect": {
+            "ok": true,
+            "effects": {
+              "command": {
+                "type": "configure-multiviewer",
+                "layoutMode": "pgmPvwTop",
+                "tileCount": 10,
+                "showLabels": true,
+                "showTally": true,
+                "showMeters": true,
+                "showClock": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

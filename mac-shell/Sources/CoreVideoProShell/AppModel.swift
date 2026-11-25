@@ -337,7 +337,7 @@ struct MultiviewTile: Identifiable, Equatable {
     let id: String
     var label: String
     var role: String      // pgm | pvw | source
-    var tally: String     // program | preview | none
+    var tally: String     // the core's words: pgm | pvw | none (normalize with MultiviewOverlayFormatting)
     var activeSpeaker: Bool
     var x: Double
     var y: Double
@@ -508,11 +508,22 @@ final class AppModel: ObservableObject {
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
     @Published var displayName = "CoreVideo Pro (mac)"
-    @Published var scenes: [SceneDef] = [
+    /// The Mac's starter catalog (plan D-C3, the twin of Windows ProductionCatalog.Scenes):
+    /// the built-in scenes, in catalog order, with their preset (empty) layers.
+    static let starterScenes: [SceneDef] = [
         SceneDef(id: "fullscreen", name: "Fullscreen", layout: "single"),
         SceneDef(id: "two-up", name: "Side by side", layout: "two-up"),
         SceneDef(id: "pip", name: "Picture in picture", layout: "pip"),
     ]
+    static var starterSceneIds: [String] { starterScenes.map(\.id) }
+    @Published var scenes: [SceneDef] = AppModel.starterScenes
+    /// Starter ids the operator deleted (Windows RemovedCatalogSceneIds), persisted and
+    /// cleared by restoreStarterScenes(). BOOKKEEPING ONLY on the Mac: Windows re-seeds its
+    /// catalog every launch and needs the set to drop removed scenes again
+    /// (SceneCatalogPolicy.RemovalsToApply); the Mac persists every rail scene, so a deleted
+    /// starter stays deleted without it, and Restore keys on presence, as Windows does.
+    // Nothing on the Mac reads this set yet (owner decision 2026-11-23: keep it Windows-shaped).
+    @Published var removedStarterSceneIds: [String] = []
     @Published var programSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != programSceneId) } }
     @Published var previewSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != previewSceneId) } }
     @Published var mediaAssets: [MediaAsset] = []
@@ -676,6 +687,15 @@ final class AppModel: ObservableObject {
     /// Keychain account). Tests replace it so the harness never writes the
     /// operator's Keychain.
     var streamSecretSaver: (String, String) -> Void = { StreamKeychain.save($0, account: $1) }
+    /// Where a remotely configured SRT destination is saved BEFORE it is applied:
+    /// the prefs (with the new config) and the Keychain passphrase; false = not
+    /// saved. Prefs are nil until the operator's file has been restored. Tests
+    /// replace it so the harness never writes the operator's Keychain.
+    var srtDestinationSaver: (ShellPrefs?, String) -> Bool = { prefs, passphrase in
+        StreamKeychain.save(passphrase, account: StreamKeychain.srtPassphraseAccount)
+        prefs?.save()
+        return true
+    }
     /// Per-source grades (grading plan Task 5): the only sender of set-source-grade.
     /// Harness-only: the saved-grade file the NEXT AppModel() uses (nil → SourceGradeFile.path),
     /// so one harness case's debounced save can never land in another case.
@@ -831,6 +851,7 @@ final class AppModel: ObservableObject {
         prefs.logoBugAssetId = logoBug?.id ?? ""
         prefs.streamUrl = streamUrl
         prefs.streamDestinations = streamDestinations
+        prefs.removedStarterSceneIds = removedStarterSceneIds.isEmpty ? nil : removedStarterSceneIds
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
@@ -971,6 +992,7 @@ final class AppModel: ObservableObject {
         }
         streamUrl = prefs.streamUrl
         if let saved = prefs.streamDestinations { streamDestinations = saved }
+        removedStarterSceneIds = (prefs.removedStarterSceneIds ?? []).filter { Self.starterSceneIds.contains($0) }
         recentMeetings = prefs.recentMeetings
         webinar = prefs.webinar
         if !prefs.scenes.isEmpty {
@@ -1186,6 +1208,19 @@ final class AppModel: ObservableObject {
 
     func configureMultiviewer(mode: String) {
         multiviewLayoutMode = mode
+        applyMultiviewConfig()
+    }
+
+    /// Multiview overlays (Windows MultiviewShowLabels/Tally/Meters/Clock): restored
+    /// from prefs before the first configure-multiviewer, carried on every one.
+    @Published var multiviewOverlays = MultiviewOverlays()
+
+    /// One overlay flag: persists and sends ONE configure-multiviewer when it changes;
+    /// a repeat of the current value sends nothing.
+    func setMultiviewOverlay(_ keyPath: WritableKeyPath<MultiviewOverlays, Bool>, _ on: Bool) {
+        guard multiviewOverlays[keyPath: keyPath] != on else { return }
+        multiviewOverlays[keyPath: keyPath] = on
+        persistPrefsNow()
         applyMultiviewConfig()
     }
 
@@ -2935,6 +2970,28 @@ final class AppModel: ObservableObject {
         return .success
     }
 
+    /// transport.stream.srt.configure (Windows StreamDestinationControl.Configure, SRT):
+    /// validate everything (SrtDestinationControlPolicy), SAVE (Keychain passphrase +
+    /// prefs) before anything in memory changes, then apply; never starts streaming.
+    func configureSrtForControl(_ args: [Any?]) -> ControlInvokeResult {
+        let decision: SrtDestinationControlPolicy.Decision
+        switch SrtDestinationControlPolicy.configure(args: args, busy: streamDestinationsLocked,
+                                                     current: streamDestinations, currentPassphrase: srtPassphrase) {
+        case .failure(let refusal): return .fail(refusal.message)
+        case .success(let value): decision = value
+        }
+        var prefs = currentPrefs()
+        prefs.streamDestinations = decision.config
+        // Never write prefs before the operator's file is restored (persistPrefsNow's rule).
+        guard srtDestinationSaver(prefsRestored ? prefs : nil, decision.passphrase) else {
+            return .fail("Destination settings were not saved. Previous settings remain active; retry after resolving preference storage.")
+        }
+        streamDestinations = decision.config
+        srtPassphrase = decision.passphrase
+        if prefsRestored { lastSavedPrefs = prefs }
+        return .success
+    }
+
     // ── remote control: awaitable twins of the fire-and-forget UI calls ──────
     // (ControlSurface+Session.swift; Windows answers zoom.join/leave from
     // IsInMeeting/JoinStatus, StudioControlSurface.cs:228-251.)
@@ -3639,6 +3696,9 @@ final class AppModel: ObservableObject {
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }) else { return nil }
         scenes.removeAll { $0.id == sceneId }
+        if Self.starterSceneIds.contains(sceneId), !removedStarterSceneIds.contains(sceneId) {
+            removedStarterSceneIds.append(sceneId)
+        }
         // Windows SceneCatalogPolicy.PreviewAfterRemoval: Preview moves to
         // Program. An EMPTY Preview sends no set-preview-scene, so the core's
         // PVW bus kept compositing the deleted scene while the chip read blank.

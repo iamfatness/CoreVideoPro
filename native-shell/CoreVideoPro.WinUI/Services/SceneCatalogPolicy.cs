@@ -128,6 +128,17 @@ public static class SceneCatalogPolicy
         return result;
     }
 
+    /// <summary>The command status after "Restore starter scenes": names the one scene restored,
+    /// counts several, or says nothing was missing. Moved verbatim out of
+    /// <c>StudioViewModel.RestoreStarterScenes</c> so the macOS port replays the exact sentences
+    /// (contracts/control.action-vectors.json, section <c>restore-starters</c>).</summary>
+    public static string RestoreStatus(IReadOnlyList<string> restoredSceneNames) =>
+        restoredSceneNames.Count == 0
+            ? "All starter scenes are already present"
+            : restoredSceneNames.Count == 1
+                ? $"{restoredSceneNames[0]} restored"
+                : $"{restoredSceneNames.Count} starter scenes restored";
+
     /// <summary>Catalog scenes missing from the live list, in catalog order, each paired with
     /// the index it should be re-inserted at so the rail keeps the starter order.</summary>
     public static List<(Scene Scene, int InsertIndex)> MissingCatalogScenes(IReadOnlyList<Scene> scenes)

@@ -767,6 +767,18 @@ struct StudioWorkspaceView: View {
 // composites PREVIEW + PROGRAM + live input tiles into the multiview texture
 // in the pgmPvw layout modes — the shell just presents it.
 struct MultiviewerCanvas: View {
+    /// The header clock: main view only, and only with the Clock overlay on (Windows
+    /// host ShowClock="False" by default; StudioWorkspace.xaml:429-433).
+    static func showsHeaderClock(isPopout: Bool, overlays: MultiviewOverlays) -> Bool {
+        !isPopout && overlays.showClock
+    }
+
+    /// The pop-out's on-canvas clock badge (MultiviewPopoutWindow.xaml:39-48 hosts
+    /// ShowMultiviewHost with the Clock toggle).
+    static func showsCanvasClock(isPopout: Bool, overlays: MultiviewOverlays) -> Bool {
+        isPopout && overlays.showClock
+    }
+
     @EnvironmentObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
     // The pop-out hosts this same view; it just hides the pop-out affordances.
@@ -780,8 +792,12 @@ struct MultiviewerCanvas: View {
                 Text("\(model.liveInputCount) live inputs")
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Spacer()
-                Text(model.clockText)
-                    .font(.plexMono(12, .medium)).foregroundStyle(Studio.textPrimary)
+                // Windows StudioWorkspace.xaml:429-433: the main view's clock follows the
+                // Clock overlay (default off); the pop-out draws it on the PGM cell.
+                if Self.showsHeaderClock(isPopout: isPopout, overlays: model.multiviewOverlays) {
+                    Text(model.clockText)
+                        .font(.plexMono(12, .medium)).foregroundStyle(Studio.textPrimary)
+                }
                 // Windows POS-1/POS-2 (Tier 0.14): edit the PREVIEW scene in
                 // place, and add an overlay layer to it. The multiview layout
                 // mode lives in Settings > Multiview, as on Windows.
@@ -830,7 +846,9 @@ struct MultiviewerCanvas: View {
                 // how "program and preview are missing" presented.
                 GeometryReader { geometry in
                     ForEach(model.multiviewTiles) { tile in
-                        MultiviewTileChrome(tile: tile)
+                        MultiviewTileChrome(tile: tile, overlays: model.multiviewOverlays,
+                                            masterLeft: Double(model.masterLevelLeft) / 100,
+                                            masterRight: Double(model.masterLevelRight) / 100)
                             .frame(width: max(1, tile.w * geometry.size.width),
                                    height: max(1, tile.h * geometry.size.height))
                             .offset(x: tile.x * geometry.size.width,
@@ -861,6 +879,15 @@ struct MultiviewerCanvas: View {
                     }
                 }
                 .coordinateSpace(name: "multiview")
+                // Windows ShowMultiviewHost ClockChrome: ONE clock, top-right of the whole
+                // multiview, whatever the layout (so Grid has one too). Pop-out only; the
+                // main view's clock is in the header.
+                if Self.showsCanvasClock(isPopout: isPopout, overlays: model.multiviewOverlays) {
+                    MultiviewClockBadge(text: model.clockText)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .allowsHitTesting(false)
+                }
                 if MultiviewEmptyStatePolicy.showAssignmentGuidance(
                     tileCount: model.multiviewTiles.count,
                     multiviewSurfaceId: model.multiviewSurfaceId) {
@@ -888,15 +915,27 @@ struct MultiviewerCanvas: View {
 // lights green). Label bar sits at the bottom of the cell like the reference.
 struct MultiviewTileChrome: View {
     let tile: MultiviewTile
+    var overlays = MultiviewOverlays()
+    var masterLeft = 0.0
+    var masterRight = 0.0
+
+    var meter: (Double, Double)? {
+        MultiviewOverlayFormatting.programMeter(
+            left: masterLeft, right: masterRight, showMeters: overlays.showMeters,
+            isProgramTile: MultiviewOverlayFormatting.isProgramTile(role: tile.role, tally: tile.tally))
+    }
 
     var accent: Color {
         switch tile.role {
         case "pgm": return Studio.red
         case "pvw": return Studio.accent
         default:
-            if tile.tally == "program" { return Studio.red }
-            if tile.tally == "preview" { return Studio.accent }
-            return tile.activeSpeaker ? Studio.accent : Studio.border
+            // The core's tally words are "pgm" / "pvw" (Windows ResolveTally).
+            switch MultiviewOverlayFormatting.normalizeTally(tile.tally) {
+            case "pgm": return Studio.red
+            case "pvw": return Studio.accent
+            default: return tile.activeSpeaker ? Studio.accent : Studio.border
+            }
         }
     }
 
@@ -913,6 +952,15 @@ struct MultiviewTileChrome: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             Rectangle().fill(Color.clear)
+            if let meter {
+                HStack(alignment: .bottom, spacing: 2) {
+                    SegmentedMeter(level: Int((meter.0 * 100).rounded())).frame(width: 6)
+                    SegmentedMeter(level: Int((meter.1 * 100).rounded())).frame(width: 6)
+                }
+                .padding(.vertical, 22).padding(.trailing, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            }
+            if overlays.showLabels {
             HStack(spacing: 4) {
                 Text(title)
                     .font(.grotesk(11, isBus ? .semibold : .regular))
@@ -928,10 +976,22 @@ struct MultiviewTileChrome: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Rectangle().fill(
                 isBus ? accent : Color.black.opacity(0.55)))
+            }
         }
-        .overlay(Rectangle().stroke(accent, lineWidth: isBus ? 3 : 2))
+        .overlay(Rectangle().stroke(overlays.showTally ? accent : Color.clear, lineWidth: isBus ? 3 : 2))
         .contentShape(Rectangle())
         .allowsHitTesting(!isBus)
+    }
+}
+
+/// Windows ClockChrome: HH:MM:SS on a dark rounded badge.
+struct MultiviewClockBadge: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.plexMono(14, .semibold)).foregroundStyle(Studio.textPrimary)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.69)))
     }
 }
 

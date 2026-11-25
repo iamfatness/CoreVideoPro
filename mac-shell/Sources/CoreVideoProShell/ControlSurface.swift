@@ -140,6 +140,18 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
                 ? .appliedPreview(sceneId) : .fail("Scene '\(sceneId)' was not queued on Preview.")
         case "scene.list":
             return .withData(sceneListJSON(model))
+        // RC7 (ControlSurface+Scenes.swift; Windows StudioControlSurface.cs:316-324).
+        case "scene.cueWithRoutes":
+            switch SceneRoutesArgs.parse(string(1)) {
+            case .refused(let error): return .fail(error)
+            case .routes(let routes): return cueWithRoutes(model, sceneId: string(0), routes: routes)
+            }
+        case "scene.restoreStarters":
+            // Windows StudioControlSurface.cs: always Success; the sentence is CommandStatus.
+            model.restoreStarterScenes()
+            return .success
+        case "scene.route.set":
+            return cueWithRoutes(model, sceneId: string(0), routes: SceneRouteMap([(string(1), int(2))]))
         // ── Session (ControlSurface+Session.swift) ──
         case "zoom.join":
             return await model.joinZoomForControl(target: string(0), displayName: optionalString(1), webinar: bool(2))
@@ -149,6 +161,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return await setCaptureOnline(model, sourceId: string(0), online: bool(1))
         case "transport.stream.rtmp.configure":
             return model.configureRtmpForControl(args.map(\.value))
+        case "transport.stream.srt.configure":
+            return model.configureSrtForControl(args.map(\.value))
         case "transport.transition.set":
             return setTransition(model, mode: string(0))
         case "transport.engine.toggle":
@@ -166,6 +180,15 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMultiviewLayout(model, mode: string(0))
         case "multiview.tileCount.set":
             return setMultiviewTileCount(model, count: int(0))
+        // RC7: Windows StudioControlSurface.cs:679-690, always Success.
+        case "multiview.showLabels.set":
+            model.setMultiviewOverlay(\.showLabels, bool(0)); return .success
+        case "multiview.showTally.set":
+            model.setMultiviewOverlay(\.showTally, bool(0)); return .success
+        case "multiview.showMeters.set":
+            model.setMultiviewOverlay(\.showMeters, bool(0)); return .success
+        case "multiview.showClock.set":
+            model.setMultiviewOverlay(\.showClock, bool(0)); return .success
         case "audio.mastering.set":
             return setMastering(model, on: bool(0))
         case "audio.masterLimiter.set":
@@ -240,6 +263,10 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "audio.zoomMode.set", "automation.autoAssignInputs.set",
         // Phase 2 (RC6)
         "media.rundown.load", "media.rundown.preview", "media.rundown.take",
+        // Phase 4 (RC7)
+        "transport.stream.srt.configure",
+        "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
+        "scene.cueWithRoutes", "scene.route.set", "scene.restoreStarters",
     ]
 
     /// Windows RunTake: refuse when CanTake is false, else the one Take path.

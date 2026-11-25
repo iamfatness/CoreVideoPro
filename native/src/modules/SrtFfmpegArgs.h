@@ -73,26 +73,79 @@ inline bool isValidSrtMode(const std::string& mode) {
 // Build the srt:// URL. Returns valid=false with a human-readable reason rather
 // than emitting a half-formed URL — a malformed endpoint fails at FFmpeg spawn
 // time with a far less useful message.
+// The host as it may appear in the URL authority, or empty when it must be
+// refused. SECURITY: the host is written into a URL whose query carries mode,
+// passphrase and streamid, so only host characters pass: ASCII letters, digits,
+// '.', '-', '_' for a name or IPv4; hex digits, ':' and '.' for an IPv6 literal,
+// which is always BRACKETED (unbracketed, its last group reads as a port), with
+// an optional zone id of 1-15 [A-Za-z0-9_.-] kept inside the brackets. Anything
+// else ('?', '&', '#', '/', '%', '@', whitespace, unbalanced brackets) refuses.
+// The Windows shell's .NET host check accepts "fe80::1%en0?passphrase=x" as IPv6,
+// so this cannot be left to the shells.
+inline std::string srtUrlHost(const std::string& raw) {
+  auto isHex = [](unsigned char c) { return std::isxdigit(c) != 0; };
+  auto isNameChar = [](unsigned char c) { return std::isalnum(c) != 0 || c == '.' || c == '-' || c == '_'; };
+  std::string inner = raw;
+  const bool bracketed = !raw.empty() && raw.front() == '[';
+  if (bracketed) {
+    if (raw.size() < 3 || raw.back() != ']') return {};
+    inner = raw.substr(1, raw.size() - 2);
+  } else if (raw.find(']') != std::string::npos) {
+    return {};
+  }
+  if (inner.empty()) return {};
+  if (inner.find(':') != std::string::npos) {   // an IPv6 literal
+    std::string address = inner, zone;
+    if (const auto percent = inner.find('%'); percent != std::string::npos) {
+      address = inner.substr(0, percent);
+      zone = inner.substr(percent + 1);
+      if (zone.empty() || zone.size() > 15 || !std::all_of(zone.begin(), zone.end(), isNameChar)) return {};
+    }
+    if (address.empty() || !std::all_of(address.begin(), address.end(),
+                                        [&](unsigned char c) { return isHex(c) || c == ':' || c == '.'; })) {
+      return {};
+    }
+    return "[" + address + (zone.empty() ? std::string() : "%" + zone) + "]";
+  }
+  if (bracketed || !std::all_of(inner.begin(), inner.end(), isNameChar)) return {};
+  return inner;
+}
+
 inline SrtEndpointResult buildSrtUrl(const SrtEndpointConfig& config) {
   SrtEndpointResult result;
   std::string host = config.host;
-  // Tolerate a pasted "srt://host:port" in the host field.
+  // Tolerate a pasted "srt://host:port" (or "srt://[v6]:port") in the host field.
   const std::string scheme = "srt://";
   if (host.rfind(scheme, 0) == 0) {
     host = host.substr(scheme.size());
   }
   int port = config.port;
-  if (const auto colon = host.rfind(':'); colon != std::string::npos && host.find(']') == std::string::npos) {
+  auto takePort = [&](std::string::size_type colon) {
     const std::string tail = host.substr(colon + 1);
-    if (!tail.empty() && std::all_of(tail.begin(), tail.end(), [](unsigned char c) { return std::isdigit(c); })) {
-      if (port == 0) {
-        port = std::atoi(tail.c_str());
-      }
-      host = host.substr(0, colon);
+    if (tail.empty() || !std::all_of(tail.begin(), tail.end(), [](unsigned char c) { return std::isdigit(c); })) {
+      return;
     }
+    if (port == 0) {
+      port = std::atoi(tail.c_str());
+    }
+    host = host.substr(0, colon);
+  };
+  if (!host.empty() && host.front() == '[') {
+    // "[v6]:port": the port follows the closing bracket.
+    if (const auto close = host.find(']'); close != std::string::npos && close + 1 < host.size() && host[close + 1] == ':') {
+      takePort(close + 1);
+    }
+  } else if (std::count(host.begin(), host.end(), ':') == 1) {
+    // "name:port" or "v4:port". Two or more colons is an unbracketed IPv6 literal.
+    takePort(host.find(':'));
   }
   if (host.empty()) {
     result.error = "SRT destination needs a host.";
+    return result;
+  }
+  const std::string urlHost = srtUrlHost(host);
+  if (urlHost.empty()) {
+    result.error = "SRT host must be a hostname or IP address without a URL scheme or query.";
     return result;
   }
   if (port <= 0 || port > 65535) {
@@ -116,7 +169,7 @@ inline SrtEndpointResult buildSrtUrl(const SrtEndpointConfig& config) {
                             : (config.latencyMs > 0 ? config.latencyMs * 1000 : 120000);
 
   std::ostringstream url;
-  url << "srt://" << host << ":" << port << "?mode=" << mode << "&transtype=live"
+  url << "srt://" << urlHost << ":" << port << "?mode=" << mode << "&transtype=live"
       << "&latency=" << latencyUs;
   if (!config.passphrase.empty()) {
     url << "&passphrase=" << percentEncodeSrtValue(config.passphrase);

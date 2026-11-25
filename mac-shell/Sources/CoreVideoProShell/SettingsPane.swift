@@ -100,6 +100,15 @@ struct SettingsPane: View {
                 }
             }
 
+            // Windows ProductionSettingsWindow.xaml:850-869: the "Overlays" group,
+            // same order and words.
+            card("Overlays") {
+                overlayToggle("Source labels", \.showLabels)
+                overlayToggle("Tally borders", \.showTally)
+                overlayToggle("Audio meters", \.showMeters)
+                overlayToggle("Clock", \.showClock)
+            }
+
             card("Outputs") {
                 labeled("Stream bitrate") {
                     HStack(spacing: 6) {
@@ -374,6 +383,17 @@ struct SettingsPane: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+    }
+
+    /// One multiview overlay switch (Windows ToggleSwitch: header left, Off/On right).
+    func overlayToggle(_ label: String, _ keyPath: WritableKeyPath<MultiviewOverlays, Bool>) -> some View {
+        labeled(label) {
+            Toggle(label, isOn: Binding(get: { model.multiviewOverlays[keyPath: keyPath] },
+                                        set: { model.setMultiviewOverlay(keyPath, $0) }))
+                .labelsHidden().toggleStyle(.switch).controlSize(.small)
+            Text(model.multiviewOverlays[keyPath: keyPath] ? "On" : "Off")
+                .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+        }
     }
 
     func labeled(_ label: String, @ViewBuilder content: () -> some View) -> some View {

@@ -287,3 +287,90 @@ enum StreamHealthLine {
         }
     }
 }
+
+// ── remote configuration (transport.stream.srt.configure) ─────────────────
+
+/// A pure port of Windows `StreamDestinationControl.Configure` (SRT branch,
+/// W/Services/StreamDestinationControl.cs:9-61) for the control API. Order is
+/// Windows': busy, schema, mode, host shape, then ValidateSrt only when
+/// enabled. No refusal text echoes an argument (the args carry a passphrase).
+/// Replayed against Windows-exported vectors (contracts/control.action-vectors.json,
+/// section srt-configure).
+enum SrtDestinationControlPolicy {
+    static let busyRefusal = "Stop streaming and wait for the transition to finish before configuring destinations."
+    static let schemaRefusal = "Destination arguments do not match the action schema; see GET /manifest."
+    static let modeRefusal = "SRT mode must be caller, listener, or rendezvous."
+    static let hostRefusal = "SRT host must be a hostname or IP address without a URL scheme or query."
+
+    struct Decision: Equatable {
+        var config: StreamDestinationsConfig
+        var passphrase: String
+    }
+
+    /// `args` are the raw control args; `current` is the saved config, which
+    /// keeps every non-SRT field.
+    static func configure(args: [Any?], busy: Bool, current: StreamDestinationsConfig,
+                          currentPassphrase: String) -> Result<Decision, ControlBindError> {
+        func refuse(_ text: String) -> Result<Decision, ControlBindError> { .failure(ControlBindError(message: text, status: 422)) }
+        if busy { return refuse(busyRefusal) }
+        guard case .success(let values) = ControlCatalog.bindSchema("transport.stream.srt.configure", args) else {
+            return refuse(schemaRefusal)
+        }
+        func text(_ index: Int) -> String {
+            ((index < values.count ? values[index] : nil) as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let enabled = values.first as? Bool ?? false
+        var next = current
+        next.srtEnabled = enabled
+        next.srtMode = text(1).lowercased()
+        next.srtHost = text(2)
+        next.srtPort = text(3)
+        next.srtLatencyMs = text(4)
+        next.srtStreamId = text(5)
+        next.srtKeyLength = text(6)
+        // Omitted keeps the stored passphrase; an explicit "" clears it.
+        let passphrase = (values.count > 7 && values[7] != nil) ? text(7) : currentPassphrase
+        guard StreamDestinationPolicy.srtModes.contains(next.srtMode) else { return refuse(modeRefusal) }
+        if !next.srtHost.isEmpty && !isHostName(next.srtHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))) {
+            return refuse(hostRefusal)
+        }
+        if enabled, let error = StreamDestinationPolicy.validateSrt(
+            mode: next.srtMode, host: next.srtHost, port: next.srtPort, latencyMs: next.srtLatencyMs,
+            streamId: next.srtStreamId, keyLength: next.srtKeyLength, passphrase: passphrase) {
+            return refuse(error)
+        }
+        return .success(Decision(config: next, passphrase: passphrase))
+    }
+
+    /// .NET `Uri.CheckHostName(name) != Unknown`: an IPv4 or IPv6 literal, or a
+    /// DNS name (dot-separated labels of letters, digits, '-' and '_', each 1-63
+    /// characters, optional trailing dot, at most 255 characters). Anything
+    /// carrying a scheme, path, query, port or space is Unknown.
+    static func isHostName(_ name: String) -> Bool {
+        guard !name.isEmpty else { return false }
+        var v4 = in_addr(), v6 = in6_addr()
+        if inet_pton(AF_INET, name, &v4) == 1 { return true }
+        if name.contains(":") {
+            // An IPv6 literal, optionally with a zone id ("fe80::1%en0"). SECURITY: the zone
+            // is allow-listed to 1-15 [A-Za-z0-9_.-]. .NET takes everything after '%'
+            // unchecked, so "fe80::1%en0?passphrase=x&mode=listener" passes on Windows and
+            // would rewrite the srt:// query (the native builder refuses it as well).
+            let parts = name.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false)
+            if parts.count == 2 {
+                let zone = parts[1]
+                guard (1...15).contains(zone.count),
+                      zone.unicodeScalars.allSatisfy({ $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "_.-".unicodeScalars.contains($0)) })
+                else { return false }
+            }
+            return inet_pton(AF_INET6, String(parts[0]), &v6) == 1
+        }
+        guard name.count <= 255 else { return false }
+        var labels = name.split(separator: ".", omittingEmptySubsequences: false)
+        if labels.count > 1, labels.last?.isEmpty == true { labels.removeLast() }
+        return labels.allSatisfy { label in
+            // .NET's IRI host path accepts Unicode letters and numbers ("cam².example" is a
+            // valid host on Windows: srt-configure vector host-superscript-digit).
+            (1...63).contains(label.count) && label.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        }
+    }
+}

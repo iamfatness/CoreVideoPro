@@ -77,7 +77,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "keyLength", type: .string, required: true, description: nil),
                 ControlParam(name: "passphrase", type: .string, required: false, description: nil),
             ]),
-            availability: .blocked(workstream: "OUT", label: "SRT and NDI output")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "transport.ndi.toggle", title: "NDI toggle", description: "Toggle NDI output. Independent of streaming; refused (and left off) when the NDI settings are invalid.", params: []),
             availability: .blocked(workstream: "OUT", label: "SRT and NDI output")),
@@ -128,20 +128,20 @@ enum ControlManifestGenerated {
                 ControlParam(name: "sceneId", type: .string, required: true, description: nil),
                 ControlParam(name: "routes", type: .string, required: true, description: "JSON object {\"ohg-host\":1,\"ohg-box-1\":null}"),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.route.set", title: "Set scene route", description: "Cue a scene to Preview and point one named route at a Show Input slot. Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.", params: [
                 ControlParam(name: "sceneId", type: .string, required: true, description: nil),
                 ControlParam(name: "routeId", type: .string, required: true, description: "Route id on that scene (for example ohg-host)"),
                 ControlParam(name: "slot", type: .int, required: true, description: "Show Input slot 1-10"),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.list", title: "List scenes", description: "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.", params: []),
             availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.restoreStarters", title: "Restore starter scenes", description: "Re-add any removed catalog scene (intro, interview, speaker-slides, panel, closing) at its catalog position with fresh starter routes. Existing scenes, Program and Preview are untouched.", params: []),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "scene.dynamicGallery.create", title: "Create CoreVideo Tiles", description: "Create a dynamic CoreVideo Tiles scene and cue it to Preview.", params: []),
             availability: .blocked(workstream: "TIL", label: "CoreVideo Tiles")),
@@ -537,22 +537,22 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "multiview.showLabels.set", title: "Multiview labels", description: "Toggle multiview labels.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.showTally.set", title: "Multiview tally", description: "Toggle multiview tally borders.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.showMeters.set", title: "Multiview meters", description: "Toggle multiview audio meters.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.showClock.set", title: "Multiview clock", description: "Toggle the multiview clock.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "automation.autoAssignInputs.set", title: "Auto-assign inputs", description: "Toggle auto-assigning roster participants to Show Inputs.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),

@@ -42,6 +42,9 @@ struct ScenesPane: View {
                     Button("New — side by side") { model.newScene(layout: "two-up") }
                     Button("New — picture in picture") { model.newScene(layout: "pip") }
                     Divider()
+                    Button("Restore starter scenes") { model.restoreStarterScenes() }
+                        .help("Re-add any removed Fullscreen, Side by side or Picture in picture scene")
+                    Divider()
                     Button("Duplicate") { model.duplicateScene(sceneId) }
                         .disabled(sceneId.isEmpty)
                     Button("Delete") { model.deleteScene(sceneId) }
