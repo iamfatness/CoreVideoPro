@@ -424,3 +424,27 @@ No HIGH. The reviewer confirmed statement-level parity for identity, membership,
 |---|---|
 | the scene-sync debounce does not cancel (a sync per tick) | red: "expected 1, got 40" |
 | drop the gutter clamp | red |
+
+### Task 17 — Style tab, presets and colour fields
+
+- `TilesStyleTab` follows Windows `SourcesPage.xaml` Style order:
+  - QUICK LOOKS: Clean, Rounded and Broadcast as equal columns, the help text, and the Mac-only D5 logo-bug note.
+  - TILE EDGES: shape, radius (shown only when rounded), thickness, and the border colour field.
+  - WALL BACKGROUND: the transparent checkbox, the background colour (hidden when transparent), the "Live background" disclosure (filled by Task 20), and wall opacity as a percentage.
+  - GLOW: size, colour, and the "Advanced glow" disclosure (intensity, softness).
+  - "Reset wall style".
+- `applyTilesPreset` / `resetTilesStyle` are `OnTilesPreset` / `OnTilesResetStyle`, ported verbatim. The style setters use the Windows clamps.
+- Colours: like Windows, every colour setter normalizes (`backgroundColor` included). `TilesColorField` is a 36 pt swatch with a `ColorPicker(supportsOpacity: false)` popover, beside a hex field. **The hex string is the only truth:** the picker reads `TilesHex.parse(hex) ?? fallback`, where the fallback is black for background and border and white for glow, and writes `TilesHex.format`. The field commits through the normalizer.
+- Snapshot of the Style tab (1360 and 1920) checked by eye. The first render wrapped "Broadcast" onto two lines; the preset buttons are now equal one-line columns. The Layout tab was rendered too.
+- Tests:
+  - `testPresetsAreTheWindowsPresetsAndKeepMembership`: every field, plus membership, overrides, capacity and glow colour untouched;
+  - `testResetWallStyleIsTheWindowsReset`;
+  - `testTheHexStringIsTheOnlyColourTruth`: 8ae0ca → (138,224,202); picker (1,2,3) → `#010203`; "zz" → `#44C1A1`; blank glow → white; an unparseable border → black; the picker follows a hex edit;
+  - `testWallOpacityAndTransparencyReachThePayload`: 40 % → 0.4, transparent on the wire, 140 % ignored.
+- `tiles/` filter: 509/509. Full suite: **8849 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 17) | Result |
+|---|---|
+| swap the Rounded and Broadcast radii | red: 3 failures |
+| a colour bypasses the normalizer | red |
+| the picker keeps its own colour copy | not built as a mutant: there is no stored colour anywhere to drift. The truth test's "the picker follows a hex edit" pins the property |

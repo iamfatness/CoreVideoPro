@@ -62,6 +62,11 @@ extension ShellTests {
             // Task 16: the Layout tab.
             ("tiles/layout-setters-clamp", testLayoutSettersClampLikeWindows),
             ("tiles/forty-tick-drag-one-sync", testAFortyTickSliderDragSendsOneSceneSyncWithTheLastValue),
+            // Task 17: the Style tab.
+            ("tiles/presets-are-windows", testPresetsAreTheWindowsPresetsAndKeepMembership),
+            ("tiles/reset-style-is-windows", testResetWallStyleIsTheWindowsReset),
+            ("tiles/hex-is-the-colour-truth", testTheHexStringIsTheOnlyColourTruth),
+            ("tiles/opacity-transparency-payload", testWallOpacityAndTransparencyReachThePayload),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1540,5 +1545,85 @@ extension ShellTests {
         expectEqual(gutter, 3.9, "\(w): it carries the last value")
         expectEqual(model.lastSavedPrefs.scenes.first { $0.id == "t-pvw" }?.tiles?.gutterPercent, 3.9,
                     "\(w): the drag is saved once, after it settles")
+    }
+
+    // ── Task 17 ──────────────────────────────────────────────────────────────
+
+    @MainActor static func testPresetsAreTheWindowsPresetsAndKeepMembership() {
+        let w = "SourcesPage.Workspace.cs OnTilesPreset"
+        let model = tilesActionModel()
+        try? model.updateTiles {
+            $0.manualSlots = ["zoom-pid:P7"]; $0.excludedSourceIds = ["zoom-name:Cy"]; $0.maxTiles = 9
+            $0.overrides = ["zoom:7": TilesMemberOverride(rect: TilesRect(x: 0, y: 0, width: 0.5, height: 1), cropLeftPercent: 10)]
+            $0.glowColor = "#123456"
+        }
+        let membership = model.tilesEditSettings
+        func check(_ p: TilesStylePreset, shape: String, transparent: Bool, radius: Double?, thickness: Double, border: String?,
+                   spacing: Double, glow: Double) {
+            try? model.applyTilesPreset(p)
+            let s = model.tilesEditSettings
+            expectEqual(s.borderShape, shape, "\(w): \(p) shape")
+            expectEqual(s.transparentBackground, transparent, "\(w): \(p) transparency")
+            if let radius { expectEqual(s.cornerRadius, radius, "\(w): \(p) radius") }
+            expectEqual(s.borderThickness, thickness, "\(w): \(p) thickness")
+            if let border { expectEqual(s.borderColor, border, "\(w): \(p) border colour") }
+            expectEqual(s.gutterPercent, spacing, "\(w): \(p) gutter")
+            expectEqual(s.marginPercent, spacing, "\(w): \(p) margin")
+            expectEqual(s.glowSize, glow, "\(w): \(p) glow")
+            expect(s.overrides == membership.overrides && s.manualSlots == membership.manualSlots
+                   && s.excludedSourceIds == membership.excludedSourceIds && s.maxTiles == membership.maxTiles
+                   && s.glowColor == membership.glowColor, "\(w): \(p) keeps membership, crops, capacity and glow colour")
+        }
+        check(.rounded, shape: "rounded", transparent: false, radius: 24, thickness: 2, border: "#657D87", spacing: 1.2, glow: 0)
+        check(.broadcast, shape: "rounded", transparent: false, radius: 12, thickness: 5, border: "#8AE0CA", spacing: 1.8, glow: 12)
+        check(.clean, shape: "square", transparent: true, radius: nil, thickness: 0, border: nil, spacing: 0.741, glow: 0)
+        expectEqual(model.tilesEditSettings.cornerRadius, 12, "\(w): clean leaves the radius as it was")
+        expectEqual(model.tilesEditSettings.borderColor, "#8AE0CA", "\(w): clean leaves the border colour as it was")
+    }
+
+    @MainActor static func testResetWallStyleIsTheWindowsReset() {
+        let w = "SourcesPage.Workspace.cs OnTilesResetStyle"
+        let model = tilesActionModel()
+        try? model.applyTilesPreset(.broadcast)
+        try? model.updateTiles { $0.wallOpacity = 0.3; $0.transparentBackground = true; $0.gutterPercent = 5 }
+        try? model.resetTilesStyle()
+        let s = model.tilesEditSettings
+        expect(s.borderShape == "rounded" && s.borderColor == "#657D87" && s.borderThickness == 2 && s.cornerRadius == 16
+               && s.glowColor == "#8AE0CA" && s.glowSize == 0 && s.glowIntensity == 100 && s.glowSoftness == 0
+               && s.backgroundColor == "#101820" && !s.transparentBackground && s.wallOpacity == 1, "\(w): every reset field")
+        expectEqual(s.gutterPercent, 5, "\(w): spacing is not part of the reset")
+    }
+
+    @MainActor static func testTheHexStringIsTheOnlyColourTruth() {
+        let w = "TilesColorField: the hex is the only truth"
+        let model = tilesActionModel()
+        try? model.setTilesColor(.glow, hex: "8ae0ca")
+        let p = model.tilesPickerColor(.glow)
+        expect(p.r == 138 && p.g == 224 && p.b == 202, "\(w): typed 8ae0ca, the picker reads (138,224,202)")
+        try? model.setTilesPickerColor(.border, r: 1, g: 2, b: 3)
+        expectEqual(model.tilesColor(.border), "#010203", "\(w): the picker writes #010203")
+        try? model.setTilesColor(.background, hex: "zz")
+        expectEqual(model.tilesColor(.background), "#44C1A1", "\(w): a malformed hex commits as the Windows fallback")
+        try? model.updateTiles { $0.glowColor = "" }
+        let blank = model.tilesPickerColor(.glow)
+        expect(blank.r == 255 && blank.g == 255 && blank.b == 255, "\(w): a blank glow opens the picker on white")
+        try? model.updateTiles { $0.borderColor = "#12345678" }
+        let border = model.tilesPickerColor(.border)
+        expect(border.r == 0 && border.g == 0 && border.b == 0, "\(w): an unparseable border opens the picker on black")
+        // After a hex edit, the picker follows the hex (no separate colour copy can drift).
+        try? model.setTilesColor(.border, hex: "#FF0000")
+        expect(model.tilesPickerColor(.border).r == 255, "\(w): the picker follows a hex edit")
+    }
+
+    @MainActor static func testWallOpacityAndTransparencyReachThePayload() {
+        let w = "Style tab (D7): wall opacity and transparency on the wire"
+        let model = tilesActionModel()
+        try? model.setTilesWallOpacityPercent(40)
+        try? model.setTilesTransparentBackground(true)
+        let payload = model.tilesPayload(for: "t-pvw")
+        expectEqual(payload?["opacity"] as? Double, 0.4, "\(w): opacity 40 % -> 0.4")
+        expectEqual(payload?["transparentBackground"] as? Bool, true, "\(w): transparent")
+        try? model.setTilesWallOpacityPercent(140)
+        expectEqual(model.tilesEditSettings.wallOpacity, 0.4, "\(w): out of 0-100 is ignored, like Windows")
     }
 }

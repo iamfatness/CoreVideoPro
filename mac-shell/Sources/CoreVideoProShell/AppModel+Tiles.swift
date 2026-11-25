@@ -318,3 +318,102 @@ extension AppModel {
                                               roster: tilesIdentityRoster, meetingId: currentTilesMeetingId)
     }
 }
+
+// MARK: - Style tab (Task 17): Windows Gallery* style setters, presets and reset
+
+enum TilesStylePreset: String, CaseIterable { case clean, rounded, broadcast }
+
+/// Which colour a `TilesColorField` edits, and the picker's fallback when the hex
+/// does not parse (Windows `HexColor.ParseOrDefault`: black for background and
+/// border, white for glow).
+enum TilesColorRole {
+    case background, border, glow
+    var fallback: (r: UInt8, g: UInt8, b: UInt8) { self == .glow ? (255, 255, 255) : (0, 0, 0) }
+}
+
+extension AppModel {
+    func setTilesBorderShape(_ v: String) throws { try updateTiles { $0.borderShape = v == "rounded" ? "rounded" : "square" } }
+    func setTilesCornerRadius(_ v: Double) throws {
+        try updateTiles(save: .debounced) { $0.cornerRadius = v.isFinite ? min(max(v, 0), 100) : 16 }
+    }
+    func setTilesBorderThickness(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.borderThickness = min(max(v, 0), 32) }
+    }
+    func setTilesGlowSize(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.glowSize = min(max(v, 0), 64) }
+    }
+    func setTilesGlowIntensity(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.glowIntensity = min(max(v, 0), 100) }
+    }
+    func setTilesGlowSoftness(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.glowSoftness = min(max(v, 0), 100) }
+    }
+    /// `OnTilesTransparency` sets it from the checkbox.
+    func setTilesTransparentBackground(_ on: Bool) throws { try updateTiles { $0.transparentBackground = on } }
+    /// `WallOpacityPercent` (SourcesPage.Workspace.cs): 0-100 only, stored as v/100 (D7).
+    func setTilesWallOpacityPercent(_ v: Double) throws {
+        guard v.isFinite, (0...100).contains(v) else { return }
+        try updateTiles(save: .debounced) { $0.wallOpacity = v / 100 }
+    }
+
+    // The hex string is the ONLY colour truth: the text field commits through the
+    // Windows normalizer, and the picker reads/writes through TilesHex.
+    func tilesColor(_ role: TilesColorRole) -> String {
+        let s = tilesEditSettings
+        switch role {
+        case .background: return s.backgroundColor
+        case .border: return s.borderColor
+        case .glow: return s.glowColor
+        }
+    }
+    /// The text field's commit (Windows setters normalize every colour).
+    func setTilesColor(_ role: TilesColorRole, hex: String) throws {
+        let value = TilesHex.normalize(hex)
+        try updateTiles { s in
+            switch role {
+            case .background: s.backgroundColor = value
+            case .border: s.borderColor = value
+            case .glow: s.glowColor = value
+            }
+        }
+    }
+    /// What the picker shows: the parsed hex, else the role's fallback.
+    func tilesPickerColor(_ role: TilesColorRole) -> (r: UInt8, g: UInt8, b: UInt8) {
+        TilesHex.parse(tilesColor(role)) ?? role.fallback
+    }
+    /// The picker's write (Windows `HexColor.ToHex`).
+    func setTilesPickerColor(_ role: TilesColorRole, r: UInt8, g: UInt8, b: UInt8) throws {
+        try setTilesColor(role, hex: TilesHex.format(r: r, g: g, b: b))
+    }
+
+    /// `OnTilesPreset` (SourcesPage.Workspace.cs) verbatim. Membership, crops,
+    /// overrides and capacity are untouched.
+    func applyTilesPreset(_ preset: TilesStylePreset) throws {
+        try updateTiles { w in
+            w.glowSize = 0; w.gutterPercent = 0.741; w.marginPercent = 0.741
+            if preset == .clean {
+                w.borderShape = "square"; w.borderThickness = 0; w.transparentBackground = true
+            } else {
+                w.borderShape = "rounded"; w.transparentBackground = false
+                w.cornerRadius = preset == .broadcast ? 12 : 24
+                w.borderThickness = preset == .broadcast ? 5 : 2
+                w.borderColor = preset == .broadcast ? "#8AE0CA" : "#657D87"
+                w.gutterPercent = preset == .broadcast ? 1.8 : 1.2; w.marginPercent = w.gutterPercent
+                w.glowSize = preset == .broadcast ? 12 : 0
+            }
+        }
+    }
+
+    /// `OnTilesResetStyle` verbatim.
+    func resetTilesStyle() throws {
+        try updateTiles { w in
+            w.borderShape = "rounded"; w.borderColor = "#657D87"; w.borderThickness = 2; w.cornerRadius = 16
+            w.glowColor = "#8AE0CA"; w.glowSize = 0; w.glowIntensity = 100; w.glowSoftness = 0
+            w.backgroundColor = "#101820"; w.transparentBackground = false; w.wallOpacity = 1
+        }
+    }
+}

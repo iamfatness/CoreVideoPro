@@ -242,9 +242,138 @@ enum TilesFormat {
     }
 }
 
+/// Windows SourcesPage.xaml Style PivotItem, control for control.
 struct TilesStyleTab: View {
-    var body: some View { TilesHelp("Style controls arrive with Task 17.") }
+    @EnvironmentObject var model: AppModel
+    @State private var liveBackground = false
+    @State private var advancedGlow = false
+
+    var s: TilesSettings { model.tilesEditSettings }
+    var enabled: Bool { model.tilesEditTargetId != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !enabled { TilesHelp("Queue this scene in Preview to edit it.") }
+            TilesSection(title: "Quick looks") {
+                HStack(spacing: 4) {
+                    ForEach(TilesStylePreset.allCases, id: \.self) { preset in
+                        // Three equal columns (Windows Grid `* * *`); one line each.
+                        Button { try? model.applyTilesPreset(preset) } label: {
+                            Text(preset.rawValue.capitalized).lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(GhostButtonStyle())
+                    }
+                }
+                TilesHelp("Presets change styling and spacing. Member crops and inclusion stay intact.")
+                // Mac only (owner decision D5): the logo bug rides no Tiles scene.
+                TilesHelp("The logo bug is not drawn over a Tiles wall on Mac yet.")
+            }
+            Divider().overlay(Studio.border)
+            TilesSection(title: "Tile edges") {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Tile shape").font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                    Picker("", selection: Binding(get: { s.borderShape }, set: { try? model.setTilesBorderShape($0) })) {
+                        Text("Square").tag("square"); Text("Rounded").tag("rounded")
+                    }
+                    .labelsHidden().controlSize(.small)
+                }
+                if s.borderShape == "rounded" {
+                    TilesSliderRow(label: "Corner radius", value: s.cornerRadius, range: 0...100, step: 1, unit: "px",
+                                   format: { String(Int($0)) }, defaultValue: 16, enabled: enabled) { try? model.setTilesCornerRadius($0) }
+                }
+                TilesSliderRow(label: "Border thickness", value: s.borderThickness, range: 0...32, step: 0.01, unit: "px",
+                               format: TilesFormat.threePlaces, defaultValue: 0, enabled: enabled) { try? model.setTilesBorderThickness($0) }
+                TilesColorField(label: "Border color", role: .border)
+            }
+            Divider().overlay(Studio.border)
+            TilesSection(title: "Wall background") {
+                Toggle("Transparent wall background", isOn: Binding(get: { s.transparentBackground },
+                                                                    set: { try? model.setTilesTransparentBackground($0) }))
+                    .font(.grotesk(11)).toggleStyle(.checkbox)
+                if !s.transparentBackground { TilesColorField(label: "Background color", role: .background) }
+                DisclosureGroup(isExpanded: $liveBackground) {
+                    TilesLiveBackground().padding(.top, 6)
+                } label: {
+                    Text("Live background").font(.grotesk(11, .medium)).foregroundStyle(Studio.textPrimary)
+                }
+                TilesSliderRow(label: "Wall opacity", value: s.wallOpacity * 100, range: 0...100, step: 0.01, unit: "%",
+                               format: { String(format: "%.0f", $0) }, defaultValue: 100, enabled: enabled) {
+                    try? model.setTilesWallOpacityPercent($0)
+                }
+            }
+            Divider().overlay(Studio.border)
+            TilesSection(title: "Glow") {
+                TilesSliderRow(label: "Glow size", value: s.glowSize, range: 0...64, step: 0.01, unit: "px",
+                               format: TilesFormat.threePlaces, defaultValue: 0, enabled: enabled) { try? model.setTilesGlowSize($0) }
+                TilesColorField(label: "Glow color", role: .glow)
+                DisclosureGroup(isExpanded: $advancedGlow) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        TilesSliderRow(label: "Glow intensity", value: s.glowIntensity, range: 0...100, step: 0.01, unit: "%",
+                                       format: TilesFormat.threePlaces, defaultValue: 100, enabled: enabled) { try? model.setTilesGlowIntensity($0) }
+                        TilesSliderRow(label: "Glow softness", value: s.glowSoftness, range: 0...100, step: 0.01, unit: "%",
+                                       format: TilesFormat.threePlaces, defaultValue: 0, enabled: enabled) { try? model.setTilesGlowSoftness($0) }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text("Advanced glow").font(.grotesk(11, .medium)).foregroundStyle(Studio.textPrimary)
+                }
+            }
+            Button("Reset wall style") { try? model.resetTilesStyle() }.buttonStyle(GhostButtonStyle())
+        }
+        .disabled(!enabled)
+    }
 }
+
+/// Filled by Task 20 (Live background).
+struct TilesLiveBackground: View {
+    var body: some View { TilesHelp("Arrives with the Members tab.") }
+}
+
+/// Windows grid `Auto | *`: a 36 pt swatch opening a colour picker, beside a hex
+/// field. The hex string is the only source of truth: the picker reads it through
+/// `TilesHex.parse` (with the role's fallback) and writes `TilesHex.format`; the
+/// field commits on submit through the Windows normalizer.
+struct TilesColorField: View {
+    @EnvironmentObject var model: AppModel
+    let label: String
+    let role: TilesColorRole
+    @State private var draft = ""
+    @State private var picking = false
+
+    var pickerColor: Color {
+        let c = model.tilesPickerColor(role)
+        return Color(red: Double(c.r) / 255, green: Double(c.g) / 255, blue: Double(c.b) / 255)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+            HStack(spacing: 8) {
+                Button { picking = true } label: {
+                    RoundedRectangle(cornerRadius: 4).fill(pickerColor).frame(width: 36, height: 22)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Studio.border, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("Choose \(label.lowercased())")
+                .popover(isPresented: $picking) {
+                    ColorPicker(label, selection: Binding(get: { pickerColor }, set: { color in
+                        let rgb = NSColor(color).usingColorSpace(.sRGB) ?? .black
+                        func byte(_ v: CGFloat) -> UInt8 { UInt8(max(0, min(255, (v * 255).rounded()))) }
+                        try? model.setTilesPickerColor(role, r: byte(rgb.redComponent), g: byte(rgb.greenComponent), b: byte(rgb.blueComponent))
+                    }), supportsOpacity: false)
+                    .padding(12)
+                }
+                TextField("#RRGGBB", text: $draft)
+                    .textFieldStyle(StudioFieldStyle())
+                    .font(.plexMono(11))
+                    .onSubmit { try? model.setTilesColor(role, hex: draft); draft = model.tilesColor(role) }
+            }
+        }
+        .onAppear { draft = model.tilesColor(role) }
+        .onChange(of: model.tilesColor(role)) { draft = $0 }
+    }
+}
+
 
 struct TilesMembersTab: View {
     var body: some View { TilesHelp("Members controls arrive with Task 19.") }
