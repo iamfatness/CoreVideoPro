@@ -498,7 +498,12 @@ final class AppModel: ObservableObject {
     @Published var clockText = ""
     @Published var selectedTab: StudioTab = .studio {
         // S6: the core renders the source sheet only while the Sources tab holds the lease.
-        didSet { if selectedTab != oldValue { updateSourcePreviewDemand() } }
+        didSet {
+            if selectedTab != oldValue { updateSourcePreviewDemand() }
+            // Navigating away from Comms: every held key goes up (panel-scoped
+            // keys; Windows StudioViewModel.Comms.cs:57-60).
+            if oldValue == .comms, selectedTab != .comms { releaseCommsKeys() }
+        }
     }
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
@@ -1786,6 +1791,7 @@ final class AppModel: ObservableObject {
         // report disagrees, never blindly.
         comms.coreGenerationChanged()
         startCommsLeaseTimer()
+        installCommsReleaseObservers()
         resetMasterMetersForProcess()
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
@@ -2252,6 +2258,82 @@ final class AppModel: ObservableObject {
     func commsLeaseTick() async {
         guard comms.anyHeld else { return }
         await comms.renewLeases()
+    }
+
+    // ── Comms release triggers and panel keys (plan Task 10) ────────────────
+    let commsKeyMonitor = CommsKeyMonitor()
+    private var commsKeys = CommsKeys()
+    private var commsReleaseObservers: [NSObjectProtocol] = []
+
+    /// Every held key up, and the key set forgotten. Each trigger calls this:
+    /// leaving the tab, the app resigning active, the main window resigning key.
+    func releaseCommsKeys() {
+        commsKeys.reset()
+        guard comms.anyHeld else { return }
+        Task { await comms.releaseAll() }
+    }
+
+    /// Installed while the Comms tab is selected.
+    func syncCommsKeys() {
+        commsKeyMonitor.setActive(selectedTab == .comms) { [weak self] event in
+            guard let self else { return event }
+            let key = CommsKeys.event(from: event, isCommsTab: self.selectedTab == .comms,
+                                      deskVisible: self.comms.deskVisible,
+                                      firstResponder: event.window?.firstResponder)
+            return self.handleCommsKey(key) ? nil : event
+        }
+    }
+
+    /// Routes one key; true when consumed.
+    @discardableResult
+    func handleCommsKey(_ key: CommsKeyEvent) -> Bool {
+        let decision = commsKeys.decide(key) { [comms] digit in comms.cell(forDigit: digit)?.slot }
+        switch decision {
+        case .ignore: return false
+        case .swallow: return true
+        case .allPress: Task { await comms.allPress() }
+        case .allRelease: Task { await comms.allRelease() }
+        case .press(let slot): Task { await comms.press(slot: slot) }
+        case .release(let slot): Task { await comms.release(slot: slot) }
+        }
+        return true
+    }
+
+    /// The app or the main window losing focus releases every held key
+    /// (Windows MainWindow.xaml.cs:675-676). Installed once.
+    func installCommsReleaseObservers() {
+        guard commsReleaseObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        commsReleaseObservers.append(center.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.releaseCommsKeys() }
+        })
+        commsReleaseObservers.append(center.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard MainWindowTracker.isMain(note.object as? NSWindow) else { return }
+                self?.releaseCommsKeys()
+            }
+        })
+    }
+
+    /// Quit: every held key up in one line, bounded so a hung core never
+    /// delays quitting (Windows ShutdownComms runs first). 350 ms.
+    static let commsQuitReleaseBudget: TimeInterval = 0.35
+    func sendCommsReleaseAllBounded() async {
+        // An unstructured race, not a task group: a group waits for EVERY child
+        // at scope exit, so a hung core would hold the quit despite the bound.
+        let comms = self.comms
+        final class Once { var done = false }
+        let once = Once()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            func finish() { if !once.done { once.done = true; cont.resume() } }
+            Task { @MainActor in await comms.sendReleaseAll(); finish() }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(Self.commsQuitReleaseBudget * 1e9))
+                finish()
+            }
+        }
     }
 
     private func startCommsLeaseTimer() {
@@ -5658,7 +5740,15 @@ final class AppModel: ObservableObject {
         // mastering slider, an A/B pick): write the operator's prefs now.
         persistPrefsNow()
         switch quitGate.request(quitOutputs) {
-        case .quitNow: return .terminateNow
+        case .quitNow:
+            // In a meeting, the Comms release-all goes out first (bounded), so a
+            // held key never outlives the shell. Otherwise nothing can be held.
+            guard comms.inMeeting, !quitCoreGone else { return .terminateNow }
+            Task { @MainActor in
+                await self.sendCommsReleaseAllBounded()
+                self.replyToQuit(true)
+            }
+            return .terminateLater
         case .ask:
             quitPromptVisible = true
             presentQuitPrompt()
@@ -5706,6 +5796,8 @@ final class AppModel: ObservableObject {
         ShellLog.write("quit: stopping outputs recording=\(recordingWasLive) stream=\(streamWasLive)")
         let timeout = quitFinishTimeout
         Task { @MainActor in
+            // Comms first (Windows ShutdownComms), before any stop or core exit.
+            if self.comms.inMeeting, !self.quitCoreGone { await self.sendCommsReleaseAllBounded() }
             var baseline = Int.max   // set when the stop lands; only later snapshots count
             let outcome = await QuitFlow.finishOutputs(
                 stop: { @MainActor [weak self] remaining in

@@ -461,7 +461,7 @@ final class CommsModel: ObservableObject {
     var allCallHeld: Bool { allHeld }
 
     /// True while any key (or ALL CALL) is held by this operator.
-    var anyHeld: Bool { allHeld || cells.contains { $0.held } }
+    var anyHeld: Bool { allHeld || !orphanHeld.isEmpty || cells.contains { $0.held } }
 
     /// Re-sends the lease on every held key (the shell's 500 ms tick).
     func renewLeases() async {
@@ -489,6 +489,7 @@ final class CommsModel: ObservableObject {
     /// Focus left the page or the window, or the operator navigated away:
     /// every held key goes up.
     func releaseAll() async {
+        for slot in orphanHeld.sorted() { await release(slot: slot) }
         for c in cells where c.held { await release(slot: c.slot) }
         await allRelease()
     }
