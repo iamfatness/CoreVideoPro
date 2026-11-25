@@ -66,6 +66,12 @@ extension AppModel {
     /// (Program never changes) and open the Tiles workspace on the Scenes tab.
     func editTiles(_ sceneId: String) {
         guard let scene = scenes.first(where: { $0.id == sceneId }), scene.tiles != nil else { return }
+        // A wall on Program is not edited in place (Program never changes without
+        // a Take; S4 review): say so instead of cueing Program onto Preview.
+        if sceneId == programSceneId {
+            studioCommandStatus = "\(scene.name) is on Program. Queue it in Preview to edit it."
+            return
+        }
         selectPreviewScene(sceneId)
         guard previewSceneId == sceneId else { return }
         selectedTab = .scenes
@@ -371,9 +377,9 @@ extension AppModel {
         }
     }
     /// The text field's commit (Windows setters normalize every colour).
-    func setTilesColor(_ role: TilesColorRole, hex: String) throws {
+    func setTilesColor(_ role: TilesColorRole, hex: String, save: TilesSave = .now) throws {
         let value = TilesHex.normalize(hex)
-        try updateTiles { s in
+        try updateTiles(save: save) { s in
             switch role {
             case .background: s.backgroundColor = value
             case .border: s.borderColor = value
@@ -387,7 +393,8 @@ extension AppModel {
     }
     /// The picker's write (Windows `HexColor.ToHex`).
     func setTilesPickerColor(_ role: TilesColorRole, r: UInt8, g: UInt8, b: UInt8) throws {
-        try setTilesColor(role, hex: TilesHex.format(r: r, g: g, b: b))
+        // The colour panel streams changes while dragged: save once it settles.
+        try setTilesColor(role, hex: TilesHex.format(r: r, g: g, b: b), save: .debounced)
     }
 
     /// `OnTilesPreset` (SourcesPage.Workspace.cs) verbatim. Membership, crops,

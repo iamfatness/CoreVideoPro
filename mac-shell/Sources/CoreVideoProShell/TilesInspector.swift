@@ -108,6 +108,7 @@ struct TilesInspectorDock: View {
                 .padding(.trailing, 4)
             }
             .frame(maxHeight: .infinity)
+            .id(model.tilesInspectorTab)   // each tab keeps its own scroll position (Windows: one ScrollViewer per PivotItem)
             Text("Changes affect this Preview draft.").font(.grotesk(10)).foregroundStyle(Studio.textDim)
         }
         .padding(12)
@@ -146,7 +147,8 @@ struct TilesSliderRow: View {
     var step: Double = 0
     var unit: String = ""
     var format: (Double) -> String = { String(format: "%g", $0) }
-    let defaultValue: Double
+    /// Windows `DefaultValue`; nil where Windows sets none (double-click does nothing).
+    let defaultValue: Double?
     var enabled = true
     let set: (Double) -> Void
 
@@ -166,7 +168,7 @@ struct TilesSliderRow: View {
             }
             .controlSize(.small)
             .tint(Studio.accent)
-            .onTapGesture(count: 2) { set(defaultValue) }
+            .onTapGesture(count: 2) { if let defaultValue { set(defaultValue) } }
         }
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.5)
@@ -297,7 +299,7 @@ struct TilesStyleTab: View {
                     Text("Live background").font(.grotesk(11, .medium)).foregroundStyle(Studio.textPrimary)
                 }
                 TilesSliderRow(label: "Wall opacity", value: s.wallOpacity * 100, range: 0...100, step: 0.01, unit: "%",
-                               format: { String(format: "%.0f", $0) }, defaultValue: 100, enabled: enabled) {
+                               format: { String(format: "%.0f", $0) }, defaultValue: nil, enabled: enabled) {
                     try? model.setTilesWallOpacityPercent($0)
                 }
             }
@@ -329,51 +331,54 @@ struct TilesLiveBackground: View {
     var body: some View { TilesHelp("Arrives with the Members tab.") }
 }
 
-/// Windows grid `Auto | *`: a 36 pt swatch opening a colour picker, beside a hex
-/// field. The hex string is the only source of truth: the picker reads it through
-/// `TilesHex.parse` (with the role's fallback) and writes `TilesHex.format`; the
-/// field commits on submit through the Windows normalizer.
+/// Windows grid `Auto | *`: a 36 pt colour well beside a hex field. The hex
+/// string is the only source of truth: the well reads it through `TilesHex.parse`
+/// (with the role's fallback) and writes `TilesHex.format`; the field commits
+/// through the Windows normalizer on Return AND on focus loss (Windows TwoWay
+/// TextBox commits on LostFocus). The well is inline: on macOS a ColorPicker
+/// drives the shared colour panel, which a transient popover would orphan.
 struct TilesColorField: View {
     @EnvironmentObject var model: AppModel
     let label: String
     let role: TilesColorRole
     @State private var draft = ""
-    @State private var picking = false
+    @FocusState private var editing: Bool
 
     var pickerColor: Color {
         let c = model.tilesPickerColor(role)
         return Color(red: Double(c.r) / 255, green: Double(c.g) / 255, blue: Double(c.b) / 255)
     }
 
+    func commit() {
+        guard draft != model.tilesColor(role) else { return }
+        try? model.setTilesColor(role, hex: draft)
+        draft = model.tilesColor(role)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
             HStack(spacing: 8) {
-                Button { picking = true } label: {
-                    RoundedRectangle(cornerRadius: 4).fill(pickerColor).frame(width: 36, height: 22)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Studio.border, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
+                ColorPicker(label, selection: Binding(get: { pickerColor }, set: { color in
+                    let rgb = NSColor(color).usingColorSpace(.sRGB) ?? .black
+                    func byte(_ v: CGFloat) -> UInt8 { UInt8(max(0, min(255, (v * 255).rounded()))) }
+                    try? model.setTilesPickerColor(role, r: byte(rgb.redComponent), g: byte(rgb.greenComponent), b: byte(rgb.blueComponent))
+                }), supportsOpacity: false)
+                .labelsHidden()
+                .fixedSize()   // the native well's own size (Windows: a 36 pt swatch button)
                 .help("Choose \(label.lowercased())")
-                .popover(isPresented: $picking) {
-                    ColorPicker(label, selection: Binding(get: { pickerColor }, set: { color in
-                        let rgb = NSColor(color).usingColorSpace(.sRGB) ?? .black
-                        func byte(_ v: CGFloat) -> UInt8 { UInt8(max(0, min(255, (v * 255).rounded()))) }
-                        try? model.setTilesPickerColor(role, r: byte(rgb.redComponent), g: byte(rgb.greenComponent), b: byte(rgb.blueComponent))
-                    }), supportsOpacity: false)
-                    .padding(12)
-                }
                 TextField("#RRGGBB", text: $draft)
                     .textFieldStyle(StudioFieldStyle())
                     .font(.plexMono(11))
-                    .onSubmit { try? model.setTilesColor(role, hex: draft); draft = model.tilesColor(role) }
+                    .focused($editing)
+                    .onSubmit(commit)
+                    .onChange(of: editing) { focused in if !focused { commit() } }
             }
         }
         .onAppear { draft = model.tilesColor(role) }
-        .onChange(of: model.tilesColor(role)) { draft = $0 }
+        .onChange(of: model.tilesColor(role)) { value in if !editing { draft = value } }
     }
 }
-
 
 struct TilesMembersTab: View {
     var body: some View { TilesHelp("Members controls arrive with Task 19.") }

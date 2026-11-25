@@ -1475,6 +1475,12 @@ extension ShellTests {
         expectEqual(model.tilesEditTargetId, "wall", "\(w): the workspace edits the wall")
         model.editTiles("missing")
         expectEqual(model.previewSceneId, "wall", "\(w): an unknown id does nothing")
+        // A wall on Program is not cued onto Preview (S4 review).
+        model.scenes.append(SceneDef(id: "onair", name: "On-air wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.programSceneId = "onair"
+        model.editTiles("onair")
+        expectEqual(model.previewSceneId, "wall", "\(w): a wall on Program is not cued onto Preview")
+        expectEqual(model.studioCommandStatus, "On-air wall is on Program. Queue it in Preview to edit it.", "\(w): it says why")
     }
 
     static func testTheScenesTabStopsScrollingAndWidensOnlyWhileEditingTiles() {
@@ -1537,6 +1543,14 @@ extension ShellTests {
         expect(core.bodies.isEmpty, "\(w): nothing is sent while the debounce has not elapsed")
         expectEqual(model.sceneSyncRequestCount - syncs, 40, "\(w): 40 requests, each coalesced")
         expect(model.tilesEditMaxDepth <= 1, "\(w): no re-entrant edit (depth \(model.tilesEditMaxDepth))")
+        // The guard itself: an edit that re-enters updateTiles (the Windows binding
+        // echo) is dropped, never recursed into, and the outer edit still lands.
+        try? model.updateTiles { s in
+            s.maxTiles = 5
+            try? model.updateTiles { $0.maxTiles = 7 }
+        }
+        expectEqual(model.tilesEditSettings.maxTiles, 5, "\(w): the re-entrant inner edit is dropped, the outer edit lands")
+        expectEqual(model.tilesEditMaxDepth, 1, "\(w): depth never exceeded 1")
         spin(until: { timers.fireAll(); return !core.bodies.isEmpty }, limit: 3)
         spin(until: { timers.fireAll(); return false }, limit: 0.3)
         let previews = core.bodies.flatMap { $0["commands"] as? [JSONObject] ?? [] }.filter { $0["type"] as? String == "set-preview-scene" }

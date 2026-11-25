@@ -467,3 +467,21 @@ The measurements:
 - I treated the measurements as evidence of correct rendering, not as a defect. They are consistent with Task 2's Windows-derived decoration proof (border 8 px pure at its centre) and with the glow being clipped only by the wall rect.
 
 Tab snapshots of Layout and Style were rendered with the Task 15 harness and checked by eye (Task 17 entry). The S4 independent review is next.
+
+### S4 slice review (independent; Tasks 15-18)
+
+No HIGH. The reviewer confirmed that Layout and Style match the XAML in order and labels, that clamps, rounding, presets, reset, the hex normalizer and the picker fallbacks all match, and that the 292 pt dock and the scrolling rules are right. Findings:
+
+- **MEDIUM (fixed): a ColorPicker inside a popover.** On macOS that well drives the shared colour panel, and a transient popover would close and orphan it. The well is now inline, at its native size, beside the hex field. Re-checked in the snapshot.
+- **MEDIUM (fixed): every colour-panel tick wrote the prefs file.** The picker path now saves debounced. The text field still saves at once.
+- **MEDIUM (fixed): the hex field committed only on Return.** It now also commits on focus loss, through `@FocusState`, like Windows' LostFocus. An external change does not overwrite a draft being typed.
+- **MEDIUM (fixed): Edit Tiles on the Program wall cued Program onto Preview and opened nothing.** It now refuses with "<name> is on Program. Queue it in Preview to edit it." and leaves Preview alone. A test was added.
+- **LOW (fixed): the re-entrancy test could not fail.** The 40-tick test now also drives a genuinely re-entrant edit. The inner edit is dropped, the outer one lands, and the depth stays 1.
+- **LOW (fixed): one scroll view served all three tabs.** It is now keyed by tab (`.id`), so each tab keeps its own scroll position, like Windows' one ScrollViewer per PivotItem.
+- **LOW (fixed):** wall opacity no longer has a double-click default; Windows sets none. `TilesSliderRow.defaultValue` is now optional.
+- **LOW (recorded, not changed):**
+  - The dock's disabled state is unreachable, because the dock renders only for an editable Preview wall; a read-only dock for an on-air wall is S6.
+  - The debounced save cannot lose an edit on quit (`persistPrefsNow`) or on respawn; only a crash inside the 500 ms window can.
+  - The live preset test does not check Clean or the spacing values on Program.
+  - Nothing exercises the views themselves beyond the snapshots.
+- `tiles/` filter: 513/513.
