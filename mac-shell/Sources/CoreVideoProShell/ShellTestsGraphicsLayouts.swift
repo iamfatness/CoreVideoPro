@@ -12,6 +12,11 @@ extension ShellTests {
             ("graphics-layouts/default-rows-install-presets-only-when-none", testDefaultRowsInstallPresetLayoutsOnlyWhenNone),
             ("graphics-layouts/windows-layouts-round-trip", testWindowsLayoutsRoundTrip),
             ("graphics-layouts/missing-scene-refuses-set", testMissingSceneRefusesSet),
+            ("graphics-layouts/resolver-vectors", testLayoutResolverVectorsReplay),
+            ("graphics-layouts/cue-transcripts", testLayoutTranscriptsReplay),
+            ("graphics-layouts/preview-edit-during-preparation", testPreviewEditDuringPreparationRefuses),
+            ("graphics-layouts/epoch-change-drops-prepared", testEpochChangeDropsThePreparedLayout),
+            ("graphics-layouts/cue-waits-for-core-preview", testCueLayoutWaitsForTheCoreToShowThePreviewScene),
         ]
     }
 
@@ -92,7 +97,7 @@ extension ShellTests {
         expectEqual(load.document.shotLayouts.map(\.id), ["open", "two-up", "panel", "clean", "final-scores", "bad-override", "ghost-row"], "every layout")
         let final = load.document.shotLayouts.first { $0.id == "final-scores" }
         expectEqual(final?.rowSettings["leaderboard"]?.dataPin?.revision, 2, "the data pin")
-        expectEqual(final?.rowSettings["leaderboard"]?.overrides.first?.key, "heading", "the override")
+        expectEqual(final?.rowSettings["title"]?.overrides.first?.key, "heading", "the override")
         do { try store.save(load.document) } catch { expect(false, "re-save: \(error)") }
         let saved = (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap { try? JSONSerialization.jsonObject(with: $0) }
         expect(jsonEqual(saved, documentJSON("windows-layouts.json")), "re-saved document equals the Windows original")
@@ -103,5 +108,161 @@ extension ShellTests {
         let model = layoutModel(drop: ["ghost-row"])
         expectEqual(model.setLayout(GraphicsShotLayout(json: ["id": "open", "name": "Open", "sceneId": "intro", "rowIds": ["title"], "hotkey": "Shift+F1"])),
                     "Scene 'intro' is not in this show.", "Windows' message for a scene the Mac show lacks")
+    }
+
+    /// windows-layouts.json with a vector's patch applied (a layout's rowSettings, extra template pins).
+    static func patchedLayoutsDocument(_ patch: JSONObject?, layoutId: String) -> GraphicsDocument {
+        var document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        if let settings = patch?["layoutRowSettings"] as? JSONObject {
+            document.shotLayouts = document.shotLayouts.map { var l = $0; if l.id == layoutId { l.json["rowSettings"] = settings }; return l }
+        }
+        if let pins = patch?["pins"] as? [JSONObject] { document.json["templates"] = pins }
+        return document
+    }
+
+    static func entry(_ o: JSONObject?) -> GraphicsPlaylistEntry {
+        GraphicsPlaylistEntry(rowId: o?["rowId"] as? String ?? "", sourceId: o?["sourceId"] as? String ?? "", name: o?["name"] as? String ?? "",
+                              title: o?["title"] as? String ?? "", slotNumber: (o?["slotNumber"] as? NSNumber)?.intValue)
+    }
+
+    static func testLayoutResolverVectorsReplay() {
+        var checked = 0
+        for vector in loadGraphicsVectors("layout-transcripts") where vector["operation"] as? String == "resolve" {
+            let id = vector["id"] as? String ?? "?"
+            let input = vector["input"] as? JSONObject ?? [:], expected = vector["expected"] as? JSONObject ?? [:]
+            let layoutId = input["layoutId"] as? String ?? ""
+            let document = patchedLayoutsDocument(input["patch"] as? JSONObject, layoutId: layoutId)
+            let state = GraphicsState(node: input["node"] as? JSONObject ?? [:])
+            guard let layout = document.shotLayouts.first(where: { $0.id == layoutId }) else { expect(false, "\(id): layout"); continue }
+            do {
+                let resolved = try GraphicsLayouts.resolve(document: document, state: state, layout: layout, entry: entry(input["entry"] as? JSONObject))
+                expect(expected["error"] == nil, "\(id): expected the error \(expected["error"] ?? "")")
+                expect(jsonEqual(resolved.row.fields, expected["fields"]), "\(id): fields \(resolved.row.fields)")
+                expectEqual(resolved.identity?.sourceId, (expected["identity"] as? JSONObject)?["sourceId"] as? String, "\(id): identity")
+                expectEqual(resolved.dataRevision, (expected["dataRevision"] as? NSNumber)?.int64Value, "\(id): data revision")
+                expectEqual(resolved.dataReceivedAt, (expected["dataReceivedAt"] as? String).flatMap(GraphicsDataSourceRecord.parseISO8601), "\(id): received at")
+            } catch {
+                expectEqual((error as? GraphicsDataError)?.message, expected["error"] as? String, "\(id): error")
+            }
+            checked += 1
+        }
+        expect(checked >= 10, "every resolver vector replayed (\(checked))")
+    }
+
+    /// A model over windows-layouts.json whose core replays a recorded cue transcript.
+    @MainActor
+    static func layoutTranscriptModel(_ vector: JSONObject) -> (GraphicsModel, ScriptedGraphicsCore) {
+        let input = vector["input"] as? JSONObject ?? [:], expected = vector["expected"] as? JSONObject ?? [:]
+        let core = ScriptedGraphicsCore(replaying: expected["steps"] as? [JSONObject] ?? [], initialNode: input["initialNode"] as? JSONObject ?? [:])
+        let model = graphicsModel(core)
+        model.document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        model.documentLoaded = true
+        var clock = Date(timeIntervalSince1970: 1_795_867_200)
+        model.playout.now = { clock }
+        model.playout.sleep = { [weak core, weak model] ns in
+            clock = clock.addingTimeInterval(Double(ns) / 1e9)
+            core?.advanceReplayPoll()
+            if let core { model?.observe(snapshot: ["graphics": core.node]) }
+        }
+        return (model, core)
+    }
+
+    @MainActor
+    static func testLayoutTranscriptsReplay() {
+        var checked = 0
+        for vector in loadGraphicsVectors("layout-transcripts") where vector["operation"] as? String == "cueLayout" {
+            let id = vector["id"] as? String ?? "?"
+            let input = vector["input"] as? JSONObject ?? [:], expected = vector["expected"] as? JSONObject ?? [:]
+            let (model, core) = layoutTranscriptModel(vector)
+            let script = input["script"] as? String ?? ""
+            let subject = entry(input["programSubject"] as? JSONObject)
+            let result = awaitMain(10) {
+                await model.playout.cueLayout(input["layoutId"] as? String ?? "", sceneSelect: { sceneId in
+                    core.pseudo("scene-select", ["sceneId": sceneId])
+                    return script != "scene-missing"
+                }, programSubject: subject, sceneGuests: [], previewStamp: { "stamp" })
+            }
+            var cancelled: GraphicsOperationResult?
+            if input["cancelAfter"] as? Bool == true { cancelled = awaitMain(10) { await model.playout.cancelLayout() } }
+            expectEqual(core.replayFaults, [], "\(id): commands as recorded")
+            expectEqual(core.commands.count, (expected["steps"] as? [Any])?.count ?? -1, "\(id): command count")
+            expectEqual(result?.reason, expected["reason"] as? String, "\(id): reason")
+            expectEqual(result?.accepted, expected["accepted"] as? Bool, "\(id): accepted")
+            if let cancelReason = expected["cancelReason"] as? String { expectEqual(cancelled?.reason, cancelReason, "\(id): cancel") }
+            if input["cancelAfter"] as? Bool != true {
+                let prepared = model.playout.preparedLayout
+                let want = expected["prepared"] as? JSONObject
+                expectEqual(prepared?.layout.id, want?["layoutId"] as? String, "\(id): prepared layout")
+                expectEqual(prepared?.cues.map { "\($0.instanceId)@\($0.cueRevision)" },
+                            (want?["cues"] as? [JSONObject])?.map { "\($0["instanceId"] as? String ?? "")@\(($0["cueRevision"] as? NSNumber)?.int64Value ?? 0)" },
+                            "\(id): prepared cues")
+            }
+            checked += 1
+        }
+        expect(checked >= 8, "every layout cue transcript replayed (\(checked))")
+    }
+
+    /// A Preview edit between the scene select and the last cue refuses the layout and releases the owned cues.
+    @MainActor
+    static func testPreviewEditDuringPreparationRefuses() {
+        let core = ScriptedGraphicsCore(epoch: "epoch-1")
+        core.node["templates"] = realCatalogTemplates + (GraphicsDocument(json: documentJSON("windows-data.json")).designs.compactMap { d -> JSONObject? in
+            guard var definition = d["definition"] as? JSONObject else { return nil }
+            definition["runtime"] = "declarative"; definition["manifestHash"] = String(repeating: "f", count: 64); return definition
+        })
+        core.react = ScriptedGraphicsCore.ownedCueReaction()
+        let model = graphicsModel(core)
+        model.document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        model.playout.sleep = { [weak core, weak model] _ in if let core { model?.observe(snapshot: ["graphics": core.node]) } }
+        var stamp = "before"
+        let result = awaitMain(10) {
+            await model.playout.cueLayout("final-scores", sceneSelect: { _ in true }, programSubject: nil, sceneGuests: [], previewStamp: {
+                defer { stamp = "after" }   // the second read (after the last cue) sees an operator's Preview edit
+                return stamp
+            })
+        }
+        expectEqual(result?.reason, "Final scores: Preview changed during preparation. Cue the layout again.", "Windows' refusal")
+        let uncues = core.commands.filter { ($0["graphics"] as? JSONObject)?["action"] as? String == "uncue" }
+        expectEqual(uncues.count, 2, "both owned cues released")
+        expect(uncues.allSatisfy { (($0["graphics"] as? JSONObject)?["cueOwner"] as? String)?.hasPrefix("layout-") == true }, "with the attempt as cueOwner")
+        expect(model.playout.preparedLayout == nil, "nothing prepared")
+    }
+
+    @MainActor
+    static func testEpochChangeDropsThePreparedLayout() {
+        guard let vector = loadGraphicsVectors("layout-transcripts").first(where: { $0["id"] as? String == "cue-guarded-final-scores" }) else { expect(false, "vector"); return }
+        let (model, core) = layoutTranscriptModel(vector)
+        _ = awaitMain(10) { await model.playout.cueLayout("final-scores", sceneSelect: { _ in true }, programSubject: nil, sceneGuests: [], previewStamp: { "stamp" }) }
+        expect(model.playout.preparedLayout != nil, "prepared")
+        expect(model.layoutProgress != nil, "progress shown")
+        model.coreGenerationChanged()
+        expect(model.playout.preparedLayout == nil, "a new core drops the prepared layout (restart rule)")
+        expect(model.layoutProgress == nil, "and its progress")
+        _ = core
+    }
+
+    /// GraphicsModel.cueLayout selects the scene to Preview, then waits until the CORE's snapshot shows it
+    /// (5 s, injected sleep) before cueing any graphic.
+    @MainActor
+    static func testCueLayoutWaitsForTheCoreToShowThePreviewScene() {
+        guard let vector = loadGraphicsVectors("layout-transcripts").first(where: { $0["id"] as? String == "cue-legacy-open" }) else { expect(false, "vector"); return }
+        let (model, core) = layoutTranscriptModel(vector)
+        var corePreview = "fullscreen", polls = 0
+        model.selectPreviewScene = { sceneId in core.pseudo("scene-select", ["sceneId": sceneId]); return true }
+        model.corePreviewSceneId = {
+            polls += 1
+            if polls > 2 { corePreview = "intro" }
+            return corePreview
+        }
+        var cuesBeforeSwitch = -1
+        let original = model.playout.sleep
+        model.playout.sleep = { ns in
+            if polls <= 2 { cuesBeforeSwitch = core.commands.filter { $0["type"] as? String == "graphics-instance-cue" }.count }
+            await original(ns)
+        }
+        let result = awaitMain(10) { await model.cueLayout("open").value }
+        expectEqual(result?.reason, "Open cued: scene intro and 2 graphics on Preview; Take carries both.", "cued (\(result?.reason ?? ""))")
+        expect(polls >= 3, "it polled the core's Preview (\(polls))")
+        expectEqual(cuesBeforeSwitch, 0, "no cue went out while the core still showed the old Preview scene")
     }
 }

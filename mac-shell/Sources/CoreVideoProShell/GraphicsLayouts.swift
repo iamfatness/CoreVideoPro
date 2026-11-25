@@ -166,3 +166,69 @@ extension GraphicsModel {
         return nil
     }
 }
+
+// ── the resolver (GraphicsLayoutResolver.cs, Task 14) ───────────────────────
+
+/// GraphicsLayoutResolver.ResolvedRow: the row with its cue fields resolved (data pin, then overrides).
+struct GraphicsResolvedRow: Equatable {
+    var row: GraphicsRow
+    var identity: GraphicsSourceIdentity?
+    var dataRevision: Int64?
+    var dataReceivedAt: Date?
+}
+
+extension GraphicsLayouts {
+    /// GraphicsLayoutResolver.Resolve: pure preflight for one row of a data-aware layout. Throws
+    /// GraphicsDataError with Windows' message. (The Sources-column mapping is out of scope, owner
+    /// decision 6.)
+    static func resolve(document: GraphicsDocument, state: GraphicsState, layout: GraphicsShotLayout,
+                        entry: GraphicsPlaylistEntry) throws -> GraphicsResolvedRow {
+        guard var row = document.row(entry.rowId) else { throw GraphicsDataError(message: "That playlist row no longer exists.") }
+        let image = row.image
+        let templateId = image.map { $0["templateId"] as? String ?? "" } ?? row.templateId
+        let version = image.map { ($0["templateVersion"] as? NSNumber)?.intValue ?? 0 } ?? row.templateVersion
+        let template = state.template(templateId, version)
+        let pin = document.templates.first { $0.templateId == templateId && $0.templateVersion == version }
+        if templateId.isEmpty || (template == nil && pin == nil) { throw GraphicsDataError(message: "\(row.name): the selected template is unavailable.") }
+        if let template, let pin, template.manifestHash != pin.manifestHash {
+            throw GraphicsDataError(message: "\(row.name): the installed template differs from its saved pin.")
+        }
+        let identity = state.sources.first { $0.videoOn && $0.identity?.sourceId == entry.sourceId }?.identity
+        if !entry.sourceId.isEmpty && !entry.isVariant && identity == nil {
+            throw GraphicsDataError(message: "\(row.name): the selected source is unavailable.")
+        }
+        let descriptors = GraphicsRowFields.templateFields(row, state: state, pins: document.templates)
+        let declarative = template?.runtime == "declarative" || (template == nil && pin?.definition["layers"] != nil)
+        var values = GraphicsPlayout.cueFields(row, entry, declarative: declarative, descriptors: descriptors)
+        let settings = layout.rowSettings[row.id]
+        if let dataPin = settings?.dataPin { try applyDataPin(document, row, dataPin, &values) }
+        for (id, value) in settings?.overrides ?? [] {
+            guard let field = descriptors.first(where: { $0.id == id }), GraphicsRowFields.validLayoutOverride(field, value) else {
+                throw GraphicsDataError(message: "\(row.name): '\(id)' is unavailable or the value does not match the selected template.")
+            }
+            values[id] = value
+        }
+        let binding = row.dataBinding.flatMap(GraphicsDataBinding.init(json:))
+        let revision = settings?.dataPin?.revision ?? binding?.revision
+        let received = document.dataSources.first { $0.id == binding?.sourceId && $0.revision == revision }?.receivedAt
+        row.fields = values
+        return GraphicsResolvedRow(row: row, identity: identity, dataRevision: revision, dataReceivedAt: received)
+    }
+
+    private static func applyDataPin(_ document: GraphicsDocument, _ row: GraphicsRow, _ pin: (sourceId: String, revision: Int64),
+                                     _ values: inout JSONObject) throws {
+        guard var binding = row.dataBinding.flatMap(GraphicsDataBinding.init(json:)), binding.sourceId == pin.sourceId else {
+            throw GraphicsDataError(message: "\(row.name): the selected data source changed.")
+        }
+        if binding.revision == pin.revision { return }
+        guard let source = document.dataSources.first(where: { $0.id == pin.sourceId && $0.revision == pin.revision }) else {
+            throw GraphicsDataError(message: "\(row.name): data revision \(pin.revision) is unavailable.")
+        }
+        binding.revision = pin.revision
+        do {
+            for (id, value) in try GraphicsDataTable.fields(source.data, binding) { values[id] = value }
+        } catch let error as GraphicsDataError {
+            throw GraphicsDataError(message: "\(row.name): \(error.message)")
+        }
+    }
+}

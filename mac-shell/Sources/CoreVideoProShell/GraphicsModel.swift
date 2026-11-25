@@ -48,6 +48,17 @@ final class GraphicsModel: ObservableObject {
     var saveTask: Task<Void, Never>?
     /// The show's scene ids (AppModel supplies them; a layout must name one of them or none).
     var sceneIds: () -> [String] = { [] }
+    /// Shot Layouts (Task 14), wired by AppModel: select a scene to Preview (false = not in this show),
+    /// the core's Preview scene id from the latest snapshot, the Program subject's canonical source id,
+    /// the Windows CaptureLayoutPreviewStamp, and the canonical source ids a scene routes, in order.
+    var selectPreviewScene: (String) -> Bool = { _ in false }
+    var corePreviewSceneId: () -> String? = { nil }
+    var programSubjectSourceId: () -> String? = { nil }
+    var layoutPreviewStamp: () -> String = { "" }
+    var sceneSourceIds: (String) -> [String] = { _ in [] }
+    @Published private(set) var layoutProgress: GraphicsLayoutProgress?
+    @Published private(set) var layoutPreparing = false
+    @Published private(set) var preparedLayout: GraphicsPreparedLayout?
     /// Six hex digits for a new design template id (tests inject a fixed value).
     var designHex6: () -> String = GraphicsDesignIds.randomHex6
     /// The document write (tests replace it to make a save fail on demand).
@@ -204,5 +215,8 @@ final class GraphicsModel: ObservableObject {
 
     private func playoutChanged() {
         if busy != playout.busy { busy = playout.busy }
+        if layoutProgress != playout.layoutProgress { layoutProgress = playout.layoutProgress }
+        if layoutPreparing != playout.layoutPreparing { layoutPreparing = playout.layoutPreparing }
+        if preparedLayout != playout.preparedLayout { preparedLayout = playout.preparedLayout }
     }
 }

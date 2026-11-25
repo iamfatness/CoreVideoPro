@@ -87,4 +87,35 @@ enum GraphicsRowFields {
         guard units.count > limit else { return text }
         return String(decoding: Array(units.prefix(limit)), as: UTF16.self)
     }
+
+    // ── Shot Layout overrides (GraphicsRowFields.cs:41-47) ──────────────────
+
+    /// A field a layout may override: not the clock or LIVE label, not a data field, and a scalar type.
+    static func canOverrideLayoutField(_ field: GraphicsTemplateField) -> Bool {
+        field.id != "time" && field.id != "label" && !isDataField(field.id) && ["string", "number", "boolean", "color"].contains(field.type)
+    }
+
+    static func validLayoutOverride(_ field: GraphicsTemplateField, _ value: Any) -> Bool {
+        guard canOverrideLayoutField(field), validField(value, field) else { return false }
+        return field.type != "color" || ((value as? String)?.utf8.count ?? 0) <= (field.maxLength ?? 128)
+    }
+
+    /// GraphicsCommandRequest.ValidField: choices, then the type's own rule.
+    static func validField(_ value: Any, _ field: GraphicsTemplateField) -> Bool {
+        if !field.choices.isEmpty && !field.choices.contains(where: { ($0 as AnyObject).isEqual(value) }) { return false }
+        let isBool = (value as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } ?? false
+        switch field.type {
+        case "string": return (value as? String).map { $0.utf8.count <= (field.maxLength ?? 512) } ?? false
+        case "color":
+            guard let c = value as? String, c.utf16.count == 7 || c.utf16.count == 9, c.hasPrefix("#") else { return false }
+            return c.dropFirst().allSatisfy(\.isHexDigit) && c.dropFirst().allSatisfy(\.isASCII)
+        case "image": return (value as? String).map { $0.isEmpty || GraphicsCommandRequest.validId($0) } ?? false
+        case "number":
+            guard let n = value as? NSNumber, !isBool else { return false }
+            let d = n.doubleValue
+            return d.isFinite && d >= (field.minimum ?? -1e9) && d <= (field.maximum ?? 1e9)
+        case "boolean": return isBool
+        default: return false
+        }
+    }
 }

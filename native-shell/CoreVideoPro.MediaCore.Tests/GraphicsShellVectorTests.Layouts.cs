@@ -9,7 +9,7 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 /// <summary>G4-G7 Task 13: Shot Layouts. documents/windows-layouts.json is written by the real
 /// serializer (the four presets over the interview rows plus the windows-data rows, a layout with
-/// rowSettings for the data table, a layout whose override does not fit its template, a layout
+/// rowSettings (the data table pinned to revision 2, the title's heading overridden), a layout whose override does not fit its template, a layout
 /// naming a row the playlist lacks). Fixture invariants: every layout is ShotLayout.IsValid (so the
 /// store loads it); "open" names scene "intro", which the Mac scene list lacks.</summary>
 public sealed partial class GraphicsShellVectorTests
@@ -26,8 +26,8 @@ public sealed partial class GraphicsShellVectorTests
         };
         var layouts = GraphicsWorkspaceLibrary.DefaultShotLayouts().Concat(new ShotLayout[]
         {
-            new() { Id = "final-scores", Name = "Final scores", SceneId = "", RowIds = ["leaderboard", "logo"], Hotkey = "Shift+F4",
-                RowSettings = new Dictionary<string, ShotLayoutRowSettings>(StringComparer.Ordinal) { ["leaderboard"] = Settings(2, ("heading", "Final")) } },
+            new() { Id = "final-scores", Name = "Final scores", SceneId = "", RowIds = ["leaderboard", "title"], Hotkey = "Shift+F4",
+                RowSettings = new Dictionary<string, ShotLayoutRowSettings>(StringComparer.Ordinal) { ["leaderboard"] = Settings(2), ["title"] = Settings(null, ("heading", "Final")) } },
             new() { Id = "bad-override", Name = "Bad override", SceneId = "", RowIds = ["title"], Hotkey = "",
                 RowSettings = new Dictionary<string, ShotLayoutRowSettings>(StringComparer.Ordinal) { ["title"] = Settings(null, ("text-size", "huge")) } },
             new() { Id = "ghost-row", Name = "Ghost row", SceneId = "", RowIds = ["nowhere"], Hotkey = "Shift+F5" },

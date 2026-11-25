@@ -403,7 +403,7 @@
       "sceneId": "",
       "rowIds": [
         "leaderboard",
-        "logo"
+        "title"
       ],
       "rowSettings": {
         "leaderboard": {
@@ -411,6 +411,10 @@
             "sourceId": "scores",
             "revision": 2
           },
+          "overrides": {}
+        },
+        "title": {
+          "dataPin": null,
           "overrides": {
             "heading": "Final"
           }

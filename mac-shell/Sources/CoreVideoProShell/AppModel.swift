@@ -730,6 +730,17 @@ final class AppModel: ObservableObject {
         model.gateway.elapsedMs = { [weak self] in self?.elapsedMs() ?? 0 }
         // Guest rows expand over the Show Input slots, as Windows' ShowInputEditors.
         model.sceneIds = { [weak self] in self?.scenes.map(\.id) ?? [] }
+        // Shot Layouts (G4-G7 Task 14): StudioViewModel.SelectSceneForLayoutAsync, the core's Preview
+        // scene, the Program subject, CaptureLayoutPreviewStamp and GuestEntriesRoutedIn's routes.
+        model.selectPreviewScene = { [weak self] sceneId in
+            guard let self, self.scenes.contains(where: { $0.id == sceneId }) else { return false }
+            self.selectPreviewScene(sceneId)
+            return true
+        }
+        model.corePreviewSceneId = { [weak self] in (self?.lastSnapshot["previewScene"] as? JSONObject)?["sceneId"] as? String }
+        model.programSubjectSourceId = { [weak self] in self?.programLowerThirdSubject()?.source.sourceId }
+        model.layoutPreviewStamp = { [weak self] in self?.layoutPreviewStamp() ?? "" }
+        model.sceneSourceIds = { [weak self] sceneId in self?.routedSourceIds(sceneId) ?? [] }
         model.rosterSlots = { [weak self] in
             (self?.slots ?? []).map {
                 GraphicsRosterSlot(slotNumber: $0.id, sourceId: ControlSourceId.canonical(kind: $0.kind, sourceId: $0.sourceId),
@@ -3887,6 +3898,28 @@ final class AppModel: ObservableObject {
         // solo scene changes only its route — Windows SyncPreviewSceneChangeAsync).
         ShellLog.write("multiview cue → input \(slotId) (\(slot.name))")
         syncScenes()
+    }
+
+    /// CaptureLayoutPreviewStamp: Program and Preview scene ids, the core's Preview scene id and the
+    /// Preview routes. (Windows also folds in its PreviewScene object; the Mac leaves out the snapshot
+    /// node's revision and counts, which move on every repeated sync without an operator edit.)
+    func layoutPreviewStamp() -> String {
+        let stamp: JSONObject = [
+            "activeSceneId": programSceneId, "previewSceneId": previewSceneId,
+            "corePreviewSceneId": (lastSnapshot["previewScene"] as? JSONObject)?["sceneId"] as? String ?? "",
+            "routes": buildRoutes(for: previewSceneId),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: stamp, options: [.sortedKeys]) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// The canonical source ids a scene routes, in route order (GuestEntriesRoutedIn over the Mac's routes).
+    func routedSourceIds(_ sceneId: String) -> [String] {
+        buildRoutes(for: sceneId).compactMap { route -> String? in
+            guard let id = route["participantId"] as? String ?? route["captureDeviceId"] as? String,
+                  let slot = slots.first(where: { $0.kind != "unassigned" && $0.kind != "media" && $0.sourceId == id }) else { return nil }
+            return ControlSourceId.canonical(kind: slot.kind, sourceId: slot.sourceId)
+        }
     }
 
     func selectPreviewScene(_ sceneId: String) {
