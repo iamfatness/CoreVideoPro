@@ -929,18 +929,22 @@ extension ShellTests {
     static func testADeviceReadThatArrivesLateDecidesNothing() {
         let model = AppModel()
         let fake = FakeCameraExtensionActivator(script: [.activating, .active], installed: [ours(enabled: false)])
-        let probe = SlowSpyCameraDeviceProbe(CameraDeviceStatus(), delay: 0.15)   // no device, slowly
+        // The probe is slow (1 s) against a 0.05 s deadline, so its reading always
+        // lands after the deadline: the verdict path. The test waits for the
+        // probe to be out instead of sleeping a fixed 0.05 s, which on a loaded
+        // CI runner could overrun the probe and let the verdict land first.
+        let probe = SlowSpyCameraDeviceProbe(CameraDeviceStatus(), delay: 1.0)   // no device, slowly
         model.cameraExtension = fake
         model.cameraDeviceProbe = probe
         model.coreCommandCaptureForTesting = { _ in }
         model.cameraRegistrationTimeout = 0.05
         model.cameraRegistrationPollInterval = 0.02
         model.setVirtualCamera(enabled: true)       // activates; .active starts the registration check
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        spin(until: { model.cameraExtensionState == .active && model.cameraDeviceReader.isReading }, limit: 0.8)
         expectEqual(model.cameraExtensionState, .active, "precondition: activation completed")
         expect(model.cameraDeviceReader.isReading, "precondition: the registration check's probe is out")
         model.removeVirtualCamera()                 // the operator removes the camera meanwhile
-        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
         expectEqual(model.cameraExtensionState, .notInstalled,
                     "the late 'no device' reading does not turn a removed camera into Restart your Mac")
         expectEqual(fake.calls.filter { $0 == "installs" }.count, 0,
