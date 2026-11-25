@@ -85,11 +85,18 @@ enum ZoomCommsProtocol {
         return .some(parseState(object))
     }
 
+    /// The engine's channel bank: slots 0..<16.
+    static let channelSlots: Range<Int64> = 0..<16
+
     static func parseState(_ cm: JSONObject) -> CommsState {
         let lamps = cm["lamps"] as? JSONObject
         let mic = cm["mic"] as? JSONObject
         let stats = cm["stats"] as? JSONObject
-        let channels = (cm["channels"] as? [Any] ?? []).compactMap { $0 as? JSONObject }.map { c in
+        // A slot names one of the engine's 16 channels (CreateChannel(16),
+        // comms_core.h). Anything else is dropped here, so no later `slot + 1`
+        // can trap on a hostile or corrupt report (security review).
+        let channels = (cm["channels"] as? [Any] ?? []).compactMap { $0 as? JSONObject }
+            .filter { channelSlots.contains(long($0, "slot")) }.map { c in
             CommsChannel(slot: Int(long(c, "slot")), label: str(c, "label"), listeners: Int(long(c, "listeners")),
                          ready: bool(c, "ready"), keyed: bool(c, "keyed"), latched: bool(c, "latched"),
                          room: str(c, "room"), reachOk: Int(long(c, "reachOk")), reachDark: Int(long(c, "reachDark")))

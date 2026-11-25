@@ -421,6 +421,7 @@ extension ShellTests {
             ("comms/model-sends-are-serialised", testCommsModelSendsAreSerialised),
             ("comms/model-release-reaches-a-cell-that-left", testCommsModelReleaseOrphan),
             ("comms/protocol-huge-numbers-never-trap", testCommsProtocolHugeNumbers),
+            ("comms/protocol-out-of-range-slot-is-dropped", testCommsProtocolOutOfRangeSlot),
         ]
     }
 
@@ -506,12 +507,30 @@ extension ShellTests {
     }
 
     static func testCommsProtocolHugeNumbers() {
-        let s = ZoomCommsProtocol.parseState(["channels": [["slot": 1e30, "listeners": -1e30]],
+        let s = ZoomCommsProtocol.parseState(["channels": [["slot": 1, "listeners": -1e30]],
                                               "roster": [["participantId": 1e30, "channels": [1e30, -1e30, 2]]],
                                               "stats": ["framesSent": Double.infinity]])
         expectEqual(s.channels.first?.listeners, Int(Int64.min), "saturates, never traps")
         expectEqual(s.roster.first?.channels.last, 2, "small values kept")
         expectEqual(s.roster.first?.channels.count, 3, "huge values saturate")
         expectEqual(s.framesSent, Int64.max, "infinity saturates")
+    }
+
+    /// Security review: a channel's slot names one of the engine's 16 channels
+    /// (CreateChannel(16), comms_core.h). A report slot outside 0..<16 is
+    /// dropped at the parse, so `slot + 1` (the cell's "CH n" name and chip
+    /// text) can never trap on Int.max, and -1 never becomes a "CH 0" cell.
+    @MainActor static func testCommsProtocolOutOfRangeSlot() {
+        let s = ZoomCommsProtocol.parseState(["channels": [["slot": 1e30, "label": "huge"], ["slot": -1, "label": "neg"],
+                                                           ["slot": 16, "label": "sixteen"], ["slot": 15, "label": "last"],
+                                                           ["slot": 0, "label": "first"]]])
+        expectEqual(s.channels.map(\.slot), [15, 0], "only slots 0..<16 survive")
+        let intMax = desk(#"{"slot":9223372036854775807,"label":null,"listeners":1,"ready":true,"keyed":true,"latched":false,"room":null,"reachOk":1,"reachDark":0}"#
+                          + "," + ch(-1, nil, 1, keyed: true) + "," + ch(3, "Ana", 1),
+                          roster: #"[{"participantId":7,"name":"Ana","talkback":true,"room":null,"channels":[3]}]"#)
+        expectEqual(commsState(intMax).channels.map(\.slot), [3], "Int.max and -1 dropped from a desk report")
+        let (m, _) = makeComms(intMax)   // traps here before the fix
+        expectEqual(m.cells.map(\.slot), [3], "the model builds only the in-range cell")
+        expect(m.people.allSatisfy { $0.chips.allSatisfy { (0..<16).contains($0.slot) } }, "chips only for real channels")
     }
 }
