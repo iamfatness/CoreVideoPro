@@ -111,9 +111,9 @@ extension ShellTests {
         let tableEntry = GraphicsPlayout.entry(for: tableRow)
         let shown = awaitMain(15) { await app.graphics.playout.show(tableEntry) }
         expectEqual(shown?.accepted, true, "live: the table shows (\(shown?.reason ?? ""))")
-        _ = waitFor("the table drawn on Program", 10) {
+        _ = waitFor("the table drawn on Program, In motion finished", 10) {
             let i = app.graphics.state?.instance(tableEntry.instanceId)
-            return (i?.firstDrawSubmittedFrame ?? 0) > 0 && i?.isOnProgram == true
+            return (i?.firstDrawSubmittedFrame ?? 0) > 0 && i?.visibility == "on-air"
         }
         settle()
         let beforePublish = sample("before publish")
@@ -157,7 +157,11 @@ extension ShellTests {
         let crawlEntry = GraphicsPlayout.entry(for: crawlRow)
         let crawlShown = awaitMain(15) { await app.graphics.playout.show(crawlEntry) }
         expectEqual(crawlShown?.accepted, true, "live: the crawl shows (\(crawlShown?.reason ?? ""))")
-        guard waitFor("the crawl playing", 10, { app.graphics.state?.instance(crawlEntry.instanceId)?.crawlPlayback == "playing" }) else { return }
+        // Its In motion must have finished first: "entering" while it builds in is not a replay.
+        guard waitFor("the crawl playing and on air", 10, {
+            let i = app.graphics.state?.instance(crawlEntry.instanceId)
+            return i?.crawlPlayback == "playing" && i?.visibility == "on-air"
+        }) else { return }
         let crawlLineage = app.graphics.state?.instance(crawlEntry.instanceId)
         expectEqual(crawlLineage?.programFields?[GraphicsCrawlData.revisionField].map { "\($0)" }, "1", "live: Program starts on crawl revision 1")
         guard let v2Crawl = data("crawl-v2.csv", key: nil) else { expect(false, "crawl-v2.csv"); return }
