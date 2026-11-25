@@ -91,6 +91,49 @@ final class VstScratch {
     var scanKicked = false
 }
 
+// What SHOW's "＋ Add processing" menu says under VST3 PLUG-INS. The core's
+// status starts at "absent" before any scan ran (MediaCore.h pluginHostStatus_),
+// the same word it uses for "host executable not found", so "absent" alone
+// cannot mean "none found": until a scan has completed the menu says the scan
+// has not run. Windows' copy (W/Views/AudioPage.xaml.cs:349-357) for the rest.
+enum VstAddMenuState: Equatable {
+    case notScanned   // no scan has completed yet
+    case scanning     // a scan or its probes are running
+    case noneFound    // a scan completed and found nothing
+    case plugins      // list the scanned plug-ins
+}
+
+enum VstAddMenuPolicy {
+    static let notScannedLine = "Plug-in scan has not run yet — reopen this menu in a moment"
+    static let scanningLine = "Scanning for plugins — reopen this menu in a moment"   // xaml.cs:353
+    static let noneFoundLine = "No VST3 plugins found on this machine"                 // xaml.cs:354
+
+    static func state(status: String, pluginCount: Int, scanCompleted: Bool) -> VstAddMenuState {
+        if pluginCount > 0 { return .plugins }
+        if status == "scanning" || status == "probing" { return .scanning }
+        return scanCompleted ? .noneFound : .notScanned
+    }
+
+    /// The disabled line shown instead of a list, nil when there is a list.
+    static func emptyLine(_ state: VstAddMenuState) -> String? {
+        switch state {
+        case .notScanned: return notScannedLine
+        case .scanning: return scanningLine
+        case .noneFound: return noneFoundLine
+        case .plugins: return nil
+        }
+    }
+
+    /// A scan has completed once the core reports a terminal status that only a
+    /// scan produces ("ready", "error"), once it has listed plug-ins, or once
+    /// the shell's own scan request returned and the core is no longer scanning
+    /// (an "absent" after that is the real "host not found").
+    static func scanCompleted(status: String, pluginCount: Int, requestReturned: Bool) -> Bool {
+        if pluginCount > 0 || status == "ready" || status == "error" { return true }
+        return requestReturned && status != "scanning" && status != "probing"
+    }
+}
+
 // How much of the plug-in host is actually usable right now.
 enum VstCapability: Equatable {
     case missing      // the host executable was never found — status "absent"
@@ -295,12 +338,19 @@ extension AppModel {
         Task { [weak self] in
             do {
                 _ = try await bridge.request(["type": "scan-vst-plugins"], timeout: 20)
+                await MainActor.run { self?.vstScanRequestReturned = true }
             } catch {
                 await MainActor.run {
                     self?.pushWarning("VST3 scan failed: \(error.localizedDescription)")
                 }
             }
         }
+    }
+
+    /// SHOW's add menu (VstAddMenuPolicy): whether any scan has completed.
+    var vstScanCompleted: Bool {
+        VstAddMenuPolicy.scanCompleted(status: vstHost.status, pluginCount: vstPlugins.count,
+                                       requestReturned: vstScanRequestReturned)
     }
 
     func kickVstScanIfNeeded() {

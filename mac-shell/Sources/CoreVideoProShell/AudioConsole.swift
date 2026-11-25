@@ -63,7 +63,9 @@ struct AudioPane: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Studio.panel))
+        // XAML:915: the SHOW console is #070B10; the other surfaces keep the panel.
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(surface == "SHOW" ? AudioConsoleColor.console : Studio.panel))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
     }
 
@@ -215,7 +217,8 @@ struct ConsoleStrip: View {
                     .font(.plexMono(10, .semibold)).foregroundStyle(Studio.textPrimary)
                 if strip.sourceMuted {
                     // Display only (#481): the guest muted themselves in Zoom.
-                    Text("ZOOM MUTED").font(.plexMono(9, .bold)).foregroundStyle(Studio.amber)
+                    // XAML:1388-1392: FontSize 10, bold (the owner asked for 10-11 px).
+                    Text("ZOOM MUTED").font(.plexMono(10, .bold)).foregroundStyle(Studio.amber)
                         .accessibilityLabel("\(label) is muted in Zoom")
                 }
                 if AudioConsolePolicy.isMeterOnly(strip.id, mode: model.zoomAudioMode) {
@@ -266,7 +269,7 @@ struct ConsoleStrip: View {
         .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 6)
         .frame(width: AudioLayout.stripWidth)
         .frame(maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 3).fill(Studio.field))
+        .background(RoundedRectangle(cornerRadius: 3).fill(AudioConsoleColor.stripFill))   // XAML:1326
         .overlay(RoundedRectangle(cornerRadius: 3).stroke(Studio.border, lineWidth: 1))
     }
 }
@@ -331,7 +334,7 @@ struct MasterLufsRail: View {
         }
         .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 3).fill(Studio.field))
+        .background(RoundedRectangle(cornerRadius: 3).fill(AudioConsoleColor.railFill))   // XAML:1443
         .overlay(RoundedRectangle(cornerRadius: 3).stroke(AudioConsoleColor.chipStroke, lineWidth: 1))
     }
 }

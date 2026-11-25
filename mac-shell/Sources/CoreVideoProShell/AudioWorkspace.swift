@@ -23,6 +23,15 @@ enum AudioLayout {
     static let columnSpacing: CGFloat = 10
     static let setupColumnSpacing: CGFloat = 12
 
+    /// The pop-out mixer window. Windows opens it at 1080 x 700
+    /// (W/Views/AudioMixerWindow.xaml.cs:17-18 WindowWidth/WindowHeight, applied
+    /// at :68 appWindow.Resize). The minimum keeps 900 wide (the Task 4 render
+    /// held at 900) and 640 tall: below that the SHOW strip faders collapse to a
+    /// few points, the meter tick labels overlap and the master meters vanish
+    /// (Task 4 review, rendered at 900 x 520).
+    static let popoutDefault = CGSize(width: 1080, height: 700)
+    static let popoutMin = CGSize(width: 900, height: 640)
+
     /// GATE, COMP and EQ widths inside a workspace row `total` wide (the
     /// workspace's content width, padding already removed): the rack takes 190,
     /// three gaps of 10, and the rest splits 1 : 1 : 1.4 (the XAML star columns).
@@ -116,6 +125,10 @@ extension ChannelInserts {
 /// Console colours taken from the XAML where the plan names them.
 enum AudioConsoleColor {
     static let title = Color(hex: 0xA7E8F2)        // XAML:1003 channel name, cell titles
+    // Scoped to the Audio pane, so the global Studio tokens other tabs use stay put.
+    static let console = Color(hex: 0x070B10)      // XAML:915 the SHOW console Border
+    static let stripFill = Color(hex: 0x0B1016)    // XAML:1326 fader strip Border
+    static let railFill = Color(hex: 0x0D1520)     // XAML:1443 master rail Border
     static let chipFill = Color(hex: 0x0B2F38)     // XAML:956 channel chip
     static let chipStroke = Color(hex: 0x1B5E6B)   // XAML:956
     static let chipBus = Color(hex: 0x5FA9B5)      // XAML:964 bus label
@@ -209,14 +222,18 @@ struct ProcessingWorkspace: View {
                 set: { value in edit { $0[keyPath: keyPath] = value } })
     }
 
-    /// The rack edits the strip it shows. Add and remove go through the
-    /// processing-target API (Task 3), so the strip becomes the selected
-    /// channel target first, as a click on a Windows strip does (SVM:4688-4693).
-    func targetThisStrip() {
-        guard let stripId,
-              model.selectedProcessingTargetId != AudioProcessingTargetPolicy.channelId(stripId)
-                || model.selectedAudioStripId != stripId else { return }
-        model.selectAudioStrip(stripId)
+    /// The rack edits the strip it shows and never moves SETUP's processing
+    /// target: Windows' rack acts on the selected channel, and only a strip
+    /// click selects the channel target (SVM:4688-4693). Static so the shell
+    /// tests drive the exact path the rack uses.
+    static func rackAdd(_ model: AppModel, stripId: String?, _ name: String) {
+        guard let stripId else { return }
+        model.addChannelInsert(name, stripId: stripId)
+    }
+
+    static func rackRemove(_ model: AppModel, stripId: String?, _ name: String) {
+        guard let stripId else { return }
+        model.removeChannelInsert(name, stripId: stripId)
     }
 
     var body: some View {
@@ -238,6 +255,11 @@ struct ProcessingWorkspace: View {
         .frame(height: AudioLayout.workspaceHeight)
         .background(RoundedRectangle(cornerRadius: 4).fill(AudioConsoleColor.workspace))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Studio.border, lineWidth: 1))
+        // W/Views/AudioPage.xaml.cs:335-337: Windows makes sure a scan has run
+        // when the add menu opens. A SwiftUI Menu has no opening hook, so the
+        // workspace asks when it appears (the PLUG-INS surface that used to
+        // ask now sits inside SETUP's collapsed disclosure).
+        .onAppear { model.kickVstScanIfNeeded() }
     }
 
     // ── RACK (XAML:996-1092) ────────────────────────────────────────────────
@@ -260,10 +282,7 @@ struct ProcessingWorkspace: View {
             ScrollView(.vertical) {
                 InsertSlotList(
                     slots: slots,
-                    onRemove: { name in
-                        targetThisStrip()
-                        model.removeProcessingInsert(name)
-                    },
+                    onRemove: { name in Self.rackRemove(model, stripId: stripId, name) },
                     flyout: { AnyView(slotFlyout($0)) })
             }
             .frame(maxHeight: .infinity)
@@ -275,17 +294,17 @@ struct ProcessingWorkspace: View {
 
     /// XAML:1084-1091 and W/Views/AudioPage.xaml.cs:326-362 (OnAddInsertFlyoutOpening).
     var addMenu: some View {
-        Menu("＋ Add processing") {
+        Menu {
             Button("BUILT-IN — processes live") {}.disabled(true)
             ForEach(ChannelInserts.builtInNames, id: \.self) { name in
                 Button(name) { add(name) }
             }
             Divider()
             Button("VST3 PLUG-INS") {}.disabled(true)
-            if model.vstPlugins.isEmpty {
-                let scanning = model.vstHost.status == "scanning" || model.vstHost.status == "probing"
-                Button(scanning ? "Scanning for plugins — reopen this menu in a moment"
-                                : "No VST3 plugins found on this machine") {}.disabled(true)
+            let state = VstAddMenuPolicy.state(status: model.vstHost.status, pluginCount: model.vstPlugins.count,
+                                               scanCompleted: model.vstScanCompleted)
+            if let line = VstAddMenuPolicy.emptyLine(state) {
+                Button(line) {}.disabled(true)
             } else {
                 if !model.vstInsertsLive {
                     // The host cannot run an insert on this machine: say why, and
@@ -299,21 +318,29 @@ struct ProcessingWorkspace: View {
                     .disabled(!model.vstInsertsLive)
                 }
             }
+        } label: {
+            // XAML:1081 DropDownButton FontSize="10" Padding="10,4". A borderless
+            // Menu draws its label through AppKit at the system size and ignores
+            // .font, so the label is a SwiftUI view under the .button style.
+            HStack(spacing: 6) {
+                Text("＋ Add processing").font(.grotesk(10, .medium)).foregroundStyle(Studio.textPrimary)
+                Image(systemName: "chevron.down").font(.grotesk(8, .semibold)).foregroundStyle(Studio.secondary)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Studio.surface))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Studio.border, lineWidth: 1))
+            .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .font(.grotesk(10, .medium))
-        .fixedSize()
-        .padding(.horizontal, 10).padding(.vertical, 4)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Studio.surface))
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Studio.border, lineWidth: 1))
         .help("Add a built-in processor or a VST3 plugin to this channel")
+        .accessibilityLabel("Add processing")
     }
 
-    func add(_ name: String) {
-        targetThisStrip()
-        model.addProcessingInsert(name)
-    }
+    func add(_ name: String) { Self.rackAdd(model, stripId: stripId, name) }
 
     /// W/Views/AudioPage.xaml.cs:168-250 (OnInsertSlotFlyoutOpening). No
     /// "Open plug-in controls" button: the Mac host has no editor window yet.
@@ -440,8 +467,8 @@ struct ProcessingWorkspace: View {
                     VStack(spacing: 1) {
                         Text("LOW CUT").font(.plexMono(8)).foregroundStyle(Studio.secondary)
                             .lineLimit(1).minimumScaleFactor(0.7)
+                        // XAML:1252-1256: the label and the slider, no readout.
                         Slider(value: bind(\.eqHighpassHz).stepped(5, in: 20...400), in: 20...400).controlSize(.mini)
-                        Text("\(Int(inserts.eqHighpassHz)) Hz").font(.plexMono(8)).foregroundStyle(Studio.textDim)
                     }
                     .padding(.trailing, 6)
                     .frame(width: star * 1.6)

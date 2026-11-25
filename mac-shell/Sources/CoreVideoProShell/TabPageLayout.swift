@@ -95,6 +95,12 @@ enum TabSnapshotHarness {
                              connectionState: "connected", signalPresent: true, warning: ""),
             CaptureDeviceRow(id: "screen:0", name: "Display 1", kind: "video", vendor: "ScreenCaptureKit",
                              connectionState: "detected", signalPresent: false, warning: ""),
+            // Slots 6 and 7: capture slots with a paired mic, so the Audio tab's
+            // extra strips carry slot names (AppModel.audioSourceLabel) like real ones.
+            CaptureDeviceRow(id: "cam-podium", name: "Podium camera", kind: "video", vendor: "avfoundation",
+                             connectionState: "connected", signalPresent: true, warning: ""),
+            CaptureDeviceRow(id: "cam-stage", name: "Stage camera", kind: "video", vendor: "avfoundation",
+                             connectionState: "connected", signalPresent: true, warning: ""),
         ]
         ShowInputWriteScope.run("snapshot-seed") { seedSlots(model) }
         seedMedia(model)
@@ -154,12 +160,12 @@ enum TabSnapshotHarness {
         // pinned master rail; an ordered chain on 101, and 101 selected.
         let more: [(id: String, gain: Double, pan: Double, level: Int)] = [
             ("zoom-mix", 0, 0, 40), ("media", -6, 0, 0), ("local-machine-audio", 3, -0.25, 55),
-            ("capture:cam-1", -2.5, 0.5, 62), ("capture:screen:0", 0, 0, 0), ("capture:usb-mic", 1.5, -1, 30),
-            ("capture:line-in", -12, 0.75, 20), ("capture:cam-gone", 0, 0, 0),
+            ("capture:cam-1", -2.5, 0.5, 62), ("capture:screen:0", 0, 0, 0), ("capture:cam-podium", 1.5, -1, 30),
+            ("capture:cam-stage", -12, 0.75, 20), ("capture:cam-gone", 0, 0, 0),
         ]
         // One channel routed only to a custom bus, so its chip shows that bus
         // (primaryBusLabel), not the MASTER fallback.
-        model.audioSends["capture:line-in"] = [bus.id: 0]
+        model.audioSends["capture:cam-stage"] = [bus.id: 0]
         for extra in more {
             model.strips.append(AudioStrip(id: extra.id, outputLevel: extra.level, manualGainDb: extra.gain,
                                            muted: extra.id == "media", solo: false, pan: extra.pan, status: "live"))
@@ -182,6 +188,10 @@ enum TabSnapshotHarness {
         model.slots[2].audioDeviceId = "mic"; model.slots[2].audioDeviceName = "USB Audio Interface"
         model.assignSlot(4, kind: "capture", sourceId: "screen:0", name: "Display 1")
         model.assignSlot(5, kind: "capture", sourceId: "cam-gone", name: "Old desk camera")
+        model.assignSlot(6, kind: "capture", sourceId: "cam-podium", name: "Podium camera")
+        model.slots[5].audioDeviceId = "usb-mic"; model.slots[5].audioDeviceName = "USB mic"
+        model.assignSlot(7, kind: "capture", sourceId: "cam-stage", name: "Stage camera")
+        model.slots[6].audioDeviceId = "line-in"; model.slots[6].audioDeviceName = "Line in"
         model.toggleSlotIso(1)
     }
 

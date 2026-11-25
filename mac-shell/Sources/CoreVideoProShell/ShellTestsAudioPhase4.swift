@@ -47,6 +47,11 @@ extension ShellTests {
             ("a7-pan-gain-tooltip-strings", testPanGainTooltipStrings),
             ("a7-param-specs-are-windows", testParamSpecsAreWindows),
             ("a7-show-not-in-page-scroll", testShowNotInPageScroll),
+            // Task 4 review fix-ups.
+            ("a7-fix4-popout-size", testFix4PopoutSize),
+            ("a7-fix4-vst-menu-state", testFix4VstMenuState),
+            ("a7-fix4-rack-keeps-target", testFix4RackKeepsTarget),
+            ("a7-fix4-seed-strips-named", testFix4SeedStripsNamed),
             // Task 5: SETUP layout (two columns, Inserts & plug-ins, VST browser folded in).
             ("a7-setup-add-buttons", testSetupAddButtons),
             ("a7-surface-pills", testSurfacePills),
@@ -1047,5 +1052,89 @@ extension ShellTests {
         // Pure form.
         expectEqual(AudioSetupPolicy.unroutedNote(target: "bus:aux-2", routedBusIds: ["master"]), note, "pure: unrouted")
         expect(AudioSetupPolicy.unroutedNote(target: "bus:aux-2", routedBusIds: ["aux-2"]) == nil, "pure: routed")
+    }
+
+    // ── Task 4 review fix-ups ───────────────────────────────────────────────
+
+    /// W/Views/AudioMixerWindow.xaml.cs:17-18 (1080 x 700). The minimum height
+    /// is the smallest that renders SHOW usably (strip faders, tick scale and
+    /// master meters, checked in renders at 900 x 640).
+    /// Mutations: default back to no size / 900 x 520, or the minimum back to 520 (red).
+    static func testFix4PopoutSize() {
+        expectEqual(AudioLayout.popoutDefault.width, 1080, "Windows WindowWidth")
+        expectEqual(AudioLayout.popoutDefault.height, 700, "Windows WindowHeight")
+        expectEqual(AudioLayout.popoutMin.width, 900, "the minimum width the Task 4 render held at")
+        expectEqual(AudioLayout.popoutMin.height, 640, "the minimum height SHOW stays usable at")
+        expect(AudioLayout.popoutMin.width <= AudioLayout.popoutDefault.width
+               && AudioLayout.popoutMin.height <= AudioLayout.popoutDefault.height,
+               "the default size satisfies the minimum")
+    }
+
+    /// Honest reporting: before any scan has completed the add menu must not
+    /// claim "No VST3 plugins found" (the core's status starts at "absent").
+    /// Mutation: state() returns .noneFound for an un-scanned "absent" (red).
+    @MainActor
+    static func testFix4VstMenuState() {
+        typealias P = VstAddMenuPolicy
+        expectEqual(P.state(status: "absent", pluginCount: 0, scanCompleted: false), .notScanned, "never scanned")
+        expectEqual(P.emptyLine(.notScanned), "Plug-in scan has not run yet — reopen this menu in a moment",
+                    "the not-scanned line")
+        expectEqual(P.state(status: "scanning", pluginCount: 0, scanCompleted: false), .scanning, "scanning")
+        expectEqual(P.state(status: "probing", pluginCount: 0, scanCompleted: true), .scanning, "probing")
+        expectEqual(P.emptyLine(.scanning), "Scanning for plugins — reopen this menu in a moment", "xaml.cs copy")
+        expectEqual(P.state(status: "ready", pluginCount: 0, scanCompleted: true), .noneFound, "scanned, none")
+        expectEqual(P.emptyLine(.noneFound), "No VST3 plugins found on this machine", "xaml.cs copy")
+        expectEqual(P.state(status: "probing", pluginCount: 2, scanCompleted: false), .plugins, "a list wins")
+        expect(P.emptyLine(.plugins) == nil, "a list has no empty line")
+        // Completion.
+        expect(!P.scanCompleted(status: "absent", pluginCount: 0, requestReturned: false), "absent before a scan")
+        expect(P.scanCompleted(status: "absent", pluginCount: 0, requestReturned: true), "absent after the scan: host not found")
+        expect(!P.scanCompleted(status: "scanning", pluginCount: 0, requestReturned: true), "still scanning")
+        expect(P.scanCompleted(status: "ready", pluginCount: 0, requestReturned: false), "a core-kicked scan finished")
+        expect(P.scanCompleted(status: "error", pluginCount: 0, requestReturned: false), "a failed scan finished")
+        // A fresh model (no bridge, no scan) reads "not scanned", never "none found".
+        let model = AppModel()
+        expect(!model.vstScanCompleted, "a fresh model has not scanned")
+        expectEqual(P.state(status: model.vstHost.status, pluginCount: model.vstPlugins.count,
+                            scanCompleted: model.vstScanCompleted), .notScanned, "fresh model state")
+        model.applyPluginHostSnapshot(["status": "ready", "plugins": [] as [JSONObject]])
+        expect(model.vstScanCompleted, "a ready snapshot completes the scan")
+    }
+
+    /// The SHOW rack adds/removes on the channel it shows and leaves SETUP's
+    /// processing target alone (Windows' rack never changes the target).
+    /// Mutation: rackAdd selects the strip first (the old targetThisStrip) (red).
+    @MainActor
+    static func testFix4RackKeepsTarget() {
+        let model = targetModel()
+        model.selectProcessingTarget(AudioProcessingTargetPolicy.defaultTargetId)
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "precondition: bus:master is the target")
+        ProcessingWorkspace.rackAdd(model, stripId: "101", "Limiter")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "the target stays bus:master")
+        expectEqual(model.channelInserts["101"]?.chain, ["Limiter"], "strip 101's chain gets the Limiter")
+        expect(model.busInserts["master"] == nil, "the master chain is untouched")
+        expectEqual(model.takeStatus, "Limiter added to \(model.audioSourceLabel("101"))", "the Windows status")
+        ProcessingWorkspace.rackAdd(model, stripId: "101", "Limiter")
+        expectEqual(model.takeStatus, "Limiter is already on \(model.audioSourceLabel("101"))", "duplicate status")
+        ProcessingWorkspace.rackRemove(model, stripId: "101", "Limiter")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "remove keeps the target too")
+        expectEqual(model.channelInserts["101"]?.chain ?? [], [], "removed from 101")
+        expectEqual(model.takeStatus, "Removed Limiter from \(model.audioSourceLabel("101"))", "remove status")
+        // The target path still works the same way through the channel branch.
+        model.selectAudioStrip("102")
+        model.addProcessingInsert("Compressor")
+        expectEqual(model.channelInserts["102"]?.chain, ["Compressor"], "addProcessingInsert on a channel target")
+    }
+
+    /// Harness: every seeded Audio strip reads a display name, not a raw id.
+    /// Mutation: seed the extras as unslotted capture ids (red).
+    @MainActor
+    static func testFix4SeedStripsNamed() {
+        let model = AppModel()
+        TabSnapshotHarness.seed(model)
+        expect(model.strips.count >= 10, "the seeded bank (\(model.strips.count) strips)")
+        for strip in model.strips {
+            expect(model.audioSourceLabel(strip.id) != strip.id, "\(strip.id) has a display name")
+        }
     }
 }

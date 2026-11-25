@@ -173,9 +173,11 @@ struct ShellApp: App {
             AudioPane(isPopout: true)
                 .environmentObject(model)
                 .modifier(MainWindowOpenerRegistration())
-                .frame(minWidth: 900, minHeight: 520)
+                .frame(minWidth: AudioLayout.popoutMin.width, minHeight: AudioLayout.popoutMin.height)
                 .studioChrome()
         }
+        // W/Views/AudioMixerWindow.xaml.cs:17-18, :68: Windows opens the mixer at 1080 x 700.
+        .defaultSize(width: AudioLayout.popoutDefault.width, height: AudioLayout.popoutDefault.height)
     }
 }
 

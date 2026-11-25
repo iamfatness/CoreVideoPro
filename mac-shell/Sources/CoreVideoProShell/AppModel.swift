@@ -520,6 +520,8 @@ final class AppModel: ObservableObject {
     // properties cannot be declared in an extension, so only the state is here).
     @Published var vstHost = VstHostState()
     @Published var vstPlugins: [VstPlugin] = []
+    /// The shell's scan-vst-plugins request came back (VstAddMenuPolicy.scanCompleted).
+    @Published var vstScanRequestReturned = false
     @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
     let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
     // #870: the core's audioObservation envelope + when the shell received it.
@@ -4907,16 +4909,7 @@ final class AppModel: ObservableObject {
         let target = AudioProcessingTargetPolicy.parse(targetId)
         let name = processingTargetName(targetId)
         if let channel = target.channel, strips.contains(where: { $0.id == channel }) {
-            var inserts = channelInserts[channel] ?? ChannelInserts()
-            switch inserts.add(raw) {
-            case .duplicate(let normalized):
-                takeStatus = "\(normalized) is already on \(name)"
-            case .added(let normalized):
-                editInserts(channel) { $0 = inserts }   // schedules the mix sync
-                takeStatus = "\(normalized) added to \(name)"
-            case .rejectedBlank:
-                return   // unreachable behind the guard above; silent, as on Windows
-            }
+            addChannelInsert(raw, stripId: channel)
             return
         }
         guard let bus = target.bus, buses.contains(where: { $0.id == bus }) else {
@@ -4939,14 +4932,42 @@ final class AppModel: ObservableObject {
         pushRoutingBase()
     }
 
+    /// The channel branch of addProcessingInsert, aimed at a strip directly:
+    /// SHOW's rack adds to the channel it shows and never moves SETUP's
+    /// processing target (Windows' rack acts on the selected channel; only a
+    /// strip click selects its target, SVM:4688-4693). Statuses as above.
+    func addChannelInsert(_ raw: String, stripId channel: String) {
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              strips.contains(where: { $0.id == channel }) else { return }
+        let name = processingTargetName(AudioProcessingTargetPolicy.channelId(channel))
+        var inserts = channelInserts[channel] ?? ChannelInserts()
+        switch inserts.add(raw) {
+        case .duplicate(let normalized):
+            takeStatus = "\(normalized) is already on \(name)"
+        case .added(let normalized):
+            editInserts(channel) { $0 = inserts }   // schedules the mix sync
+            takeStatus = "\(normalized) added to \(name)"
+        case .rejectedBlank:
+            return   // unreachable behind the guard above; silent, as on Windows
+        }
+    }
+
+    /// The channel branch of removeProcessingInsert, aimed at a strip directly
+    /// (the rack; see addChannelInsert). Nothing removed, nothing said.
+    func removeChannelInsert(_ insertName: String, stripId channel: String) {
+        guard var inserts = channelInserts[channel], inserts.remove(insertName) else { return }
+        editInserts(channel) { $0 = inserts }
+        takeStatus = "Removed \(insertName) from \(processingTargetName(AudioProcessingTargetPolicy.channelId(channel)))"
+    }
+
     /// SVM:2618-2632 (RemoveAudioProcessingInsert): case-insensitive, the
     /// status names the insert as given; nothing removed, nothing said.
     func removeProcessingInsert(_ insertName: String) {
         let targetId = selectedProcessingTargetId
         let target = AudioProcessingTargetPolicy.parse(targetId)
         if let channel = target.channel {
-            guard var inserts = channelInserts[channel], inserts.remove(insertName) else { return }
-            editInserts(channel) { $0 = inserts }
+            removeChannelInsert(insertName, stripId: channel)
+            return
         } else if let bus = target.bus {
             guard var chain = busInserts[bus] else { return }
             let before = chain.count
