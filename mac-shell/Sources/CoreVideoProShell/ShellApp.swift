@@ -1183,7 +1183,35 @@ struct SceneRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 4) {
-            rowButton
+            VStack(spacing: 0) {
+                rowButton
+                // Windows StudioWorkspace.xaml: "Edit Tiles" inside a Tiles scene's
+                // row card. Cues the wall on Preview and opens its inspector;
+                // Program never changes.
+                if scene.tiles != nil {
+                    Button { model.editTiles(scene.id) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "square.grid.3x3").font(.system(size: 11))  // design-lint: allow
+                            Text("Edit Tiles").font(.grotesk(12, .semibold))
+                        }
+                        .foregroundStyle(Studio.accent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Studio.accent.opacity(0.12)))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.accent, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .padding([.horizontal, .bottom], 10)
+                    .help("Cue this wall on Preview and open its inspector")
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(onProgram ? Studio.amber.opacity(0.12)
+                      : onPreview ? Studio.accent.opacity(0.08) : Studio.card))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(onProgram ? Studio.amber.opacity(0.7)
+                        : onPreview ? Studio.accent.opacity(0.6) : Studio.stroke,
+                        lineWidth: 1))
             // Windows: a Duplicate button beside every row (the copy is cued
             // on Preview).
             Button {
@@ -1228,13 +1256,7 @@ struct SceneRow: View {
                 }
             }
             .padding(8)
-            .background(RoundedRectangle(cornerRadius: 8)
-                .fill(onProgram ? Studio.amber.opacity(0.12)
-                      : onPreview ? Studio.accent.opacity(0.08) : Studio.card))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .stroke(onProgram ? Studio.amber.opacity(0.7)
-                        : onPreview ? Studio.accent.opacity(0.6) : Studio.stroke,
-                        lineWidth: 1))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         // Windows rail context menu: by this row's stable id, without cueing it.
@@ -1355,7 +1377,7 @@ struct TabPage: View {
     // Width per tab comes from TabPageLayout (a flat 720 pt cap clipped the
     // Sources rows and the Routing grid).
     var body: some View {
-        if TabPageLayout.fillsHeight(model.selectedTab) {
+        if !TabPageLayout.scrolls(model.selectedTab, tilesEditing: model.tilesEditTargetId != nil) {
             TabPageContent(tab: model.selectedTab).frame(maxHeight: .infinity, alignment: .top)
         } else {
             ScrollView {

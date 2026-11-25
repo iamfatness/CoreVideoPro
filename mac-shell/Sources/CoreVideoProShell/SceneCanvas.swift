@@ -29,12 +29,13 @@ struct ScenesPane: View {
                     .font(.grotesk(12)).foregroundStyle(Studio.secondary)
                 MonoChip("1920×1080")
                 Spacer()
+                // A Tiles wall has no layers on Mac yet (D5): the canvas actions are off.
                 Button("Add layer") { model.addLayer(to: sceneId) }
                     .buttonStyle(GhostButtonStyle())
-                    .disabled(sceneId.isEmpty)
+                    .disabled(sceneId.isEmpty || model.tilesEditTargetId != nil)
                 Button("Reset to preset") { model.resetLayers(for: sceneId) }
                     .buttonStyle(GhostButtonStyle())
-                    .disabled(scene?.layers.isEmpty ?? true)
+                    .disabled((scene?.layers.isEmpty ?? true) || model.tilesEditTargetId != nil)
                 Button("Save") { model.saveScenes() }
                     .buttonStyle(GhostButtonStyle(tint: Studio.accent))
                 Menu("Scene") {
@@ -75,6 +76,11 @@ struct ScenesPane: View {
                 }
                 Spacer()
             }
+            if model.tilesEditTargetId != nil {
+                // A CoreVideo Tiles wall on Preview: the two-column Tiles workspace
+                // (Windows Scene Builder centre + 292 pt inspector), not the canvas.
+                TilesWorkspace()
+            } else {
             Text(sceneId.isEmpty
                  ? "No scene on Preview — cue one to edit it. Program is never edited directly."
                  : "Editing the PREVIEW scene — program is untouched until Take. "
@@ -86,11 +92,13 @@ struct ScenesPane: View {
                 LayerDock(sceneId: sceneId, selectedLayerId: $selectedLayerId)
                     .frame(width: 280)
             }
+            }
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
-        .frame(maxWidth: 1000)
+        .frame(maxWidth: model.tilesEditTargetId != nil ? .infinity : 1000,
+               maxHeight: model.tilesEditTargetId != nil ? .infinity : nil, alignment: .top)
         .onAppear { model.ensureLayers(for: sceneId); nameDraft = scene?.name ?? "" }
         .onChange(of: sceneId) { _ in
             model.ensureLayers(for: sceneId)

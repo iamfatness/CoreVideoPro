@@ -56,6 +56,9 @@ extension ShellTests {
             ("tiles/edits-sync-and-save", testEveryTilesEditIsSentAndSaved),
             ("tiles/identity-roster-is-full", testACameraOffGuestsSavedSlotIsNotStale),
             ("tiles/move-and-include-paths", testTilesMoveAndIncludeCoverEveryPath),
+            // Task 15: Edit Tiles and the two-column workspace.
+            ("tiles/edit-tiles-entry", testEditTilesCuesPreviewOpensTheInspectorAndNeverTouchesProgram),
+            ("tiles/scenes-tab-layout-rules", testTheScenesTabStopsScrollingAndWidensOnlyWhileEditingTiles),
             // Task 13: identity and roster-aware membership.
             ("tiles/identity-windows-facts", testTilesIdentityPortsTheWindowsFacts),
             ("tiles/membership-windows-facts", testTilesMembershipPortsTheWindowsFacts),
@@ -1444,5 +1447,43 @@ extension ShellTests {
         try? model.updateTiles { $0.manualSlots = ["zoom-pid:P7"]; $0.excludedSourceIds = []; $0.omittedSourceIds = [] }
         try? model.includeTilesMember("zoom:7", included: true)
         expectEqual(model.scenes.first { $0.id == "t-pvw" }?.tiles?.manualSlots, ["zoom-pid:P7"], "\(w): an existing member keeps one slot")
+    }
+
+    // ── Task 15 ──────────────────────────────────────────────────────────────
+
+    @MainActor static func testEditTilesCuesPreviewOpensTheInspectorAndNeverTouchesProgram() {
+        let w = "StudioViewModel.EditTiles (StudioWorkspaceLayoutProbe: opens the wall, preserves Program)"
+        let model = sceneEditModel()   // Program s2, Preview s1
+        model.scenes.append(SceneDef(id: "wall", name: "Panel wall", layout: AppModel.tilesLayout, tiles: TilesSettings()))
+        model.selectedTab = .studio
+        model.editTiles("s3")          // not a Tiles scene: nothing happens
+        expectEqual(model.previewSceneId, "s1", "\(w): a non-Tiles id does nothing")
+        expectEqual(model.selectedTab, .studio, "\(w): the tab is unchanged for a non-Tiles id")
+        model.editTiles("wall")
+        expectEqual(model.programSceneId, "s2", "\(w): Program unchanged")
+        expectEqual(model.previewSceneId, "wall", "\(w): the wall is on Preview")
+        expectEqual(model.selectedTab, .scenes, "\(w): the Scenes tab opens")
+        expectEqual(model.studioCommandStatus, "Editing Tiles in Panel wall", "\(w): status text")
+        expectEqual(model.tilesEditTargetId, "wall", "\(w): the workspace edits the wall")
+        model.editTiles("missing")
+        expectEqual(model.previewSceneId, "wall", "\(w): an unknown id does nothing")
+    }
+
+    static func testTheScenesTabStopsScrollingAndWidensOnlyWhileEditingTiles() {
+        let w = "TabPageLayout (Tiles workspace)"
+        for tab in StudioTab.allCases {
+            for editing in [false, true] {
+                let expectWidth: CGFloat = (tab == .scenes && editing) ? .infinity : TabPageLayout.maxWidth(for: tab)
+                expectEqual(TabPageLayout.maxWidth(for: tab, tilesEditing: editing), expectWidth,
+                            "\(w): width of \(tab.rawValue) editing=\(editing)")
+                let expectScroll = !(tab == .scenes && editing) && !TabPageLayout.fillsHeight(tab)
+                expectEqual(TabPageLayout.scrolls(tab, tilesEditing: editing), expectScroll,
+                            "\(w): scrolling of \(tab.rawValue) editing=\(editing)")
+            }
+        }
+        expectEqual(TabPageLayout.maxWidth(for: .scenes, tilesEditing: false), 720, "\(w): Scenes keeps its measure otherwise")
+        expect(!TabPageLayout.scrolls(.scenes, tilesEditing: true) && TabPageLayout.scrolls(.scenes, tilesEditing: false),
+               "\(w): only the Tiles workspace stops the page scroll")
+        expectEqual(TilesWorkspaceMetrics.dockWidth, 292, "\(w): the Windows 292 pt dock")
     }
 }

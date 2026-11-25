@@ -62,6 +62,16 @@ extension AppModel {
         saveScenes()
     }
 
+    /// Windows `StudioViewModel.EditTiles`: only a Tiles scene; cue it on Preview
+    /// (Program never changes) and open the Tiles workspace on the Scenes tab.
+    func editTiles(_ sceneId: String) {
+        guard let scene = scenes.first(where: { $0.id == sceneId }), scene.tiles != nil else { return }
+        selectPreviewScene(sceneId)
+        guard previewSceneId == sceneId else { return }
+        selectedTab = .scenes
+        studioCommandStatus = "Editing Tiles in \(scene.name)"
+    }
+
     /// True (and the refusal shown) when a layer edit targets a Tiles scene.
     func refuseLayerEditOnTiles(_ sceneId: String) -> Bool {
         guard isTilesScene(sceneId) else { return false }

@@ -377,3 +377,29 @@ No HIGH. The reviewer confirmed statement-level parity for identity, membership,
   - an existing member keeping one slot.
 - **LOW (recorded):** `currentTilesMeetingId` reads the typed field like Windows, and no code reads meeting ids today. Case folding is `caseInsensitiveCompare`, not ordinal-ignore-case, and only differs for exotic names.
 - `tiles/` filter: 392/392. Full suite: **8732 checks, 2 failed**, the known `.m4a` pair.
+
+## Slice S4
+
+### Task 15 — Edit Tiles, page layout and the workspace shell
+
+- `TabPageLayout.maxWidth(for:tilesEditing:)` and `scrolls(_:tilesEditing:)`. While a wall is being edited, the Scenes tab takes the window's width and stops scrolling as a page. `TabPage` and `TabPageContent` follow these rules.
+- `AppModel.editTiles(_:)` is Windows `EditTiles`: Tiles scenes only. It cues the wall on Preview, opens the Scenes tab and sets the status "Editing Tiles in <name>". Program is never touched. `tilesInspectorTab` is the dock's Pivot selection.
+- `SceneRow` gets an accent "Edit Tiles" button with the `square.grid.3x3` symbol, inside a Tiles scene's row card.
+- New `TilesInspector.swift`:
+  - `TilesWorkspace` is the centre column: the scene name in 18 pt, a PVW chip with "Changes ride Preview until Take.", the live Preview monitor at 16:9, and the Program strip with "Take to Program →".
+  - `TilesInspectorDock`: 292 pt, panel background, 1 pt border, radius 9, padding 12. It shows the name, "Tiles wall · n selected / m available", segmented Layout | Style | Members tabs, the selected tab in **its own** vertical ScrollView, and the footer "Changes affect this Preview draft."
+  - Helpers: `TilesSection`, `TilesHelp`, `TilesSliderRow` (double-click resets to the Windows default).
+  - The tab bodies are filled by Tasks 16, 17 and 19.
+- `ScenesPane` shows the Tiles workspace in place of the canvas whenever Preview is a wall. "Add layer" and "Reset to preset" are disabled there (D5).
+- Snapshot harness: `COREVIDEO_SHELL_TAB_SNAPSHOT_TILES=1` (or `style`/`members`) seeds a wall on Preview. Ran with `COREVIDEO_SHELL_TAB_LIST=Scenes`. **Checked by eye against the layout contract:**
+  - two columns, with a 292 pt dock on the right of a flexible centre;
+  - 12 pt spacing;
+  - no page scroll bar;
+  - the dock's own scroll area between the tabs and the footer;
+  - the header row unchanged.
+
+  Rendered at 1360×865 and 1920×1180 in the scratchpad. Not committed, because binary snapshots are not kept in the repo.
+- Tests:
+  - `testEditTilesCuesPreviewOpensTheInspectorAndNeverTouchesProgram`: a non-Tiles or unknown id does nothing, and the status text is exact;
+  - `testTheScenesTabStopsScrollingAndWidensOnlyWhileEditingTiles`: a table over every `StudioTab` × editing.
+- `tiles/` filter: 451/451.

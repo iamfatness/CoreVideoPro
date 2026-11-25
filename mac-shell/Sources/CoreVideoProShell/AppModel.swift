@@ -400,6 +400,8 @@ struct RosterParticipant: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
+    /// The Tiles inspector's selected tab (Windows Pivot: Layout | Style | Members).
+    @Published var tilesInspectorTab: TilesInspectorTab = .layout
     /// Sticky Tiles audio (Windows TilesAudioSourceLatch), observed once per spine build.
     let tilesAudioLatch = TilesAudioSourceLatch()
     /// True once a Zoom snapshot with a non-empty meetingState arrived on this core generation.
