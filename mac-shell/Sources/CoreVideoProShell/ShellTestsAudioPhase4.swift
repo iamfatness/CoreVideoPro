@@ -68,6 +68,8 @@ extension ShellTests {
             ("a7-fix7-unscanned-is-not-host-missing", testFix7UnscannedIsNotHostMissing),
             ("a7-fix7-failed-scan-retries", testFix7FailedScanRetries),
             ("a7-fix7-popout-window-uses-layout", testFix7PopoutWindowUsesLayout),
+            ("a7-fix8-plugin-host-real-shape", testFix8PluginHostRealShape),
+            ("a7-fix8-stale-poll-cannot-finish-scan", testFix8StalePollCannotFinishScan),
         ]
     }
 
@@ -1285,8 +1287,16 @@ extension ShellTests {
 
     // ── Review fix-ups 7 ────────────────────────────────────────────────────
 
+    /// The scan reply in the core's real shape: `snapshot` is sessionState and
+    /// the plugin-host node sits under audioMixSession (CoreStateCapture.cpp
+    /// audioMixSessionState), never at the root.
     private static func pluginHostReply(_ status: String) -> JSONObject {
-        ["snapshot": ["pluginHost": ["status": status, "plugins": [] as [JSONObject]] as JSONObject] as JSONObject]
+        ["snapshot": pluginHostSnapshot(status)]
+    }
+
+    /// A sessionState snapshot carrying only the nested plugin-host node.
+    private static func pluginHostSnapshot(_ status: String, plugins: [JSONObject] = []) -> JSONObject {
+        ["audioMixSession": ["pluginHost": ["status": status, "plugins": plugins] as JSONObject] as JSONObject]
     }
 
     /// The scan request's reply snapshot (taken after the core set "scanning",
@@ -1378,6 +1388,121 @@ extension ShellTests {
         expectEqual(attempts, 2, "the next kick sent a second request")
         expect(!model.vstScanRequestFailed, "a new request clears the failure")
         expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "and the menu follows the reply")
+    }
+
+    // ── Review fix-ups 8 ────────────────────────────────────────────────────
+
+    /// A sessionState snapshot shaped like the real core: the key layout of
+    /// CoreStateCapture.cpp sessionState ({"audioMixSession", ...} at the root)
+    /// and audioMixSessionState ({"pluginHost", pluginHostState()} inside it,
+    /// fields from MediaCore.cpp pluginHostState). There is no root-level
+    /// `pluginHost`, so a root read applies nothing.
+    private static let realShapeSessionStateJson = """
+    {
+      "sceneId": "scene-1",
+      "active": true,
+      "audioMixSession": {
+        "status": "live",
+        "masterLevel": 0.5,
+        "loudnessLufs": -18.0,
+        "pluginHost": {
+          "status": "ready",
+          "plugins": [
+            {"id": "vst3:abc", "name": "Pro-Q 3", "vendor": "FabFilter", "probe": "pass",
+             "classNames": ["Pro-Q 3"]}
+          ],
+          "serve": {
+            "running": true, "exchanges": 10, "deadlineMisses": 0,
+            "activePlugin": "Pro-Q 3", "statusCode": 0, "lastError": "",
+            "editorStatusCode": 0, "editorActivePlugin": "", "editorLastError": "",
+            "latencySamples": 0, "latencyMs": 0,
+            "paramPluginClass": "", "paramTotalCount": 0,
+            "paramListGeneration": 0, "paramValuesGeneration": 0, "params": [],
+            "respawn": {"attempts": 0, "gaveUp": false}
+          }
+        },
+        "limiterEnabled": false,
+        "limiterActive": false,
+        "participants": [],
+        "warnings": []
+      },
+      "audioRoutingMatrix": {"routes": []}
+    }
+    """
+
+    private static func realShapeSessionState() -> JSONObject {
+        (try? JSONSerialization.jsonObject(with: Data(realShapeSessionStateJson.utf8))) as? JSONObject ?? [:]
+    }
+
+    /// The core nests pluginHost under audioMixSession (CoreStateCapture.cpp
+    /// audioMixSessionState; Windows reads LastSnapshot.AudioMixSession.PluginHost,
+    /// StudioViewModel.cs:2265). A real-shaped snapshot updates vstHost through
+    /// BOTH the poll path (applySnapshot) and the scan reply.
+    /// Mutation: read `snapshot["pluginHost"]` (the root) in the poll path (red,
+    /// poll half); read `reply["snapshot"]["pluginHost"]` in the scan reply (red,
+    /// reply half).
+    @MainActor
+    static func testFix8PluginHostRealShape() {
+        let snapshot = realShapeSessionState()
+        expect(!snapshot.isEmpty, "the real-shape fixture parses")
+        expect(snapshot["pluginHost"] == nil, "the real core has no root-level pluginHost")
+        // Poll path.
+        let polled = AppModel()
+        polled.applySnapshotForTesting(snapshot)
+        expectEqual(polled.vstHost.status, "ready", "poll: status applied from audioMixSession.pluginHost")
+        expectEqual(polled.vstPlugins.map(\.name), ["Pro-Q 3"], "poll: plug-ins applied")
+        expect(polled.vstHost.serveRunning, "poll: serve.running applied")
+        expectEqual(polled.vstCapability, .live, "poll: a running host gates inserts live")
+        expect(polled.vstInsertsLive, "poll: vstInsertsLive follows serve.running")
+        // Scan reply path.
+        let scanned = AppModel()
+        scanned.vstScanRequestForTesting = { _, _ in ["snapshot": snapshot] }
+        scanned.scanVstPlugins()
+        spin(until: { scanned.vstScanRequestReturned || !scanned.vstScratch.scanKicked }, limit: 2)
+        expect(scanned.vstScanRequestReturned, "reply: the nested node counts as a reply with pluginHost")
+        expectEqual(scanned.vstHost.status, "ready", "reply: status applied from audioMixSession.pluginHost")
+        expectEqual(scanned.vstPlugins.map(\.name), ["Pro-Q 3"], "reply: plug-ins applied")
+        expectEqual(scanned.vstAddMenuState, .plugins, "reply: the menu lists the plug-ins")
+        // The shared reader.
+        expectEqual(AppModel.pluginHostNode(inSnapshot: snapshot)?["status"] as? String, "ready",
+                    "pluginHostNode reads audioMixSession.pluginHost")
+        expect(AppModel.pluginHostNode(inSnapshot: ["pluginHost": ["status": "ready"] as JSONObject]) == nil,
+               "a root-level pluginHost is not the core's shape")
+    }
+
+    /// A poll requested before the scan reply was applied may carry a capture
+    /// from before the core set "scanning": its pre-scan "absent" must not
+    /// count as a finished scan. Only a poll requested after the reply does.
+    /// Mutation: apply pluginHost from every snapshot (drop the stale-barrier
+    /// check in applyPluginHostFromSnapshot) (red).
+    @MainActor
+    static func testFix8StalePollCannotFinishScan() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        // A poll is in flight when the scan starts: requested before the reply.
+        let stalePoll = model.issueSnapshotRequest()
+        model.vstScanRequestForTesting = { _, _ in pluginHostReply("scanning") }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(model.vstHost.status, "scanning", "the reply says scanning")
+        // ... and lands after the reply with the pre-scan default.
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: stalePoll)
+        expectEqual(model.vstHost.status, "scanning", "a stale poll does not regress the status")
+        expect(!model.vstScanCompleted, "a stale poll does not finish the scan")
+        expect(model.setupVstMenuEmptyLine != P.noneFoundLine, "SETUP's menu never flashes 'none found'")
+        expectEqual(model.vstAddMenuState, .scanning, "SHOW's menu: still scanning")
+        // An unstamped snapshot (a one-shot command reply) during the window is skipped too.
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"))
+        expectEqual(model.vstAddMenuState, .scanning, "an unordered snapshot cannot finish the scan either")
+        // A poll requested after the reply reports the finished scan.
+        let freshPoll = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: freshPoll)
+        expect(model.vstScanCompleted, "a fresh absent after the reply: completed")
+        expectEqual(model.setupVstMenuEmptyLine, P.noneFoundLine, "a completed scan found nothing")
+        expectEqual(model.vstCapability, .missing, "and the host is really missing")
+        // The window is closed: later snapshots apply normally again.
+        model.applySnapshotForTesting(pluginHostSnapshot("ready", plugins: [["id": "a", "name": "A"]]))
+        expectEqual(model.vstPlugins.map(\.name), ["A"], "after a fresh poll every snapshot applies")
     }
 
     /// The Audio Mixer pop-out window takes its sizes from AudioLayout and no

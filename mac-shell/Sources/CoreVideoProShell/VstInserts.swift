@@ -29,7 +29,7 @@
 // process, show an editor, or read parameters from one. This file therefore
 // ships a real scan/browse surface and DIMS every control that would need the
 // audio transport — it never renders a live-looking insert that does nothing.
-// The gating is derived from the core's runtime `pluginHost.serve.running`
+// The gating is derived from the core's runtime `audioMixSession.pluginHost.serve.running`
 // (never a hardcoded platform check), so the day the host gains a macOS
 // transport this surface lights up with no change here.
 //
@@ -89,6 +89,11 @@ final class VstScratch {
     var pendingParams: [UInt32: Double] = [:]
     var paramEditedAt: [UInt32: Date] = [:]
     var scanKicked = false
+    /// Set when a scan reply is applied: the last snapshot-request stamp issued
+    /// before it. Snapshots answering those requests (or unstamped ones) may
+    /// predate the core's "scanning", so their pluginHost is skipped until a
+    /// later-stamped snapshot lands (AppModel.applyPluginHostFromSnapshot).
+    var scanStaleBarrier: Int?
 }
 
 // What SHOW's "＋ Add processing" menu says under VST3 PLUG-INS. The core's
@@ -230,6 +235,38 @@ extension AppModel {
         case .live:
             return "Isolated VST3 host running — inserts process live."
         }
+    }
+
+    /// The plugin-host node of a sessionState snapshot. The core nests it under
+    /// audioMixSession — every branch of CoreStateCapture.cpp
+    /// audioMixSessionState emits {"pluginHost", pluginHostState()} — and
+    /// Windows reads `_bridge.LastSnapshot?.AudioMixSession.PluginHost`
+    /// (StudioViewModel.cs:2265). The poll (applySnapshot) and the scan reply
+    /// (scanVstPlugins) both read through here so they cannot drift again.
+    static func pluginHostNode(inSnapshot snapshot: JSONObject?) -> JSONObject? {
+        (snapshot?["audioMixSession"] as? JSONObject)?["pluginHost"] as? JSONObject
+    }
+
+    /// Poll intake for the plugin-host node, guarded against a stale capture.
+    ///
+    /// Why: once the scan reply ("scanning", MediaCore.cpp startPluginHostScan)
+    /// has been applied and `vstScanRequestReturned` is true, an "absent" reads
+    /// as a finished scan. A poll whose request left BEFORE the reply may carry
+    /// a capture from before the scan started — the core's pre-scan "absent" —
+    /// and core replies are not ordered, so applying it would flash "none
+    /// found" / "host not found" mid-scan. The core exposes no revision for the
+    /// plugin-host state, and a real host-missing result is ALSO "absent", so
+    /// status alone cannot tell them apart. Request send order can: a request
+    /// sent after the reply was applied reached the core after it set
+    /// "scanning". So until one snapshot stamped later than the barrier lands,
+    /// snapshots stamped at/below it, and unstamped ones, leave the node alone.
+    func applyPluginHostFromSnapshot(_ snapshot: JSONObject, requestSeq: Int?) {
+        guard let node = Self.pluginHostNode(inSnapshot: snapshot) else { return }
+        if let barrier = vstScratch.scanStaleBarrier {
+            guard let requestSeq, requestSeq > barrier else { return }
+            vstScratch.scanStaleBarrier = nil
+        }
+        applyPluginHostSnapshot(node)
     }
 
     // pluginHost node → model. Assignments are change-gated: snapshots arrive at
@@ -387,8 +424,10 @@ extension AppModel {
                 let reply = try await send(["type": "scan-vst-plugins"], 20)
                 await MainActor.run {
                     guard let self else { return }
-                    if let node = (reply["snapshot"] as? JSONObject)?["pluginHost"] as? JSONObject {
+                    if let node = Self.pluginHostNode(inSnapshot: reply["snapshot"] as? JSONObject) {
                         self.applyPluginHostSnapshot(node)
+                        // Every snapshot request issued so far may predate "scanning".
+                        self.vstScratch.scanStaleBarrier = self.snapshotRequestsIssued
                         self.vstScanRequestReturned = true
                     } else {
                         self.vstScratch.scanKicked = false

@@ -736,6 +736,14 @@ final class AppModel: ObservableObject {
     // arrived AFTER the stop landed (a stale pre-stop `completed` never counts).
     private var quitGate = QuitGate()
     private(set) var snapshotSequence = 0
+    /// Snapshot requests stamped so far, in SEND order (`issueSnapshotRequest`).
+    /// Unlike `snapshotSequence` (arrival order) it tells whether a snapshot's
+    /// request left before or after some event, e.g. the VST scan reply.
+    private(set) var snapshotRequestsIssued = 0
+    func issueSnapshotRequest() -> Int {
+        snapshotRequestsIssued += 1
+        return snapshotRequestsIssued
+    }
     @Published var quitPromptVisible = false
     @Published var quitFinishing = false
     /// Test seam: replaces the real stop/finish/shutdown so the flow can be driven
@@ -2031,11 +2039,12 @@ final class AppModel: ObservableObject {
     private func syncTick() async {
         guard let bridge else { return }
         let commands: [JSONObject] = []
+        let requestSeq = issueSnapshotRequest()
         do {
             let response = try await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": commands,
             ])
-            applySnapshot(response["snapshot"] as? JSONObject ?? [:])
+            applySnapshot(response["snapshot"] as? JSONObject ?? [:], requestSeq: requestSeq)
             statusDetail = ""  // a recovered core clears the transient error
         } catch {
             statusDetail = error.localizedDescription
@@ -2080,7 +2089,9 @@ final class AppModel: ObservableObject {
         AudioObservationPolicy.warning(audioObservation, receivedAt: audioObservationReceivedAt, now: now)
     }
 
-    private func applySnapshot(_ snapshot: JSONObject) {
+    /// `requestSeq` is the `issueSnapshotRequest()` stamp of the request this
+    /// snapshot answers (the poll stamps it; one-shot command replies pass nil).
+    private func applySnapshot(_ snapshot: JSONObject, requestSeq: Int? = nil) {
         snapshotSequence &+= 1
         // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
         // the Health surface (an operator reads it hardest right when the
@@ -2168,9 +2179,9 @@ final class AppModel: ObservableObject {
         if let matrix = snapshot["audioRoutingMatrix"] as? JSONObject {
             applyRoutingSnapshot(matrix)
         }
-        if let pluginHost = snapshot["pluginHost"] as? JSONObject {
-            applyPluginHostSnapshot(pluginHost)
-        }
+        // The core nests pluginHost under audioMixSession; one reader for the
+        // poll and the scan reply (VstInserts.swift pluginHostNode).
+        applyPluginHostFromSnapshot(snapshot, requestSeq: requestSeq)
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
             applySharedTexture(texture)
@@ -6340,7 +6351,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Test seam: feed a snapshot through the real read path.
-    func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+    func applySnapshotForTesting(_ snapshot: JSONObject, requestSeq: Int? = nil) {
+        applySnapshot(snapshot, requestSeq: requestSeq)
+    }
     func handleEventForTesting(_ event: JSONObject) { handleEvent(event) }
     /// Test seam: feed a zoom-snapshot through the real read path.
     func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }
