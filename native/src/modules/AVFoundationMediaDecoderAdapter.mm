@@ -528,18 +528,29 @@ class AvfClipVideoReader final : public IClipVideoReader {
 
   // Cancels, then DRAINS the queue: nothing this reader scheduled can run (and
   // no wake can fire) after the destructor returns.
+  //
+  // cancelReading runs ON THE READER QUEUE, after any decode in flight. Calling
+  // it from this thread while decodeNext was inside copyNextSampleBuffer
+  // crashed (EXC_BAD_ACCESS in FigSimpleMutexUnlock): AVAssetReader does not
+  // support those two concurrently. cancelLoading stays here, because it is
+  // what unblocks an open that is still waiting on the asset.
   ~AvfClipVideoReader() override {
     state_->cancelled.store(true);
-    AVAssetReader* reader = nil;
     AVURLAsset* asset = nil;
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
-      reader = state_->reader;
       asset = state_->asset;
     }
     [asset cancelLoading];
-    [reader cancelReading];
-    dispatch_sync(queue_, ^{});
+    const auto state = state_;
+    dispatch_sync(queue_, ^{
+      AVAssetReader* reader = nil;
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        reader = state->reader;
+      }
+      [reader cancelReading];
+    });
   }
 
   ClipReadStatus take(ClipVideoSample& out, std::string& error) override {
@@ -730,16 +741,21 @@ class AvfClipAudioReader final : public IClipAudioReader {
 
   ~AvfClipAudioReader() override {
     state_->cancelled.store(true);
-    AVAssetReader* reader = nil;
     AVURLAsset* asset = nil;
     {
       std::lock_guard<std::mutex> lock(state_->mutex);
-      reader = state_->reader;
       asset = state_->asset;
     }
     [asset cancelLoading];
-    [reader cancelReading];
-    dispatch_sync(queue_, ^{});
+    const auto state = state_;
+    dispatch_sync(queue_, ^{
+      AVAssetReader* queued = nil;
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        queued = state->reader;
+      }
+      [queued cancelReading];  // same rule as the video reader's destructor
+    });
   }
 
   ClipReadStatus take(ClipAudioSample& out, std::string& error) override {

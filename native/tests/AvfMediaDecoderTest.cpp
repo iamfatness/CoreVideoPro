@@ -267,6 +267,34 @@ TEST(AvfMediaDecoder, AReaderNeverWakesAfterItsDestructorReturns) {
   EXPECT_EQ(lateWakes->load(), 0);
 }
 
+// CI crash 2026-11-24 (PR #1242's native-metal-macos, and reproduced on main):
+// the destructor called -[AVAssetReader cancelReading] on the OWNER's thread
+// while decodeNext was inside -[AVAssetReaderOutput copyNextSampleBuffer] on
+// the reader's queue. AVAssetReader does not support those two concurrently:
+// EXC_BAD_ACCESS in FigSimpleMutexUnlock under copyNextSampleBuffer, about one
+// AvfMediaPixel run in five. This forces the overlap: 1080p samples (a slow
+// read), destroy right after a take() has scheduled the next decode, many times.
+// Red = the process crashes; there is no softer signal for a use-after-free.
+TEST(AvfMediaDecoder, DestroyingDuringAReadNeverRacesTheReaderItself) {
+  const auto p = tmp("reader-race.mp4"); Cleanup c{p};
+  ASSERT_EQ(corevideo::testing::writeFlatColourClip(p, 1920, 1080, 60, {{90, 0x20, 0x40, 0x80}}), "");
+  const auto readers = modules::createAvFoundationClipReaderFactory();
+  ASSERT_NE(readers, nullptr);
+  int samplesBeforeDestroy = 0;
+  for (int i = 0; i < 300; ++i) {
+    std::string error;
+    auto reader = readers->openVideo(p.string(), [] {}, error);
+    ASSERT_NE(reader, nullptr) << error;
+    modules::ClipVideoSample sample;
+    for (auto deadline = steadyMs() + 3000; steadyMs() < deadline;) {
+      if (reader->take(sample, error) == modules::ClipReadStatus::Ready) { ++samplesBeforeDestroy; break; }
+      std::this_thread::yield();
+    }
+    reader.reset();  // the take() above just queued a decode: destroy while it reads
+  }
+  EXPECT_EQ(samplesBeforeDestroy, 300) << "fixture invariant: every reader delivered a sample before it was destroyed";
+}
+
 TEST(AvfMediaDecoder, A440HzClipDecodesTo440HzStereoAt48k) {
   // Fixture: 3 s of H.264 + AAC, a 440 Hz sine at amplitude 0.5 on both channels.
   const auto p = tmp("tone.mp4"); Cleanup c{p};
