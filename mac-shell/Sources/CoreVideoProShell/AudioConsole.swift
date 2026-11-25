@@ -671,7 +671,9 @@ struct MasteringRack: View {
             if !model.masteringStatus.isEmpty {
                 Text(model.masteringStatus).font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
-            HStack(alignment: .top, spacing: 8) {
+            // Reflows (Task 5 review): the stages take as many equal columns as
+            // fit (MasteringRackLayout.stageColumns), so nothing clips at 900.
+            StageGridLayout {
                 stage("01 INPUT", engaged: abs(params.inputGainDb) > 0.05) {
                     knob("Gain", value: bind(\.inputGainDb), in: -12...12, unit: "dB")
                 }
@@ -726,7 +728,7 @@ struct MasteringRack: View {
     }
 
     var compareRow: some View {
-        HStack(spacing: 8) {
+        WrapRowLayout {
             MonoLabel("Compare")
             ForEach(["A", "B"], id: \.self) { slot in
                 Button(slot) { model.selectMasteringCompareSlot(slot) }
@@ -758,11 +760,12 @@ struct MasteringRack: View {
             .menuStyle(.borderlessButton).fixedSize()
             Text("A/B slots and the whole rack persist across restarts.")
                 .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     var presetsRow: some View {
-        HStack(spacing: 8) {
+        WrapRowLayout {
             MonoLabel("My presets")
             TextField("Preset name", text: $presetName)
                 .textFieldStyle(.roundedBorder).frame(width: 160)
@@ -798,7 +801,7 @@ struct MasteringRack: View {
             content()
         }
         .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
         .overlay(RoundedRectangle(cornerRadius: 8)
             .stroke(engaged ? Studio.accent.opacity(0.35) : Studio.border, lineWidth: 1))

@@ -54,14 +54,17 @@ enum AudioSetupPolicy {
         return routedBusIds.contains(bus) ? nil : unroutedBusNote
     }
 
-    /// XAML:690-707 readouts for the selected strip. SVM:2200-2213
-    /// (SelectedGainLabel, `{gain:0} dB` with a sign), SVM:2215-2227
-    /// (SelectedManualGainLabel, 0 = "Auto"), SVM:2233 (SelectedOutputLevel,
-    /// the core's 0..100). The Mac strip has ONE gain (manualGainDb, the fader
-    /// the core applies), so both gain readouts read it. A bus target, or no
-    /// strip, reads a dash.
-    static func readouts(strip: AudioStrip?, targetIsBus: Bool) -> (gain: String, manual: String, output: String) {
-        guard !targetIsBus, let strip else { return ("—", "—", "—") }
+    /// XAML:692-709 readouts. Windows binds them to SelectedAudioMix, the
+    /// strip selected on SHOW, whatever the processing target (SVM:2195-2233;
+    /// XAML:692-709 and the Mute button at :794-796 carry no visibility
+    /// binding). SVM:2200-2213 (SelectedGainLabel, `{gain:0} dB` with a sign),
+    /// SVM:2215-2227 (SelectedManualGainLabel, 0 = "Auto"), SVM:2233
+    /// (SelectedOutputLevel, the core's 0..100). The Mac strip has ONE gain
+    /// (manualGainDb, the fader the core applies; there is no separate
+    /// GainDb), so both gain readouts read it. No selected strip reads a dash
+    /// (Windows prints "0 dB" / "Auto" / 0 there, which reads as a real value).
+    static func readouts(strip: AudioStrip?) -> (gain: String, manual: String, output: String) {
+        guard let strip else { return ("—", "—", "—") }
         func signed(_ db: Double) -> String { (db > 0 ? "+" : "") + String(format: "%.0f dB", db) }
         let manual = strip.manualGainDb == 0 ? "Auto" : signed(strip.manualGainDb)
         return (signed(strip.manualGainDb), manual, "\(strip.outputLevel)")
@@ -100,6 +103,16 @@ extension AppModel {
         return ids
     }
 
+    /// SVM:2195-2198 (SelectedAudioMix): the SHOW-selected strip, which the
+    /// SETUP readouts and Mute follow whatever the processing target.
+    var setupSelectedStrip: AudioStrip? {
+        selectedAudioStripId.flatMap { id in strips.first { $0.id == id } }
+    }
+
+    var setupReadouts: (gain: String, manual: String, output: String) {
+        AudioSetupPolicy.readouts(strip: setupSelectedStrip)
+    }
+
     var selectedTargetUnroutedNote: String? {
         AudioSetupPolicy.unroutedNote(target: selectedProcessingTargetId, routedBusIds: busesWithSourceSends)
     }
@@ -111,33 +124,19 @@ struct AudioSetupSurface: View {
     @EnvironmentObject var model: AppModel
     @Binding var vstBrowserOpen: Bool
 
-    /// The master rack keeps the width the capped 820 column gives it
-    /// (820 - 2 x 12 padding). In a narrower column (the 900-wide pop-out gives
-    /// it ~500) the rack scrolls sideways inside the column instead of
-    /// crushing its seven stages' labels letter by letter.
-    static let rackMinWidth: CGFloat = AudioLayout.setupRightMaxWidth - 2 * 12
-
-    /// The rack's content width in a surface `total` wide: the right column
-    /// (capped at 820) less the section padding.
-    static func rackWidth(surface total: CGFloat) -> CGFloat {
-        let right = min(AudioLayout.setupRightMaxWidth,
-                        total - AudioLayout.setupLeftWidth - AudioLayout.setupColumnSpacing - 8)
-        return right - 2 * 12
-    }
-
+    // The master rack reflows inside the column (MasteringRack: the compare
+    // and preset rows wrap, the stages fall into as many columns as fit), so a
+    // narrow column (the 900-wide pop-out) clips nothing and needs no sideways scroll.
     var body: some View {
-        GeometryReader { geo in
-            let rackScrolls = Self.rackWidth(surface: geo.size.width) < Self.rackMinWidth
-            ScrollView(.vertical) {
-                // XAML:44-48: 340 | * (MaxWidth 820), ColumnSpacing 12.
-                HStack(alignment: .top, spacing: AudioLayout.setupColumnSpacing) {
-                    devicesColumn.frame(width: AudioLayout.setupLeftWidth)
-                    processingColumn(rackScrolls: rackScrolls)
-                        .frame(maxWidth: AudioLayout.setupRightMaxWidth, alignment: .topLeading)
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(.trailing, 8).padding(.bottom, 16)   // XAML:38 Padding="0,0,8,16"
+        ScrollView(.vertical) {
+            // XAML:44-48: 340 | * (MaxWidth 820), ColumnSpacing 12.
+            HStack(alignment: .top, spacing: AudioLayout.setupColumnSpacing) {
+                devicesColumn.frame(width: AudioLayout.setupLeftWidth)
+                processingColumn
+                    .frame(maxWidth: AudioLayout.setupRightMaxWidth, alignment: .topLeading)
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.trailing, 8).padding(.bottom, 16)   // XAML:38 Padding="0,0,8,16"
         }
     }
 
@@ -146,7 +145,7 @@ struct AudioSetupSurface: View {
     var devicesColumn: some View {
         SetupSection {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Devices & monitoring").font(.grotesk(13, .semibold))
+                SetupSectionTitle("Devices & monitoring")
                 monitorCard
                 // Notices about the monitor stay under its card.
                 if !model.monitorControlNotice.isEmpty {
@@ -178,7 +177,7 @@ struct AudioSetupSurface: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Device").font(.grotesk(11)).foregroundStyle(Studio.secondary)
-                    MonitorDevicePicker(width: AudioLayout.setupLeftWidth - 2 * 12 - 2 * 12)
+                    MonitorDevicePicker(width: AudioLayout.setupLeftWidth - 2 * setupSectionPadding - 2 * 12)
                 }
                 SetupToggleButton(title: "Monitor", isOn: Binding(
                     get: { model.monitorEnabled },
@@ -200,24 +199,18 @@ struct AudioSetupSurface: View {
 
     // ── Right: Master processor, then Inserts & plug-ins ────────────────────
 
-    func processingColumn(rackScrolls: Bool) -> some View {
+    var processingColumn: some View {
         SetupSection {
             VStack(alignment: .leading, spacing: 10) {
                 // XAML:193-205. The MASTER IN toggle is the existing one in the
                 // rack's own header row (MasteringRack, unchanged).
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Master processor").font(.grotesk(13, .semibold))
+                    SetupSectionTitle("Master processor")
                     Text("Program L/R · processing order")   // XAML:199
                         .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 }
                 MasteringGuideMeters()
-                if rackScrolls {
-                    ScrollView(.horizontal) {
-                        MasteringRack().frame(width: Self.rackMinWidth)
-                    }
-                } else {
-                    MasteringRack()
-                }
+                MasteringRack()
                 Rectangle().fill(Studio.border).frame(height: 1).padding(.vertical, 4)   // XAML:629
                 InsertsAndPlugins(vstBrowserOpen: $vstBrowserOpen)
             }
@@ -232,11 +225,12 @@ struct InsertsAndPlugins: View {
 
     var target: AudioProcessingTarget? { model.selectedProcessingTarget }
     var parsed: (channel: String?, bus: String?) { AudioProcessingTargetPolicy.parse(model.selectedProcessingTargetId) }
-    var strip: AudioStrip? { parsed.channel.flatMap { id in model.strips.first { $0.id == id } } }
+    /// The readouts and Mute follow the SHOW-selected strip (SVM:2195-2233).
+    var strip: AudioStrip? { model.setupSelectedStrip }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Inserts & plug-ins").font(.grotesk(13, .semibold))
+            SetupSectionTitle("Inserts & plug-ins")
             Text("Choose the exact channel or bus, then build its insert chain in processing order.")   // XAML:632-633
                 .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -270,17 +264,19 @@ struct InsertsAndPlugins: View {
             readouts
             signalFlow
             addGrid
-            if let strip, parsed.bus == nil {
-                Button(AudioSetupPolicy.muteLabel(muted: strip.muted)) {
-                    model.editStrip(strip.id) { $0.muted.toggle() }
-                }
-                .buttonStyle(GhostButtonStyle())
+            // XAML:794-796: always shown; it toggles the SHOW-selected strip
+            // (SVM:7175 ToggleSelectedParticipantMute) and is dimmed with none.
+            Button(AudioSetupPolicy.muteLabel(muted: strip?.muted ?? false)) {
+                if let strip { model.editStrip(strip.id) { $0.muted.toggle() } }
             }
+            .buttonStyle(GhostButtonStyle())
+            .disabled(strip == nil)
+            .opacity(strip == nil ? 0.45 : 1)
         }
     }
 
     var readouts: some View {
-        let values = AudioSetupPolicy.readouts(strip: strip, targetIsBus: parsed.bus != nil)
+        let values = model.setupReadouts
         return VStack(alignment: .leading, spacing: 6) {
             readoutBox("Audio gain", values.gain)
             readoutBox("Manual gain", values.manual)
@@ -293,10 +289,7 @@ struct InsertsAndPlugins: View {
             Text(title).font(.grotesk(10)).foregroundStyle(Studio.secondary)
             Text(value).font(.grotesk(12)).foregroundStyle(Studio.textPrimary)
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Studio.field))
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Studio.border, lineWidth: 1))
+        .modifier(SetupReadoutBorder())
     }
 
     var signalFlow: some View {
@@ -309,10 +302,7 @@ struct InsertsAndPlugins: View {
                 .font(.grotesk(10)).foregroundStyle(Studio.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Studio.field))
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Studio.border, lineWidth: 1))
+        .modifier(SetupReadoutBorder())
     }
 
     var addGrid: some View {
@@ -420,16 +410,139 @@ struct SetupSlotFlyout: View {
     }
 }
 
-/// XAML OperatorSectionBorder: the column panel.
+/// W/Views/OperatorTabResources.xaml:8-14 OperatorSectionBorder: StudioPanelBrush
+/// (#101315, W/App.xaml:21 = Studio.panel), StudioBorderBrush, corner 8, padding 16.
+private let setupSectionPadding: CGFloat = 16
+
 private struct SetupSection<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
         content
-            .padding(12)
+            .padding(setupSectionPadding)
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Studio.surface))
+            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+/// OperatorTabResources.xaml:16 OperatorSectionTitle, based on StudioSectionTitle
+/// (W/Themes/StudioTheme.xaml:38-42): 14, SemiBold.
+private struct SetupSectionTitle: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View { Text(text).font(.grotesk(14, .semibold)).foregroundStyle(Studio.textPrimary) }
+}
+
+/// OperatorTabResources.xaml:31-38 OperatorReadoutBorder: #0C1118
+/// (AudioSetupColor.card), StudioBorderBrush, corner 6, padding 10,8.
+private struct SetupReadoutBorder: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6).fill(AudioSetupColor.card))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+/// The master rack's reflow (Task 5 review): how many stage columns fit.
+enum MasteringRackLayout {
+    /// The narrowest a stage card gets before its knob labels and values
+    /// collide (the seven stages fit one row in the 820 column's 788).
+    static let minStageWidth: CGFloat = 104
+    static let stageSpacing: CGFloat = 8
+
+    static func stageColumns(width: CGFloat, stages: Int = 7) -> Int {
+        guard width.isFinite, width > 0 else { return stages }
+        let fit = Int((width + stageSpacing) / (minStageWidth + stageSpacing))
+        return max(1, min(stages, fit))
+    }
+}
+
+/// Lays children left to right and wraps to a new line when the next one
+/// does not fit. A child wider than the line is proposed the line's width.
+struct WrapRowLayout: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 6
+
+    private func arrange(_ maxWidth: CGFloat, _ subviews: Subviews) -> (frames: [CGRect], size: CGSize) {
+        var frames: [CGRect] = []
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            var size = subview.sizeThatFits(.unspecified)
+            if size.width > maxWidth {
+                size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+                size.width = min(size.width, maxWidth)
+            }
+            if x > 0, x + size.width > maxWidth {
+                x = 0; y += lineHeight + lineSpacing; lineHeight = 0
+            }
+            frames.append(CGRect(origin: CGPoint(x: x, y: y), size: size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        // Centre each child vertically on its line.
+        var lineTop: CGFloat = -1, lineMax: CGFloat = 0, members: [Int] = []
+        func flush() {
+            for member in members { frames[member].origin.y += (lineMax - frames[member].height) / 2 }
+            members = []; lineMax = 0
+        }
+        for index in frames.indices {
+            if frames[index].minY != lineTop { flush(); lineTop = frames[index].minY }
+            members.append(index); lineMax = max(lineMax, frames[index].height)
+        }
+        flush()
+        return (frames, CGSize(width: widest, height: y + lineHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let size = arrange(maxWidth, subviews).size
+        return CGSize(width: proposal.width ?? size.width, height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = arrange(bounds.width, subviews).frames
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
+/// The master rack's stage cards in MasteringRackLayout.stageColumns columns
+/// of equal width; each row is as tall as its tallest card.
+struct StageGridLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 788
+        return CGSize(width: width, height: rows(width, subviews).reduce(0) { $0 + $1.height }
+                      + CGFloat(max(0, rows(width, subviews).count - 1)) * MasteringRackLayout.stageSpacing)
+    }
+
+    private func rows(_ width: CGFloat, _ subviews: Subviews) -> [(range: Range<Int>, height: CGFloat, column: CGFloat)] {
+        let columns = MasteringRackLayout.stageColumns(width: width, stages: subviews.count)
+        let spacing = MasteringRackLayout.stageSpacing
+        let column = max(0, (width - CGFloat(columns - 1) * spacing) / CGFloat(columns))
+        return stride(from: 0, to: subviews.count, by: columns).map { start in
+            let range = start..<min(subviews.count, start + columns)
+            let height = range.map { subviews[$0].sizeThatFits(ProposedViewSize(width: column, height: nil)).height }
+                .max() ?? 0
+            return (range, height, column)
+        }
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(bounds.width, subviews) {
+            for (offset, index) in row.range.enumerated() {
+                let x = bounds.minX + CGFloat(offset) * (row.column + MasteringRackLayout.stageSpacing)
+                subviews[index].place(at: CGPoint(x: x, y: y),
+                                      proposal: ProposedViewSize(width: row.column, height: row.height))
+            }
+            y += row.height + MasteringRackLayout.stageSpacing
+        }
     }
 }
 

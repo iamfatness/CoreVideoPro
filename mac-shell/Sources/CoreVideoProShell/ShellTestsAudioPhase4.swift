@@ -57,6 +57,10 @@ extension ShellTests {
             ("a7-surface-pills", testSurfacePills),
             ("a7-setup-target-picker-drives-list", testSetupTargetPickerDrivesList),
             ("a7-setup-unrouted-bus-note", testSetupUnroutedBusNote),
+            // Task 5 review fix-ups.
+            ("a7-fix5-bus-to-bus-feed-is-unrouted", testFix5BusToBusFeedIsUnrouted),
+            ("a7-fix5-readout-strings", testFix5ReadoutStrings),
+            ("a7-fix5-rack-stage-columns", testFix5RackStageColumns),
         ]
     }
 
@@ -980,7 +984,7 @@ extension ShellTests {
                                                chain: [])
         expectEqual(live[2].enabled, true, "a live host enables Add VST3")
         expectEqual(live[3].enabled, false, "Clear chain is dimmed on an empty chain")
-        expect(live[3].reason != nil, "and says why")
+        expectEqual(live[3].reason, "The insert chain is already empty.", "and says why")
         let emptyBus = AudioSetupPolicy.addButtons(target: "bus:aux-1", vstLive: true, vstStatusLine: status, chain: [])
         expectEqual(emptyBus[3].enabled, false, "Clear chain is dimmed on an empty bus chain")
     }
@@ -1018,9 +1022,18 @@ extension ShellTests {
         model.selectProcessingTarget("channel:101")
         expectEqual(model.selectedTargetSlots.map(\.name), [], "channel 101 has its own (empty) chain")
         expectEqual(model.selectedProcessingTarget?.insertLabel, "No inserts", "SVM:11611")
-        expectEqual(AudioSetupPolicy.readouts(strip: model.strips.first { $0.id == "101" },
-                                              targetIsBus: true).gain, "—",
-                    "the readouts read a dash on a bus target")
+        // Windows binds the readouts to SelectedAudioMix (SVM:2195-2233), the
+        // SHOW-selected strip, whatever the target: a bus target picked in the
+        // model still reads strip 101. Mutation: dash on a bus target (red).
+        model.editStrip("101") { $0.manualGainDb = 3 }
+        model.selectAudioStrip("101")
+        model.selectProcessingTarget("bus:aux-1")
+        expect(model.selectedProcessingTarget.map { AudioProcessingTargetPolicy.parse($0.id).bus != nil } == true,
+               "precondition: the model's selected target is a bus")
+        expectEqual(model.setupReadouts.gain, "+3 dB", "the readouts follow the selected strip on a bus target")
+        expectEqual(model.setupReadouts.manual, "+3 dB", "manual gain too")
+        model.selectedAudioStripId = nil
+        expectEqual(model.setupReadouts.gain, "—", "no selected strip reads a dash")
     }
 
     /// Honest reporting (Task 3 review): the core reads a bus chain only from
@@ -1136,5 +1149,65 @@ extension ShellTests {
         for strip in model.strips {
             expect(model.audioSourceLabel(strip.id) != strip.id, "\(strip.id) has a display name")
         }
+    }
+
+    // ── Task 5 review fix-ups ───────────────────────────────────────────────
+
+    /// The core reads a bus chain only from SOURCE sends to that bus
+    /// (MediaCore.cpp:7195-7212): a bus fed only by another bus's output, or
+    /// master with no sources, carries a chain that never runs.
+    /// Mutations: count bus-to-bus destinations as routed (red on stream);
+    /// hard-code master as routed (red on master).
+    @MainActor
+    static func testFix5BusToBusFeedIsUnrouted() {
+        let note = AudioSetupPolicy.unroutedBusNote
+        let model = AppModel()
+        expect(model.strips.isEmpty, "fixture: no sources")
+        model.selectProcessingTarget("bus:master")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "precondition: master is a target")
+        expectEqual(model.selectedTargetUnroutedNote, note, "master with no sources does not run its chain")
+        let custom = model.addCustomBus()
+        model.setBusSend(custom.id, target: "stream", enabled: true)
+        model.setBusSend(custom.id, target: "master", enabled: true)
+        model.selectProcessingTarget("bus:stream")
+        expectEqual(model.selectedProcessingTargetId, "bus:stream", "precondition: stream is a target")
+        expectEqual(model.selectedTargetUnroutedNote, note, "stream fed only by a bus-to-bus send stays unrouted")
+        model.selectProcessingTarget("bus:master")
+        expectEqual(model.selectedTargetUnroutedNote, note, "so does master")
+        // Sources make the default sends, and master/stream run.
+        model.zoomAudioSourceIds = ["101"]
+        model.refreshStrips()
+        expect(model.selectedTargetUnroutedNote == nil, "a source's default send makes master run")
+    }
+
+    /// SVM:2200-2230: the readout and Mute strings.
+    static func testFix5ReadoutStrings() {
+        expectEqual(AudioSetupPolicy.muteLabel(muted: false), "Mute in mix", "SVM:2230")
+        expectEqual(AudioSetupPolicy.muteLabel(muted: true), "Unmute in mix", "SVM:2230")
+        func strip(_ gain: Double, level: Int = 42) -> AudioStrip {
+            AudioStrip(id: "101", outputLevel: level, manualGainDb: gain, muted: false, solo: false, pan: 0, status: "live")
+        }
+        let unity = AudioSetupPolicy.readouts(strip: strip(0))
+        expectEqual(unity.gain, "0 dB", "unity gain has no sign")
+        expectEqual(unity.manual, "Auto", "manual 0 reads Auto (SVM:2220)")
+        expectEqual(unity.output, "42", "output level is the core's 0..100")
+        let up = AudioSetupPolicy.readouts(strip: strip(3.4))
+        expectEqual(up.gain, "+3 dB", "positive gain is signed, {gain:0}")
+        expectEqual(up.manual, "+3 dB", "manual likewise")
+        let down = AudioSetupPolicy.readouts(strip: strip(-6))
+        expectEqual(down.gain, "-6 dB", "negative gain")
+        expectEqual(down.manual, "-6 dB", "negative manual")
+        let none = AudioSetupPolicy.readouts(strip: nil)
+        expectEqual([none.gain, none.manual, none.output], ["—", "—", "—"], "no strip reads dashes")
+    }
+
+    /// The rack reflows: the seven stages fit one row in the capped column
+    /// (820 - 2 x 16 = 788) and fall to fewer columns in the 900 pop-out's
+    /// column (~456). Mutation: a fixed 7 columns (red at 456).
+    static func testFix5RackStageColumns() {
+        expectEqual(MasteringRackLayout.stageColumns(width: 788), 7, "one row in the capped column")
+        expectEqual(MasteringRackLayout.stageColumns(width: 456), 4, "four columns at the pop-out minimum")
+        expectEqual(MasteringRackLayout.stageColumns(width: 100), 1, "never zero columns")
+        expectEqual(MasteringRackLayout.stageColumns(width: 5000), 7, "never more columns than stages")
     }
 }
