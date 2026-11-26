@@ -259,6 +259,7 @@ class MetalCompositor final : public ICompositor {
   // encoder holds a slot's use count while it encodes; a slot in use is never
   // rewritten, and a tick with all three in use exports nothing (a counted shed).
   bool encoderExporting() const override { return encExporting_.load(std::memory_order_acquire); }
+  bool supportsEncoderTextureExport() const override { return true; }
   std::int64_t encoderExportShedFrames() const override { return encShed_.load(std::memory_order_acquire); }
 
   CompositorSourceTexStats sourceTexStats() const override { return stats_; }

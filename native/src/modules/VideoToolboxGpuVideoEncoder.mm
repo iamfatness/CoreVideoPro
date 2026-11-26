@@ -3,6 +3,8 @@
 
 #include "modules/VideoToolboxGpuVideoEncoder.h"
 
+#include "core/BoundedAsyncLog.h"
+
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
@@ -368,8 +370,14 @@ bool VideoToolboxGpuVideoEncoder::start(const GpuVideoEncoderConfig& config, Gpu
   s.session = session;
   s.queue = dispatch_queue_create("us.iamfatness.corevideo.vt-encode", DISPATCH_QUEUE_SERIAL);
   s.setFailure("");
-  std::lock_guard<std::mutex> gate(s.submitMutex);
-  s.running.store(true);
+  {
+    std::lock_guard<std::mutex> gate(s.submitMutex);
+    s.running.store(true);
+  }
+  // The same start line the Media Foundation encoder prints: the GPU encode
+  // gate counts these to prove a congested stream never rebuilds the encoder.
+  ::corevideo::core::nativeLogf("[gpu-encode] started %dx%d@%d %dkbps vt=hardware-%s\n", config.width,
+                                config.height, fps, config.bitrateKbps, config.codec.c_str());
   return true;
 }
 

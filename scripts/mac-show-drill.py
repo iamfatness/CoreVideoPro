@@ -17,10 +17,12 @@ Usage:  python3 scripts/mac-show-drill.py [--seconds 40] [--core PATH]
 Exit 0 = the rehearsal passed.
 """
 import argparse
+import atexit
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -331,6 +333,156 @@ def stage_evidence(before, after, seconds):
 MEDIA_CLIP_ID, MEDIA_BG_ID = "drill-clip", "drill-bg"
 MEDIA_CLIP_FPS, MEDIA_BG_FPS = 60.0, 30.0
 MIN_MEDIA_RATE_RATIO = 0.95
+
+
+class SrtStreamReceiver:
+    """--stream-srt (Phase 4 O4e): an ffmpeg SRT listener that RECEIVES the
+    core's Program stream (test tooling; any srt-capable ffmpeg will do), and
+    the core destination row that sends to it (the bundled LGPL ffmpeg)."""
+
+    MIN_FPS = 58.0
+
+    def __init__(self, port, receiver, sender_bin_dir, folder):
+        self.port = port
+        self.receiver = receiver
+        self.sender_bin_dir = sender_bin_dir
+        self.stem = os.path.join(folder, f"drill-stream-{int(time.time())}")
+        self.paths = []
+        self.proc = None
+        self.started_at = None
+        self.stopping = False
+        self.lock = threading.Lock()  # guards proc/stopping between serve() and stop()
+        self.last_error = ""
+        self.watcher = None
+
+    @staticmethod
+    def has_srt(ffmpeg):
+        try:
+            out = subprocess.run([ffmpeg, "-hide_banner", "-protocols"], capture_output=True,
+                                 text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return any(line.strip() == "srt" for line in out.splitlines())
+
+    @classmethod
+    def prepare(cls, args):
+        """A ready receiver, or the sentence saying why there is none."""
+        sender_dir = args.stream_ffmpeg_bin_dir or os.environ.get("COREVIDEO_FFMPEG_BIN_DIR")
+        if not sender_dir or not os.path.isfile(os.path.join(sender_dir, "ffmpeg" + _EXE)):
+            return ("--stream-srt needs the bundled LGPL ffmpeg for the sender "
+                    "(--stream-ffmpeg-bin-dir or COREVIDEO_FFMPEG_BIN_DIR)")
+        candidates = [find_ffmpeg(args.ffmpeg), "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg",
+                      os.path.join(sender_dir, "ffmpeg" + _EXE)]
+        receiver = next((c for c in candidates if c and os.path.isfile(c) and cls.has_srt(c)), None)
+        if not receiver:
+            return "--stream-srt found no ffmpeg built with the srt protocol to receive with"
+        folder = os.path.join(REPO, "artifacts", "show-drill")
+        os.makedirs(folder, exist_ok=True)
+        stream = cls(args.stream_srt, receiver, sender_dir, folder)
+        stream.listen(args.seconds)
+        # Every early `return 1` in main() must not leave a listener running.
+        atexit.register(stream.stop)
+        return stream
+
+    def listen(self, seconds):
+        """An ffmpeg SRT listener serves ONE connection and exits when it ends,
+        so a sender that reconnects (a supervised restart, or a handshake lost
+        under load) would find nobody listening. Re-arm the listener after
+        every exit, one capture file per connection; the verdict reports how
+        many connections there were and judges the longest."""
+        url = (f"srt://0.0.0.0:{self.port}?mode=listener&transtype=live"
+               f"&listen_timeout={int((seconds + 60) * 1_000_000)}")
+
+        def serve():
+            while True:
+                with self.lock:
+                    # Checked under the lock stop() takes, so a listener is never
+                    # armed after stop() looked: nothing is left listening.
+                    if self.stopping:
+                        return
+                    path = f"{self.stem}-{len(self.paths)}.ts"
+                    self.paths.append(path)
+                    proc = self.proc = subprocess.Popen(
+                        [self.receiver, "-hide_banner", "-loglevel", "error", "-y", "-i", url,
+                         "-c", "copy", "-f", "mpegts", path],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                err = proc.stderr.read()  # -loglevel error: a few lines at most
+                proc.wait()
+                self.last_error = (err or "").strip()[-160:]
+
+        self.watcher = threading.Thread(target=serve, daemon=True)
+        self.watcher.start()
+        print(f"STREAM SRT listener on :{self.port} ({self.receiver}) -> {self.stem}-N.ts")
+
+    def start_command(self, destinations):
+        self.started_at = self.started_at or time.time()
+        return {"type": "start-program-output", "destinations": destinations,
+                "isoSourceIds": [], "isoParticipantIds": [],
+                "destinationSettings": [{
+                    "id": "srt", "label": "show-drill", "protocol": "srt",
+                    "host": "127.0.0.1", "port": self.port, "mode": "caller", "latencyMs": 120,
+                    "fps": 60, "targetBitrateMbps": 6, "encoderMode": "auto", "videoCodec": "h264",
+                    "ffmpegBinDirectory": self.sender_bin_dir}]}
+
+    def stop(self):
+        """Ends the listener for good. SIGINT asks ffmpeg to finish its file
+        cleanly; a kill would truncate it. Safe to call more than once."""
+        with self.lock:
+            self.stopping = True
+            proc = self.proc
+        if proc and proc.poll() is None:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if self.watcher:
+            self.watcher.join(timeout=15)
+
+    def verdict(self, snapshot, core_stderr):
+        """Failures for the received stream; prints the evidence either way."""
+        failures = []
+        starts = sum(1 for line in core_stderr if "destination=srt mux-input=" in line)
+        print(f"STREAM sender starts (core log): {starts}")
+        senders = ((snapshot.get("outputSenderSession") or {}).get("senders")) or []
+        row = next((r for r in senders if "srt" in (r.get("destination") or r.get("senderId") or "")), None)
+        path = (row or {}).get("encodePath") or {}
+        print(f"STREAM sender status={(row or {}).get('status')} encodePath={path or None} "
+              f"backpressure={(row or {}).get('backpressure')}")
+        if path.get("path") != "gpu-direct":
+            failures.append(f"--stream-srt: the sender did not take the GPU-direct path ({path or 'no row'})")
+        self.stop()
+        captured = [p for p in self.paths if os.path.exists(p) and os.path.getsize(p) > 0]
+        print(f"STREAM connections captured: {len(captured)} of {len(self.paths)} listener runs")
+        if not captured:
+            failures.append(f"--stream-srt: the receiver got nothing (last listener error: {self.last_error})")
+            return failures
+        self.path = max(captured, key=os.path.getsize)
+        ffprobe = shutil.which("ffprobe") or os.path.join(os.path.dirname(self.receiver), "ffprobe" + _EXE)
+        try:
+            probe = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0", "-count_packets",
+                 "-show_entries", "stream=codec_name,width,height,nb_read_packets:format=duration",
+                 "-of", "json", self.path], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            failures.append(f"--stream-srt: could not run ffprobe ({ffprobe}): {error}")
+            return failures
+        try:
+            info = json.loads(probe.stdout or "{}")
+            video = (info.get("streams") or [{}])[0]
+            packets = int(video.get("nb_read_packets") or 0)
+            duration = float((info.get("format") or {}).get("duration") or 0)
+        except (ValueError, IndexError):
+            failures.append(f"--stream-srt: ffprobe could not read {self.path}: {probe.stderr.strip()[:160]}")
+            return failures
+        fps = packets / duration if duration > 0 else 0.0
+        print(f"STREAM received {video.get('codec_name')} {video.get('width')}x{video.get('height')} "
+              f"{packets} frames / {duration:.2f}s = {fps:.1f} fps ({os.path.getsize(self.path)} bytes)")
+        if (video.get("width"), video.get("height")) != (1920, 1080):
+            failures.append(f"--stream-srt: received {video.get('width')}x{video.get('height')}, not 1920x1080")
+        if fps < self.MIN_FPS:
+            failures.append(f"--stream-srt: received {fps:.1f} fps, below {self.MIN_FPS:.0f}")
+        return failures
 
 
 def find_ffmpeg(explicit):
@@ -746,6 +898,13 @@ def main():
     parser.add_argument("--ffmpeg", default=None,
                         help="ffmpeg bin dir or exe for --media fixtures "
                              "(default: COREVIDEO_FFMPEG_BIN_DIR, then PATH)")
+    parser.add_argument("--stream-srt", type=int, default=0, metavar="PORT",
+                        help="also stream Program to an SRT listener on this port at 1080p60 for the "
+                             "whole drill (Phase 4 O4e), then gate the received stream: it decodes, "
+                             "runs at >= 58 fps, and the sender took the GPU-direct path")
+    parser.add_argument("--stream-ffmpeg-bin-dir", default=None,
+                        help="the bundled LGPL ffmpeg bin dir the core's SENDER runs for --stream-srt "
+                             "(default: COREVIDEO_FFMPEG_BIN_DIR). Never Homebrew's GPL build.")
     args = parser.parse_args()
 
     media_clip = media_background = None
@@ -767,6 +926,13 @@ def main():
     if args.load and not os.path.exists(FAKE_ENGINE):
         print(f"FAIL fake engine not built: {FAKE_ENGINE}")
         return 1
+
+    stream = None
+    if args.stream_srt:
+        stream = SrtStreamReceiver.prepare(args)
+        if isinstance(stream, str):
+            print(f"FAIL harness: {stream}")
+            return 1
 
     failures = []
     core = Core(args.core, env=load_env(args.load) if args.load else None, evidence_path=args.evidence)
@@ -854,6 +1020,10 @@ def main():
         program["background"] = {"mediaAssetId": MEDIA_BG_ID, "mediaAssetName": MEDIA_BG_ID,
                                  "mediaAssetKind": "stinger", "mediaAssetPath": media_background}
     step("configure", configure, 500)
+    if stream:
+        # Streaming runs through the whole drill, so every poll, take and the
+        # recording below are measured WITH the encoder blit and the VT session.
+        step("stream-start", [stream.start_command(["srt"])], 600)
 
     graphics = None
     if args.graphics_cue:
@@ -973,7 +1143,10 @@ def main():
     folder = os.path.join(REPO, "artifacts", "show-drill")
     os.makedirs(folder, exist_ok=True)
     record_started_at = time.time()
+    # start-program-output REPLACES the destination set, so a streaming drill
+    # names the SRT destination again (same settings: the sender is kept).
     record_start = step("record-start", [
+        stream.start_command(["recording", "srt"]) if stream else
         {"type": "start-program-output", "destinations": ["recording"],
          "isoSourceIds": [], "isoParticipantIds": []},
         {"type": "set-recording-targets", "targetFolder": folder,
@@ -1460,6 +1633,8 @@ def main():
             print(f"  {line}")
 
     core.kill()
+    if stream:
+        failures.extend(stream.verdict(snapshot, core.stderr))
 
     if failures:
         print("\nNative pipeline diagnostics:")

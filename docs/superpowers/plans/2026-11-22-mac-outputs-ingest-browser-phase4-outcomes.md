@@ -563,3 +563,72 @@ Branch `mac-outputs-phase4-o4d`, stacked on `-o4c`.
   - **Why the test missed it.** `PosixGpuDirectUsesUnifiedTs` checked only that `pipe:3` was absent. It asserted a proxy, not the property (rule 10).
   - **The test now asserts the property:** exactly one ` -i `, no `-f aac`, and `-map 0:a:0`. Mutation **M5e** (the guard put back) turns it red.
   - **After the fix**, `scripts/validate-gpu-encode.mjs --build-dir native/build-metal --codec h264 --sink-protocol rtmp` **passes on this Mac**: GPU-direct, decoded h264 1920x1080, 58.4 fps of 60 received, sink speed 1.07x. That run was on a loaded machine, so it is functional evidence only; the quiet-machine gate is still owed.
+
+## Task 6 (O4e): encode path, `gpu-direct-stream-encode`, Mac stream gates
+
+**Shipped:**
+- **Sender rows:** `encodePath {path, reason, codec}` on every row, JSON null until a start decides it.
+  - It is published *after* the GPU encoder start, so a failed start reads `cpu-fallback`/`encoder-start-failed`.
+  - It is published *before* admission, so a refused start still names its path.
+- **Capability:** `gpu-direct-stream-encode` is `available` (detail `videotoolbox` / `media-foundation`) only when the build has a platform GPU encoder **and** the compositor exports the encoder texture (`ICompositor::supportsEncoderTextureExport`, true on Metal and D3D11). Otherwise it is `omitted`, with the reason.
+  - The plan named `MediaCore.cpp:255-280` for this, but the live report is `CoreStateCapture.cpp::capabilityReport`. `MediaCore.cpp` holds an unused anonymous-namespace copy (candidate cleanup).
+- **VideoToolbox log line:** the encoder prints the MF encoder's `[gpu-encode] started` line, which the slow-sink gate counts to prove there are no rebuilds.
+- **`validate-gpu-encode.mjs`:**
+  - New options: `--build-dir`, `--ffmpeg-bin-dir` (the bundled LGPL ffmpeg for the sender), and a Homebrew lookup for the receiver.
+  - The POSIX ffmpeg census matches **argv[0]**. The first Mac run counted `corevideo-child-guard`, whose argv carries the ffmpeg command line, as a second child.
+  - `--force-raw` now fails when the stream stops delivering.
+  - Homebrew's ffmpeg on this Mac has **no SRT**, so the Mac runs use `--sink-protocol rtmp`.
+- **`mac-show-drill.py --stream-srt PORT`:**
+  - An SRT receiver that is re-armed per connection (an ffmpeg listener serves one connection and exits).
+  - The core's `srt` destination at 1080p60, re-sent in the record step, because start-program-output replaces the destination set.
+  - A verdict: GPU-direct, 1920x1080, at least 58 fps, plus the number of sender starts.
+
+**Tests:**
+- `OutputSenderAdapter.PublishesTheChosenEncodePath`
+- `OutputSenderAdapter.AnEncoderThatFailsToStartPublishesTheFallback`
+- `MediaCoreCommand.OutputSenderRowsPublishTheEncodePath`
+- `MediaCore.AdvertisesGpuDirectStreamEncode`
+- ContractParity
+
+**Mutations (all red):**
+
+| Mutation | Change | Test that goes red |
+|---|---|---|
+| M6a | publish the *desired* path | the fallback test, `reason=encoder-start-failed status=failed` |
+| M6a′ | drop the after-start publication | both encodePath tests |
+| M6b | `available` without the export | the capability test |
+| M6c | omit the null key | the wire test |
+
+**Found by running the gates end to end** (each fixed with its own test):
+1. **POSIX unified-TS audio.** The unified TS on POSIX still declared a second `-f aac -i pipe:0` input. Fixed on #1250; see Task 5.
+2. **Mac raw-fallback stream (on `main`).** Since #1234 (Task 1), the raw fallback on the Mac wedged after about a dozen frames, and the sink got about 11 KB.
+   - **Cause:** the new POSIX trial encode runs inside the stream start (~0.2 s). Queued Program PCM then wedged the blocking audio pipe on the shared worker.
+   - **Bisect:** `1f0075d8` passes, `8196dedc` fails, and bypassing only the probe passes.
+   - **Fix:** never probe a single candidate. Draft **#1255** off `main`.
+   - **Still open:** the blocking-PCM fragility itself (candidate issue).
+
+**Functional runs on this Mac.** The machine was loaded (load average 5–33, other worktrees building), so these are **not** the quiet-machine gate numbers:
+
+| Run | Result |
+|---|---|
+| h264 1080p60 RTMP | PASS, 58.4 fps |
+| hevc | path and decode OK, 57.9 fps (just under 58.2) |
+| `--check-bitrate 6` | 6.026 Mbps; rate 50.4 fps (load) |
+| `--slow-sink 0.85` | discard events visible, peak queue 837 ms, 0 encoder rebuilds |
+| `--slow-sink --burst-sink` | 4 overflow-discard resyncs, 0 sender failures |
+| `--force-raw` | PASS only with #1255: 29.9 fps |
+
+(The slow-sink and burst runs failed at the time only on the child-census artifact, which is now fixed.)
+
+- **Drill** `--stream-srt 9710` (loaded machine):
+  - **First run:** 2 SRT sender starts. The first ffmpeg was signalled to exit before it delivered anything, and only the record window was captured.
+  - **Re-run with the re-arming receiver** (`--seconds 15`): **1 sender start, sender `live`**, the whole run captured (20.8 s, 1138 frames, h264 1920x1080, 54.7 fps under load).
+  - **So:** the record step's repeated start-program-output does **not** restart an unchanged sender. The first run's double start looks like a connect lost under heavy load. That is not proven; it is recorded so the quiet-machine run checks it.
+- **`--slow-sink 0.85` re-run** after the census fix: **PASS**. 1 encoder build, peak 1 egress child, 0 alive after Stop, 2 policy discards, peak queue 822 ms.
+- **Independent review** found three real problems, now fixed. Two other findings (stale `gpuEncodePathReason_` in a log line; a second admission refusal publishing `gpu-direct`) were judged unreachable or harmless and left alone.
+  1. **A stale `encodePath` after a refused restart.** `startFfmpegProcess` now resets it first. Test `ARefusedRestartDoesNotKeepThePreviousPath` (AV1 refused before any encoder binds). Mutation **M6d** (no reset) turns it red.
+  2. **The drill's listener could be re-armed after stop, and an early `return 1` leaked a listener.** Fixed with a lock, plus an `atexit` stop.
+  3. **Two script hazards.** An ffprobe `OSError` crashed the drill, and the census split a path with a space (`CoreVideo Pro.app`) into a wrong argv[0]. The census now joins `ps -o comm=` (the executable) with `args=` by pid.
+- **Full native suite (o4e):** 2349 passed, 0 failed before the review fixes, and 2350 passed, 0 failed after them.
+
+**Owed on a quiet machine:** Step 3 items 1–6 (60 s h264 and hevc, bitrate, slow and burst sink, raw, the drill before/after at `--load 8`, frame identity).
