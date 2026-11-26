@@ -111,7 +111,9 @@ public sealed class TelemetryFixtureExportTests
                 ["machine"] = JsonNode.Parse(JsonSerializer.Serialize(Machine(gpu),
                     new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })),
                 ["wire"] = TelemetryPayloadBuilder.SerializeWire(payload),
-                ["preview"] = TelemetryPayloadBuilder.SerializePreview(payload),
+                // Indented JSON uses Environment.NewLine ("\r\n" on Windows): normalise so the
+                // fixture is the same on every host (it failed on the Windows CI job before).
+                ["preview"] = TelemetryPayloadBuilder.SerializePreview(payload).Replace("\r\n", "\n"),
             });
         }
 
