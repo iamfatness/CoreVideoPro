@@ -55,6 +55,17 @@ public sealed partial class GraphicsShellVectorTests
         };
     }
 
+    /// <summary>Restated from W/Controls/GraphicsPlayoutControl.cs SceneName / LayoutSummary (:198-206), private
+    /// statics of a WinUI control the exporter cannot call; the scene list is an input.</summary>
+    private static string LayoutSummary(IReadOnlyList<(string Id, string Name)> scenes, ShotLayout layout, IReadOnlyList<GraphicsPlaylistRow> rows)
+    {
+        string SceneName(string sceneId) => sceneId.Length == 0 ? "" : scenes.FirstOrDefault(s => s.Id == sceneId).Name ?? sceneId + " (missing)";
+        var scene = layout.SceneId.Length == 0 ? "No scene change" : SceneName(layout.SceneId);
+        var names = layout.RowIds.Select(id => rows.FirstOrDefault(r => r.Id == id)?.Name ?? id + " (missing)").ToArray();
+        var graphics = names.Length == 0 ? (layout.PlayOutOthers ? "plays everything out" : "no graphics") : string.Join(", ", names) + (layout.PlayOutOthers ? " · hides the rest" : "");
+        return scene + " · " + graphics;
+    }
+
     [Fact]
     public void LayoutVectors()
     {
@@ -142,6 +153,19 @@ public sealed partial class GraphicsShellVectorTests
             }
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
-        Check("layouts", "Shot Layouts: ShotLayout.IsValid / ShotLayoutRowSettings.IsValid (each clause), the layout slug, and set-layout outcomes (GraphicsPlayoutActions LayoutSet + SaveShotLayoutsAsync) over documents/windows-layouts.json with the Mac scene ids.", rows);
+        // The layout summary line, over the Mac scene list and over Windows' own scene names.
+        var sceneLists = new (string Id, (string Id, string Name)[] Scenes)[]
+        {
+            ("mac", [("fullscreen", "Full screen"), ("two-up", "Two-up"), ("pip", "Picture in picture")]),
+            ("windows", [("intro", "Intro"), ("interview", "Interview"), ("panel", "Panel")]),
+        };
+        foreach (var (listId, scenes) in sceneLists)
+            foreach (var layout in show.ShotLayouts.Append(new ShotLayout { Id = "hides-the-rest", Name = "Hides the rest", SceneId = "pip", RowIds = ["logo"], PlayOutOthers = true }))
+                rows.Add(Row($"summary-{listId}-{layout.Id}", "summary", new JsonObject
+                {
+                    ["document"] = "documents/windows-layouts.json", ["layout"] = JsonSerializer.SerializeToNode(layout, Web),
+                    ["scenes"] = new JsonArray(scenes.Select(s => (JsonNode)new JsonObject { ["id"] = s.Id, ["name"] = s.Name }).ToArray()),
+                }, new JsonObject { ["summary"] = LayoutSummary(scenes, layout, show.Playlist) }));
+        Check("layouts", "Shot Layouts: ShotLayout.IsValid / ShotLayoutRowSettings.IsValid (each clause), the layout slug, set-layout outcomes (GraphicsPlayoutActions LayoutSet + SaveShotLayoutsAsync) over documents/windows-layouts.json with the Mac scene ids, and the layout summary line (GraphicsPlayoutControl.LayoutSummary, restated).", rows);
     }
 }

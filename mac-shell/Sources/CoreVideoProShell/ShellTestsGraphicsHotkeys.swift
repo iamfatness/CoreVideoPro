@@ -10,6 +10,7 @@ extension ShellTests {
             ("graphics-keys/f2-shows-and-shift-f12-clears", testGraphicsHotkeysDriveTheModel),
             ("graphics-keys/guest-row-plays-program-subject", testGraphicsGuestHotkeyPlaysProgramSubject),
             ("graphics-keys/monitor-on-graphics-tab", testGraphicsMonitorOnGraphicsTab),
+            ("graphics-keys/shift-f-cues-the-layout", testShiftFKeyCuesTheLayoutInTheApp),
         ]
     }
 
@@ -66,6 +67,21 @@ extension ShellTests {
             if let core { app?.graphics.observe(snapshot: ["graphics": core.node]) }
         }
         return (app, core)
+    }
+
+    /// G4-G7 Task 16: the app's key path hands the show's layout hotkeys to the router.
+    @MainActor
+    static func testShiftFKeyCuesTheLayoutInTheApp() {
+        let (app, core) = hotkeyApp([])
+        app.graphics.document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        app.selectedTab = .overlays
+        expect(app.handleGraphicsKey(fKey(1, [.shift])), "Shift+F1 is consumed")
+        expectEqual(app.graphics.selectedLayoutId, "open", "and selects the Open layout")
+        spin(until: { app.graphics.status.hasPrefix("Open:") }, limit: 3)
+        expectEqual(app.graphics.status, "Open: scene 'intro' is not in this show, so the layout was not cued. Edit the layout to pick a scene.",
+                    "the cue ran (and refused: the preset keeps Windows' scene id)")
+        expect(core.commands.isEmpty, "nothing reached the core")
+        expect(!app.handleGraphicsKey(fKey(9, [.shift])), "a Shift+F key no layout carries passes through")
     }
 
     @MainActor

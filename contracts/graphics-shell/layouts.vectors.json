@@ -1,6 +1,6 @@
 {
   "area": "layouts",
-  "description": "Shot Layouts: ShotLayout.IsValid / ShotLayoutRowSettings.IsValid (each clause), the layout slug, and set-layout outcomes (GraphicsPlayoutActions LayoutSet + SaveShotLayoutsAsync) over documents/windows-layouts.json with the Mac scene ids.",
+  "description": "Shot Layouts: ShotLayout.IsValid / ShotLayoutRowSettings.IsValid (each clause), the layout slug, set-layout outcomes (GraphicsPlayoutActions LayoutSet + SaveShotLayoutsAsync) over documents/windows-layouts.json with the Mac scene ids, and the layout summary line (GraphicsPlayoutControl.LayoutSummary, restated).",
   "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
   "rows": [
     {
@@ -1333,6 +1333,610 @@
             "hotkey": ""
           }
         ]
+      }
+    },
+    {
+      "id": "summary-mac-open",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "open",
+          "name": "Open",
+          "sceneId": "intro",
+          "rowIds": [
+            "title",
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "intro (missing) · Show title, Logo"
+      }
+    },
+    {
+      "id": "summary-mac-two-up",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "two-up",
+          "name": "Two-up",
+          "sceneId": "interview",
+          "rowIds": [
+            "guest"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F2",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "interview (missing) · Guest name"
+      }
+    },
+    {
+      "id": "summary-mac-panel",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "panel",
+          "name": "Panel",
+          "sceneId": "panel",
+          "rowIds": [
+            "guest",
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F3",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "panel (missing) · Guest name, Logo"
+      }
+    },
+    {
+      "id": "summary-mac-clean",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "clean",
+          "name": "Clean",
+          "sceneId": "",
+          "rowIds": [],
+          "rowSettings": {},
+          "hotkey": "Shift+F11",
+          "playOutOthers": true
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · plays everything out"
+      }
+    },
+    {
+      "id": "summary-mac-final-scores",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "final-scores",
+          "name": "Final scores",
+          "sceneId": "",
+          "rowIds": [
+            "leaderboard",
+            "title"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {}
+            },
+            "title": {
+              "dataPin": null,
+              "overrides": {
+                "heading": "Final"
+              }
+            }
+          },
+          "hotkey": "Shift+F4",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · Leaderboard, Show title"
+      }
+    },
+    {
+      "id": "summary-mac-bad-override",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "bad-override",
+          "name": "Bad override",
+          "sceneId": "",
+          "rowIds": [
+            "title"
+          ],
+          "rowSettings": {
+            "title": {
+              "dataPin": null,
+              "overrides": {
+                "text-size": "huge"
+              }
+            }
+          },
+          "hotkey": "",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · Show title"
+      }
+    },
+    {
+      "id": "summary-mac-ghost-row",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "ghost-row",
+          "name": "Ghost row",
+          "sceneId": "",
+          "rowIds": [
+            "nowhere"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F5",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · nowhere (missing)"
+      }
+    },
+    {
+      "id": "summary-mac-hides-the-rest",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "hides-the-rest",
+          "name": "Hides the rest",
+          "sceneId": "pip",
+          "rowIds": [
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "",
+          "playOutOthers": true
+        },
+        "scenes": [
+          {
+            "id": "fullscreen",
+            "name": "Full screen"
+          },
+          {
+            "id": "two-up",
+            "name": "Two-up"
+          },
+          {
+            "id": "pip",
+            "name": "Picture in picture"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "Picture in picture · Logo · hides the rest"
+      }
+    },
+    {
+      "id": "summary-windows-open",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "open",
+          "name": "Open",
+          "sceneId": "intro",
+          "rowIds": [
+            "title",
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F1",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "Intro · Show title, Logo"
+      }
+    },
+    {
+      "id": "summary-windows-two-up",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "two-up",
+          "name": "Two-up",
+          "sceneId": "interview",
+          "rowIds": [
+            "guest"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F2",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "Interview · Guest name"
+      }
+    },
+    {
+      "id": "summary-windows-panel",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "panel",
+          "name": "Panel",
+          "sceneId": "panel",
+          "rowIds": [
+            "guest",
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F3",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "Panel · Guest name, Logo"
+      }
+    },
+    {
+      "id": "summary-windows-clean",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "clean",
+          "name": "Clean",
+          "sceneId": "",
+          "rowIds": [],
+          "rowSettings": {},
+          "hotkey": "Shift+F11",
+          "playOutOthers": true
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · plays everything out"
+      }
+    },
+    {
+      "id": "summary-windows-final-scores",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "final-scores",
+          "name": "Final scores",
+          "sceneId": "",
+          "rowIds": [
+            "leaderboard",
+            "title"
+          ],
+          "rowSettings": {
+            "leaderboard": {
+              "dataPin": {
+                "sourceId": "scores",
+                "revision": 2
+              },
+              "overrides": {}
+            },
+            "title": {
+              "dataPin": null,
+              "overrides": {
+                "heading": "Final"
+              }
+            }
+          },
+          "hotkey": "Shift+F4",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · Leaderboard, Show title"
+      }
+    },
+    {
+      "id": "summary-windows-bad-override",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "bad-override",
+          "name": "Bad override",
+          "sceneId": "",
+          "rowIds": [
+            "title"
+          ],
+          "rowSettings": {
+            "title": {
+              "dataPin": null,
+              "overrides": {
+                "text-size": "huge"
+              }
+            }
+          },
+          "hotkey": "",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · Show title"
+      }
+    },
+    {
+      "id": "summary-windows-ghost-row",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "ghost-row",
+          "name": "Ghost row",
+          "sceneId": "",
+          "rowIds": [
+            "nowhere"
+          ],
+          "rowSettings": {},
+          "hotkey": "Shift+F5",
+          "playOutOthers": false
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "No scene change · nowhere (missing)"
+      }
+    },
+    {
+      "id": "summary-windows-hides-the-rest",
+      "operation": "summary",
+      "input": {
+        "document": "documents/windows-layouts.json",
+        "layout": {
+          "id": "hides-the-rest",
+          "name": "Hides the rest",
+          "sceneId": "pip",
+          "rowIds": [
+            "logo"
+          ],
+          "rowSettings": {},
+          "hotkey": "",
+          "playOutOthers": true
+        },
+        "scenes": [
+          {
+            "id": "intro",
+            "name": "Intro"
+          },
+          {
+            "id": "interview",
+            "name": "Interview"
+          },
+          {
+            "id": "panel",
+            "name": "Panel"
+          }
+        ]
+      },
+      "expected": {
+        "summary": "pip (missing) · Logo · hides the rest"
       }
     }
   ]

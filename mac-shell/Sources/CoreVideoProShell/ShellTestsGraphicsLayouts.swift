@@ -17,6 +17,10 @@ extension ShellTests {
             ("graphics-layouts/preview-edit-during-preparation", testPreviewEditDuringPreparationRefuses),
             ("graphics-layouts/epoch-change-drops-prepared", testEpochChangeDropsThePreparedLayout),
             ("graphics-layouts/cue-waits-for-core-preview", testCueLayoutWaitsForTheCoreToShowThePreviewScene),
+            ("graphics-layouts/header-buttons-per-state", testHeaderButtonsPerState),
+            ("graphics-layouts/row-editor-options-and-read", testRowEditorOptionsAndRead),
+            ("graphics-layouts/shift-f2-cues-that-layout", testShiftF2CuesTheLayoutWithThatHotkey),
+            ("graphics-layouts/missing-scene-refuses-at-cue", testMissingSceneLayoutRefusesAtCue),
         ]
     }
 
@@ -53,6 +57,11 @@ extension ShellTests {
                 } else {
                     expectEqual(model.document.shotLayouts.map { [$0.id, $0.hotkey] }, before, "\(id): unchanged")
                 }
+            case "summary":
+                let document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+                let scenes = (input["scenes"] as? [JSONObject] ?? []).map { (id: $0["id"] as? String ?? "", name: $0["name"] as? String ?? "") }
+                expectEqual(GraphicsLayouts.summary(GraphicsShotLayout(json: input["layout"] as? JSONObject ?? [:]), rows: document.playlist, scenes: scenes),
+                            expected["summary"] as? String, "\(id)")
             default: expect(false, "\(id): unknown operation"); continue
             }
             checked += 1
@@ -264,5 +273,104 @@ extension ShellTests {
         expectEqual(result?.reason, "Open cued: scene intro and 2 graphics on Preview; Take carries both.", "cued (\(result?.reason ?? ""))")
         expect(polls >= 3, "it polled the core's Preview (\(polls))")
         expectEqual(cuesBeforeSwitch, 0, "no cue went out while the core still showed the old Preview scene")
+    }
+
+    // ── Task 16: the band, the editor, Shift+F1-F11 ──────────────────────────
+
+    /// GraphicsPlayoutControl.RefreshLayouts' header (:228-251), every state.
+    static func testHeaderButtonsPerState() {
+        let document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        let legacy = document.shotLayouts.first { $0.id == "open" }!, guarded = document.shotLayouts.first { $0.id == "final-scores" }!
+        let prepared = GraphicsPreparedLayout(layout: guarded, coreEpoch: "e", attemptId: "layout-x", cues: [], previewStamp: nil)
+        func titles(_ selected: GraphicsShotLayout?, _ prepared: GraphicsPreparedLayout?, pending: Bool, progress: Bool, busy: Bool = false) -> [String] {
+            GraphicsLayouts.headerButtons(selected: selected, prepared: prepared, takePending: pending, hasProgress: progress, busy: busy)
+                .map { "\($0.title)\($0.enabled ? "" : " (off)")" }
+        }
+        expectEqual(titles(nil, nil, pending: false, progress: false), ["Edit layouts"], "nothing selected")
+        expectEqual(titles(legacy, nil, pending: false, progress: false), ["Cue and Take", "Edit layouts"], "a selected legacy layout")
+        expectEqual(titles(guarded, nil, pending: false, progress: false), ["Edit layouts"], "an unprepared guarded layout offers no Take")
+        expectEqual(titles(guarded, nil, pending: false, progress: true), ["Cancel layout", "Edit layouts"], "preparing: Cancel only")
+        expectEqual(titles(legacy, prepared, pending: false, progress: true), ["Take", "Cancel layout", "Edit layouts"], "a prepared guarded layout wins the selection")
+        expectEqual(titles(nil, prepared, pending: true, progress: true), ["Check Take", "Cancel layout (off)", "Edit layouts"], "a pending guarded Take")
+        expectEqual(titles(legacy, nil, pending: false, progress: false, busy: true), ["Cue and Take (off)", "Edit layouts (off)"], "busy")
+    }
+
+    /// AddLayoutRowEditor (GraphicsPlayoutControl.Layouts.cs:18-129) as a pure model.
+    static func testRowEditorOptionsAndRead() {
+        let document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        guard var row = document.row("leaderboard"), let source = document.dataSources.first(where: { $0.id == "scores" }) else { expect(false, "fixture"); return }
+        // The row publishes revision 1 while the loaded source is at 2.
+        var binding = row.dataBinding ?? [:]; binding["revision"] = 1; row.json["dataBinding"] = binding
+        expectEqual(source.revision, 2, "fixture source at revision 2")
+        var editor = GraphicsLayoutRowEditor(row: row, fields: [], dataSources: document.dataSources, saved: nil, included: true)
+        expectEqual(editor.revisionOptions.map(\.label), ["Use published data (revision 1)", "Pin revision 1", "Pin revision 2"], "three options")
+        expectEqual(editor.selectedRevision, 0, "published by default")
+        func read(_ e: GraphicsLayoutRowEditor) -> (ok: Bool, settings: GraphicsLayoutRowSettings?) {
+            do { return (true, try e.read()) } catch { return (false, nil) }
+        }
+        expect(read(editor) == (true, nil), "published data and no overrides read as no settings")
+        editor.selectedRevision = 2
+        let pinned = read(editor).settings
+        expectEqual(pinned?.dataPin?.sourceId, "scores", "pin source")
+        expectEqual(pinned?.dataPin?.revision, 2, "Pin revision 2")
+        editor.included = false
+        expect(read(editor) == (true, nil), "an unticked row has no settings")
+        // A saved pin that is no longer offered stays selectable as unavailable.
+        let stale = GraphicsLayoutRowSettings(json: ["dataPin": ["sourceId": "scores", "revision": 9], "overrides": [:] as JSONObject])
+        let staleEditor = GraphicsLayoutRowEditor(row: row, fields: [], dataSources: document.dataSources, saved: stale, included: true)
+        expectEqual(staleEditor.revisionOptions.last?.label, "Revision 9 unavailable", "unavailable revision")
+        expectEqual(staleEditor.selectedRevision, 3, "and selected")
+
+        // Overrides: an invalid saved override reads back verbatim unless replaced.
+        let size = GraphicsTemplateField(id: "text-size", type: "number", minimum: 8, maximum: 200)
+        let heading = GraphicsTemplateField(id: "heading", type: "string")
+        guard let title = document.row("title") else { expect(false, "title row"); return }
+        let saved = GraphicsLayoutRowSettings(json: ["overrides": ["text-size": "huge", "gone": "x"]])
+        var overrides = GraphicsLayoutRowEditor(row: title, fields: [size, heading], dataSources: [], saved: saved, included: true)
+        expectEqual(overrides.fieldEditors.map(\.title), ["Replace invalid Text size", "Override Heading"], "editor titles")
+        expectEqual(overrides.fieldEditors.map(\.enabled), [false, false], "nothing enabled")
+        expectEqual(overrides.unavailable.map(\.key), ["gone"], "the unavailable override is listed")
+        let kept = read(overrides).settings
+        expectEqual(kept?.json["overrides"] as? NSDictionary, ["text-size": "huge", "gone": "x"] as NSDictionary, "invalid and unavailable overrides read back verbatim")
+        overrides.fieldEditors[0].enabled = true
+        overrides.fieldEditors[0].value = 72
+        overrides.unavailable[0].remove = true
+        let replaced = read(overrides).settings
+        expectEqual(replaced?.json["overrides"] as? NSDictionary, ["text-size": 72] as NSDictionary, "replaced, and the unavailable one removed")
+        overrides.fieldEditors[0].value = 999
+        do { _ = try overrides.read(); expect(false, "an out-of-range value is refused") }
+        catch { expectEqual((error as? GraphicsDataError)?.message, "Show title: check the value for text-size.", "Windows text") }
+    }
+
+    /// Shift+F2 routes to the layout carrying that hotkey and cues it: the scene select comes first.
+    @MainActor
+    static func testShiftF2CuesTheLayoutWithThatHotkey() {
+        let model = layoutModel(drop: ["ghost-row"])
+        // The Guest row cues the Program subject (a routed guest), so the layout resolves before its scene select.
+        model.rosterSlots = { [GraphicsRosterSlot(slotNumber: 1, sourceId: "zoom:100", derivedName: "Ada")] }
+        model.programSubjectSourceId = { "zoom:100" }
+        var selected: [String] = []
+        model.selectPreviewScene = { selected.append($0); return false }
+        guard let route = GraphicsHotkeys.route(function: 2, modifiers: [.shift], textFocus: false, rows: model.rows, layoutHotkeys: model.layoutHotkeys) else {
+            expect(false, "Shift+F2 routes"); return
+        }
+        expectEqual(route, .layoutCue(layoutId: "two-up"), "to the Two-up preset")
+        expect(model.perform(route, subjectSourceId: nil), "the route is performed")
+        expectEqual(model.selectedLayoutId, "two-up", "and selects the layout")
+        spin(until: { !selected.isEmpty }, limit: 2)
+        expectEqual(selected, ["interview"], "the cue starts with the layout's scene select")
+    }
+
+    /// Review Focus 4: a preset keeps Windows' scene id (owner decision 2); on Mac scenes the cue is refused
+    /// with Windows' text and nothing reaches the core.
+    @MainActor
+    static func testMissingSceneLayoutRefusesAtCue() {
+        let (app, graphicsCore, takeCore) = takeAndGraphicsApp([])
+        app.graphics.document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        let result = awaitMain(5) { await app.graphics.cueLayout("open").value }
+        expectEqual(result?.reason, "Open: scene 'intro' is not in this show, so the layout was not cued. Edit the layout to pick a scene.", "Windows refusal")
+        expectEqual(graphicsCore.commands.count, 0, "no graphics command")
+        expectEqual(takeCore.bodies.count, 0, "no scene sync")
+        expectEqual(app.previewSceneId, "s1", "Preview unchanged")
     }
 }

@@ -741,6 +741,17 @@ final class AppModel: ObservableObject {
         model.programSubjectSourceId = { [weak self] in self?.programLowerThirdSubject()?.source.sourceId }
         model.layoutPreviewStamp = { [weak self] in self?.layoutPreviewStamp() ?? "" }
         model.sceneSourceIds = { [weak self] sceneId in self?.routedSourceIds(sceneId) ?? [] }
+        model.sceneNames = { [weak self] in self?.scenes.map { (id: $0.id, name: $0.name) } ?? [] }
+        model.guardedTakePending = { [weak self] in self?.pendingGuardedTake != nil }
+        model.previewSceneIdProvider = { [weak self] in self?.previewSceneId ?? "" }
+        model.takeForLayout = { [weak self] in
+            guard let self else { return "Take is unavailable." }
+            if !self.canTake { return AppModelControlSurface.takeUnavailable }
+            switch await self.take() {
+            case .success: return nil
+            case .failed(let why): return why.isEmpty ? "Take was not confirmed by the media core." : why
+            }
+        }
         model.rosterSlots = { [weak self] in
             (self?.slots ?? []).map {
                 GraphicsRosterSlot(slotNumber: $0.id, sourceId: ControlSourceId.canonical(kind: $0.kind, sourceId: $0.sourceId),
@@ -4216,7 +4227,8 @@ final class AppModel: ObservableObject {
         guard selectedTab == .studio || selectedTab == .overlays, !quitPromptVisible, !quitFinishing,
               case .function(let number) = event.kind,
               let route = GraphicsHotkeys.route(function: number, modifiers: event.modifiers,
-                                                textFocus: event.isTextEntryFocus, rows: graphics.rows)
+                                                textFocus: event.isTextEntryFocus, rows: graphics.rows,
+                                                layoutHotkeys: graphics.layoutHotkeys)
         else { return false }
         if event.isRepeat { return true }
         return graphics.perform(route, subjectSourceId: programLowerThirdSubject()?.source.sourceId)

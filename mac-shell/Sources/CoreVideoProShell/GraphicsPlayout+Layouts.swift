@@ -255,3 +255,46 @@ extension GraphicsModel {
         return result
     }
 }
+
+// ── Task 16: the band's model side ───────────────────────────────────────────
+
+extension GraphicsModel {
+    func layoutSummary(_ layout: GraphicsShotLayout) -> String {
+        GraphicsLayouts.summary(layout, rows: rows, scenes: sceneNames())
+    }
+
+    /// The layout the header acts on: the prepared one, else the selected one.
+    var headerLayout: GraphicsShotLayout? { playout.preparedLayout?.layout ?? document.shotLayouts.first { $0.id == selectedLayoutId } }
+
+    func layoutHeaderButtons() -> [GraphicsLayoutHeaderButton] {
+        GraphicsLayouts.headerButtons(selected: document.shotLayouts.first { $0.id == selectedLayoutId }, prepared: playout.preparedLayout,
+                                      takePending: guardedTakePending(), hasProgress: playout.layoutProgress != nil, busy: busy)
+    }
+
+    /// graphics.layout.take (CueAndTakeLayoutAsync): the prepared layout goes straight to Take; anything
+    /// else is cued first. A layout with no scene and no rows has nothing to Take.
+    @discardableResult
+    func cueAndTakeLayout(_ id: String) -> Task<GraphicsOperationResult, Never> {
+        Task { @MainActor in
+            var cued: GraphicsOperationResult
+            if playout.preparedLayout?.layout.id == id { cued = GraphicsOperationResult(accepted: true, reason: "Shot Layout is ready.") }
+            else { cued = await cueLayout(id).value }
+            guard cued.accepted else { return cued }
+            let layout = playout.preparedLayout?.layout ?? document.shotLayouts.first { $0.id == id }
+            guard let layout, !(layout.sceneId.isEmpty && layout.rowIds.isEmpty) else {
+                cued.reason += " Nothing to Take."; report(cued); return cued
+            }
+            let result: GraphicsOperationResult
+            if let error = await takeForLayout() { result = GraphicsOperationResult(accepted: false, reason: "\(layout.name): \(error)") }
+            else { cued.reason = "\(layout.name) taken."; result = cued }
+            report(result)
+            return result
+        }
+    }
+
+    /// The editor model for one row of a layout (AddLayoutRowEditor).
+    func layoutRowEditor(_ row: GraphicsRow, saved: GraphicsLayoutRowSettings?, included: Bool) -> GraphicsLayoutRowEditor {
+        GraphicsLayoutRowEditor(row: row, fields: GraphicsRowFields.templateFields(row, state: state, pins: document.templates),
+                                dataSources: document.dataSources, saved: saved, included: included)
+    }
+}

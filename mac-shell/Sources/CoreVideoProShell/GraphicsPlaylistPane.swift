@@ -62,11 +62,6 @@ struct GraphicsPlaylistPane: View {
     }
 }
 
-/// SHOT LAYOUTS sits between the header and the playlist (Windows :73-74). Task 16 fills it.
-struct GraphicsShotLayoutsBand: View {
-    @ObservedObject var graphics: GraphicsModel
-    var body: some View { EmptyView() }
-}
 
 struct GraphicsRowCard: View {
     @ObservedObject var graphics: GraphicsModel

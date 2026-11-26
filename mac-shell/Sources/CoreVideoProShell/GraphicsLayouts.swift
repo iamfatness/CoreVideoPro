@@ -232,3 +232,142 @@ extension GraphicsLayouts {
         }
     }
 }
+
+// ── the band and the editor, pure (Task 16) ─────────────────────────────────
+
+/// One button of the SHOT LAYOUTS header (GraphicsPlayoutControl.RefreshLayouts :228-251).
+struct GraphicsLayoutHeaderButton: Equatable {
+    enum Kind: Equatable { case take, cancel, edit }
+    let kind: Kind
+    let title: String
+    let enabled: Bool
+}
+
+extension GraphicsLayouts {
+    /// LayoutSummary (GraphicsPlayoutControl.cs:198-206): "<scene> · <graphics>", "(missing)" for a
+    /// scene or row that is gone.
+    static func summary(_ layout: GraphicsShotLayout, rows: [GraphicsRow], scenes: [(id: String, name: String)]) -> String {
+        let scene = layout.sceneId.isEmpty ? "No scene change"
+            : scenes.first { $0.id == layout.sceneId }?.name ?? layout.sceneId + " (missing)"
+        let names = layout.rowIds.map { id in rows.first { $0.id == id }?.name ?? id + " (missing)" }
+        let graphics = names.isEmpty ? (layout.playOutOthers ? "plays everything out" : "no graphics")
+            : names.joined(separator: ", ") + (layout.playOutOthers ? " · hides the rest" : "")
+        return scene + " · " + graphics
+    }
+
+    /// The header: Take ("Check Take" while a guarded Take awaits its receipt, "Take" for the prepared
+    /// guarded layout, "Cue and Take" for a selected legacy layout; never for an unprepared guarded one),
+    /// "Cancel layout" while progress shows (off while a Take is pending), "Edit layouts" always.
+    static func headerButtons(selected: GraphicsShotLayout?, prepared: GraphicsPreparedLayout?, takePending: Bool,
+                              hasProgress: Bool, busy: Bool) -> [GraphicsLayoutHeaderButton] {
+        var buttons: [GraphicsLayoutHeaderButton] = []
+        if let selected = prepared?.layout ?? selected, selected.rowSettings.isEmpty || prepared != nil {
+            let title = takePending ? "Check Take" : !selected.rowSettings.isEmpty ? "Take" : "Cue and Take"
+            buttons.append(GraphicsLayoutHeaderButton(kind: .take, title: title, enabled: !busy))
+        }
+        if hasProgress { buttons.append(GraphicsLayoutHeaderButton(kind: .cancel, title: "Cancel layout", enabled: !takePending)) }
+        buttons.append(GraphicsLayoutHeaderButton(kind: .edit, title: "Edit layouts", enabled: !busy))
+        return buttons
+    }
+
+    static let hotkeyChoices = ["None"] + (1...11).map { "Shift+F\($0)" }
+}
+
+/// AddLayoutRowEditor (GraphicsPlayoutControl.Layouts.cs:18-110) as a pure model: the data revision
+/// picker, one override per overridable field, the invalid and unavailable saved overrides.
+struct GraphicsLayoutRowEditor {
+    struct RevisionOption: Equatable {
+        let label: String
+        let pin: GraphicsLayoutPin?
+    }
+    struct FieldEditor {
+        let field: GraphicsTemplateField
+        let title: String
+        var enabled: Bool
+        var value: Any
+    }
+    struct Unavailable {
+        let key: String
+        let value: Any
+        var remove = false
+    }
+
+    let row: GraphicsRow
+    /// False when the row has nothing to edit (no data binding, no overridable field, nothing saved).
+    let visible: Bool
+    let revisionOptions: [RevisionOption]
+    var selectedRevision: Int
+    /// "Remove unavailable data pin": a saved pin on a row that is no longer a data row.
+    let hasOrphanPin: Bool
+    var removePin = false
+    var fieldEditors: [FieldEditor]
+    /// Saved overrides the template no longer accepts as they are: kept verbatim unless replaced.
+    let invalid: [(key: String, value: Any)]
+    var unavailable: [Unavailable]
+    var included: Bool
+    private let saved: GraphicsLayoutRowSettings?
+
+    /// `fields`: the row's template fields (only canOverrideLayoutField ones are used).
+    init(row: GraphicsRow, fields: [GraphicsTemplateField], dataSources: [GraphicsDataSourceRecord], saved: GraphicsLayoutRowSettings?, included: Bool) {
+        self.row = row; self.saved = saved; self.included = included
+        let fields = fields.filter(GraphicsRowFields.canOverrideLayoutField)
+        let binding = row.dataBinding.flatMap(GraphicsDataBinding.init(json:))
+        visible = !(row.dataBinding == nil && fields.isEmpty && saved == nil)
+        let savedPin = saved?.dataPin.map { GraphicsLayoutPin(sourceId: $0.sourceId, revision: $0.revision) }
+        var options: [RevisionOption] = []
+        if let binding {
+            options = [RevisionOption(label: "Use published data (revision \(binding.revision))", pin: nil),
+                       RevisionOption(label: "Pin revision \(binding.revision)", pin: GraphicsLayoutPin(sourceId: binding.sourceId, revision: binding.revision))]
+            if let loaded = dataSources.first(where: { $0.id == binding.sourceId }), loaded.revision != binding.revision {
+                options.append(RevisionOption(label: "Pin revision \(loaded.revision)", pin: GraphicsLayoutPin(sourceId: binding.sourceId, revision: loaded.revision)))
+            }
+            if let savedPin, !options.contains(where: { $0.pin == savedPin }) {
+                options.append(RevisionOption(label: "Revision \(savedPin.revision) unavailable", pin: savedPin))
+            }
+        }
+        revisionOptions = options
+        selectedRevision = max(0, options.firstIndex { $0.pin == savedPin } ?? 0)
+        hasOrphanPin = binding == nil && savedPin != nil
+        let overrides = Dictionary((saved?.overrides ?? []).map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        var invalid: [(key: String, value: Any)] = []
+        fieldEditors = fields.map { field in
+            var value = overrides[field.id]
+            let hasOverride = value != nil
+            if value == nil || !GraphicsRowFields.validLayoutOverride(field, value!) {
+                if hasOverride { invalid.append((field.id, value!)) }
+                value = row.fields[field.id] ?? field.defaultValue
+            }
+            let replace = invalid.contains { $0.key == field.id }
+            return FieldEditor(field: field, title: (replace ? "Replace invalid " : "Override ") + GraphicsRowFields.humanize(field.id),
+                               enabled: hasOverride && !replace, value: value ?? "")
+        }
+        self.invalid = invalid
+        unavailable = (saved?.overrides ?? []).filter { key, _ in !fields.contains { $0.id == key } }.map { Unavailable(key: $0.key, value: $0.value) }
+    }
+
+    /// The settings to save for this row: nil when unticked or when there is no pin and no override.
+    func read() throws -> GraphicsLayoutRowSettings? {
+        guard included else { return nil }
+        var overrides: JSONObject = [:]
+        for (key, value) in invalid { overrides[key] = value }
+        for item in unavailable where !item.remove { overrides[item.key] = item.value }
+        for editor in fieldEditors where editor.enabled {
+            guard GraphicsRowFields.validLayoutOverride(editor.field, editor.value) else {
+                throw GraphicsDataError(message: "\(row.name): check the value for \(editor.field.id).")
+            }
+            overrides[editor.field.id] = editor.value
+        }
+        let pin: GraphicsLayoutPin? = !revisionOptions.isEmpty
+            ? revisionOptions[min(max(selectedRevision, 0), revisionOptions.count - 1)].pin
+            : removePin ? nil : saved?.dataPin.map { GraphicsLayoutPin(sourceId: $0.sourceId, revision: $0.revision) }
+        if pin == nil && overrides.isEmpty { return nil }
+        var json: JSONObject = ["overrides": overrides]
+        if let pin { json["dataPin"] = ["sourceId": pin.sourceId, "revision": pin.revision] }
+        return GraphicsLayoutRowSettings(json: json)
+    }
+}
+
+struct GraphicsLayoutPin: Equatable {
+    let sourceId: String
+    let revision: Int64
+}

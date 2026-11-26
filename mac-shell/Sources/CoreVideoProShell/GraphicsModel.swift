@@ -56,6 +56,14 @@ final class GraphicsModel: ObservableObject {
     var programSubjectSourceId: () -> String? = { nil }
     var layoutPreviewStamp: () -> String = { "" }
     var sceneSourceIds: (String) -> [String] = { _ in [] }
+    /// Task 16: the Mac scene list (id, name), whether a guarded Take awaits its receipt, and the
+    /// ordinary Take for "Cue and Take" (nil = taken, else the refusal).
+    var sceneNames: () -> [(id: String, name: String)] = { [] }
+    var guardedTakePending: () -> Bool = { false }
+    var previewSceneIdProvider: () -> String = { "" }
+    var takeForLayout: () async -> String? = { "Take is unavailable." }
+    /// The layout the band shows as selected (Windows _selectedLayoutId).
+    @Published var selectedLayoutId = ""
     @Published private(set) var layoutProgress: GraphicsLayoutProgress?
     @Published private(set) var layoutPreparing = false
     @Published private(set) var preparedLayout: GraphicsPreparedLayout?
