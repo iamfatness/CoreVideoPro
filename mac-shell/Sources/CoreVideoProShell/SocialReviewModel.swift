@@ -31,13 +31,22 @@ struct SocialFeedRunners {
     var twitch: @MainActor (_ channel: String, _ clientId: String, _ playout: SocialPlayout, _ report: @escaping Report,
                             _ prompt: @escaping @MainActor (TwitchDevicePrompt) -> Void) async -> Void
 
-    /// Production: YouTube over URLSessionSocialHTTP (Task 15); Twitch joins in Tasks 16-17.
+    /// Production: YouTube (Task 15) and Twitch EventSub (Tasks 16-17) over the shared transport.
     static let live = SocialFeedRunners(
         youTube: { videoId, key, playout, report in
             await YouTubeSocialFeed.run(videoId: videoId, key: key, playout: playout, http: URLSessionSocialHTTP.shared,
                                         sleep: { try? await Task.sleep(nanoseconds: $0) }, report: report)
         },
-        twitch: unavailable.twitch)
+        twitch: { channel, clientId, playout, report, prompt in
+            await TwitchSocialFeed.run(channel: channel, clientId: clientId, auth: sharedTwitchAuthorization, playout: playout,
+                                       http: URLSessionSocialHTTP.shared,
+                                       connect: { try await URLSessionTwitchSocket.connect() },
+                                       sleep: { try? await Task.sleep(nanoseconds: $0) }, report: report, prompt: prompt)
+        })
+
+    /// One review owner's authorization (Windows keeps one per view model): the
+    /// hourly validation clock and the rotation lock live for the process.
+    @MainActor static let sharedTwitchAuthorization = TwitchAuthorization.keychain()
 
     static let unavailable = SocialFeedRunners(
         youTube: { _, _, _, report in report("YouTube live chat is not available in this build.") },
