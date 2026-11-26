@@ -3255,9 +3255,11 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
 
   void stopFfmpegProcess() {
     audioStartupPacketsToDrop_ = 3;
+    const auto stopStarted = std::chrono::steady_clock::now();
     // Stop the GPU encoder FIRST: its sink writes FFmpeg's stdin on the encoder
     // thread, so joining it here guarantees no write-after-close on the pipe.
     stopGpuEncoder();
+    const auto encoderStopped = std::chrono::steady_clock::now();
     activeUseGpuDirect_ = false;
     hasWrittenVideo_ = false;
 #if defined(_WIN32)
@@ -3307,18 +3309,37 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       // terminate and reap. A second child cannot start while the old one lives.
       int status = 0;
       bool reaped = false;
-      for (int attempt = 0; attempt < 50; ++attempt) {
+      // A WALL-CLOCK 500 ms, not 50 x usleep(10 ms): on a loaded machine each
+      // sleep overshoots, and the count-based loop stretched this grace to 1.5-2 s
+      // on CI runners (Stop measured 2.7 and 3.3 s against its 2 s contract).
+      const auto eofDeadline = encoderStopped + std::chrono::milliseconds(500);
+      for (;;) {
         const pid_t result = ::waitpid(stopping, &status, WNOHANG);
         if (result == stopping || result < 0) {
           reaped = true;
           break;
         }
+        if (std::chrono::steady_clock::now() >= eofDeadline) break;
         ::usleep(10000);
       }
+      const auto eofWaited = std::chrono::steady_clock::now();
       if (!reaped) {
         // SIGTERM then SIGKILL to the PROCESS GROUP (guard + ffmpeg): killing
         // only the guard would orphan an ffmpeg that ignores SIGTERM.
         posix_child::stopGroup(stopping, std::chrono::milliseconds(500), &status);
+      }
+      // The Stop contract is 2 s even with a wedged pipe; name where a slow one
+      // went (the by-design floor for a child that ignores EOF and SIGTERM is
+      // ~1.0 s: 0.5 s EOF grace + 0.5 s SIGTERM grace).
+      const auto ms = [](auto a, auto b) {
+        return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count());
+      };
+      const auto done = std::chrono::steady_clock::now();
+      if (ms(stopStarted, done) > 1200) {
+        ::corevideo::core::nativeLogf("[ffmpeg-stop] slow stop %lldms: encoder+writer=%lldms eof-wait=%lldms "
+                                     "group-stop=%lldms reaped-on-eof=%d\n", ms(stopStarted, done),
+                                     ms(stopStarted, encoderStopped), ms(encoderStopped, eofWaited),
+                                     ms(eofWaited, done), reaped ? 1 : 0);
       }
     }
 #endif
