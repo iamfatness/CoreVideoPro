@@ -827,6 +827,14 @@ class MediaTransports final {
               // non-Live entry.
               entry->state = MediaTransportState::Ended;
               entry->wantsAudio.store(false);
+              // THE QUEUE GOES WITH THE STATE, as it does for an operator
+              // Pause, RestartCued and Release. popAudio() never drains a non-Live entry, so a window
+              // left here keeps its slot for good, and the poll that brings a
+              // stalled bed back (above) needs a free one. The backstop can
+              // fire with the queue full: the audio worker stopped pulling,
+              // or everything stalled and this thread ran first. That bed
+              // stayed silent until an operator Play.
+              entry->audio.clear();
             }
           }
         }
