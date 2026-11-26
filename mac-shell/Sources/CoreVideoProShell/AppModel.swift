@@ -696,6 +696,11 @@ final class AppModel: ObservableObject {
     @Published var telemetryConsentOn = false
     /// The "Preview what's sent" block (empty = hidden).
     @Published var telemetryPreviewJSON = ""
+    /// The crash report bar (nil = hidden) and what it offers (Phase 4 R5).
+    @Published var crashBar: CrashBarState?
+    var pendingCrashReports: [CrashReportFile] = []
+    var crashCoordinator: CrashReportCoordinator?
+    var crashScanStarted = false
     /// Test seams (production leaves them at their defaults): the request path,
     /// the "core is gone" answer when that path is replaced, and the timings.
     var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
@@ -6167,6 +6172,20 @@ final class AppModel: ObservableObject {
         telemetryService = service
         loadTelemetryConsent()
         service.start()
+        // R5: the consented crash report needs the same key, and only the key (Windows gates
+        // the send on the explicit click, not on telemetry consent).
+        startCrashReports(coordinator: CrashReportCoordinator.make(
+            config: config, store: CrashReportWatermarkStore(path: CrashReportWatermarkStore.defaultPath()),
+            directories: CrashReportScanner.defaultDirectories(), logFiles: [ShellLog.path, CoreLog.path],
+            bundleDirectory: CrashReportCoordinator.defaultBundleDirectory(),
+            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
+            machineClass: machine.label,
+            transport: CrashReportUploader.urlSessionTransport(),
+            // The support bundle's literal source, plus the SRT passphrase; read at send time.
+            secretLiterals: { [weak self] in
+                guard let self else { return [] }
+                return [self.streamKey, self.srtPassphrase, self.joinPasscode].filter { !$0.isEmpty }
+            }))
     }
 
     private func replyToQuit(_ shouldTerminate: Bool) {

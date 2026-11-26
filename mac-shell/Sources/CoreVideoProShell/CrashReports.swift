@@ -147,7 +147,9 @@ enum IpsSanitizer {
     static let threadKeys: Set<String> = ["triggered", "id", "threadState", "queue", "frames"]
 
     /// The allow-listed copy: header line, "\n", body JSON. nil when the input is not an .ips.
-    static func sanitize(_ ips: Data) -> Data? {
+    /// Kept free text (asi, exception, termination, ktriageinfo, legacyInfo, queue names) goes
+    /// through the shell's redactor and the known secret literals, not only the path scrub.
+    static func sanitize(_ ips: Data, literals: [String] = []) -> Data? {
         guard let text = String(data: ips, encoding: .utf8) else { return nil }
         let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
         guard parts.count == 2,
@@ -160,23 +162,30 @@ enum IpsSanitizer {
         if let threads = cleanBody["threads"] as? [[String: Any]] {
             cleanBody["threads"] = threads.map { $0.filter { threadKeys.contains($0.key) } }
         }
-        let cleanHeader = scrub(header.filter { headerKeys.contains($0.key) })
+        let cleanHeader = scrub(header.filter { headerKeys.contains($0.key) }, literals: literals)
         // Slashes unescaped: a reader (and any text search for a path) sees the real characters.
         guard let headerData = try? JSONSerialization.data(withJSONObject: cleanHeader, options: [.sortedKeys, .withoutEscapingSlashes]),
-              let bodyData = try? JSONSerialization.data(withJSONObject: scrub(cleanBody),
+              let bodyData = try? JSONSerialization.data(withJSONObject: scrub(cleanBody, literals: literals),
                                                          options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])
         else { return nil }
         return headerData + Data("\n".utf8) + bodyData
     }
 
-    /// Every string (and key) with "/Users/<name>" rewritten to "/Users/USER".
-    static func scrub(_ value: Any) -> Any {
+    /// Every string value: "/Users/<name>" -> "/Users/USER", then the shell's redactor (secret
+    /// URLs, key=value, Bearer, JWTs, high-entropy runs) and the known literals. Keys: path scrub.
+    /// Longer kept strings are OMITTED, not scanned: the redactor's high-entropy rule is quadratic
+    /// on a long run (a 700 KiB string never finished), and nothing that long belongs in a report.
+    static let maxScrubbedLength = 8192
+
+    static func scrub(_ value: Any, literals: [String] = []) -> Any {
         switch value {
-        case let text as String: return scrubPath(text)
-        case let array as [Any]: return array.map(scrub)
+        case let text as String:
+            if text.utf8.count > maxScrubbedLength { return "[omitted: \(text.utf8.count) characters]" }
+            return Redactor.scrub(scrubPath(text), literals: literals)
+        case let array as [Any]: return array.map { scrub($0, literals: literals) }
         case let object as [String: Any]:
             var out: [String: Any] = [:]
-            for (key, element) in object { out[scrubPath(key)] = scrub(element) }
+            for (key, element) in object { out[scrubPath(key)] = scrub(element, literals: literals) }
             return out
         default: return value
         }

@@ -15,6 +15,9 @@ struct CrashArchiveRequest {
     var maxTotalBytes: Int64 = 24 << 20
     var logTailBytes: Int64 = 2 << 20
     var appVersion: String
+    /// Live secret VALUES held by the shell (stream key, SRT passphrase, meeting passcode): scrubbed
+    /// by identity from every entry, then verified absent (the support bundle's two steps).
+    var knownSecretLiterals: [String] = []
 }
 
 struct CrashArchiveResult: Equatable {
@@ -43,12 +46,17 @@ enum CrashReportArchiveBuilder {
     /// runs). When the tail starts mid-file its first line is a fragment that a line-based
     /// pattern may not recognise (a key cut at the seek point loses its rtmp:// prefix and its
     /// length), so that partial line is DROPPED, never sent.
-    static func redactTail(_ data: Data, truncated: Bool) -> Data {
+    static func redactTail(_ data: Data, truncated: Bool, literals: [String] = []) -> Data {
         var text = String(decoding: data, as: UTF8.self)
         if truncated {
             if let newline = text.firstIndex(of: "\n") { text = String(text[text.index(after: newline)...]) } else { text = "" }
         }
-        return Data(Redactor.redactLines(text).utf8)
+        // A line longer than the scrub bound is omitted, never scanned (the redactor is
+        // quadratic on one long run) and never sent raw.
+        let bounded = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            line.utf8.count > IpsSanitizer.maxScrubbedLength ? "[line omitted: \(line.utf8.count) characters]" : String(line)
+        }.joined(separator: "\n")
+        return Data(Redactor.redactLines(bounded, literals: literals).utf8)
     }
 
     /// A one-line reason with no local path (exception text can quote one).
@@ -56,7 +64,13 @@ enum CrashReportArchiveBuilder {
         IpsSanitizer.scrubPath(error.localizedDescription)
     }
 
+    /// True when any known literal (4+ characters, as the support bundle) is still in `data`.
+    static func carriesLiteral(_ data: Data, _ literals: [String]) -> Bool {
+        literals.contains { data.range(of: Data($0.utf8)) != nil }
+    }
+
     static func build(zipPath: String, request: CrashArchiveRequest, now: Date) throws -> CrashArchiveResult {
+        let literals = request.knownSecretLiterals.filter { $0.count >= 4 }
         var included: [String] = []
         var skipped: [String] = []
         var manifest = ["CoreVideo Pro crash report", "Created: \(TelemetryConsentStore.formatDate(now))",
@@ -69,7 +83,7 @@ enum CrashReportArchiveBuilder {
             do {
                 let (raw, length) = try readTail(path, maxBytes: request.logTailBytes)
                 let truncated = length > Int64(raw.count)
-                tails.append(("logs/\(name)", redactTail(raw, truncated: truncated), length, truncated))
+                tails.append(("logs/\(name)", redactTail(raw, truncated: truncated, literals: literals), length, truncated))
             } catch {
                 skipped.append("\(name) — unreadable (\(reason(error)))")
             }
@@ -82,7 +96,9 @@ enum CrashReportArchiveBuilder {
                 skipped.append("\(bundleEntry) — support bundle export produced no file")
             }
         } else {
-            skipped.append("\(bundleEntry) — support bundle export unavailable this session")
+            // The Mac support bundle keeps local file paths (recording folders carry the user
+            // name), and the privacy rule says no path leaves the machine.
+            skipped.append("\(bundleEntry) — not included (it keeps local file paths, which never leave this Mac)")
         }
 
         // Sanitize first: the budget is spent on what will actually be sent.
@@ -92,10 +108,23 @@ enum CrashReportArchiveBuilder {
             guard let raw = FileManager.default.contents(atPath: report.path) else {
                 skipped.append("\(name) — unreadable"); continue
             }
-            guard let clean = IpsSanitizer.sanitize(raw) else {
+            guard let clean = IpsSanitizer.sanitize(raw, literals: literals) else {
                 skipped.append("\(name) — not a readable crash report; never sent raw"); continue
             }
             sanitized.append((report, clean))
+        }
+
+        // The support bundle's final check: an entry that still carries a known literal is
+        // WITHHELD (the manifest says so, never quoting the secret).
+        let withheld = "withheld: a known secret survived redaction"
+        tails.removeAll { tail in
+            guard carriesLiteral(tail.bytes, literals) else { return false }
+            skipped.append("\((tail.entry as NSString).lastPathComponent) — \(withheld)"); return true
+        }
+        if let data = bundle, carriesLiteral(data, literals) { bundle = nil; skipped.append("\(bundleEntry) — \(withheld)") }
+        sanitized.removeAll { item in
+            guard carriesLiteral(item.bytes, literals) else { return false }
+            skipped.append("\((item.file.path as NSString).lastPathComponent) — \(withheld)"); return true
         }
 
         let reserved = tails.reduce(Int64(0)) { $0 + Int64($1.bytes.count) } + Int64(bundle?.count ?? 0)
@@ -234,13 +263,15 @@ final class CrashReportCoordinator {
     let transport: CrashTransport
     let now: () -> Date
     let log: (String) -> Void
+    /// The shell's live secret values at send time (the support bundle's source).
+    let secretLiterals: () -> [String]
 
     private init(config: TelemetryConfig, store: CrashReportWatermarkStore, directories: [String], logFiles: [String],
                  bundleDirectory: String, version: String, machineClass: String, transport: @escaping CrashTransport,
-                 now: @escaping () -> Date, log: @escaping (String) -> Void) {
+                 now: @escaping () -> Date, log: @escaping (String) -> Void, secretLiterals: @escaping () -> [String]) {
         self.config = config; self.store = store; self.directories = directories; self.logFiles = logFiles
         self.bundleDirectory = bundleDirectory; self.version = version; self.machineClass = machineClass
-        self.transport = transport; self.now = now; self.log = log
+        self.transport = transport; self.now = now; self.log = log; self.secretLiterals = secretLiterals
     }
 
     /// nil without a key: no scan, no bar, nothing sent (Windows gates on the key; consent for
@@ -248,11 +279,12 @@ final class CrashReportCoordinator {
     static func make(config: TelemetryConfig, store: CrashReportWatermarkStore, directories: [String],
                      logFiles: [String], bundleDirectory: String, version: String, machineClass: String,
                      transport: @escaping CrashTransport, now: @escaping () -> Date = Date.init,
-                     log: @escaping (String) -> Void = { ShellLog.write($0) }) -> CrashReportCoordinator? {
+                     log: @escaping (String) -> Void = { ShellLog.write($0) },
+                     secretLiterals: @escaping () -> [String] = { [] }) -> CrashReportCoordinator? {
         guard config.enabled else { return nil }
         return CrashReportCoordinator(config: config, store: store, directories: directories, logFiles: logFiles,
                                       bundleDirectory: bundleDirectory, version: version, machineClass: machineClass,
-                                      transport: transport, now: now, log: log)
+                                      transport: transport, now: now, log: log, secretLiterals: secretLiterals)
     }
 
     func scanAndAdvance(fs: CrashFS = .real) -> [CrashReportFile] {
@@ -280,7 +312,8 @@ final class CrashReportCoordinator {
             archive = try CrashReportArchiveBuilder.build(
                 zipPath: zipPath,
                 request: CrashArchiveRequest(reports: reports, logFiles: logFiles,
-                                             supportBundlePath: wroteBundle ? bundlePath : nil, appVersion: version),
+                                             supportBundlePath: wroteBundle ? bundlePath : nil, appVersion: version,
+                                             knownSecretLiterals: secretLiterals()),
                 now: now())
         } catch {
             log("crash-report: could not assemble (\(IpsSanitizer.scrubPath(error.localizedDescription)))")

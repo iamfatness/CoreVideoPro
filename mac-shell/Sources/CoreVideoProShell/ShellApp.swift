@@ -286,6 +286,13 @@ struct RootView: View {
                 }
             }
             .frame(maxHeight: .infinity)
+            // Windows CrashReportBar: Grid.Row 2, top, margin 16/10/16/0, over every tab.
+            .overlay(alignment: .top) {
+                if let bar = model.crashBar {
+                    CrashBarView(state: bar, onSend: { model.sendCrashReport() }, onClose: { model.dismissCrashBar() })
+                        .padding(.horizontal, 16).padding(.top, 10)
+                }
+            }
             StudioFooter()
         }
         .background(Studio.background)

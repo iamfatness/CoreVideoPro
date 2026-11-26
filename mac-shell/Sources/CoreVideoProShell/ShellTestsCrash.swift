@@ -28,6 +28,13 @@ extension ShellTests {
             ("crash/upload-outcomes", testCrashUploadOutcomes),
             ("crash/coordinator-disabled-without-key", testCrashCoordinatorDisabledWithoutKey),
             ("crash/coordinator-records-report-id", testCrashCoordinatorRecordsReportId),
+            ("crash/sanitize-redacts-kept-free-text", testCrashSanitizeRedactsKeptFreeText),
+            ("crash/archive-known-literal-scrubbed", testCrashArchiveKnownLiteralScrubbed),
+            ("crash/archive-withholds-entry-with-literal", testCrashArchiveWithholdsEntryWithLiteral),
+            ("crash/long-text-omitted-not-scanned", testCrashLongTextOmittedNotScanned),
+            ("crash/bar-copy-and-states", testCrashBarCopyAndStates),
+            ("crash/no-bar-without-key", testCrashNoBarWithoutKey),
+            ("crash/scan-once-per-process", testCrashScanOncePerProcess),
         ]
     }
 
@@ -262,7 +269,9 @@ extension ShellTests {
     /// A synthetic report whose sanitized copy is about `kib` KiB (padding in a kept field).
     static func paddedReport(kib: Int) -> Data {
         let header = #"{"app_name":"CoreVideoProShell","name":"CoreVideoProShell","bug_type":"309"}"#
-        let body = #"{"procName":"CoreVideoProShell","asi":{"pad":[""# + String(repeating: "x", count: kib * 1024) + #""]}}"#
+        // Many short strings (each under the scrub bound, no long word run) reach the size.
+        let chunk = "\"" + String(repeating: "x ", count: 511) + "\""
+        let body = #"{"procName":"CoreVideoProShell","asi":{"pad":["# + Array(repeating: chunk, count: kib).joined(separator: ",") + "]}}"
         return Data((header + "\n" + body).utf8)
     }
 
@@ -421,5 +430,143 @@ extension ShellTests {
         expect(tail.hasPrefix("later line"), "the partial first line is dropped; whole lines follow")
         expect(tail.contains("final line"), "the tail keeps the last line")
         expect(result.manifestText.contains("Included: logs/CoreVideoPro-core.log (last "), "the manifest says it is a tail")
+    }
+
+    // ── Task 12: the bar ─────────────────────────────────────────────────────
+
+    /// Windows' copy and states (Mac: "crash report" for "crash dump").
+    /// Mutation: keep "Try again" after a non-retryable failure (e.g. a 413).
+    static func testCrashBarCopyAndStates() {
+        let t0 = Date(timeIntervalSince1970: 1_795_341_600)
+        let one = [CrashReportFile(path: "/r/a.ips", processName: "corevideo-native", lastWrite: t0, length: 1)]
+        let three = one + [CrashReportFile(path: "/r/b.ips", processName: "corevideo-zoom-engine", lastWrite: t0, length: 1),
+                           CrashReportFile(path: "/r/c.ips", processName: "CoreVideoProShell", lastWrite: t0, length: 1)]
+        guard let offered = CrashBarState.offered(one) else { expect(false, "one report offers a bar"); return }
+        expectEqual(offered.title, "CoreVideo Pro crashed last session", "title")
+        expectEqual(offered.message, "A crash report from corevideo-native was found (1 report). Send a report to help fix it? The report (crash report + recent logs, secrets redacted) is saved locally either way — nothing is sent unless you click Send.", "one report")
+        expectEqual(offered.buttonTitle, "Send report", "action")
+        expect(CrashBarState.offered(three)?.message.hasPrefix("A crash report from CoreVideoProShell was found (3 reports). ") == true, "three: the newest process, counted")
+        expect(CrashBarState.offered([]) == nil, "nothing found: no bar")
+        let sending = offered.sending()
+        expectEqual(sending.message, "Assembling and sending the crash report…", "sending message")
+        expectEqual(sending.buttonEnabled, false, "the button is disabled while sending")
+        let sent = sending.finished(CrashSendOutcome(success: true, canRetry: false, message: "Thanks", reportId: "r", zipPath: "/z"))
+        expectEqual([sent.title, sent.message], ["Crash report sent", "Thanks"], "success"); expectEqual(sent.style, .success, "success style")
+        expectEqual(sent.buttonTitle, nil, "success hides the button")
+        let retry = sending.finished(CrashSendOutcome(success: false, canRetry: true, message: "busy", reportId: nil, zipPath: "/z"))
+        expectEqual([retry.title, retry.buttonTitle ?? "-"], ["Crash report not sent", "Try again"], "retryable: Try again")
+        expectEqual(retry.buttonEnabled, true, "re-enabled"); expectEqual(retry.style, .warning, "warning style")
+        let rejected = sending.finished(CrashSendOutcome(success: false, canRetry: false, message: "413", reportId: nil, zipPath: "/z"))
+        expectEqual(rejected.buttonTitle, nil, "non-retryable: no button")
+        let thrown = sending.failed("boom")
+        expectEqual([thrown.title, thrown.message, thrown.buttonTitle ?? "-"], ["Crash report not sent", "Sending failed: boom", "Try again"], "thrown")
+        expectEqual(thrown.style, .error, "error style")
+    }
+
+    /// No key: no coordinator, so no scan and no bar.
+    @MainActor
+    static func testCrashNoBarWithoutKey() {
+        let model = AppModel()
+        model.startCrashReports(coordinator: nil)
+        expect(!model.crashScanStarted, "no coordinator: no scan")
+        expect(model.crashBar == nil, "no bar")
+    }
+
+    /// The scan runs once per process (not on every tab visit); its result reaches the bar.
+    /// Mutation: scan on every call.
+    @MainActor
+    static func testCrashScanOncePerProcess() {
+        let dir = crashTempDir("once")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let t0 = Date(timeIntervalSince1970: 1_795_341_600)
+        let reportPath = dir + "/corevideo-native-2026-11-22-100000.ips"
+        FileManager.default.createFile(atPath: reportPath, contents: crashFixture(),
+                                       attributes: [.modificationDate: t0.addingTimeInterval(-60)])
+        func coordinator() -> CrashReportCoordinator? {
+            CrashReportCoordinator.make(config: .resolve(endpointOverride: "https://t.example", apiKey: "k"),
+                                        store: CrashReportWatermarkStore(path: dir + "/w.json"), directories: [dir], logFiles: [],
+                                        bundleDirectory: dir + "/b", version: "1", machineClass: "m",
+                                        transport: { _, _, _, _, _ in .init(status: .accepted) }, now: { t0 }, log: { _ in })
+        }
+        let model = AppModel()
+        model.startCrashReports(coordinator: coordinator())
+        spin(until: { model.crashBar != nil }, limit: 5)
+        expect(model.crashBar?.message.contains("corevideo-native") == true, "the launch scan offers the report")
+        expectEqual(model.pendingCrashReports.count, 1, "one report pending")
+        model.crashBar = nil
+        model.startCrashReports(coordinator: coordinator())
+        spin(until: { model.crashBar != nil }, limit: 0.5)
+        expect(model.crashBar == nil, "a second start does not scan again")
+    }
+
+    // ── Security review (2026-11-25): secrets in kept free text, and known literals ──
+
+    /// A stream key planted in the asi message (a KEPT free-text field) never survives: kept
+    /// strings go through the shell's redactor, not only the path scrub. Red first: the
+    /// path-scrub-only sanitizer kept it. Mutation: path-scrub only.
+    static func testCrashSanitizeRedactsKeptFreeText() {
+        let planted = String(decoding: crashFixture(), as: UTF8.self)
+            .replacingOccurrences(of: "\"abort() called\"",
+                                  with: "\"abort() called: rtmp://a.rtmp.youtube.com/live2/\(plantedStreamKey) token=PLANTEDtoken99\"")
+        expect(planted.contains(plantedStreamKey), "fixture: the key is planted in asi")
+        guard let clean = IpsSanitizer.sanitize(Data(planted.utf8)) else { expect(false, "sanitizes"); return }
+        let text = String(decoding: clean, as: UTF8.self)
+        expect(!text.contains(plantedStreamKey), "the planted stream key is gone from the kept asi text")
+        expect(!text.contains("PLANTEDtoken99"), "a token= value is gone too")
+        expect(text.contains("abort() called"), "the diagnostic text around it is kept")
+    }
+
+    /// A known literal the regex rules cannot recognise (a short lowercase passcode with no key=
+    /// prefix) is scrubbed by identity from a log tail. Red first: redactLines ran without the
+    /// literals. Mutation: drop the literals.
+    static func testCrashArchiveKnownLiteralScrubbed() {
+        let dir = crashTempDir("literal")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let log = dir + "/CoreVideoPro-shell.log"
+        FileManager.default.createFile(atPath: log, contents: Data("zoom: joined 81234567 with hunter22 today\nlast\n".utf8))
+        expectEqual(Redactor.redactLines("joined with hunter22 today"), "joined with hunter22 today",
+                    "fixture: the regex rules alone do NOT catch this literal")
+        guard let result = try? CrashReportArchiveBuilder.build(
+            zipPath: dir + "/out.zip",
+            request: CrashArchiveRequest(reports: [], logFiles: [log], supportBundlePath: nil, appVersion: "1",
+                                         knownSecretLiterals: ["hunter22"]),
+            now: Date(timeIntervalSince1970: 1_795_341_600)) else { expect(false, "builds"); return }
+        let everything = unzipEntries(result.zipPath).values.map { String(decoding: $0, as: UTF8.self) }.joined()
+        expect(!everything.contains("hunter22"), "the known literal is in NO entry")
+        expect(everything.contains("last"), "the rest of the tail is kept")
+    }
+
+    /// The final check: an entry that still carries a known literal (here a support bundle passed
+    /// in raw) is withheld, and the manifest says so without quoting the literal.
+    static func testCrashArchiveWithholdsEntryWithLiteral() {
+        let dir = crashTempDir("withhold")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        FileManager.default.createFile(atPath: dir + "/bundle.json", contents: Data(#"{"note":"hunter22"}"#.utf8))
+        guard let result = try? CrashReportArchiveBuilder.build(
+            zipPath: dir + "/out.zip",
+            request: CrashArchiveRequest(reports: [], logFiles: [], supportBundlePath: dir + "/bundle.json", appVersion: "1",
+                                         knownSecretLiterals: ["hunter22"]),
+            now: Date(timeIntervalSince1970: 1_795_341_600)) else { expect(false, "builds"); return }
+        expect(!result.included.contains("support-bundle.json"), "the entry carrying the literal is withheld")
+        expect(result.manifestText.contains("Skipped: support-bundle.json — withheld: a known secret survived redaction"),
+               "the manifest says why (\(result.manifestText))")
+        expect(!result.manifestText.contains("hunter22"), "without quoting the secret")
+        let everything = unzipEntries(result.zipPath).values.map { String(decoding: $0, as: UTF8.self) }.joined()
+        expect(!everything.contains("hunter22"), "the literal is in no entry")
+    }
+
+    /// A kept string or a log line over 8 KiB is omitted (never scanned, never sent raw), and a
+    /// huge one costs milliseconds, not hours: the redactor is quadratic on one long run, and a
+    /// 700 KiB string hung this harness for hours before the bound. Mutation: drop the bound.
+    static func testCrashLongTextOmittedNotScanned() {
+        let huge = String(repeating: "x", count: 600_000)
+        let report = #"{"app_name":"CoreVideoProShell"}"# + "\n" + #"{"procName":"p","asi":{"lib":[""# + huge + #""]}}"#
+        let started = Date()
+        let clean = IpsSanitizer.sanitize(Data(report.utf8)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        expect(Date().timeIntervalSince(started) < 5, "a huge kept string is handled in well under 5 s")
+        expect(clean.contains("[omitted: 600000 characters]"), "the huge string is replaced by a marker")
+        expect(!clean.contains("xxxxxxxxxx"), "and none of it is sent")
+        let tail = String(decoding: CrashReportArchiveBuilder.redactTail(Data(("short\n" + huge + "\nend\n").utf8), truncated: false), as: UTF8.self)
+        expectEqual(tail, "short\n[line omitted: 600000 characters]\nend\n", "a huge log line is omitted, the rest kept")
     }
 }
