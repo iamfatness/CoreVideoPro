@@ -32,6 +32,8 @@ extension ShellTests {
             ("crash/archive-known-literal-scrubbed", testCrashArchiveKnownLiteralScrubbed),
             ("crash/archive-withholds-entry-with-literal", testCrashArchiveWithholdsEntryWithLiteral),
             ("crash/long-text-omitted-not-scanned", testCrashLongTextOmittedNotScanned),
+            ("crash/sanitize-redacts-keys-without-collisions", testCrashSanitizeRedactsKeysWithoutCollisions),
+            ("crash/literal-check-sees-through-json-escaping", testCrashLiteralCheckSeesThroughJsonEscaping),
             ("crash/bar-copy-and-states", testCrashBarCopyAndStates),
             ("crash/no-bar-without-key", testCrashNoBarWithoutKey),
             ("crash/scan-once-per-process", testCrashScanOncePerProcess),
@@ -568,5 +570,80 @@ extension ShellTests {
         expect(!clean.contains("xxxxxxxxxx"), "and none of it is sent")
         let tail = String(decoding: CrashReportArchiveBuilder.redactTail(Data(("short\n" + huge + "\nend\n").utf8), truncated: false), as: UTF8.self)
         expectEqual(tail, "short\n[line omitted: 600000 characters]\nend\n", "a huge log line is omitted, the rest kept")
+    }
+
+    // ── Security review 2 (2026-11-26): keys, and literals behind JSON escaping ──
+
+    /// Dictionary KEYS get the full redactor too, and two keys that redact to the same text are
+    /// both kept (no silent overwrite). Red first: keys were only path-scrubbed.
+    /// Mutation: path-scrub keys only; let a colliding key overwrite.
+    static func testCrashSanitizeRedactsKeysWithoutCollisions() {
+        let report = #"{"app_name":"CoreVideoProShell"}"# + "\n"
+            + #"{"procName":"p","asi":{"rtmp://a.rtmp.youtube.com/live2/"# + plantedStreamKey + #"":["first"],"#
+            + #""token=AAAAsecret1":["second"],"token=BBBBsecret2":["third"]}}"#
+        guard let clean = IpsSanitizer.sanitize(Data(report.utf8)) else { expect(false, "sanitizes"); return }
+        let text = String(decoding: clean, as: UTF8.self)
+        expect(!text.contains(plantedStreamKey), "a stream key inside a KEY is redacted")
+        expect(!text.contains("AAAAsecret1") && !text.contains("BBBBsecret2"), "secret values inside keys are redacted")
+        let body = json(String(text.split(separator: "\n", maxSplits: 1).last ?? ""))
+        let asi = body["asi"] as? [String: [String]] ?? [:]
+        expectEqual(asi.count, 3, "three keys stay three keys (colliding redactions do not overwrite)")
+        expectEqual(Set(asi.values.flatMap { $0 }), ["first", "second", "third"], "no value was lost to a collision")
+    }
+
+    /// A literal with '/', '"' and '\\' is caught as the reader would see it, not only as
+    /// serialized bytes (JSON escapes '"' and '\\', which hid it from a byte search): in a report
+    /// KEY, in an escaped support-bundle JSON string, in a log tail, and in a manifest line.
+    /// Red first: keys kept the literal and the byte check missed the escaped forms.
+    static func testCrashLiteralCheckSeesThroughJsonEscaping() {
+        let literal = #"pa/ss"w\rd99"#
+        let literal2 = #"hunter"22"#
+        let dir = crashTempDir("escape")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let t0 = Date(timeIntervalSince1970: 1_795_341_600)
+        func jsonString(_ s: String) -> String {
+            String(decoding: (try? JSONSerialization.data(withJSONObject: [s], options: [.withoutEscapingSlashes])) ?? Data(), as: UTF8.self)
+                .dropFirst().dropLast().description
+        }
+        let ips = #"{"app_name":"CoreVideoProShell"}"# + "\n" + #"{"procName":"p","asi":{"# + jsonString(literal) + #":["v"]}}"#
+        let report = stageReport(dir, name: "corevideo-native-2026-11-22-100000.ips", data: Data(ips.utf8), at: t0)
+        FileManager.default.createFile(atPath: dir + "/bundle.json", contents: Data((#"{"note":"# + jsonString(literal) + "}").utf8))
+        FileManager.default.createFile(atPath: dir + "/CoreVideoPro-shell.log", contents: Data("joined with \(literal) ok\nlast\n".utf8))
+        guard let result = try? CrashReportArchiveBuilder.build(
+            zipPath: dir + "/out.zip",
+            request: CrashArchiveRequest(reports: [report], logFiles: [dir + "/CoreVideoPro-shell.log", dir + "/x-\(literal2).log"],
+                                         supportBundlePath: dir + "/bundle.json", appVersion: "1",
+                                         knownSecretLiterals: [literal, literal2]),
+            now: t0) else { expect(false, "builds"); return }
+        let entries = unzipEntries(result.zipPath)
+        // Read every entry as a reader would: JSON entries parsed (escapes undone), text as text.
+        func readable(_ data: Data) -> String {
+            if let object = try? JSONSerialization.jsonObject(with: data) { return "\(object)" + String(decoding: data, as: UTF8.self) }
+            let text = String(decoding: data, as: UTF8.self)
+            let parts = text.split(separator: "\n", maxSplits: 1)
+            let parsed = parts.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }.map { "\($0)" }.joined()
+            return text + parsed
+        }
+        func keysAndStrings(_ value: Any) -> [String] {
+            switch value {
+            case let s as String: return [s]
+            case let a as [Any]: return a.flatMap(keysAndStrings)
+            case let o as [String: Any]: return o.keys.map { $0 } + o.values.flatMap(keysAndStrings)
+            default: return []
+            }
+        }
+        var strings: [String] = [result.manifestText]
+        for (_, data) in entries {
+            let text = String(decoding: data, as: UTF8.self)
+            strings.append(text)
+            for part in text.split(separator: "\n", maxSplits: 1) {
+                if let object = try? JSONSerialization.jsonObject(with: Data(part.utf8)) { strings += keysAndStrings(object) }
+            }
+            if let object = try? JSONSerialization.jsonObject(with: data) { strings += keysAndStrings(object) }
+        }
+        _ = readable
+        expect(!strings.contains { $0.contains(literal) }, "the literal with / \" \\\\ is in no key, value, line or manifest")
+        expect(!strings.contains { $0.contains(literal2) }, "the second literal (a manifest file name) is nowhere either")
+        expect(entries["logs/CoreVideoPro-shell.log"].map { String(decoding: $0, as: UTF8.self).contains("last") } == true, "the tail is kept, scrubbed")
     }
 }

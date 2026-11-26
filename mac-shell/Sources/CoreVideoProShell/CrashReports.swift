@@ -150,11 +150,36 @@ enum IpsSanitizer {
     /// Kept free text (asi, exception, termination, ktriageinfo, legacyInfo, queue names) goes
     /// through the shell's redactor and the known secret literals, not only the path scrub.
     static func sanitize(_ ips: Data, literals: [String] = []) -> Data? {
-        guard let text = String(data: ips, encoding: .utf8) else { return nil }
+        if case .clean(let data) = sanitizeChecked(ips, literals: literals) { return data }
+        return nil
+    }
+
+    enum Outcome: Equatable { case clean(Data), unreadable, literalSurvived }
+
+    /// True when any known literal (4+ characters) is in a KEY or STRING of `value`, read as
+    /// the receiver will read it: unescaped, before serialization.
+    static func carriesLiteral(_ value: Any, _ literals: [String]) -> Bool {
+        let wanted = literals.filter { $0.count >= 4 }
+        guard !wanted.isEmpty else { return false }
+        func walk(_ value: Any) -> Bool {
+            switch value {
+            case let text as String: return wanted.contains { text.contains($0) }
+            case let array as [Any]: return array.contains(where: walk)
+            case let object as [String: Any]:
+                return object.contains { key, element in wanted.contains { key.contains($0) } || walk(element) }
+            default: return false
+            }
+        }
+        return walk(value)
+    }
+
+    /// sanitize, with the support bundle's final check run on the unescaped keys and values.
+    static func sanitizeChecked(_ ips: Data, literals: [String] = []) -> Outcome {
+        guard let text = String(data: ips, encoding: .utf8) else { return .unreadable }
         let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
         guard parts.count == 2,
               let header = (try? JSONSerialization.jsonObject(with: Data(parts[0].utf8))) as? [String: Any],
-              let body = (try? JSONSerialization.jsonObject(with: Data(parts[1].utf8))) as? [String: Any] else { return nil }
+              let body = (try? JSONSerialization.jsonObject(with: Data(parts[1].utf8))) as? [String: Any] else { return .unreadable }
         var cleanBody = body.filter { bodyKeys.contains($0.key) }
         if let images = cleanBody["usedImages"] as? [[String: Any]] {
             cleanBody["usedImages"] = images.map { $0.filter { imageKeys.contains($0.key) } }
@@ -163,12 +188,14 @@ enum IpsSanitizer {
             cleanBody["threads"] = threads.map { $0.filter { threadKeys.contains($0.key) } }
         }
         let cleanHeader = scrub(header.filter { headerKeys.contains($0.key) }, literals: literals)
+        let scrubbedBody = scrub(cleanBody, literals: literals)
+        if carriesLiteral(cleanHeader, literals) || carriesLiteral(scrubbedBody, literals) { return .literalSurvived }
         // Slashes unescaped: a reader (and any text search for a path) sees the real characters.
         guard let headerData = try? JSONSerialization.data(withJSONObject: cleanHeader, options: [.sortedKeys, .withoutEscapingSlashes]),
-              let bodyData = try? JSONSerialization.data(withJSONObject: scrub(cleanBody, literals: literals),
+              let bodyData = try? JSONSerialization.data(withJSONObject: scrubbedBody,
                                                          options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])
-        else { return nil }
-        return headerData + Data("\n".utf8) + bodyData
+        else { return .unreadable }
+        return .clean(headerData + Data("\n".utf8) + bodyData)
     }
 
     /// Every string value: "/Users/<name>" -> "/Users/USER", then the shell's redactor (secret
@@ -184,8 +211,19 @@ enum IpsSanitizer {
             return Redactor.scrub(scrubPath(text), literals: literals)
         case let array as [Any]: return array.map { scrub($0, literals: literals) }
         case let object as [String: Any]:
+            // Keys get the same redactor, literals and bound as values. Two keys that redact to
+            // the same text are both kept ("<key> (2)", ...), never silently overwritten.
             var out: [String: Any] = [:]
-            for (key, element) in object { out[scrubPath(key)] = scrub(element, literals: literals) }
+            for key in object.keys.sorted() {
+                var clean = key.utf8.count > maxScrubbedLength
+                    ? "[omitted: \(key.utf8.count) characters]" : Redactor.scrub(scrubPath(key), literals: literals)
+                if out[clean] != nil {
+                    var n = 2
+                    while out["\(clean) (\(n))"] != nil { n += 1 }
+                    clean = "\(clean) (\(n))"
+                }
+                out[clean] = scrub(object[key] as Any, literals: literals)
+            }
             return out
         default: return value
         }

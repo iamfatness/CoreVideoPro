@@ -65,8 +65,28 @@ enum CrashReportArchiveBuilder {
     }
 
     /// True when any known literal (4+ characters, as the support bundle) is still in `data`.
+    /// The final check on an entry, read as the receiver reads it: the raw text, and, when the
+    /// entry is JSON (or an .ips header + body), every unescaped key and string as well (JSON
+    /// escaping of '"' and '\\' hides a literal from a byte search).
     static func carriesLiteral(_ data: Data, _ literals: [String]) -> Bool {
-        literals.contains { data.range(of: Data($0.utf8)) != nil }
+        if literals.contains(where: { data.range(of: Data($0.utf8)) != nil }) { return true }
+        if let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+            return IpsSanitizer.carriesLiteral(object, literals)
+        }
+        let text = String(decoding: data, as: UTF8.self)
+        return text.split(separator: "\n").contains { line in
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8), options: [.fragmentsAllowed]) else { return false }
+            return IpsSanitizer.carriesLiteral(object, literals)
+        }
+    }
+
+    /// The manifest is generated text that can quote a file name: scrubbed with the literals,
+    /// then any line that still carries one is withheld.
+    static func scrubManifest(_ text: String, literals: [String]) -> String {
+        Redactor.redactLines(text, literals: literals)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in literals.contains { line.contains($0) } ? "[line withheld: a known secret]" : String(line) }
+            .joined(separator: "\n")
     }
 
     static func build(zipPath: String, request: CrashArchiveRequest, now: Date) throws -> CrashArchiveResult {
@@ -108,10 +128,11 @@ enum CrashReportArchiveBuilder {
             guard let raw = FileManager.default.contents(atPath: report.path) else {
                 skipped.append("\(name) — unreadable"); continue
             }
-            guard let clean = IpsSanitizer.sanitize(raw, literals: literals) else {
-                skipped.append("\(name) — not a readable crash report; never sent raw"); continue
+            switch IpsSanitizer.sanitizeChecked(raw, literals: literals) {
+            case .clean(let clean): sanitized.append((report, clean))
+            case .literalSurvived: skipped.append("\(name) — withheld: a known secret survived redaction")
+            case .unreadable: skipped.append("\(name) — not a readable crash report; never sent raw")
             }
-            sanitized.append((report, clean))
         }
 
         // The support bundle's final check: an entry that still carries a known literal is
@@ -166,7 +187,7 @@ enum CrashReportArchiveBuilder {
             manifest.append("Included: \(bundleEntry) (\(bundle.count) bytes, redacted diagnostics snapshot)")
         }
         if !skipped.isEmpty { manifest.append(""); manifest += skipped.map { "Skipped: \($0)" } }
-        let manifestText = manifest.joined(separator: "\n") + "\n"
+        let manifestText = scrubManifest(manifest.joined(separator: "\n") + "\n", literals: literals)
         try Data(manifestText.utf8).write(to: URL(fileURLWithPath: staging + "/manifest.txt"))
         included.insert("manifest.txt", at: 0)
         if plan.isEmpty { try? fm.removeItem(atPath: staging + "/dumps") }
