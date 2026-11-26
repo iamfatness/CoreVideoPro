@@ -116,7 +116,7 @@ struct CrashBarView: View {
                 }
             }
             Spacer(minLength: 0)
-            Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)) }
+            Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)) }  // design-lint: allow (icon)
                 .buttonStyle(.plain).foregroundStyle(Studio.secondary)
                 .help("Close")
         }
