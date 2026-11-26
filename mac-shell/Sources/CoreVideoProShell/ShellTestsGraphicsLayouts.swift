@@ -21,6 +21,8 @@ extension ShellTests {
             ("graphics-layouts/row-editor-options-and-read", testRowEditorOptionsAndRead),
             ("graphics-layouts/shift-f2-cues-that-layout", testShiftF2CuesTheLayoutWithThatHotkey),
             ("graphics-layouts/missing-scene-refuses-at-cue", testMissingSceneLayoutRefusesAtCue),
+            ("graphics-layouts/cancel-during-preparation", testCancelDuringPreparationReleasesOwnedCues),
+            ("graphics-layouts/confirm-cancels-played-out-auto-outs", testConfirmCancelsAutoOutsOfPlayedOutGraphics),
         ]
     }
 
@@ -209,6 +211,11 @@ extension ShellTests {
             expectEqual(result?.reason, expected["reason"] as? String, "\(id): reason")
             expectEqual(result?.accepted, expected["accepted"] as? Bool, "\(id): accepted")
             if let cancelReason = expected["cancelReason"] as? String { expectEqual(cancelled?.reason, cancelReason, "\(id): cancel") }
+            // A refused guarded layout leaves its progress Blocked with the reason (CueLayoutAsync).
+            if result?.accepted == false, input["layoutId"] as? String == "final-scores" {
+                expectEqual(model.playout.layoutProgress?.state, "Blocked", "\(id): progress Blocked")
+                expectEqual(model.playout.layoutProgress?.reason, result?.reason, "\(id): with the reason")
+            }
             if input["cancelAfter"] as? Bool != true {
                 let prepared = model.playout.preparedLayout
                 let want = expected["prepared"] as? JSONObject
@@ -367,7 +374,7 @@ extension ShellTests {
         }
         expectEqual(route, .layoutCue(layoutId: "two-up"), "to the Two-up preset")
         expect(model.perform(route, subjectSourceId: nil), "the route is performed")
-        expectEqual(model.selectedLayoutId, "two-up", "and selects the layout")
+        expectEqual(model.selectedLayoutId, "", "a hotkey cues without selecting (Windows selects on a click)")
         spin(until: { !selected.isEmpty }, limit: 2)
         expectEqual(selected, ["interview"], "the cue starts with the layout's scene select")
     }
@@ -383,5 +390,70 @@ extension ShellTests {
         expectEqual(graphicsCore.commands.count, 0, "no graphics command")
         expectEqual(takeCore.bodies.count, 0, "no scene sync")
         expectEqual(app.previewSceneId, "s1", "Preview unchanged")
+    }
+
+    /// A cancel while a guarded cue is still preparing stops it and releases the attempt's own cues.
+    @MainActor
+    static func testCancelDuringPreparationReleasesOwnedCues() {
+        let core = ScriptedGraphicsCore(epoch: "epoch-1")
+        core.node["templates"] = layoutCatalog()
+        let owned = ScriptedGraphicsCore.ownedCueReaction()
+        core.react = { command, node in
+            let outcome = owned(command, &node)
+            if command["type"] as? String == "graphics-instance-cue" {   // the cue never lands: preparation keeps waiting
+                let id = (command["graphics"] as? JSONObject)?["instanceId"] as? String
+                node["instances"] = (node["instances"] as? [JSONObject] ?? []).map { var i = $0; if i["instanceId"] as? String == id { i["cuePending"] = true }; return i }
+            }
+            return outcome
+        }
+        let model = graphicsModel(core)
+        model.document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
+        var cancelled: GraphicsOperationResult?
+        var waits = 0
+        var clock = Date(timeIntervalSince1970: 1_795_867_200)
+        model.playout.now = { clock }
+        model.playout.sleep = { [weak core, weak model] ns in
+            clock = clock.addingTimeInterval(Double(ns) / 1e9)
+            waits += 1
+            if let core { model?.observe(snapshot: ["graphics": core.node]) }
+            if waits == 2, let model {
+                Task { @MainActor in cancelled = await model.playout.cancelLayout() }
+                for _ in 0..<10 { await Task.yield() }   // the cancel marks the running preparation
+            }
+        }
+        let result = awaitMain(10) {
+            await model.playout.cueLayout("final-scores", sceneSelect: { _ in true }, programSubject: nil, sceneGuests: [], previewStamp: { "s" })
+        }
+        spin(until: { cancelled != nil }, limit: 3)
+        expectEqual(result?.reason, "Graphics playout cancelled. Retry explicitly when ready.", "the preparation stopped at the cancel (Windows Run)")
+        expectEqual(cancelled?.reason, "Shot Layout cue cancelled.", "the cancel reports")
+        let uncues = core.commands.filter { ($0["graphics"] as? JSONObject)?["action"] as? String == "uncue" }
+        expectEqual(uncues.count, 1, "the one cue sent is released")
+        expect(uncues.allSatisfy { (($0["graphics"] as? JSONObject)?["cueOwner"] as? String)?.hasPrefix("layout-") == true }, "owned")
+        expect(model.playout.preparedLayout == nil && model.playout.layoutProgress == nil, "nothing prepared, no progress")
+    }
+
+    /// ConfirmLayoutTake: a playOutOthers layout's Take cancels the auto-out of the Program graphics it played out.
+    @MainActor
+    static func testConfirmCancelsAutoOutsOfPlayedOutGraphics() {
+        let core = ScriptedGraphicsCore(epoch: "epoch-1", instances: [
+            ScriptedGraphicsCore.instance("playlist-logo", program: 2, visibility: "visible"),
+            ScriptedGraphicsCore.instance("playlist-title", program: 2, visibility: "visible"),
+        ])
+        let model = graphicsModel(core)
+        model.observe(snapshot: ["graphics": core.node, "profile": ["capabilityStates": ["graphics-instances": ["state": "available"]]]])
+        var row = GraphicsRow(json: ["id": "logo", "name": "Logo", "kind": "logo", "playOutAfterMs": 8000])
+        row.playOutAfterMs = 8000
+        model.playout.sleep = { _ in try? await Task.sleep(nanoseconds: 10_000_000_000) }
+        model.playout.armAutoOut(row, "playlist-logo", epoch: "epoch-1")
+        model.playout.armAutoOut(row, "playlist-title", epoch: "epoch-1")
+        var layout = GraphicsShotLayout(json: [:]); layout.id = "clean"; layout.name = "Clean"; layout.playOutOthers = true; layout.rowIds = ["title"]
+        model.playout.preparedLayout = GraphicsPreparedLayout(layout: layout, coreEpoch: "epoch-1", attemptId: "layout-a",
+                                                              cues: [GraphicsLayoutCue(instanceId: "playlist-title", cueRevision: 3)], previewStamp: nil)
+        model.playout.confirmLayoutTake(attemptId: "layout-a")
+        expect(model.playout.autoOut["playlist-logo"] == nil, "the played-out graphic's auto-out is cancelled")
+        expect(model.playout.autoOut["playlist-title"] != nil, "the carried graphic keeps its auto-out")
+        expect(model.playout.preparedLayout == nil, "confirmed")
+        model.playout.cancelAllAutoOut()
     }
 }

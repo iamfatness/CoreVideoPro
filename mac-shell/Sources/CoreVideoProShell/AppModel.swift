@@ -1920,6 +1920,10 @@ final class AppModel: ObservableObject {
         sourceGrades.coreGenerationChanged()
         // Graphics: a new core has none of the old one's instances (spec 5.3).
         graphics.coreGenerationChanged()
+        // A guarded Shot Layout Take pending on the old core can never be confirmed by this one, and
+        // it holds every scene sync (D10): resolve it now as the epoch-changed outcome (rollback, the
+        // owed sync) instead of leaving Program empty until the operator presses Check Take.
+        resolvePendingGuardedTakeAfterRestart()
         // One-shot: the brand kit is lost on respawn (L18a, gotchas). Sent at
         // launch and on every generation, not only when the operator edits it.
         pushBrandKitNow()
@@ -3911,12 +3915,22 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
-    /// CaptureLayoutPreviewStamp: Program and Preview scene ids, the core's Preview scene id and the
-    /// Preview routes. (Windows also folds in its PreviewScene object; the Mac leaves out the snapshot
-    /// node's revision and counts, which move on every repeated sync without an operator edit.)
+    /// CaptureLayoutPreviewStamp (StudioViewModel.GraphicsPlayout.cs:88): Program and Preview scene
+    /// ids, the local Preview scene model (Windows serialises its PreviewScene object: here the scene's
+    /// layout, edited layers, background asset and background payload) and the Preview routes. The Mac
+    /// adds the core's Preview scene id, so a cue made before the core showed the scene is not current.
     func layoutPreviewStamp() -> String {
+        let scene = scenes.first { $0.id == previewSceneId }
+        var sceneModel: JSONObject = [:]
+        if let scene {
+            sceneModel = ["id": scene.id, "name": scene.name, "layout": scene.layout, "backgroundAssetId": scene.backgroundAssetId,
+                          "layers": scene.layers.map { ["id": $0.id, "slotId": $0.slotId as Any? ?? NSNull(), "x": $0.x, "y": $0.y,
+                                                        "width": $0.width, "height": $0.height, "fitMode": $0.fitMode,
+                                                        "opacity": $0.opacity, "mediaAssetId": $0.mediaAssetId as Any? ?? NSNull()] as JSONObject }]
+            if let background = backgroundPayload(for: scene.id) { sceneModel["background"] = background }
+        }
         let stamp: JSONObject = [
-            "activeSceneId": programSceneId, "previewSceneId": previewSceneId,
+            "activeSceneId": programSceneId, "previewSceneId": previewSceneId, "previewScene": sceneModel,
             "corePreviewSceneId": (lastSnapshot["previewScene"] as? JSONObject)?["sceneId"] as? String ?? "",
             "routes": buildRoutes(for: previewSceneId),
         ]
@@ -4012,12 +4026,13 @@ final class AppModel: ObservableObject {
         defer { takeInFlight = false }
         if pendingGuardedTake != nil { return await resolveGuardedTake() }
         func refuse(_ text: String) -> TakeResult { takeStatus = text; return .failed(text) }
-        if graphics.playout.layoutPreparing { return refuse("Wait for all Shot Layout graphics to prepare.") }
+        // These three refusals are returned without a status line, as Windows TakeAsync does.
+        if graphics.playout.layoutPreparing { return .failed("Wait for all Shot Layout graphics to prepare.") }
         let prepared = graphics.playout.preparedLayout
         let guarded = prepared == nil ? nil : graphics.createGuardedTake(snapshot: lastSnapshot, activeSceneId: programSceneId)
-        if prepared != nil && guarded == nil { return refuse("The Shot Layout cue changed. Cancel and cue it again.") }
+        if prepared != nil && guarded == nil { return .failed("The Shot Layout cue changed. Cancel and cue it again.") }
         if guarded != nil && bridge == nil && quitRequestForTesting == nil {
-            return refuse("The core is offline. Cue the Shot Layout again after it reconnects.")
+            return .failed("The core is offline. Cue the Shot Layout again after it reconnects.")
         }
         let keepProgram = guarded?.keepProgramScene == true
         let previousProgram = programSceneId

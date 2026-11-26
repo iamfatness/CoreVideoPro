@@ -48,6 +48,7 @@ extension GraphicsPlayout {
     /// at Blocked with the reason.
     func cueLayout(_ layoutId: String, sceneSelect: @escaping (String) async -> Bool, programSubject: GraphicsPlaylistEntry?,
                    sceneGuests: [GraphicsPlaylistEntry], previewStamp: @escaping () -> String) async -> GraphicsOperationResult {
+        if !layoutPreparing { layoutCancelRequested = false }   // a cancel belongs to the preparation it stopped
         let result = await run { try await self.cueLayoutCore(layoutId, sceneSelect: sceneSelect, programSubject: programSubject,
                                                               sceneGuests: sceneGuests, previewStamp: previewStamp) }
         if !result.accepted, !(layout(layoutId)?.rowSettings.isEmpty ?? true), !layoutCancelRequested,

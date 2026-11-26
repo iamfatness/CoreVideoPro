@@ -120,6 +120,15 @@ extension AppModel {
         return .failed(unconfirmed)
     }
 
+    /// A new core generation: a pending guarded Take (not mid-resolution) ends as "Core restarted".
+    func resolvePendingGuardedTakeAfterRestart() {
+        guard let pending = pendingGuardedTake, !takeInFlight else { return }
+        Task { @MainActor in
+            guard self.pendingGuardedTake != nil, !self.takeInFlight else { return }
+            _ = await self.finishGuardedTake(pending, refusal: "Core restarted. Cue the Shot Layout again.")
+        }
+    }
+
     /// FinishGuardedTakeAsync, then the one scene sync held while the Take was pending (D10).
     private func finishGuardedTake(_ pending: PendingGuardedTake, refusal: String?, restore: Bool = true) async -> TakeResult {
         if refusal != nil && restore { _ = pending.rollback() }

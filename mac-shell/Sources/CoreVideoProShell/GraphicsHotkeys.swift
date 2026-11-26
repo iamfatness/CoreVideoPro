@@ -69,8 +69,7 @@ extension GraphicsModel {
             clearAll()
             return true
         case .layoutCue(let layoutId):
-            selectedLayoutId = layoutId
-            cueLayout(layoutId)
+            cueLayout(layoutId)   // graphics.layout.cue only: Windows selects a layout on a button click, not a hotkey
             return true
         }
     }

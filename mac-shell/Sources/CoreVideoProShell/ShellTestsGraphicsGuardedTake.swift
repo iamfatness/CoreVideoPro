@@ -19,6 +19,10 @@ extension ShellTests {
             ("graphics-guarded-take/holds-scene-sync", testGuardedTakeHoldsSceneSync),
             ("graphics-guarded-take/control-take-uses-the-guard", testControlTakeUsesTheGuard),
             ("graphics-guarded-take/stale-guard-refused", testStalePreparedLayoutRefusesTheTake),
+            ("graphics-guarded-take/prepared-layout-currency", testPreparedLayoutCurrencyClauses),
+            ("graphics-guarded-take/warming-for-16-rounds-awaits", testWarmingForSixteenRoundsAwaitsConfirmation),
+            ("graphics-guarded-take/refused-runs-the-owed-sync", testRefusedTakeRunsTheOwedSync),
+            ("graphics-guarded-take/core-restart-resolves-pending", testCoreRestartResolvesThePendingTake),
         ]
     }
 
@@ -34,7 +38,14 @@ extension ShellTests {
         var operationId = ""
         let graphics = ScriptedGraphicsCore()
 
+        /// Requests other than media-core-sync (output/NDI/spine pushes the shell makes on its own).
+        var otherTypes: [String] = []
+
         func handle(_ body: JSONObject) throws -> JSONObject {
+            guard body["type"] as? String == "media-core-sync" else {
+                otherTypes.append(body["type"] as? String ?? "?")
+                return ["ok": true]
+            }
             bodies.append(body)
             let commands = body["commands"] as? [JSONObject] ?? []
             if let transition = commands.first(where: { $0["type"] as? String == "begin-take-transition" }) {
@@ -51,6 +62,17 @@ extension ShellTests {
             return ["snapshot": ["sceneId": programSceneId, "graphics": node]]
         }
 
+        /// The Take's own rounds: transition batches and polls (an ordinary scene sync is neither).
+        var roundBodies: [JSONObject] {
+            bodies.filter { body in
+                let commands = body["commands"] as? [JSONObject] ?? []
+                return commands.isEmpty || commands.first?["type"] as? String == "begin-take-transition"
+            }
+        }
+        static func isOrdinarySync(_ body: JSONObject) -> Bool {
+            let commands = body["commands"] as? [JSONObject] ?? []
+            return !commands.isEmpty && !commands.contains { $0["type"] as? String == "begin-take-transition" }
+        }
         var transitions: [JSONObject] {
             bodies.compactMap { ($0["commands"] as? [JSONObject])?.first { $0["type"] as? String == "begin-take-transition" } }
         }
@@ -165,7 +187,7 @@ extension ShellTests {
             var sleeps: [UInt64] = []
             model.timerSleepForTesting = { sleeps.append($0) }
             expectEqual(runTake(model).result, .failed(text), "no receipt")
-            expectEqual(core.bodies.count, 16, "16 rounds")
+            expectEqual(core.roundBodies.count, 16, "16 rounds")
             // (The timer seam is shared with the shell's other debounces; count the Take's 125 ms rounds.)
             expectEqual(sleeps.filter { $0 == 125_000_000 }.count, 15, "15 waits of 125 ms between them")
             expectEqual(model.programSceneId, "s2", "rolled back: the core still shows the previous Program")
@@ -244,16 +266,16 @@ extension ShellTests {
             rounds += 1
             if rounds == 1 {
                 model?.selectPreviewScene("s3")
-                try? await Task.sleep(nanoseconds: 250_000_000)   // the 120 ms scene debounce fires while warming
+                for _ in 0..<20 { await Task.yield() }   // the (injected, instant) scene debounce runs while warming
             }
         }
         expectEqual(runTake(model).result, .success, "committed")
-        let duringTake = core.bodies.count
         expectEqual(rounds, 3, "three warming rounds waited")
-        expectEqual(duringTake, 4, "send + 3 polls; no scene sync went out while pending")
-        spin(until: { core.bodies.count > duringTake }, limit: 1)
-        spin(until: { false }, limit: 0.3)
-        expectEqual(core.bodies.count, duringTake + 1, "exactly one owed sync after the receipt")
+        spin(until: { core.bodies.count >= 5 }, limit: 1)
+        for _ in 0..<5 { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        expectEqual(core.bodies.count, 5, "send + 3 polls + exactly one owed sync")
+        expectEqual(core.bodies.prefix(4).filter(GuardedTakeCore.isOrdinarySync).count, 0, "no scene sync went out while pending")
+        expect(core.bodies.last.map(GuardedTakeCore.isOrdinarySync) == true, "the owed sync follows the receipt")
         let owed = core.bodies.last?["commands"] as? [JSONObject] ?? []
         expectEqual(owed.first { $0["type"] as? String == "set-preview-scene" }?["sceneId"] as? String, "s3", "carrying the newer Preview")
         expect(!owed.contains { $0["type"] as? String == "begin-take-transition" }, "an ordinary sync")
@@ -266,5 +288,90 @@ extension ShellTests {
         expectEqual(invoke(surface, "transport.take"), .success, "remote Take succeeds")
         expectEqual(core.transitions.first?["operationId"] as? String, guardedAttempt, "through the same guard")
         expect(model.graphics.playout.preparedLayout == nil, "confirmed")
+    }
+
+    /// IsPreparedLayoutCurrent: a Preview edit (routes or the scene model), a re-saved layout, a new core
+    /// epoch or a cue that changed owner each make the Take refuse before anything is sent.
+    @MainActor
+    static func testPreparedLayoutCurrencyClauses() {
+        let cueChanged = "The Shot Layout cue changed. Cancel and cue it again."
+        func refuses(_ label: String, _ change: (AppModel, GuardedTakeCore) -> Void) {
+            let (model, core) = guardedTakeApp(script: ["committed"])
+            change(model, core)
+            expectEqual(runTake(model).result, .failed(cueChanged), "\(label): refused")
+            expectEqual(core.bodies.count, 0, "\(label): nothing sent")
+            expectEqual(model.programSceneId, "s2", "\(label): no swap")
+        }
+        refuses("a Preview route edit") { model, _ in model.scenes[0].layers[0].opacity = 0.5 }
+        refuses("a Preview background edit") { model, _ in model.scenes[0].backgroundAssetId = "other-asset" }
+        refuses("the layout re-saved with a change") { model, _ in model.graphics.document.shotLayouts[0].name = "Final (edited)" }
+        // A new core epoch drops the prepared layout outright (restart rule), so the Take is an ordinary one.
+        do {
+            let (model, core) = guardedTakeApp(script: ["committed"])
+            var node = core.graphics.node; node["coreEpoch"] = "epoch-2"
+            model.graphics.observe(snapshot: ["graphics": node])
+            expect(model.graphics.playout.preparedLayout == nil, "a new core epoch drops the prepared layout")
+            _ = runTake(model)
+            let transition = (core.bodies.first?["commands"] as? [JSONObject])?.first
+            expect(transition?["graphicsLayout"] == nil, "and the next Take carries no guard")
+        }
+        refuses("a cue now owned by another attempt") { model, core in
+            var node = core.graphics.node
+            node["instances"] = (node["instances"] as? [JSONObject] ?? []).map { var i = $0; i["cueOwner"] = "layout-other"; return i }
+            model.graphics.observe(snapshot: ["graphics": node])
+        }
+    }
+
+    /// Warming for every round: the core may still commit after its warm-up, so the guard stays pending
+    /// (Windows' "awaiting confirmation"), never a rollback.
+    @MainActor
+    static func testWarmingForSixteenRoundsAwaitsConfirmation() {
+        let (model, core) = guardedTakeApp(script: ["warming"])
+        let waiting = "Shot Layout Take is awaiting confirmation. Retry Take to check the same operation."
+        expectEqual(runTake(model).result, .failed(waiting), "awaiting confirmation")
+        expectEqual(core.bodies.count, 16, "16 rounds")
+        expect(model.pendingGuardedTake != nil, "the guard stays pending")
+        expectEqual(model.programSceneId, "s1", "no rollback: the core may still commit")
+    }
+
+    /// The one held sync runs on a refusal too (FinishGuardedTake, not only on commit).
+    @MainActor
+    static func testRefusedTakeRunsTheOwedSync() {
+        let (model, core) = guardedTakeApp(script: ["warming", "refused:layout-scene-changed", "none"])
+        var held = false
+        model.timerSleepForTesting = { [weak model] ns in
+            guard ns == AppModel.guardedTakeRoundDelayNs, !held else { return }
+            held = true
+            model?.selectPreviewScene("s3")
+            for _ in 0..<20 { await Task.yield() }   // the (injected, instant) scene debounce runs while warming
+        }
+        expectEqual(runTake(model).result, .failed("Shot Layout Take refused. layout-scene-changed"), "refused")
+        spin(until: { core.bodies.count >= 3 }, limit: 1)
+        for _ in 0..<5 { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        expectEqual(core.bodies.prefix(2).filter(GuardedTakeCore.isOrdinarySync).count, 0, "send + one poll; the scene sync was held")
+        expectEqual(core.bodies.count, 3, "exactly one sync after the refusal (rollback and owed sync coalesce)")
+        expect(!(core.bodies.last?["commands"] as? [JSONObject] ?? []).contains { $0["type"] as? String == "begin-take-transition" }, "an ordinary sync")
+    }
+
+    /// Restart rule: a guarded Take left pending (no observation) is resolved by the next core generation as
+    /// "Core restarted", rolled back, and the held scene sync goes out instead of waiting for Check Take.
+    @MainActor
+    static func testCoreRestartResolvesThePendingTake() {
+        let (model, core) = guardedTakeApp(script: ["throw"])
+        _ = runTake(model)
+        expect(model.pendingGuardedTake != nil, "pending after a dead core")
+        core.script = ["none"]
+        model.onConnected()
+        spin(until: { model.pendingGuardedTake == nil }, limit: 2)
+        expect(model.pendingGuardedTake == nil, "the new generation resolves it")
+        expectEqual(model.takeStatus, "Core restarted. Cue the Shot Layout again.", "Windows' epoch text")
+        expectEqual(model.programSceneId, "s2", "rolled back")
+        expectEqual(model.previewSceneId, "s1", "Preview restored")
+        spin(until: { core.bodies.contains { ($0["commands"] as? [JSONObject] ?? []).contains { $0["type"] as? String == "load-scene-graph" } && !($0["commands"] as? [JSONObject] ?? []).contains { $0["type"] as? String == "begin-take-transition" } } }, limit: 1)
+        expect(core.bodies.contains { body in
+            let commands = body["commands"] as? [JSONObject] ?? []
+            return commands.contains { $0["type"] as? String == "load-scene-graph" && $0["sceneId"] as? String == "s2" }
+                && !commands.contains { $0["type"] as? String == "begin-take-transition" }
+        }, "the held scene sync reaches the new core")
     }
 }

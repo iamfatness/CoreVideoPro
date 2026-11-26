@@ -76,7 +76,6 @@ extension ShellTests {
         app.graphics.document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
         app.selectedTab = .overlays
         expect(app.handleGraphicsKey(fKey(1, [.shift])), "Shift+F1 is consumed")
-        expectEqual(app.graphics.selectedLayoutId, "open", "and selects the Open layout")
         spin(until: { app.graphics.status.hasPrefix("Open:") }, limit: 3)
         expectEqual(app.graphics.status, "Open: scene 'intro' is not in this show, so the layout was not cued. Edit the layout to pick a scene.",
                     "the cue ran (and refused: the preset keeps Windows' scene id)")
