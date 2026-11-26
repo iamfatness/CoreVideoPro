@@ -41,6 +41,9 @@ FAKE_ENGINE = os.environ.get("COREVIDEO_FAKE_ENGINE_PATH") or os.path.join(
 # The core's own budget for a render tick (LockHoldGuardrail::kRenderTickBudgetUs
 # is half a frame). A show that exceeds it on most ticks starves the RPC queue.
 MAX_OVER_BUDGET_RATIO = 0.35
+# Fewest holds a site must log before its over-budget RATIO is gated (see the
+# per-site verdict): one long startup hold is an event, not a rate.
+MIN_GUARDRAIL_SAMPLES = 50
 
 # Average ms the per-tick Zoom engine tap may cost under --load. It is a
 # shared_ptr handoff by design, so this is generous; it exists to catch a
@@ -1243,11 +1246,22 @@ def main():
             per_site[site] = (int(parts[0]), int(parts[1].split(" ")[0]))
         except (IndexError, ValueError):
             continue
+    # A RATIO needs a sample. A site that logged one hold all run (a startup
+    # command: cmd.handle, rpc.metadata-capture) reads 1/1 = 100% when that one
+    # hold ran long on a shared runner, and used to outrank render.display-tick's
+    # 12% of 1,560 and fail main twice (cdf3a83d, 0b5f04d6) on a single event.
+    # Only sites with MIN_GUARDRAIL_SAMPLES holds are gated on their ratio; the
+    # rest are printed so a rare long hold is still visible.
     worst_site = ""
     over = 0
     total = 0
     for site, (site_over, site_total) in per_site.items():
-        if site_total and site_over / site_total >= (over / total if total else 0):
+        if site_total < MIN_GUARDRAIL_SAMPLES:
+            if site_over:
+                print(f"NOTE  coreMutex site '{site}' over budget {site_over}/{site_total} "
+                      f"(under {MIN_GUARDRAIL_SAMPLES} holds: reported, not gated on its ratio)")
+            continue
+        if site_over / site_total >= (over / total if total else 0):
             worst_site, over, total = site, site_over, site_total
     if total:
         ratio = over / total
