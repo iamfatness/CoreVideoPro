@@ -69,7 +69,11 @@ enum CrashReportArchiveBuilder {
     /// entry is JSON (or an .ips header + body), every unescaped key and string as well (JSON
     /// escaping of '"' and '\\' hides a literal from a byte search).
     static func carriesLiteral(_ data: Data, _ literals: [String]) -> Bool {
-        if literals.contains(where: { data.range(of: Data($0.utf8)) != nil }) { return true }
+        // Every form: as typed and JSON-escaped (with and without "\/"), so a text line that
+        // embeds a JSON string is covered, not only whole-JSON entries.
+        if literals.contains(where: { literal in Redactor.literalForms(literal).contains { data.range(of: Data($0.utf8)) != nil } }) {
+            return true
+        }
         if let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
             return IpsSanitizer.carriesLiteral(object, literals)
         }
@@ -85,7 +89,10 @@ enum CrashReportArchiveBuilder {
     static func scrubManifest(_ text: String, literals: [String]) -> String {
         Redactor.redactLines(text, literals: literals)
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line in literals.contains { line.contains($0) } ? "[line withheld: a known secret]" : String(line) }
+            .map { line in
+                literals.contains { literal in Redactor.literalForms(literal).contains { line.contains($0) } }
+                    ? "[line withheld: a known secret]" : String(line)
+            }
             .joined(separator: "\n")
     }
 
@@ -369,7 +376,7 @@ final class CrashReportCoordinator {
     }
 
     /// The Mac's crash report folder: ~/Library/Application Support/CoreVideoPro/support-bundles.
-    static func defaultBundleDirectory() -> String {
+    nonisolated static func defaultBundleDirectory() -> String {
         ((TelemetryConsentStore.defaultPath() as NSString).deletingLastPathComponent as NSString)
             .appendingPathComponent("support-bundles")
     }

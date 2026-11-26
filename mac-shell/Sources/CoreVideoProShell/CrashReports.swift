@@ -163,10 +163,12 @@ enum IpsSanitizer {
         guard !wanted.isEmpty else { return false }
         func walk(_ value: Any) -> Bool {
             switch value {
-            case let text as String: return wanted.contains { text.contains($0) }
+            case let text as String: return wanted.contains { literal in Redactor.literalForms(literal).contains { text.contains($0) } }
             case let array as [Any]: return array.contains(where: walk)
             case let object as [String: Any]:
-                return object.contains { key, element in wanted.contains { key.contains($0) } || walk(element) }
+                return object.contains { key, element in
+                    wanted.contains { literal in Redactor.literalForms(literal).contains { key.contains($0) } } || walk(element)
+                }
             default: return false
             }
         }

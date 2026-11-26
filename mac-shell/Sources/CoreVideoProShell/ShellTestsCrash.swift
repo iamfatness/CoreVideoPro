@@ -34,6 +34,8 @@ extension ShellTests {
             ("crash/long-text-omitted-not-scanned", testCrashLongTextOmittedNotScanned),
             ("crash/sanitize-redacts-keys-without-collisions", testCrashSanitizeRedactsKeysWithoutCollisions),
             ("crash/literal-check-sees-through-json-escaping", testCrashLiteralCheckSeesThroughJsonEscaping),
+            ("crash/live-secrets-reach-crash-zip-and-bundle", testCrashLiveSecretsReachCrashZipAndBundle),
+            ("crash/escaped-literal-inside-a-text-line", testCrashEscapedLiteralInsideATextLine),
             ("crash/bar-copy-and-states", testCrashBarCopyAndStates),
             ("crash/no-bar-without-key", testCrashNoBarWithoutKey),
             ("crash/scan-once-per-process", testCrashScanOncePerProcess),
@@ -645,5 +647,78 @@ extension ShellTests {
         expect(!strings.contains { $0.contains(literal) }, "the literal with / \" \\\\ is in no key, value, line or manifest")
         expect(!strings.contains { $0.contains(literal2) }, "the second literal (a manifest file name) is nowhere either")
         expect(entries["logs/CoreVideoPro-shell.log"].map { String(decoding: $0, as: UTF8.self).contains("last") } == true, "the tail is kept, scrubbed")
+    }
+
+    // ── Security review 3 (2026-11-26): one live-secret source; escaped forms in text ──
+
+    /// Every live secret the shell holds (stream key, SRT passphrase, meeting passcode, the
+    /// YouTube key, the Twitch access and refresh tokens) is planted through the REAL seams (model
+    /// properties, the harness's in-memory Keychain for the social credentials) as short values
+    /// the pattern rules cannot catch. Neither the crash zip, built by the app's own
+    /// makeCrashCoordinator wiring, nor the support bundle from supportBundleInput() may contain
+    /// any of them. Red first: the crash path missed the social secrets and the bundle missed the
+    /// SRT passphrase. Mutation: drift either list.
+    @MainActor
+    static func testCrashLiveSecretsReachCrashZipAndBundle() {
+        let dir = crashTempDir("live")
+        defer {
+            try? FileManager.default.removeItem(atPath: dir)
+            SocialCredentials.youTubeKey.delete(); SocialCredentials.twitch.delete()
+        }
+        let planted = ["stk-4410", "srtp-6672", "pcd-9921", "ytk-7731", "twa-5512", "twr-8843"]
+        let model = AppModel()
+        model.streamKey = planted[0]; model.srtPassphrase = planted[1]; model.joinPasscode = planted[2]
+        SocialCredentials.youTubeKey.writeString(planted[3])
+        SocialCredentials.twitch.write(Data(#"{"accessToken":"twa-5512","refreshToken":"twr-8843"}"#.utf8))
+        for value in planted { expectEqual(Redactor.redactLines("x \(value) y"), "x \(value) y", "fixture: patterns miss \(value)") }
+        let log = dir + "/CoreVideoPro-shell.log"
+        FileManager.default.createFile(atPath: log, contents: Data(("secrets: " + planted.joined(separator: " ") + "\nlast\n").utf8))
+        let t0 = Date(timeIntervalSince1970: 1_795_341_600)
+        let coordinator = model.makeCrashCoordinator(
+            config: .resolve(endpointOverride: "https://t.example", apiKey: "k"), machineClass: "mac-arm64",
+            transport: { _, _, _, _, _ in TelemetrySendResult(status: .accepted, reportId: "r1") },
+            directories: [dir], logFiles: [log], bundleDirectory: dir + "/bundles",
+            store: CrashReportWatermarkStore(path: dir + "/w.json"), now: { t0 })
+        let box = Box<CrashSendOutcome>()
+        Task { box.value = await coordinator?.send([], writeSupportBundle: { _ in false }) }
+        spin(until: { box.value != nil }, limit: 10)
+        let zipText = unzipEntries(box.value?.zipPath ?? "/nope").values.map { String(decoding: $0, as: UTF8.self) }.joined()
+        expect(zipText.contains("last"), "the crash zip carries the tail")
+        for value in planted { expect(!zipText.contains(value), "crash zip: \(value) never leaves the machine") }
+        var input = model.supportBundleInput()
+        input.shellLogPath = log; input.coreLogPath = log
+        input.crashReportDirectory = dir; input.destinationRoot = URL(fileURLWithPath: dir + "/sb")
+        guard let bundle = try? SupportBundle.write(input) else { expect(false, "the support bundle writes"); return }
+        var bundleText = ""
+        let enumerator = FileManager.default.enumerator(atPath: bundle.folder.path)
+        while let file = enumerator?.nextObject() as? String {
+            bundleText += (try? String(contentsOfFile: bundle.folder.path + "/" + file, encoding: .utf8)) ?? ""
+        }
+        expect(bundleText.contains("last"), "the bundle carries the tail")
+        for value in planted { expect(!bundleText.contains(value), "support bundle: \(value) never leaves the machine") }
+    }
+
+    /// A text-prefixed line that embeds a JSON string carrying the ESCAPED form of a literal
+    /// (with and without "\\/" slash escaping) is scrubbed and caught: not only whole-JSON
+    /// lines. Red first. Mutation: replace the raw form only.
+    static func testCrashEscapedLiteralInsideATextLine() {
+        let literal = #"pa/ss"w\rd99"#
+        let escapedSlash = #"pa\/ss\"w\\rd99"#
+        let escapedPlain = #"pa/ss\"w\\rd99"#
+        let dir = crashTempDir("embedded")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let log = dir + "/CoreVideoPro-core.log"
+        let text = "info: payload={\"passcode\":\"\(escapedSlash)\"}\nwarn: again {\"p\":\"\(escapedPlain)\"} done\nlast\n"
+        FileManager.default.createFile(atPath: log, contents: Data(text.utf8))
+        guard let result = try? CrashReportArchiveBuilder.build(
+            zipPath: dir + "/out.zip",
+            request: CrashArchiveRequest(reports: [], logFiles: [log], supportBundlePath: nil, appVersion: "1", knownSecretLiterals: [literal]),
+            now: Date(timeIntervalSince1970: 1_795_341_600)) else { expect(false, "builds"); return }
+        let tail = String(decoding: unzipEntries(result.zipPath)["logs/CoreVideoPro-core.log"] ?? Data(), as: UTF8.self)
+        expect(tail.contains("last"), "the tail is kept")
+        for form in [literal, escapedSlash, escapedPlain] { expect(!tail.contains(form), "no form of the literal (\(form)) is in the tail") }
+        expect(tail.contains("info: payload="), "the line around it is kept")
+        expect(Redactor.scrub("x \(escapedSlash) y", literals: [literal]) == "x \(Redactor.placeholder) y",
+               "the shared redactor replaces the escaped form too (so the support bundle gets it)")
     }
 }

@@ -6174,18 +6174,32 @@ final class AppModel: ObservableObject {
         service.start()
         // R5: the consented crash report needs the same key, and only the key (Windows gates
         // the send on the explicit click, not on telemetry consent).
-        startCrashReports(coordinator: CrashReportCoordinator.make(
-            config: config, store: CrashReportWatermarkStore(path: CrashReportWatermarkStore.defaultPath()),
-            directories: CrashReportScanner.defaultDirectories(), logFiles: [ShellLog.path, CoreLog.path],
-            bundleDirectory: CrashReportCoordinator.defaultBundleDirectory(),
+        startCrashReports(coordinator: makeCrashCoordinator(config: config, machineClass: machine.label,
+                                                            transport: CrashReportUploader.urlSessionTransport()))
+    }
+
+    /// The crash report coordinator as the app wires it. Production uses the defaults; tests pass
+    /// harness folders and a fake transport and keep every other piece of the real wiring.
+    func makeCrashCoordinator(config: TelemetryConfig, machineClass: String, transport: @escaping CrashTransport,
+                              directories: [String] = CrashReportScanner.defaultDirectories(),
+                              logFiles: [String] = [ShellLog.path, CoreLog.path],
+                              bundleDirectory: String = CrashReportCoordinator.defaultBundleDirectory(),
+                              store: CrashReportWatermarkStore = CrashReportWatermarkStore(path: CrashReportWatermarkStore.defaultPath()),
+                              now: @escaping () -> Date = Date.init) -> CrashReportCoordinator? {
+        CrashReportCoordinator.make(
+            config: config, store: store, directories: directories, logFiles: logFiles,
+            bundleDirectory: bundleDirectory,
             version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
-            machineClass: machine.label,
-            transport: CrashReportUploader.urlSessionTransport(),
-            // The support bundle's literal source, plus the SRT passphrase; read at send time.
-            secretLiterals: { [weak self] in
-                guard let self else { return [] }
-                return [self.streamKey, self.srtPassphrase, self.joinPasscode].filter { !$0.isEmpty }
-            }))
+            machineClass: machineClass, transport: transport, now: now,
+            secretLiterals: { [weak self] in self?.liveSecretLiterals() ?? [] })
+    }
+
+    /// The ONE list of live secret values the shell holds, scrubbed by identity from every export
+    /// that leaves the machine (support bundle, crash report), so the two can never drift: the
+    /// stream key, SRT passphrase and meeting passcode, plus the stored social credentials
+    /// (YouTube API key, Twitch access and refresh tokens).
+    func liveSecretLiterals() -> [String] {
+        ([streamKey, srtPassphrase, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
     }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
@@ -6614,7 +6628,7 @@ final class AppModel: ObservableObject {
             (try? JSONSerialization.data(withJSONObject: lastZoomSnapshot)) ?? Data()
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
         input.warnings = warnings
-        input.knownSecretLiterals = ([streamKey, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
+        input.knownSecretLiterals = liveSecretLiterals()
         return input
     }
 }

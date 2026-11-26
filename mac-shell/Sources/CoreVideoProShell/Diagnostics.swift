@@ -102,6 +102,23 @@ enum Redactor {
              placeholder, []),
     ]
 
+    /// The forms a literal can take in text: as typed, and JSON-escaped with and without "\/"
+    /// slash escaping (a log line that embeds a JSON string carries the escaped form). Longest
+    /// first, so a replacement never leaves part of a longer form behind.
+    static func literalForms(_ literal: String) -> [String] {
+        func escaped(_ options: JSONSerialization.WritingOptions) -> String? {
+            guard let data = try? JSONSerialization.data(withJSONObject: [literal], options: options) else { return nil }
+            let text = String(decoding: data, as: UTF8.self)
+            guard text.hasPrefix("[\""), text.hasSuffix("\"]") else { return nil }
+            return String(text.dropFirst(2).dropLast(2))
+        }
+        var forms = [literal]
+        for form in [escaped([]), escaped([.withoutEscapingSlashes])].compactMap({ $0 }) where !forms.contains(form) {
+            forms.append(form)
+        }
+        return forms.sorted { $0.count > $1.count }
+    }
+
     /// Scrubs one string: known literals first (layer 3), then value patterns.
     static func scrub(_ text: String, literals: [String] = []) -> String {
         var result = text
@@ -109,7 +126,7 @@ enum Redactor {
         // key and meeting passcode in memory; an identity match cannot be fooled
         // by a shape the pattern rules did not anticipate.
         for literal in literals where literal.count >= 4 {
-            result = result.replacingOccurrences(of: literal, with: placeholder)
+            for form in literalForms(literal) { result = result.replacingOccurrences(of: form, with: placeholder) }
         }
         guard !result.isEmpty else { return result }
         for rule in rules {
@@ -434,9 +451,11 @@ enum SupportBundle {
             guard var text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             verifiedCount += 1
             var hits = 0
-            for literal in literals where text.contains(literal) {
-                hits += text.components(separatedBy: literal).count - 1
-                text = text.replacingOccurrences(of: literal, with: Redactor.placeholder)
+            for literal in literals {
+                for form in Redactor.literalForms(literal) where text.contains(form) {
+                    hits += text.components(separatedBy: form).count - 1
+                    text = text.replacingOccurrences(of: form, with: Redactor.placeholder)
+                }
             }
             if hits > 0 {
                 result.literalHits += hits
