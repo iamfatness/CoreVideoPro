@@ -2,7 +2,7 @@
 // Port of W/Services/GraphicsHotkeyRouter.cs:17-34: nothing routes while a text
 // field has focus; F1-F12 unmodified play the row carrying that hotkey (a Guest
 // row plays the Program subject); Shift+F12 plays everything out; Shift+F1-F11
-// cue the Shot Layout with that hotkey (none until G7, so they route nowhere);
+// cue the Shot Layout with that hotkey (G4-G7 Task 16);
 // any other modifier routes nowhere. In-app only (the existing key monitor,
 // Studio and Graphics tabs); no global hotkeys.
 
@@ -32,6 +32,11 @@ enum GraphicsHotkeys {
 }
 
 extension GraphicsModel {
+    /// "Shift+Fn" -> layout id, for the layouts that carry a hotkey.
+    var layoutHotkeys: [String: String] {
+        Dictionary(document.shotLayouts.filter { !$0.hotkey.isEmpty }.map { ($0.hotkey, $0.id) }, uniquingKeysWith: { a, _ in a })
+    }
+
     static func noEntry(_ rowId: String) -> String {
         rowId.isEmpty ? "Choose a playlist row first."
             : "Playlist row '\(rowId)' has nothing to play. Add a source in Sources or choose another row."
@@ -63,8 +68,9 @@ extension GraphicsModel {
         case .playOutAll:
             clearAll()
             return true
-        case .layoutCue:
-            return false   // Shot Layouts arrive in G7
+        case .layoutCue(let layoutId):
+            cueLayout(layoutId)   // graphics.layout.cue only: Windows selects a layout on a button click, not a hotkey
+            return true
         }
     }
 }

@@ -368,7 +368,8 @@ struct GraphicsDocument: @unchecked Sendable {
               Set(ids(playlist, "id")).count == playlist.count
         else { throw fail("Invalid saved graphics playlist.") }
         let layouts = try list("shotLayouts")
-        guard layouts.count <= 32, layouts.allSatisfy({ $0 is JSONObject }), Set(ids(layouts, "id")).count == layouts.count
+        guard layouts.count <= 32, layouts.allSatisfy({ ($0 as? JSONObject).map { GraphicsShotLayout(json: $0).isValid } == true }),
+              Set(ids(layouts, "id")).count == layouts.count
         else { throw fail("Invalid saved shot layouts.") }
         let rules = try list("automationRules")
         guard rules.count <= 8, rules.allSatisfy({ $0 is JSONObject }), Set(ids(rules, "id")).count == rules.count,

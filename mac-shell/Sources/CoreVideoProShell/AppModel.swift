@@ -813,6 +813,29 @@ final class AppModel: ObservableObject {
         })
         model.gateway.elapsedMs = { [weak self] in self?.elapsedMs() ?? 0 }
         // Guest rows expand over the Show Input slots, as Windows' ShowInputEditors.
+        model.sceneIds = { [weak self] in self?.scenes.map(\.id) ?? [] }
+        // Shot Layouts (G4-G7 Task 14): StudioViewModel.SelectSceneForLayoutAsync, the core's Preview
+        // scene, the Program subject, CaptureLayoutPreviewStamp and GuestEntriesRoutedIn's routes.
+        model.selectPreviewScene = { [weak self] sceneId in
+            guard let self, self.scenes.contains(where: { $0.id == sceneId }) else { return false }
+            self.selectPreviewScene(sceneId)
+            return true
+        }
+        model.corePreviewSceneId = { [weak self] in (self?.lastSnapshot["previewScene"] as? JSONObject)?["sceneId"] as? String }
+        model.programSubjectSourceId = { [weak self] in self?.programLowerThirdSubject()?.source.sourceId }
+        model.layoutPreviewStamp = { [weak self] in self?.layoutPreviewStamp() ?? "" }
+        model.sceneSourceIds = { [weak self] sceneId in self?.routedSourceIds(sceneId) ?? [] }
+        model.sceneNames = { [weak self] in self?.scenes.map { (id: $0.id, name: $0.name) } ?? [] }
+        model.guardedTakePending = { [weak self] in self?.pendingGuardedTake != nil }
+        model.previewSceneIdProvider = { [weak self] in self?.previewSceneId ?? "" }
+        model.takeForLayout = { [weak self] in
+            guard let self else { return "Take is unavailable." }
+            if !self.canTake { return AppModelControlSurface.takeUnavailable }
+            switch await self.take() {
+            case .success: return nil
+            case .failed(let why): return why.isEmpty ? "Take was not confirmed by the media core." : why
+            }
+        }
         model.rosterSlots = { [weak self] in
             (self?.slots ?? []).map {
                 GraphicsRosterSlot(slotNumber: $0.id, sourceId: ControlSourceId.canonical(kind: $0.kind, sourceId: $0.sourceId),
@@ -1995,6 +2018,10 @@ final class AppModel: ObservableObject {
         sourceGrades.coreGenerationChanged()
         // Graphics: a new core has none of the old one's instances (spec 5.3).
         graphics.coreGenerationChanged()
+        // A guarded Shot Layout Take pending on the old core can never be confirmed by this one, and
+        // it holds every scene sync (D10): resolve it now as the epoch-changed outcome (rollback, the
+        // owed sync) instead of leaving Program empty until the operator presses Check Take.
+        resolvePendingGuardedTakeAfterRestart()
         // One-shot: the brand kit is lost on respawn (L18a, gotchas). Sent at
         // launch and on every generation, not only when the operator edits it.
         pushBrandKitNow()
@@ -3994,6 +4021,38 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
+    /// CaptureLayoutPreviewStamp (StudioViewModel.GraphicsPlayout.cs:88): Program and Preview scene
+    /// ids, the local Preview scene model (Windows serialises its PreviewScene object: here the scene's
+    /// layout, edited layers, background asset and background payload) and the Preview routes. The Mac
+    /// adds the core's Preview scene id, so a cue made before the core showed the scene is not current.
+    func layoutPreviewStamp() -> String {
+        let scene = scenes.first { $0.id == previewSceneId }
+        var sceneModel: JSONObject = [:]
+        if let scene {
+            sceneModel = ["id": scene.id, "name": scene.name, "layout": scene.layout, "backgroundAssetId": scene.backgroundAssetId,
+                          "layers": scene.layers.map { ["id": $0.id, "slotId": $0.slotId as Any? ?? NSNull(), "x": $0.x, "y": $0.y,
+                                                        "width": $0.width, "height": $0.height, "fitMode": $0.fitMode,
+                                                        "opacity": $0.opacity, "mediaAssetId": $0.mediaAssetId as Any? ?? NSNull()] as JSONObject }]
+            if let background = backgroundPayload(for: scene.id) { sceneModel["background"] = background }
+        }
+        let stamp: JSONObject = [
+            "activeSceneId": programSceneId, "previewSceneId": previewSceneId, "previewScene": sceneModel,
+            "corePreviewSceneId": (lastSnapshot["previewScene"] as? JSONObject)?["sceneId"] as? String ?? "",
+            "routes": buildRoutes(for: previewSceneId),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: stamp, options: [.sortedKeys]) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// The canonical source ids a scene routes, in route order (GuestEntriesRoutedIn over the Mac's routes).
+    func routedSourceIds(_ sceneId: String) -> [String] {
+        buildRoutes(for: sceneId).compactMap { route -> String? in
+            guard let id = route["participantId"] as? String ?? route["captureDeviceId"] as? String,
+                  let slot = slots.first(where: { $0.kind != "unassigned" && $0.kind != "media" && $0.sourceId == id }) else { return nil }
+            return ControlSourceId.canonical(kind: slot.kind, sourceId: slot.sourceId)
+        }
+    }
+
     func selectPreviewScene(_ sceneId: String) {
         // Mirrors StudioViewModel.SelectScene: selection ONLY arms preview —
         // program changes exclusively on Take.
@@ -4005,6 +4064,9 @@ final class AppModel: ObservableObject {
     @Published var takeTransitionMode = "fade"
     @Published var takeStatus = ""
     @Published private(set) var takeInFlight = false
+    /// A guarded Shot Layout Take awaiting its receipt (TransportCoordinator._guardedTake).
+    @Published var pendingGuardedTake: PendingGuardedTake?
+    var owedSceneSync = false
     private var takeRevision = 0
 
     enum TakeResult: Equatable {
@@ -4037,40 +4099,57 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Windows `CanTake` (StudioViewModel.cs:4275) minus the Shot Layout and
-    /// draft terms Mac has no equivalent of, plus the coordinator's in-flight
-    /// guard. Deliberately NOT gated on `quitFinishing`: Windows CanTake has no
-    /// quit term (only Record/Stream do).
+    /// Windows `CanTake` (StudioViewModel.cs:4275) minus the draft term Mac has
+    /// no equivalent of, plus the coordinator's in-flight guard. A pending guarded
+    /// Take can always be checked; a prepared Shot Layout may Take with Preview
+    /// equal to Program. Deliberately NOT gated on `quitFinishing`: Windows
+    /// CanTake has no quit term (only Record/Stream do).
     var canTake: Bool {
-        !takeInFlight
+        guard !takeInFlight else { return false }
+        if pendingGuardedTake != nil { return true }
+        return !graphics.playout.layoutPreparing
             && scenes.contains { $0.id == previewSceneId }
             && scenes.contains { $0.id == programSceneId }
-            && previewSceneId != programSceneId
+            && (graphics.playout.preparedLayout != nil || previewSceneId != programSceneId)
     }
+
+    /// "Check Take" while a guarded Shot Layout Take awaits its receipt.
+    var takeButtonTitle: String { pendingGuardedTake != nil ? "Check Take" : "Take" }
 
     /// The one Take entry (button, and later keyboard / Companion): a port of
     /// `TransportCoordinator.TakeAsync`. Swaps Program/Preview, sends
     /// `begin-take-transition` first in the SAME media-core-sync batch as the
     /// scene graphs (no 120 ms debounce), and rolls both ids back when the core
     /// rejects or the request fails, unless the operator has edited them since
-    /// (the #286 rule: newer edits are preserved, never clobbered).
+    /// (the #286 rule: newer edits are preserved, never clobbered). A prepared
+    /// Shot Layout makes it a guarded Take (GuardedLayoutTake.swift): the
+    /// transition carries the layout's cues under its attempt id and the core's
+    /// receipt decides it.
     @discardableResult
     func take() async -> TakeResult {
         if takeInFlight { return .failed("A Take is already in progress.") }
         takeInFlight = true
         defer { takeInFlight = false }
+        if pendingGuardedTake != nil { return await resolveGuardedTake() }
+        func refuse(_ text: String) -> TakeResult { takeStatus = text; return .failed(text) }
+        // These three refusals are returned without a status line, as Windows TakeAsync does.
+        if graphics.playout.layoutPreparing { return .failed("Wait for all Shot Layout graphics to prepare.") }
+        let prepared = graphics.playout.preparedLayout
+        let guarded = prepared == nil ? nil : graphics.createGuardedTake(snapshot: lastSnapshot, activeSceneId: programSceneId)
+        if prepared != nil && guarded == nil { return .failed("The Shot Layout cue changed. Cancel and cue it again.") }
+        if guarded != nil && bridge == nil && quitRequestForTesting == nil {
+            return .failed("The core is offline. Cue the Shot Layout again after it reconnects.")
+        }
+        let keepProgram = guarded?.keepProgramScene == true
         let previousProgram = programSceneId
-        let taken = previewSceneId
+        let previousPreview = previewSceneId
+        let taken = keepProgram ? previousProgram : previewSceneId
         guard scenes.contains(where: { $0.id == taken }),
               scenes.contains(where: { $0.id == previousProgram }) else {
-            let unavailable = "Take unavailable - select an available Preview scene."
-            takeStatus = unavailable
-            return .failed(unavailable)
+            return refuse("Take unavailable - select an available Preview scene.")
         }
-        guard taken != previousProgram else {
-            let same = "Take unavailable - Preview is already on Program."
-            takeStatus = same
-            return .failed(same)
+        guard taken != previousProgram || guarded != nil else {
+            return refuse("Take unavailable - Preview is already on Program.")
         }
         // Windows snapshots BOTH scenes' routes and refuses the rollback if either
         // changed while the Take was pending. Only solo scenes can be re-pointed
@@ -4081,11 +4160,32 @@ final class AppModel: ObservableObject {
         // back if the Take is rolled back (Windows TransportCoordinator, T1.3).
         let mediaBeforeTake = captureMediaSelection()
         let previousProgramRoutes = buildRoutes(for: previousProgram, isProgram: true)
-        previewSceneId = previousProgram
-        programSceneId = taken
+        if !keepProgram {
+            previewSceneId = previousProgram
+            programSceneId = taken
+        }
         let attemptedProgramRoutes = buildRoutes(for: taken, isProgram: true)
-        promoteMediaSelectionAfterLocalTake(previous: previousProgramRoutes, current: attemptedProgramRoutes)
+        if !keepProgram { promoteMediaSelectionAfterLocalTake(previous: previousProgramRoutes, current: attemptedProgramRoutes) }
         let mediaAfterTake = captureMediaSelection()
+        let expectedPreview = keepProgram ? previousPreview : previousProgram
+        // The #286 rollback, whole: false (nothing restored) when newer edits landed.
+        let rollback: () -> Bool = { [weak self] in
+            guard let self else { return false }
+            let untouched = self.programSceneId == taken && self.previewSceneId == expectedPreview
+                && self.soloCueByScene[taken] == cuesAtTake.0
+                && self.soloCueByScene[previousProgram] == cuesAtTake.1
+            guard untouched else { return false }
+            self.programSceneId = previousProgram
+            self.previewSceneId = previousPreview
+            self.syncScenes()              // reconcile the core with the restored scenes
+            // Only on a real scene rollback; a refused one leaves the selection alone.
+            self.restoreMediaSelection(TakeMediaSelectionRollback.resolve(
+                beforeTake: mediaBeforeTake, afterTake: mediaAfterTake, current: self.captureMediaSelection(),
+                attemptedProgramRoutes: attemptedProgramRoutes,
+                restoredProgramRoutes: self.buildRoutes(for: previousProgram, isProgram: true),
+                rows: self.mediaSources))
+            return true
+        }
         sceneSyncTask?.cancel()           // the Take batch carries the full current state
         sceneSyncRequestCount += 1
         guard bridge != nil || quitRequestForTesting != nil else {
@@ -4094,15 +4194,21 @@ final class AppModel: ObservableObject {
             return .failed(offline)
         }
         takeRevision += 1
-        let transition: JSONObject = [
+        var transition: JSONObject = [
             "type": "begin-take-transition",
-            "operationId": UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
+            "operationId": guarded?.operationId ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
             "revision": takeRevision,
             "mode": Self.normalizeTakeTransitionMode(takeTransitionMode),
             "durationMs": 300,
             "direction": "left-to-right",
             "dipColor": "#000000",
         ]
+        if let guarded {
+            transition["graphicsLayout"] = guarded.wire
+            pendingGuardedTake = PendingGuardedTake(request: guarded, transition: transition,
+                                                    previousProgramSceneId: previousProgram, rollback: rollback)
+            return await resolveGuardedTake()
+        }
         let batch = sceneSyncBatch(transition: transition)
         do {
             _ = try await outputRequest([
@@ -4112,30 +4218,25 @@ final class AppModel: ObservableObject {
             syncSpine()   // the buses swapped: the source set follows
             return .success
         } catch {
-            let untouched = programSceneId == taken && previewSceneId == previousProgram
-                && soloCueByScene[taken] == cuesAtTake.0
-                && soloCueByScene[previousProgram] == cuesAtTake.1
-            let failure: String
-            if untouched {
-                programSceneId = previousProgram
-                previewSceneId = taken
-                syncScenes()              // reconcile the core with the restored scenes
-                // Only on a real scene rollback; a refused one leaves the selection alone.
-                restoreMediaSelection(TakeMediaSelectionRollback.resolve(
-                    beforeTake: mediaBeforeTake, afterTake: mediaAfterTake, current: captureMediaSelection(),
-                    attemptedProgramRoutes: attemptedProgramRoutes,
-                    restoredProgramRoutes: buildRoutes(for: previousProgram, isProgram: true),
-                    rows: mediaSources))
-                failure = "Take was not confirmed; previous local Program restored. "
+            let failure = rollback()
+                ? "Take was not confirmed; previous local Program restored. "
                     + "Verify live output before retrying. \(error.localizedDescription)"
-            } else {
-                failure = "Take was not confirmed; newer local edits preserved. "
+                : "Take was not confirmed; newer local edits preserved. "
                     + "Verify live output. \(error.localizedDescription)"
-            }
             takeStatus = failure
             pushWarning(failure)
             return .failed(failure)
         }
+    }
+
+    /// The guarded Take's batch: the ordinary scene batch led by its transition.
+    func guardedSceneSyncBatch(transition: JSONObject) -> [JSONObject] { sceneSyncBatch(transition: transition) }
+
+    /// D10: the one scene sync held while a guarded Take was pending.
+    func runOwedSceneSync() {
+        guard owedSceneSync else { return }
+        owedSceneSync = false
+        syncScenes()
     }
 
     // ── Fade to Black (audit §2; Windows StudioViewModel.ProgramBlackout.cs) ──
@@ -4247,7 +4348,8 @@ final class AppModel: ObservableObject {
         guard selectedTab == .studio || selectedTab == .overlays, !quitPromptVisible, !quitFinishing,
               case .function(let number) = event.kind,
               let route = GraphicsHotkeys.route(function: number, modifiers: event.modifiers,
-                                                textFocus: event.isTextEntryFocus, rows: graphics.rows)
+                                                textFocus: event.isTextEntryFocus, rows: graphics.rows,
+                                                layoutHotkeys: graphics.layoutHotkeys)
         else { return false }
         if event.isRepeat { return true }
         return graphics.perform(route, subjectSourceId: programLowerThirdSubject()?.source.sourceId)
@@ -4363,6 +4465,9 @@ final class AppModel: ObservableObject {
 
     private func pushScenes() async {
         guard bridge != nil || quitRequestForTesting != nil else { return }
+        // D10 (GuardedLayoutTake.swift): the core swallows any scene load while a guarded Take
+        // warms, so the sync is held and sent once the receipt resolves.
+        if pendingGuardedTake != nil { owedSceneSync = true; return }
         let batch = sceneSyncBatch()
         guard !batch.isEmpty else { return }
         do {

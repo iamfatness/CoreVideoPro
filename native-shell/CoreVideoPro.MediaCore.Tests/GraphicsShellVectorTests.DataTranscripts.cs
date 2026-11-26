@@ -12,7 +12,8 @@ namespace CoreVideoPro.MediaCore.Tests;
 /// command as the wire command the gateway builds plus the graphics node after it. Scripts:
 /// "accept-all", "never-adopt" (a Program update is accepted but never adopted),
 /// "adopt-after-3-polls" (Program adopts after the third 50 ms wait, as a real core prepares first),
-/// "fail-preparation" (the Program update's preparation fails at the first wait). Every wait after a
+/// "fail-preparation" (the Program update's preparation fails at the first wait), "fail-second-cue"
+/// (the second cue's preparation fails). Every wait after a
 /// command (for the two preparing scripts) appends the node it leaves to that step's "pollsAfter", so a
 /// replay serves them in order; otherwise the node after the command stands for every wait.</summary>
 internal sealed class TranscriptCore
@@ -26,6 +27,11 @@ internal sealed class TranscriptCore
     public TranscriptCore(NativeGraphicsState initial) => State = initial;
 
     private int _polls;
+    private int _cues;
+
+    /// A step that is not a core command (the Shot Layout's scene select), recorded in order.
+    public void Pseudo(string type, JsonObject body) =>
+        Steps.Add(new JsonObject { ["command"] = new JsonObject { ["type"] = type, ["graphics"] = body }, ["nodeAfter"] = JsonSerializer.SerializeToNode(State, Web) });
     private (string Id, long Revision, NativeGraphicsFields Fields)? _pendingAdoption;
 
     public Task Delay(TimeSpan span, CancellationToken _)
@@ -88,14 +94,21 @@ internal sealed class TranscriptCore
                 break;
             }
             case "graphics.instance.cue":
-                State = State with { Instances = Map(i => i with { CueRevision = input.GetProperty("expectedRevision").GetInt64(), CueTemplateVersion = i.TemplateVersion, Cued = true }) };
+            {
+                _cues++;
+                var owner = input.TryGetProperty("cueOwner", out var ownerValue) ? ownerValue.GetString()! : "";
+                var failed = Script == "fail-second-cue" && _cues == 2;
+                State = State with { Instances = Map(i => i with { CueRevision = input.GetProperty("expectedRevision").GetInt64(), CueTemplateVersion = i.TemplateVersion,
+                    Cued = true, CueOwner = owner, CuePreparation = failed ? "failed" : "ready", CueWarning = failed ? "Font missing" : "" }) };
                 break;
+            }
             case "graphics.instance.trigger":
                 State = State with { Instances = Map(i => input.GetProperty("action").GetString() switch {
                     "show" => i with { ProgramRevision = i.CueRevision, ProgramTemplateVersion = i.TemplateVersion, ProgramFields = i.Fields, Visibility = "on-air",
                         CueRevision = 0, Cued = false, CrawlPlayback = i.TemplateId.StartsWith("design-headlines", StringComparison.Ordinal) ? "playing" : "" },
                     "hide" => i with { ProgramRevision = 0, Visibility = "hidden", CrawlPlayback = "" },
-                    "uncue" => i with { CueRevision = 0, Cued = false },
+                    "uncue" => input.TryGetProperty("cueOwner", out var owner) && owner.GetString() != i.CueOwner ? i
+                        : i with { CueRevision = 0, Cued = false, CueOwner = "", CuePreparation = "unprepared" },
                     "pause" => i with { CrawlPlayback = "paused" },
                     "resume" or "restart" => i with { CrawlPlayback = "playing" },
                     _ => i }) };

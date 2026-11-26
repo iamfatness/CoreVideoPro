@@ -10,6 +10,32 @@ extension ScriptedGraphicsCore {
     /// copies the fields, cue sets cueRevision (cuePending while `pendingPolls` > 0),
     /// trigger show-from-cue puts the cue copy on Program, hide takes it off,
     /// install adds the manifest to the catalog.
+    /// instancesReaction plus owned cues: a cue records its cueOwner (and is prepared), an owned uncue
+    /// clears only the cue that owner holds (rule 9: the double honours cueOwner).
+    static func ownedCueReaction() -> (JSONObject, inout JSONObject) -> (accepted: Bool, reason: String) {
+        let base = instancesReaction()
+        return { command, node in
+            let g = command["graphics"] as? JSONObject ?? [:]
+            let id = g["instanceId"] as? String ?? ""
+            var instances = node["instances"] as? [JSONObject] ?? []
+            let index = instances.firstIndex { $0["instanceId"] as? String == id }
+            if command["type"] as? String == "graphics-instance-trigger", g["action"] as? String == "uncue", let owner = g["cueOwner"] as? String, let index {
+                if instances[index]["cueOwner"] as? String == owner { instances[index]["cueRevision"] = 0; instances[index]["cued"] = false; instances[index]["cueOwner"] = "" }
+                node["instances"] = instances
+                return (true, "")
+            }
+            let outcome = base(command, &node)
+            if command["type"] as? String == "graphics-instance-cue" {
+                var after = node["instances"] as? [JSONObject] ?? []
+                if let i = after.firstIndex(where: { $0["instanceId"] as? String == id }) {
+                    after[i]["cueOwner"] = g["cueOwner"] ?? ""; after[i]["cued"] = true; after[i]["cuePreparation"] = "ready"
+                }
+                node["instances"] = after
+            }
+            return outcome
+        }
+    }
+
     static func instancesReaction(pendingPolls: Int = 0) -> (JSONObject, inout JSONObject) -> (accepted: Bool, reason: String) {
         { command, node in
             let g = command["graphics"] as? JSONObject ?? [:]
