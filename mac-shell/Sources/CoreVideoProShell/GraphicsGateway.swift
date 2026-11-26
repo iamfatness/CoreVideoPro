@@ -271,6 +271,17 @@ final class GraphicsGateway {
     }
 
     func invoke(_ action: String, request: String) async -> GraphicsOperationResult {
+        await invokeCore(action, request: request, socialReview: false)
+    }
+
+    /// The one path that may carry clientId graphics-social-review (SocialPlayout
+    /// only); `invoke` keeps refusing it. The gate is symmetric, as on Windows
+    /// (GraphicsCommandGateway.cs:45-46): this path refuses any OTHER client.
+    func invokeSocial(_ action: String, _ body: JSONObject) async -> GraphicsOperationResult {
+        await invokeCore(action, request: GraphicsJSON.serialize(body), socialReview: true)
+    }
+
+    private func invokeCore(_ action: String, request: String, socialReview: Bool) async -> GraphicsOperationResult {
         guard capable(), let observed = observe(), observed.isUsable else {
             return .refused(GraphicsCommandRequest.unavailable)
         }
@@ -279,9 +290,7 @@ final class GraphicsGateway {
         case .failure(let refusal): return .refused(refusal.error, requestId: refusal.requestId)
         case .success(let value): built = value
         }
-        // No social review client on the Mac yet: a social command can never
-        // arrive through the public gateway (GraphicsCommandGateway.cs:44-46).
-        if built.clientId == Self.socialClientId {
+        if (built.clientId == Self.socialClientId) != socialReview {
             return .refused("social-graphics-require-operator-review", requestId: built.requestId)
         }
         if inFlight { return .refused("graphics-command-overloaded", requestId: built.requestId) }

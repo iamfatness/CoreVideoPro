@@ -1825,6 +1825,8 @@ final class AppModel: ObservableObject {
         // (every-core-generation rule). Private is re-sent only when the new
         // report disagrees, never blindly.
         comms.coreGenerationChanged()
+        // Social review: decisions made against the old core do not carry over.
+        if let review = graphics.socialReviewIfStarted { Task { @MainActor in await review.coreGenerationChanged() } }
         startCommsLeaseTimer()
         installCommsReleaseObservers()
         resetMasterMetersForProcess()
@@ -1981,7 +1983,8 @@ final class AppModel: ObservableObject {
         // core is unhappy).
         if !snapshot.isEmpty {
             lastSnapshot = snapshot
-            controlSnapshotBox.publish(snapshot, at: Date())
+            // GET /snapshot never serves a social card's chat (author, message).
+            controlSnapshotBox.publish(SocialRedaction.scrub(snapshot: snapshot), at: Date())
             observeAudioObservation(snapshot)
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
@@ -2361,9 +2364,15 @@ final class AppModel: ObservableObject {
         let comms = self.comms
         final class Once { var done = false }
         let once = Once()
+        let social = graphics.socialReviewIfStarted
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             func finish() { if !once.done { once.done = true; cont.resume() } }
-            Task { @MainActor in await comms.sendReleaseAll(); finish() }
+            Task { @MainActor in
+                // Comms keys first, then social review (retires a card) in the same bound.
+                if comms.inMeeting { await comms.sendReleaseAll() }
+                await social?.stopForShutdown()
+                finish()
+            }
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(Self.commsQuitReleaseBudget * 1e9))
                 finish()
@@ -5803,7 +5812,9 @@ final class AppModel: ObservableObject {
         case .quitNow:
             // In a meeting, the Comms release-all goes out first (bounded), so a
             // held key never outlives the shell. Otherwise nothing can be held.
-            guard comms.inMeeting, !quitCoreGone else { return .terminateNow }
+            guard comms.inMeeting || graphics.socialReviewIfStarted?.isConnected == true, !quitCoreGone else {
+                return .terminateNow
+            }
             Task { @MainActor in
                 await self.sendCommsReleaseAllBounded()
                 self.replyToQuit(true)
@@ -5857,7 +5868,9 @@ final class AppModel: ObservableObject {
         let timeout = quitFinishTimeout
         Task { @MainActor in
             // Comms first (Windows ShutdownComms), before any stop or core exit.
-            if self.comms.inMeeting, !self.quitCoreGone { await self.sendCommsReleaseAllBounded() }
+            if self.comms.inMeeting || self.graphics.socialReviewIfStarted?.isConnected == true, !self.quitCoreGone {
+                await self.sendCommsReleaseAllBounded()
+            }
             var baseline = Int.max   // set when the stop lands; only later snapshots count
             let outcome = await QuitFlow.finishOutputs(
                 stop: { @MainActor [weak self] remaining in
@@ -6368,13 +6381,16 @@ final class AppModel: ObservableObject {
             ],
         ]
         var input = SupportBundleInput()
+        // Social review: a social card's fields ARE chat (author, message), which
+        // never goes into a bundle (slice-6 spec :15). The instance stays, its
+        // payload does not.
         input.coreSnapshotJson =
-            (try? JSONSerialization.data(withJSONObject: lastSnapshot)) ?? Data()
+            (try? JSONSerialization.data(withJSONObject: SocialRedaction.scrub(snapshot: lastSnapshot))) ?? Data()
         input.zoomSnapshotJson =
             (try? JSONSerialization.data(withJSONObject: lastZoomSnapshot)) ?? Data()
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
         input.warnings = warnings
-        input.knownSecretLiterals = [streamKey, joinPasscode].filter { !$0.isEmpty }
+        input.knownSecretLiterals = ([streamKey, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
         return input
     }
 }

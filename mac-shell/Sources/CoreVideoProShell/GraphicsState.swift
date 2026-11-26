@@ -275,6 +275,10 @@ struct GraphicsStrip: Equatable {
     static let playlistPrefix = "playlist-"
     static let socialPrefix = "social-review-"
     static let socialTemplateId = "youtube-chat-card"
+    // Both provider cards are social: the cued list filters them by the
+    // social-review- prefix (Windows filters only the YouTube template, owner
+    // decision N4; the Mac filters both).
+    static let twitchSocialTemplateId = "twitch-chat-card"
 
     /// The row that created an instance id (GraphicsPlayoutService.RowOf, :74-75).
     static func row(of instanceId: String, in rows: [GraphicsStripRow]) -> GraphicsStripRow? {
@@ -293,6 +297,7 @@ struct GraphicsStrip: Equatable {
             }
             let label: String
             if i.templateId == socialTemplateId { label = "YouTube chat" }
+            else if i.templateId == twitchSocialTemplateId { label = "Twitch chat" }
             else if let row {
                 label = (row.kind == "guest" || row.hasVariants) && !i.fieldName.isEmpty ? row.name + " · " + i.fieldName : row.name
             } else {

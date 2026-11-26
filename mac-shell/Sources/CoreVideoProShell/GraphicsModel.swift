@@ -25,7 +25,13 @@ final class GraphicsModel: ObservableObject {
     /// True while a core process is up (set by AppModel from BridgeStatus).
     var coreRunning: () -> Bool
     /// The show document (playlist rows, template pins; everything else verbatim).
-    @Published var document = GraphicsDocument()
+    @Published var document = GraphicsDocument() {
+        // A different show stops social review (Windows OnLibraryChanged).
+        didSet { if document.showId != oldValue.showId, let review = socialReviewIfCreated {
+            let next = document.showId
+            Task { @MainActor in await review.showChanged(to: next) }
+        } }
+    }
     @Published var documentReadOnly = false
     @Published var documentStatus = ""
     @Published var documentLoaded = false
@@ -45,6 +51,18 @@ final class GraphicsModel: ObservableObject {
 
     private(set) var gateway: GraphicsGateway!
     private(set) var playout: GraphicsPlayout!
+    /// The private social review queue and its sole path to air (gateway.invokeSocial).
+    private(set) var social: SocialPlayout!
+    private var socialReviewIfCreated: SocialReviewModel?
+    /// The Social review sheet's model (created on first use).
+    var socialReview: SocialReviewModel {
+        if let existing = socialReviewIfCreated { return existing }
+        let made = SocialReviewModel(playout: social, showId: document.showId)
+        socialReviewIfCreated = made
+        return made
+    }
+    /// Created only if the operator ever opened social review.
+    var socialReviewIfStarted: SocialReviewModel? { socialReviewIfCreated }
     private var lastNode: NSDictionary?
 
     init(coreRunning: @escaping () -> Bool, send: @escaping (JSONObject) async throws -> JSONObject,
@@ -57,6 +75,7 @@ final class GraphicsModel: ObservableObject {
             guard let self else { return .refused(GraphicsCommandRequest.unavailable) }
             return await self.gateway.invoke(action, body)
         }, observe: { [weak self] in self?.state })
+        social = SocialPlayout(gateway: gateway)
         playout.onChange = { [weak self] in self?.playoutChanged() }
         // A command's own reply carries the freshest snapshot: observe it at once.
         gateway.onSnapshot = { [weak self] in self?.observe(snapshot: $0) }
