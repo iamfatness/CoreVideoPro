@@ -74,6 +74,7 @@ extension ShellTests {
             ("a7-fix9-respawn-resets-scan-state", testFix9RespawnResetsScanState),
             ("a7-fix9-respawn-rescans-visible-surface", testFix9RespawnRescansVisibleSurface),
             ("a7-fix9-scan-only-plugins-listed-dimmed", testFix9ScanOnlyPluginsListedDimmed),
+            ("a7-fix9-old-core-reply-dropped", testFix9OldCoreReplyDropped),
         ]
     }
 
@@ -1550,6 +1551,53 @@ extension ShellTests {
         model.kickVstScanIfNeeded()
         spin(until: { sent >= 2 }, limit: 2)
         expectEqual(sent, 2, "the next kick sends a new scan request to the new core")
+    }
+
+    /// A scan reply still in flight from the OLD core when a new core generation
+    /// starts is dropped: its core is gone, and applying its "ready" list would
+    /// show plug-ins the new core has never scanned. The new generation's own
+    /// reply is applied. The seam is MainActor-isolated, so a released reply runs
+    /// the whole reply path in the same main-actor job that sets its marker:
+    /// once the marker reads true the reply has been applied or dropped.
+    /// Mutation: drop the generation check from scanVstPlugins' reply path (red).
+    @MainActor
+    static func testFix9OldCoreReplyDropped() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        var held: [CheckedContinuation<JSONObject, Never>] = []
+        var returned = 0
+        model.vstScanRequestForTesting = { @MainActor _, _ in
+            let reply = await withCheckedContinuation { held.append($0) }
+            returned += 1
+            return reply
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { held.count == 1 }, limit: 2)
+        expectEqual(held.count, 1, "precondition: the old core's scan request is held")
+        // The core respawns while the old reply is still in flight.
+        model.onConnected()
+        model.stopTimersForTesting()
+        expectEqual(model.vstHost, VstHostState(), "precondition: the new generation starts pre-scan")
+        // The old core's reply arrives, in the real nesting, listing one plug-in.
+        let oneReady: JSONObject = ["snapshot": pluginHostSnapshot("ready", plugins: [["id": "old", "name": "Old"]])]
+        held[0].resume(returning: oneReady)
+        spin(until: { returned >= 1 }, limit: 2)
+        expectEqual(returned, 1, "the old reply was delivered to the reply path")
+        expectEqual(model.vstHost, VstHostState(), "the old core's reply is ignored: still the pre-scan default")
+        expect(model.vstPlugins.isEmpty, "no plug-ins from the old core")
+        expect(!model.vstScanRequestReturned, "the old reply does not count as the new core's scan")
+        expectEqual(model.vstAddMenuState, .notScanned, "SHOW's menu: not scanned, not plug-ins")
+        expectEqual(model.setupVstMenuEmptyLine, P.notScannedLine, "SETUP's menu: not scanned")
+        // The new generation's own scan reply IS applied.
+        model.kickVstScanIfNeeded()
+        spin(until: { held.count == 2 }, limit: 2)
+        expectEqual(held.count, 2, "the new core gets its own scan request")
+        held[1].resume(returning: ["snapshot": pluginHostSnapshot("ready", plugins: [["id": "new", "name": "New"]])])
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expect(model.vstScanRequestReturned, "the new core's reply returned")
+        expectEqual(model.vstHost.status, "ready", "the new core's reply is applied")
+        expectEqual(model.vstPlugins.map(\.name), ["New"], "the new core's plug-in is listed")
+        expectEqual(model.vstAddMenuState, .plugins, "SHOW's menu lists plug-ins")
     }
 
     /// A VST surface that stays on screen across a respawn gets no new
