@@ -120,4 +120,24 @@ inline std::vector<std::string> encoderCandidatesFor(const std::string& normaliz
 #endif
 }
 
+// Which candidate a stream start uses. `isAvailable` is the trial encode
+// (ffmpegEncoderIsAvailable): it spawns FFmpeg and runs on the sender's worker
+// INSIDE the stream start, so it is only worth paying when the answer can change
+// the choice. With one candidate it cannot - a failed probe falls back to that
+// same candidate - so it is never run. That is every Mac start and every
+// explicit hardware choice. The probe used to run anyway, and on the Mac its
+// ~0.2 s delayed the raw fallback's FFmpeg past a queued backlog of Program PCM
+// that then wedged the stream after a dozen frames (found by
+// validate-gpu-encode.mjs --force-raw on the Mac).
+template <typename IsAvailable>
+std::string chooseEncoderCandidate(const std::vector<std::string>& candidates, const std::string& fallback,
+                                   IsAvailable&& isAvailable) {
+  if (candidates.empty()) return fallback;
+  if (candidates.size() == 1) return candidates.front();
+  for (const auto& candidate : candidates) {
+    if (isAvailable(candidate)) return candidate;
+  }
+  return candidates.front();
+}
+
 }  // namespace corevideo::modules
