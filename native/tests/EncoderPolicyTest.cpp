@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+using corevideo::modules::chooseEncoderCandidate;
 using corevideo::modules::codecHasSupportedHardwareEncoder;
 using corevideo::modules::encoderCandidatesFor;
 using corevideo::modules::isSupportedEncoder;
@@ -142,4 +143,28 @@ TEST(EncoderPolicy, ExplicitHardwareChoiceIsNotSubstituted) {
   ASSERT_EQ(nvenc.size(), 1u);
   EXPECT_EQ(nvenc[0], "h264_nvenc");
   EXPECT_FALSE(contains(nvenc, "h264_mf"));
+}
+
+// The trial encode spawns FFmpeg inside the stream start. It runs only when it
+// can change the choice: never for a single candidate (every Mac start, every
+// explicit hardware choice), in order otherwise, stopping at the first success.
+TEST(EncoderPolicy, ProbesOnlyWhenTheAnswerCanChangeTheChoice) {
+  std::vector<std::string> probed;
+  const auto probe = [&](bool answer) {
+    return [&probed, answer](const std::string& candidate) { probed.push_back(candidate); return answer; };
+  };
+
+  EXPECT_EQ(chooseEncoderCandidate({"h264_videotoolbox"}, "x", probe(false)), "h264_videotoolbox");
+  EXPECT_TRUE(probed.empty()) << "a single candidate must never be probed; probed " << probed.size();
+
+  EXPECT_EQ(chooseEncoderCandidate({}, "fallback", probe(true)), "fallback");
+  EXPECT_TRUE(probed.empty());
+
+  EXPECT_EQ(chooseEncoderCandidate({"h264_nvenc", "h264_mf"}, "x", probe(true)), "h264_nvenc");
+  EXPECT_EQ(probed, (std::vector<std::string>{"h264_nvenc"})) << "stops at the first available candidate";
+
+  probed.clear();
+  EXPECT_EQ(chooseEncoderCandidate({"h264_nvenc", "h264_mf"}, "x", probe(false)), "h264_nvenc")
+      << "nothing available: the first candidate, so FFmpeg reports the real failure";
+  EXPECT_EQ(probed, (std::vector<std::string>{"h264_nvenc", "h264_mf"}));
 }

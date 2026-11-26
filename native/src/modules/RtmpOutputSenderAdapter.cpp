@@ -616,13 +616,11 @@ std::string selectFfmpegVideoEncoder(
     const std::string& encoderMode) {
   const auto normalizedCodec = normalizeVideoCodec(codec);
   const auto normalizedMode = normalizeEncoderMode(encoderMode);
-  const auto candidates = encoderCandidatesFor(normalizedCodec, normalizedMode);
-  for (const auto& candidate : candidates) {
-    if (ffmpegEncoderIsAvailable(executable, candidate)) {
-      return candidate;
-    }
-  }
-  return candidates.empty() ? preferredEncoderFor(normalizedCodec, normalizedMode) : candidates.front();
+  return chooseEncoderCandidate(encoderCandidatesFor(normalizedCodec, normalizedMode),
+                                preferredEncoderFor(normalizedCodec, normalizedMode),
+                                [&](const std::string& candidate) {
+                                  return ffmpegEncoderIsAvailable(executable, candidate);
+                                });
 }
 
 class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestAccess {
