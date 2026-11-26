@@ -560,3 +560,12 @@ No HIGH. The reviewer confirmed that Layout and Style match the XAML in order an
   - The Review Focus 3 test holds because the Take makes the wall Program, and nothing is editable then. `editorValues` is the Windows editor's loader and is only used by tests on Mac.
   - `tilesMemberStates` recomputes per render; this is a performance note only.
 - `tiles/` filter: 575/575.
+
+### Owner decision D2 (2026-11-25)
+
+The plan's gate stays. Live held/black badges on Members rows appear only for the wall the core's `tiles` node describes, which is the Program wall. They arrive with S6's read-only on-air panel. No code change.
+
+## Remaining (Tasks 21-22)
+
+- **Task 21, the quiet-machine drill:** pending. It needs the other lane agents stopped and load below 2.5 (lane rules: performance verdicts are never taken on a loaded machine).
+- **Task 22, the owner's live acceptance:** pending. It needs the owner, 6-9 co-hosts and a signed build. Task 5's range normalization stays unverified until then.
