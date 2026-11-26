@@ -40,9 +40,11 @@ final class ScriptedGraphicsCore {
             if let owner = (command["graphics"] as? JSONObject)?["cueOwner"] as? String, owner.hasPrefix("layout-") { self.attemptId = owner }
             let got: JSONObject = ["type": command["type"] ?? "", "graphics": Self.normalized(command["graphics"] as? JSONObject ?? [:])]
             if !(got as NSDictionary).isEqual(to: want) { self.replayFaults.append("step \(index - 1): sent \(got), recorded \(want)") }
-            let operations = node["operations"]
+            let operations = node["operations"], templates = node["templates"]
             node = self.withAttempt(step["nodeAfter"] as? JSONObject ?? node)
             node["operations"] = operations ?? [] as [Any]
+            // A recorded node may omit the template catalog (layout transcripts): the catalog is unchanged.
+            if node["templates"] == nil { node["templates"] = templates }
             self.replayPolls = (step["pollsAfter"] as? [JSONObject] ?? []).map(self.withAttempt)
             return (true, "accepted")
         }
@@ -55,9 +57,10 @@ final class ScriptedGraphicsCore {
     /// One wait passed: serve the next recorded node, if the core changed during the waits.
     func advanceReplayPoll() {
         guard !replayPolls.isEmpty else { return }
-        let operations = node["operations"]
+        let operations = node["operations"], templates = node["templates"]
         node = replayPolls.removeFirst()
         node["operations"] = operations ?? [] as [Any]
+        if node["templates"] == nil { node["templates"] = templates }
     }
 
     /// The attempt id the Mac minted (recorded transcripts write ATTEMPT for Windows' own GUID).

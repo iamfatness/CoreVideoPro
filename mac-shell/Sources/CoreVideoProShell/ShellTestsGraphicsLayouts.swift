@@ -129,6 +129,12 @@ extension ShellTests {
         return document
     }
 
+    /// The template catalog the layout transcripts share (written once in the vectors).
+    static func layoutCatalog() -> [JSONObject] {
+        let row = loadGraphicsVectors("layout-transcripts").first { $0["id"] as? String == "catalog-layout-state" }
+        return (row?["expected"] as? JSONObject)?["templates"] as? [JSONObject] ?? []
+    }
+
     static func entry(_ o: JSONObject?) -> GraphicsPlaylistEntry {
         GraphicsPlaylistEntry(rowId: o?["rowId"] as? String ?? "", sourceId: o?["sourceId"] as? String ?? "", name: o?["name"] as? String ?? "",
                               title: o?["title"] as? String ?? "", slotNumber: (o?["slotNumber"] as? NSNumber)?.intValue)
@@ -141,7 +147,10 @@ extension ShellTests {
             let input = vector["input"] as? JSONObject ?? [:], expected = vector["expected"] as? JSONObject ?? [:]
             let layoutId = input["layoutId"] as? String ?? ""
             let document = patchedLayoutsDocument(input["patch"] as? JSONObject, layoutId: layoutId)
-            let state = GraphicsState(node: input["node"] as? JSONObject ?? [:])
+            var node = input["node"] as? JSONObject ?? [:]
+            let drop = input["dropTemplates"] as? [String] ?? []
+            node["templates"] = layoutCatalog().filter { !drop.contains($0["templateId"] as? String ?? "") }
+            let state = GraphicsState(node: node)
             guard let layout = document.shotLayouts.first(where: { $0.id == layoutId }) else { expect(false, "\(id): layout"); continue }
             do {
                 let resolved = try GraphicsLayouts.resolve(document: document, state: state, layout: layout, entry: entry(input["entry"] as? JSONObject))
@@ -162,7 +171,9 @@ extension ShellTests {
     @MainActor
     static func layoutTranscriptModel(_ vector: JSONObject) -> (GraphicsModel, ScriptedGraphicsCore) {
         let input = vector["input"] as? JSONObject ?? [:], expected = vector["expected"] as? JSONObject ?? [:]
-        let core = ScriptedGraphicsCore(replaying: expected["steps"] as? [JSONObject] ?? [], initialNode: input["initialNode"] as? JSONObject ?? [:])
+        var initial = input["initialNode"] as? JSONObject ?? [:]
+        initial["templates"] = layoutCatalog()
+        let core = ScriptedGraphicsCore(replaying: expected["steps"] as? [JSONObject] ?? [], initialNode: initial)
         let model = graphicsModel(core)
         model.document = GraphicsDocument(json: documentJSON("windows-layouts.json"))
         model.documentLoaded = true

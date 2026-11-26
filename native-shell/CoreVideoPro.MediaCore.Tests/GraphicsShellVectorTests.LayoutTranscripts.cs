@@ -38,6 +38,13 @@ public sealed partial class GraphicsShellVectorTests
         catch (InvalidDataException ex) { return new JsonObject { ["error"] = ex.Message }; }
     }
 
+    private static JsonObject WithoutTemplates(NativeGraphicsState state)
+    {
+        var node = JsonSerializer.SerializeToNode(state, Web)!.AsObject();
+        node.Remove("templates");
+        return node;
+    }
+
     [Fact]
     public void LayoutTranscripts()
     {
@@ -73,13 +80,22 @@ public sealed partial class GraphicsShellVectorTests
             ("guest-source-unavailable", show with { ShotLayouts = [With("two-up", new() { Overrides = new Dictionary<string, JsonElement> { ["title"] = JsonSerializer.SerializeToElement("Guest") } }, "guest")] },
                 state, "two-up", guest with { SourceId = "zoom:999" }, new JsonObject { ["layoutRowSettings"] = new JsonObject { ["guest"] = new JsonObject { ["overrides"] = new JsonObject { ["title"] = "Guest" } } } }),
         };
+        // The template catalog is written once (catalog-layout-state); a resolve row's node carries only the
+        // ids it leaves out of it (dropTemplates) and a transcript step's node omits it (the replay keeps the
+        // initial node's catalog), which keeps the file small.
+        rows.Add(Row("catalog-layout-state", "catalog", new JsonObject(), new JsonObject { ["templates"] = JsonSerializer.SerializeToNode(state.Templates, Web) }));
         foreach (var (id, document, st, layout, entry, patch) in cases)
+        {
+            var node = JsonSerializer.SerializeToNode(st with { Templates = [] }, Web)!.AsObject();
+            node.Remove("templates");
             rows.Add(Row("resolve-" + id, "resolve", new JsonObject
             {
                 ["document"] = "documents/windows-layouts.json", ["patch"] = patch, ["layoutId"] = layout,
                 ["entry"] = new JsonObject { ["rowId"] = entry.RowId, ["sourceId"] = entry.SourceId, ["name"] = entry.Label, ["title"] = entry.Title },
-                ["node"] = JsonSerializer.SerializeToNode(st, Web),
+                ["node"] = node, ["templates"] = "catalog-layout-state",
+                ["dropTemplates"] = new JsonArray(state.Templates.Select(t => t.TemplateId).Distinct().Where(t => st.Templates.All(x => x.TemplateId != t)).Select(t => (JsonNode)t).ToArray()),
             }, Resolve(document, st, layout, entry)));
+        }
 
         // Cue transcripts.
         var other = new NativeGraphicsInstance { InstanceId = "playlist-sponsor", Revision = 2, CueRevision = 2, Cued = true, CuePreparation = "ready", TemplateId = "compact-solid", TemplateVersion = 1, Scope = "global" };
@@ -102,6 +118,13 @@ public sealed partial class GraphicsShellVectorTests
                 var result = service.CueLayoutAsync(layoutId, Select, guest, null, CancellationToken.None, () => "stamp").GetAwaiter().GetResult();
                 var cancelled = cancelAfter ? service.CancelLayoutAsync().GetAwaiter().GetResult() : null;
                 var steps = Regex.Replace(core.Steps.ToJsonString(), "layout-[0-9a-f]{32}", "ATTEMPT");
+                var stepNodes = JsonNode.Parse(steps)!.AsArray();
+                foreach (var step in stepNodes)
+                {
+                    (step!["nodeAfter"] as JsonObject)?.Remove("templates");
+                    foreach (var poll in step["pollsAfter"] as JsonArray ?? []) (poll as JsonObject)?.Remove("templates");
+                }
+                steps = stepNodes.ToJsonString();
                 var expected = new JsonObject
                 {
                     ["steps"] = JsonNode.Parse(steps), ["accepted"] = result.Accepted, ["reason"] = result.Reason,
@@ -113,7 +136,7 @@ public sealed partial class GraphicsShellVectorTests
                 {
                     ["document"] = "documents/windows-layouts.json", ["layoutId"] = layoutId, ["script"] = script, ["cancelAfter"] = cancelAfter,
                     ["programSubject"] = new JsonObject { ["rowId"] = guest.RowId, ["sourceId"] = guest.SourceId, ["name"] = guest.Label, ["title"] = guest.Title, ["slotNumber"] = 1 },
-                    ["initialNode"] = JsonSerializer.SerializeToNode(initial, Web),
+                    ["initialNode"] = WithoutTemplates(initial), ["templates"] = "catalog-layout-state",
                 }, expected));
             }
             finally { Directory.Delete(directory, true); }
