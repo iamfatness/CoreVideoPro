@@ -108,7 +108,7 @@ extension ShellTests {
         model.cameraExtension = fake
         model.cameraExtensionOptedIn = true
         model.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settleCamera(model)
         expectEqual(fake.calls, ["installs"], "our version enabled: nothing is submitted")
         expectEqual(model.cameraExtensionState, .active, "and the state is active")
         model.stopTimersForTesting()
@@ -118,7 +118,7 @@ extension ShellTests {
         uninstalling.cameraExtension = fake2
         uninstalling.cameraExtensionOptedIn = true
         uninstalling.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settleCamera(uninstalling)
         expectEqual(fake2.calls, ["installs", "activate"], "our version on its way out does not count")
         uninstalling.stopTimersForTesting()
     }
@@ -132,6 +132,22 @@ extension ShellTests {
     final class WireLog {
         var sent: [(on: Bool, state: CameraExtensionState)] = []
         var ons: [Bool] { sent.map(\.on) }
+    }
+
+    /// Runs the main loop until `model` has no camera check out (CI runners
+    /// stall, so a fixed sleep flakes), then `extra` more seconds so a wrong
+    /// extra action still has room to show.
+    @MainActor
+    static func settleCamera(_ model: AppModel, limit: TimeInterval = 5, extra: TimeInterval = 0.05) {
+        spin(until: { model.cameraExtensionState != .unknown && !model.cameraExtensionCheckPending }, limit: limit)
+        RunLoop.current.run(until: Date().addingTimeInterval(extra))
+    }
+
+    /// Runs the main loop until `condition` holds, then `extra` more seconds.
+    @MainActor
+    static func settle(until condition: () -> Bool, limit: TimeInterval = 5, extra: TimeInterval = 0.05) {
+        spin(until: condition, limit: limit)
+        RunLoop.current.run(until: Date().addingTimeInterval(extra))
     }
 
     /// Wires the model the way production runs: every core command goes to the
@@ -163,7 +179,7 @@ extension ShellTests {
         model.startCameraExtensionAtLaunch()
         // The core connecting re-sends the intent (onConnected's resend).
         model.handleBridgeStatus(.connected(renderer: "test"))
-        RunLoop.current.run(until: Date().addingTimeInterval(settle))
+        settleCamera(model, extra: settle)
         return (model, fake, probe, log)
     }
 
@@ -205,7 +221,7 @@ extension ShellTests {
         RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         expectEqual(fake.calls, ["installs"], "still in use: the retry submits nothing")
         probe.status.runningSomewhere = false
-        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        settle(until: { model.cameraExtensionState == .active && !model.cameraExtensionCheckPending }, extra: 0.15)
         expectEqual(fake.calls, ["installs", "activate"], "the other app quit: the retry installs the update once")
         expectEqual(model.cameraExtensionState, .active, "and the update completes")
         model.stopTimersForTesting()
@@ -227,7 +243,7 @@ extension ShellTests {
         expect(probe.ownStreaming, "precondition: our output is streaming")
         log.sent.removeAll()
         model.updateCameraExtension()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        settle(until: { !model.cameraExtensionCheckPending && log.ons.last == true })
         expectEqual(fake.calls, ["installs", "activate"], "Update camera replaces once our stream has stopped")
         expectEqual(log.ons, [false, true], "our output is paused for the swap, then resumed")
         expect(probe.reads >= 3, "the release was polled, not assumed")
@@ -244,7 +260,7 @@ extension ShellTests {
         busy.cameraUpdateRetryInterval = 60
         busyLog.sent.removeAll()
         busy.updateCameraExtension()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.45))
+        settle(until: { !busy.cameraExtensionCheckPending && busyLog.ons.last == true })
         expectEqual(busyFake.calls, ["installs"], "another app holds the camera: nothing is submitted")
         expectEqual(busy.cameraExtensionState, .updateReady, "the update stays ready")
         expectEqual(busyLog.ons, [false, true], "and our output is resumed")
@@ -271,7 +287,8 @@ extension ShellTests {
                "and the button goes away while it runs")
         RunLoop.current.run(until: Date().addingTimeInterval(0.04))
         model.updateCameraExtension()            // the double click
-        RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+        // The retry (0.05 s) keeps firing: 0.15 s more gives a wrong second swap room to show.
+        settle(until: { !model.cameraExtensionCheckPending && log.ons.last == true }, extra: 0.15)
         expectEqual(fake.calls, ["installs", "activate"], "exactly one replacement")
         expectEqual(log.ons, [false, true], "paused once, resumed once")
         expect(log.sent.last.map { $0.state != .activating } ?? false,
@@ -335,8 +352,9 @@ extension ShellTests {
         on.cameraUpdateRetryInterval = 60
         expectEqual(on.cameraExtensionState, .updateReady, "precondition: deferred by Zoom")
         onProbe.status.runningSomewhere = false   // Zoom quits
-        on.checkCameraInUse { _ in }              // a later re-check (the 5 s retry)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        var onAnswered = false
+        on.checkCameraInUse { _ in onAnswered = true }   // a later re-check (the 5 s retry)
+        settle(until: { onAnswered })
         expect(on.virtualCameraUpdateNotice?.contains("Quit apps") == false,
                "our output on: the notice no longer says quit apps")
         expect(on.virtualCameraUpdateNotice?.contains("Close any other apps") == true, "it is the neutral copy")
@@ -348,8 +366,9 @@ extension ShellTests {
         expect(off.virtualCameraUpdateNotice?.contains("Quit apps") == true,
                "precondition: our output off, Zoom on the camera: quit apps")
         offProbe.status.runningSomewhere = false   // Zoom quits
-        off.readCameraDevice { _ in }
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        var offAnswered = false
+        off.readCameraDevice { _ in offAnswered = true }
+        settle(until: { offAnswered })
         expect(!off.cameraUpdateOthersHolding, "a free read clears 'another app holds it'")
         expect(off.virtualCameraUpdateNotice?.contains("Quit apps") == false, "and the quit-apps copy goes")
         off.stopTimersForTesting()
@@ -359,7 +378,7 @@ extension ShellTests {
         let (left, _, _, _) = launchedModel(installed: [olderInstall], device: ourDevice(running: true))
         expect(left.cameraUpdateOthersHolding, "precondition: Zoom seen")
         left.removeVirtualCamera()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settle(until: { left.cameraExtensionState == .notInstalled && !left.cameraExtensionCheckPending })
         expectEqual(left.cameraExtensionState, .notInstalled, "precondition: left .updateReady")
         expect(!left.cameraUpdateOthersHolding, "and the flag is gone with .updateReady")
         left.stopTimersForTesting()
@@ -409,7 +428,7 @@ extension ShellTests {
         model.cameraLostRecheckAfter = 0.1
         model.virtualCamera = PersistedVirtualCamera(enabled: true)
         model.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settleCamera(model)
         expectEqual(model.cameraExtensionState, .active, "precondition: active with our device")
         // The extension dies; macOS still lists OUR version enabled next to an
         // older copy uninstalling. Not a restart.
@@ -420,7 +439,7 @@ extension ShellTests {
         model.virtualCameraCore = lost
         RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         model.virtualCameraCore = lost   // the next snapshot, still lost
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settle(until: { fake.calls.filter { $0 == "installs" }.count >= 2 && !model.cameraExtensionCheckPending })
         expect(fake.calls.filter { $0 == "installs" }.count >= 2, "the loss re-asks what is installed")
         expectEqual(model.cameraExtensionState, .active, "ours enabled: a lost camera is not a restart")
         // macOS reports OUR version itself as not enabled: that is a restart.
@@ -429,7 +448,7 @@ extension ShellTests {
         model.virtualCameraCore = lost    // ...and starts again
         RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         model.virtualCameraCore = lost
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settle(until: { model.cameraExtensionState == .needsReboot && !model.cameraExtensionCheckPending })
         expectEqual(model.cameraExtensionState, .needsReboot, "a lost camera with OUR version not enabled says restart")
         model.stopTimersForTesting()
     }
@@ -480,7 +499,9 @@ extension ShellTests {
         model.cameraRegistrationTimeout = 0.2
         model.cameraRegistrationPollInterval = 0.05
         model.setVirtualCamera(enabled: true)  // first enable: activates
-        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        // The activation lands, then the registration check (0.2 s) has its verdict.
+        settle(until: { ![.unknown, .notInstalled, .activating].contains(model.cameraExtensionState)
+                        && !model.cameraExtensionCheckPending })
         return (model, fake)
     }
 
@@ -529,7 +550,7 @@ extension ShellTests {
         model.cameraExtensionOptedIn = true
         model.virtualCamera = PersistedVirtualCamera(enabled: true)
         model.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        settleCamera(model, extra: 0.25)        // longer than the 0.2 s registration timeout
         expectEqual(fake.calls, ["installs"], "nothing is submitted")
         expectEqual(model.cameraExtensionState, .needsReboot, "the stuck swap is reported as needing a restart")
         model.stopTimersForTesting()
@@ -644,7 +665,7 @@ extension ShellTests {
         var unreadableInUse: Bool?
         model.checkCameraInUse { unreadableInUse = $0 }
         expect(unreadableInUse == nil, "the read is not made in place: no answer before the caller returns")
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settle(until: { unreadableInUse != nil }, extra: 0)
         expectEqual(unreadableInUse, true, "unreadable counts as in use: nothing is replaced on a guess")
         expect(model.cameraInUseNow(), "and the in-place check at a replacement offer says the same")
         let diag = model.virtualCameraDiagnostics()
@@ -689,7 +710,7 @@ extension ShellTests {
         model.cameraExtensionOptedIn = true
         model.virtualCamera = PersistedVirtualCamera(enabled: true)
         model.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settleCamera(model)
         expectEqual(model.cameraExtensionState, .notInApplications, "Move to Applications, not Update camera")
         expectEqual(fake.calls, ["installs"], "and nothing is submitted")
         model.stopTimersForTesting()
@@ -702,7 +723,7 @@ extension ShellTests {
         fine.coreCommandCaptureForTesting = { _ in }
         fine.cameraExtensionOptedIn = true
         fine.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        settleCamera(fine)
         expectEqual(fine.cameraExtensionState, .active, "our version already working stays active from the DMG")
         fine.stopTimersForTesting()
     }
@@ -836,7 +857,8 @@ extension ShellTests {
         defer { heartbeat.invalidate() }
 
         model.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        // Launch, then at least two retries (0.05 s) read the device.
+        settle(until: { model.cameraExtensionState == .updateReady && probe.reads >= 3 }, extra: 0.1)
         expectEqual(model.cameraExtensionState, .updateReady, "precondition: another app holds the camera")
         expectEqual(fake.calls, ["installs"], "and nothing was submitted")
         let afterRetries = probe.reads
@@ -845,13 +867,13 @@ extension ShellTests {
         model.refreshCameraExtensionDiagnostics()   // the Health tab appearing
         _ = model.supportBundleInput()              // Export support bundle
         model.updateCameraExtension()               // the Update camera button
-        RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+        settle(until: { !model.cameraUpdateInProgress }, extra: 0.1)   // the 0.3 s release wait ends
         expectEqual(model.cameraExtensionState, .updateReady, "still held: the update stays ready")
         expect(!model.cameraUpdateInProgress, "and the click's wait ended")
 
         fake.installed = [ours()]                   // what macOS lists once the swap ran
         probe.status = ourDevice()                  // the other app quit; the swap can run
-        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        settle(until: { model.cameraExtensionState == .active && !model.cameraExtensionCheckPending }, extra: 0.15)
         expectEqual(fake.calls.filter { $0 == "activate" }.count, 1, "the retry installs the update once")
         expectEqual(model.cameraExtensionState, .active, "and the swap completes")
         model.stopTimersForTesting()
