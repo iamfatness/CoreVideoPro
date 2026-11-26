@@ -1601,6 +1601,9 @@ struct ZoomPane: View {
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+
+            // D-T3: after "Zoom status" (Windows hosts it on its Zoom-tab settings page).
+            TelemetryCard()
         }
         .frame(maxWidth: 520, alignment: .leading)
     }
