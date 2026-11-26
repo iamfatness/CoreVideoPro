@@ -11,6 +11,7 @@
 #include <cmath>
 #include <string_view>
 
+#include "compositor/CompositorFaultInjection.h"
 #include "modules/OverlayTileRaster.h"
 #include "core/ComApartmentLifetime.h"
 
@@ -511,6 +512,7 @@ std::vector<uint8_t> CompositorOverlayRaster::thumbnailPng(const CompositorOverl
   return result.asset ? result.asset->thumbnail : std::vector<uint8_t>{};
 }
 CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(const Request& request) {
+  compositor::invokeOverlayRasterPrepareHook();  // test seam; a no-op unless a test installs a hook
   thread_local core::ComApartmentLifetime apartment;
   const auto& overlay = request.overlay;
   const int widthPx = request.width, heightPx = request.height;
