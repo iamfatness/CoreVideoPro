@@ -31,6 +31,23 @@ struct SocialFeedRunners {
     var twitch: @MainActor (_ channel: String, _ clientId: String, _ playout: SocialPlayout, _ report: @escaping Report,
                             _ prompt: @escaping @MainActor (TwitchDevicePrompt) -> Void) async -> Void
 
+    /// Production: YouTube (Task 15) and Twitch EventSub (Tasks 16-17) over the shared transport.
+    static let live = SocialFeedRunners(
+        youTube: { videoId, key, playout, report in
+            await YouTubeSocialFeed.run(videoId: videoId, key: key, playout: playout, http: URLSessionSocialHTTP.shared,
+                                        sleep: { try? await Task.sleep(nanoseconds: $0) }, report: report)
+        },
+        twitch: { channel, clientId, playout, report, prompt in
+            await TwitchSocialFeed.run(channel: channel, clientId: clientId, auth: sharedTwitchAuthorization, playout: playout,
+                                       http: URLSessionSocialHTTP.shared,
+                                       connect: { try await URLSessionTwitchSocket.connect() },
+                                       sleep: { try? await Task.sleep(nanoseconds: $0) }, report: report, prompt: prompt)
+        })
+
+    /// One review owner's authorization (Windows keeps one per view model): the
+    /// hourly validation clock and the rotation lock live for the process.
+    @MainActor static let sharedTwitchAuthorization = TwitchAuthorization.keychain()
+
     static let unavailable = SocialFeedRunners(
         youTube: { _, _, _, report in report("YouTube live chat is not available in this build.") },
         twitch: { _, _, _, report, _ in report("Twitch chat is not available in this build.") })
@@ -79,7 +96,7 @@ final class SocialReviewModel: ObservableObject {
     private var showId: String
     private let sleep: (UInt64) async -> Void
 
-    init(playout: SocialPlayout, showId: String, feeds: SocialFeedRunners = .unavailable,
+    init(playout: SocialPlayout, showId: String, feeds: SocialFeedRunners = .live,
          sleep: @escaping (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }) {
         self.playout = playout
         self.showId = showId

@@ -19,141 +19,151 @@ struct AudioPane: View {
     // The pop-out window hosts this same view; it just hides the pop-out button.
     var isPopout: Bool = false
     @EnvironmentObject var model: AppModel
-    @State private var surface = AudioPane.initialSurface
-    /// The offscreen tab renderer (COREVIDEO_SHELL_TAB_SNAPSHOT) may open another
-    /// surface with COREVIDEO_SHELL_AUDIO_SURFACE=ROUTING|SETUP|PLUG-INS; the
-    /// running app always opens on SHOW.
-    static var initialSurface: String {
-        guard ShellHarness.isActive,
-              let wanted = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUDIO_SURFACE"],
-              ["SHOW", "ROUTING", "PLUG-INS", "SETUP"].contains(wanted) else { return "SHOW" }
-        return wanted
-    }
-    @State private var selectedStripId: String?
+    @State private var surface = AudioPane.initialSurface.surface
+    @State private var vstBrowserOpen = AudioPane.initialSurface.vstBrowserOpen
+    /// XAML:62-73: the Windows pills. OD-2: the Mac-only PLUG-INS pill is
+    /// folded into SETUP's collapsed "Advanced · VST3 plug-in browser".
+    static let surfaces = ["SHOW", "ROUTING", "SETUP"]
 
-    var selected: AudioStrip? {
-        model.strips.first { $0.id == (selectedStripId ?? model.strips.first?.id) }
+    /// COREVIDEO_SHELL_AUDIO_SURFACE for the offscreen tab renderer: SHOW,
+    /// ROUTING or SETUP; the retired PLUG-INS opens SETUP with the VST browser
+    /// open, so existing snapshot scripts keep working. Anything else is SHOW.
+    static func resolveSurface(_ wanted: String?) -> (surface: String, vstBrowserOpen: Bool) {
+        if wanted == "PLUG-INS" { return ("SETUP", true) }
+        guard let wanted, surfaces.contains(wanted) else { return ("SHOW", false) }
+        return (wanted, false)
     }
 
+    /// The running app always opens on SHOW.
+    static var initialSurface: (surface: String, vstBrowserOpen: Bool) {
+        guard ShellHarness.isActive else { return ("SHOW", false) }
+        return resolveSurface(ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUDIO_SURFACE"])
+    }
+    // The selection is model state (AppModel.selectedAudioStripId, A7 Task 3):
+    // the pop-out and the main window share it.
+    // SHOW and SETUP share AppModel.effectiveAudioStrip.
+    var selected: AudioStrip? { Self.selectedStrip(model) }
+    static func selectedStrip(_ model: AppModel) -> AudioStrip? { model.effectiveAudioStrip }
+
+    // OD-3 (XAML:31-36, :914-917): SHOW is a fixed viewport that fills the tab
+    // and never scrolls; the page ScrollView made the console jump on every
+    // snapshot. The other surfaces bring their own vertical scrolling, since
+    // TabPage no longer wraps the Audio tab (TabPage.wrapsInScrollView).
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                ForEach(["SHOW", "ROUTING", "PLUG-INS", "SETUP"], id: \.self) { name in
-                    Button(name) { surface = name }
-                        .buttonStyle(.plain)
-                        .font(.plexMono(10, .semibold))
-                        .foregroundStyle(surface == name ? Studio.onAccent : Studio.secondary)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(RoundedRectangle(cornerRadius: 6)
-                            .fill(surface == name ? Studio.blue : Studio.surface))
-                }
-                Spacer()
-                // A1, Windows AudioPage.xaml:79-88: OFF = Zoom's own program mix rides
-                // to master (echo-cancelled, continuous); ON = each guest's isolated
-                // stem routes through their strip, so the faders shape program audio.
-                Toggle(isOn: Binding(
-                    get: { model.zoomAudioMode == .perGuestIso },
-                    set: { model.setZoomAudioMode($0 ? .perGuestIso : .programMix) })) {
-                    Text(model.zoomAudioMode == .perGuestIso ? "Per-guest ISO" : "Zoom program mix")
-                        .font(.plexMono(10, .semibold)).foregroundStyle(Studio.secondary)
-                }
-                .toggleStyle(.switch).controlSize(.small)
-                .accessibilityLabel("Per-guest ISO audio to program")
-                .help("Route each guest's isolated audio through their fader instead of Zoom's combined mix")
-                // Real second-display mixer (was a disabled placeholder). Hidden
-                // inside the pop-out so it cannot spawn copies of itself.
-                if !isPopout {
-                    Button("Pop out mixer") { openWindow(id: PopoutWindow.audioMixer) }
-                        .buttonStyle(GhostButtonStyle())
-                        .help("Open the mixer on a second display")
-                }
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            header.frame(height: 34)
             switch surface {
             case "ROUTING":
-                AudioRoutingSurface()
-            case "PLUG-INS":
-                VstInsertsSurface()
-                    .padding(.top, 2)
+                ScrollView(.vertical) { AudioRoutingSurface() }
             case "SETUP":
-                VStack(alignment: .leading, spacing: 12) {
-                    MasteringGuideMeters()
-                    MasteringRack()
-                    LocalAudioSourceCard()
-                    Text("Monitor output").font(.grotesk(13, .semibold))
-                    MonitorDevicePicker()
-                    Toggle("Monitor", isOn: Binding(
-                        get: { model.monitorEnabled },
-                        set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
-                    HStack {
-                        Text("Volume").font(.grotesk(12))
-                        Slider(value: Binding(
-                            get: { model.monitorVolume },
-                            set: {
-                                model.setMonitor(enabled: model.monitorEnabled, volume: $0)
-                            }), in: 0...1)
-                            .frame(width: 220)
-                        if !model.monitorStatus.isEmpty {
-                            Text(model.monitorStatus).font(.plexMono(10))
-                                .foregroundStyle(Studio.secondary)
-                        }
-                    }
-                    if !model.monitorControlNotice.isEmpty {
-                        Text(model.monitorControlNotice).font(.plexMono(10))
-                            .foregroundStyle(Studio.amber)
-                    }
-                    if model.monitorFeedbackRisk {
-                        Text("Monitor output matches the loopback device — feedback risk")
-                            .font(.grotesk(12)).foregroundStyle(Studio.amber)
-                    }
-                }
-                .padding(10)
+                AudioSetupSurface(vstBrowserOpen: $vstBrowserOpen)
             default:
                 showSurface
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
-        .frame(maxWidth: 1000)
+        .padding(AudioLayout.panePadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // XAML:915: the SHOW console is #070B10; the other surfaces keep the panel.
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(surface == "SHOW" ? AudioConsoleColor.console : Studio.panel))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
     }
 
+    var header: some View {
+        HStack(spacing: 8) {
+            ForEach(Self.surfaces, id: \.self) { name in
+                Button(name) { surface = name }
+                    .buttonStyle(.plain)
+                    .font(.plexMono(10, .semibold))
+                    .foregroundStyle(surface == name ? Studio.onAccent : Studio.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 6)
+                        .fill(surface == name ? Studio.blue : Studio.surface))
+            }
+            Spacer()
+            // A1, Windows AudioPage.xaml:79-88: OFF = Zoom's own program mix rides
+            // to master (echo-cancelled, continuous); ON = each guest's isolated
+            // stem routes through their strip, so the faders shape program audio.
+            Toggle(isOn: Binding(
+                get: { model.zoomAudioMode == .perGuestIso },
+                set: { model.setZoomAudioMode($0 ? .perGuestIso : .programMix) })) {
+                Text(model.zoomAudioMode == .perGuestIso ? "Per-guest ISO" : "Zoom program mix")
+                    .font(.plexMono(10, .semibold)).foregroundStyle(Studio.secondary)
+            }
+            .toggleStyle(.switch).controlSize(.small)
+            .accessibilityLabel("Per-guest ISO audio to program")
+            .help("Route each guest's isolated audio through their fader instead of Zoom's combined mix")
+            // Real second-display mixer (was a disabled placeholder). Hidden
+            // inside the pop-out so it cannot spawn copies of itself.
+            if !isPopout {
+                Button("Pop out mixer") { openWindow(id: PopoutWindow.audioMixer) }
+                    .buttonStyle(GhostButtonStyle())
+                    .help("Open the mixer on a second display")
+            }
+        }
+    }
+
+    /// XAML:919-1491: header, channel chips, the 255-tall workspace, then the
+    /// strip bank and master rail filling the remaining height.
     var showSurface: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                ForEach(model.strips) { strip in
-                    Button {
-                        selectedStripId = strip.id
-                    } label: {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(stripLabel(strip)).font(.grotesk(11, .medium))
-                                .lineLimit(1)
-                            MonoLabel("Master", dim: true)
+        VStack(alignment: .leading, spacing: 8) {
+            channelChips
+            ProcessingWorkspace(stripId: selected?.id, stripName: selected.map(stripLabel) ?? "")
+            HStack(alignment: .top, spacing: 8) {
+                // XAML:1316-1431: a horizontal ScrollViewer of 120-wide strips.
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 4) {
+                        ForEach(model.strips) { strip in
+                            ConsoleStrip(strip: strip, label: stripLabel(strip),
+                                         selected: selected?.id == strip.id)
                         }
+                    }
+                    .frame(maxHeight: .infinity, alignment: .top)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // XAML:1434-1488: the master rail, pinned 150 wide at the right.
+                MasterLufsRail()
+                    .frame(width: AudioLayout.railWidth)
+                    .frame(maxHeight: .infinity)
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// XAML:946-975: one chip per channel, 88...170 wide, the name over the
+    /// primary routed bus (SVM:11650-11661 ResolvePrimaryAudioBusLabel).
+    var channelChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(model.strips) { strip in
+                    let isSelected = selected?.id == strip.id
+                    Button { model.selectAudioStrip(strip.id) } label: {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(stripLabel(strip)).font(.grotesk(11, .semibold))
+                                .foregroundStyle(AudioConsoleColor.title)
+                                .lineLimit(1).truncationMode(.tail)
+                            Text(model.primaryBusLabel(strip.id)).font(.plexMono(8))
+                                .foregroundStyle(AudioConsoleColor.chipBus)
+                                .lineLimit(1).truncationMode(.tail)
+                        }
+                        .frame(minWidth: 72, maxWidth: 154, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 6)
-                            .fill(selected?.id == strip.id
-                                  ? Studio.surfaceRaised : Studio.surface))
-                        .overlay(RoundedRectangle(cornerRadius: 6)
-                            .stroke(selected?.id == strip.id
-                                    ? Studio.accent.opacity(0.5) : Studio.border,
+                        .background(RoundedRectangle(cornerRadius: 3).fill(AudioConsoleColor.chipFill))
+                        .overlay(RoundedRectangle(cornerRadius: 3)
+                            .stroke(isSelected ? AudioConsoleColor.title : AudioConsoleColor.chipStroke,
                                     lineWidth: 1))
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help(stripLabel(strip))
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
                 if model.strips.isEmpty {
                     Text("Channels appear once sources carry PCM.")
                         .font(.grotesk(12)).foregroundStyle(Studio.secondary)
                 }
-            }
-            if let strip = selected {
-                ProcessingWorkspace(stripId: strip.id, stripName: stripLabel(strip))
-            }
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(model.strips) { strip in
-                    ConsoleStrip(strip: strip, label: stripLabel(strip))
-                }
-                Spacer()
-                MasterLufsRail()
             }
         }
     }
@@ -161,250 +171,111 @@ struct AudioPane: View {
     func stripLabel(_ strip: AudioStrip) -> String { model.audioSourceLabel(strip.id) }
 }
 
-// GATE / COMP / EQ cells with drawn response curves (composition per the
-// reference; parameter state is local until the chain's key names are
-// verified — see the header note).
-struct ProcessingWorkspace: View {
-    @EnvironmentObject var model: AppModel
-    let stripId: String
-    let stripName: String
-
-    let bandLabels = ["63", "125", "250", "500", "1k", "2k", "4k", "8k"]
-
-    var inserts: ChannelInserts { model.channelInserts[stripId] ?? ChannelInserts() }
-
-    func bind(_ keyPath: WritableKeyPath<ChannelInserts, Double>) -> Binding<Double> {
-        Binding(
-            get: { inserts[keyPath: keyPath] },
-            set: { value in model.editInserts(stripId) { $0[keyPath: keyPath] = value } })
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 6) {
-                MonoLabel("Channel")
-                Text(stripName).font(.grotesk(13, .semibold)).lineLimit(2)
-                Spacer()
-                // Real VST3 insert selection (was a permanently disabled
-                // placeholder). The control disables itself — with the reason —
-                // whenever the isolated host cannot actually run an insert; see
-                // VstInserts.swift for what does and does not work on macOS.
-                VstChannelInsertControl(stripId: stripId)
-            }
-            .frame(width: 150, alignment: .leading)
-            cell("GATE", on: inserts.gateEnabled,
-                 toggle: { model.editInserts(stripId) { $0.gateEnabled.toggle() } }) {
-                CurveCanvas { size in
-                    var path = Path()
-                    let knee = (inserts.gateThresholdDb + 80) / 68 * size.width * 0.8
-                    path.move(to: CGPoint(x: 0, y: size.height * 0.95))
-                    path.addLine(to: CGPoint(x: knee, y: size.height * 0.95))
-                    path.addLine(to: CGPoint(x: knee + 14, y: size.height * 0.35))
-                    path.addLine(to: CGPoint(x: size.width, y: 0))
-                    return path
-                }
-                HStack(spacing: 6) {
-                    labeledSlider("Threshold (dB)", bind(\.gateThresholdDb), in: -80...(-12))
-                    labeledSlider("Range (dB)", bind(\.gateRangeDb), in: -80...(-6))
-                }
-                HStack(spacing: 6) {
-                    labeledSlider("Attack", bind(\.gateAttackMs), in: 0.5...50)
-                    labeledSlider("Hold", bind(\.gateHoldMs), in: 0...500)
-                    labeledSlider("Release", bind(\.gateReleaseMs), in: 20...500)
-                }
-            }
-            cell("COMP", on: inserts.compEnabled,
-                 toggle: { model.editInserts(stripId) { $0.compEnabled.toggle() } }) {
-                CurveCanvas { size in
-                    var path = Path()
-                    let knee = (inserts.compThresholdDb + 40) / 34 * size.width
-                    path.move(to: CGPoint(x: 0, y: size.height))
-                    path.addLine(to: CGPoint(x: knee, y: size.height - knee))
-                    let over = size.width - knee
-                    path.addLine(to: CGPoint(
-                        x: size.width,
-                        y: size.height - knee - over / max(1, inserts.compRatio)))
-                    return path
-                }
-                HStack(spacing: 6) {
-                    labeledSlider("Threshold (dB)", bind(\.compThresholdDb), in: -40...(-6))
-                    labeledSlider("Ratio", bind(\.compRatio), in: 1...20)
-                }
-                let gr = MasterMeterReadout.gainReduction(
-                    model.strips.first { $0.id == stripId }?.gainReductionDb ?? 0)
-                HStack(spacing: 6) {
-                    Text(gr.label).font(.plexMono(9)).foregroundStyle(Studio.secondary)
-                        .frame(width: 70, alignment: .leading)
-                    GainReductionBar(level: gr.level).frame(height: 6)
-                }
-                HStack(spacing: 6) {
-                    labeledSlider("Attack", bind(\.compAttackMs), in: 0.1...100)
-                    labeledSlider("Release", bind(\.compReleaseMs), in: 10...1000)
-                    labeledSlider("Knee", bind(\.compKneeDb), in: 0...24)
-                    labeledSlider("Makeup", bind(\.compMakeupDb), in: 0...24)
-                }
-            }
-            cell("EQ", on: inserts.eqEnabled,
-                 toggle: { model.editInserts(stripId) { $0.eqEnabled.toggle() } }) {
-                CurveCanvas { size in
-                    var path = Path()
-                    let bands = inserts.eqBandsDb
-                    let step = size.width / CGFloat(max(1, bands.count - 1))
-                    for (index, band) in bands.enumerated() {
-                        let point = CGPoint(
-                            x: CGFloat(index) * step,
-                            y: size.height / 2 - CGFloat(band / 12) * size.height / 2)
-                        if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-                    }
-                    return path
-                }
-                HStack(alignment: .bottom, spacing: 6) {
-                    VStack(spacing: 1) {
-                        MonoLabel("Low cut", dim: true)
-                        Slider(value: bind(\.eqHighpassHz), in: 20...400).frame(width: 74)
-                        Text("\(Int(inserts.eqHighpassHz)) Hz")
-                            .font(.plexMono(8)).foregroundStyle(Studio.textDim)
-                    }
-                    ForEach(0..<8, id: \.self) { index in
-                        VStack(spacing: 2) {
-                            Slider(value: Binding(
-                                get: { inserts.eqBandsDb[index] },
-                                set: { value in
-                                    model.editInserts(stripId) { $0.eqBandsDb[index] = value }
-                                }), in: -12...12)
-                                .frame(width: 60)
-                                .rotationEffect(.degrees(-90))
-                                .frame(width: 18, height: 60)
-                            Text(bandLabels[index]).font(.plexMono(8))
-                                .foregroundStyle(Studio.textDim)
-                        }
-                    }
-                }
-            }
-        }
-        .frame(height: 220)
-    }
-
-    func cell(_ title: String, on: Bool, toggle: @escaping () -> Void,
-              @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                MonoLabel(title)
-                Spacer()
-                Button("IN", action: toggle)
-                    .buttonStyle(.plain)
-                    .font(.plexMono(9, .semibold))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 3)
-                        .fill(on ? Studio.accent.opacity(0.22) : Studio.surface))
-                    .foregroundStyle(on ? Studio.accent : Studio.textDim)
-            }
-            content()
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .stroke(on ? Studio.accent.opacity(0.4) : Studio.border, lineWidth: 1))
-        .opacity(on ? 1 : 0.55)
-    }
-
-    func labeledSlider(_ label: String, _ value: Binding<Double>,
-                       in range: ClosedRange<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(label).font(.plexMono(9)).foregroundStyle(Studio.secondary)
-            Slider(value: value, in: range)
-        }
-    }
-}
-
-struct CurveCanvas: View {
-    let makePath: (CGSize) -> Path
-
-    var body: some View {
-        Canvas { context, size in
-            context.stroke(makePath(size), with: .color(Studio.secondary.opacity(0.8)),
-                           lineWidth: 1.5)
-        }
-        .frame(height: 70)
-        .background(Rectangle().fill(Color.black.opacity(0.35)))
-        .overlay(Rectangle().stroke(Studio.line2, lineWidth: 1))
-    }
-}
-
-// Fader strip: PAN on top, MUTE/S, dB readout, vertical fader beside the
-// segmented meter, name chip at the bottom (reference strip bank).
+// Fader strip, XAML:1326-1424: 120 wide; PAN with its readout, MUTE / S, the
+// signed gain label, the fader and meter stretching to the bank's height, and
+// the name chip (a button that selects the channel).
 struct ConsoleStrip: View {
     @EnvironmentObject var model: AppModel
     let strip: AudioStrip
     let label: String
+    var selected = false
 
     var body: some View {
         VStack(spacing: 6) {
-            MonoLabel("Pan", dim: true)
-            Slider(value: Binding(
-                get: { strip.pan },
-                set: { value in model.editStrip(strip.id) { $0.pan = value } }),
-                in: -1...1)
-                .frame(width: 90)
-            HStack(spacing: 4) {
-                Button("MUTE") {
-                    model.editStrip(strip.id) { $0.muted.toggle() }
-                }
-                .buttonStyle(.plain)
-                .font(.plexMono(9, .semibold))
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 4)
-                    .fill(strip.muted ? Studio.red : Studio.surface))
-                .foregroundStyle(strip.muted ? .white : Studio.secondary)
-                Button("S") {
-                    model.editStrip(strip.id) { $0.solo.toggle() }
-                }
-                .buttonStyle(.plain)
-                .font(.plexMono(9, .semibold))
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 4)
-                    .fill(strip.solo ? Studio.amber : Studio.surface))
-                .foregroundStyle(strip.solo ? .black : Studio.secondary)
-            }
-            Text(String(format: "%.1f dB", strip.manualGainDb))
-                .font(.plexMono(10)).foregroundStyle(Studio.secondary)
-            HStack(spacing: 5) {
+            VStack(spacing: 0) {
+                Text("PAN").font(.plexMono(8)).tracking(0.6).foregroundStyle(Studio.secondary)
                 Slider(value: Binding(
-                    get: { strip.manualGainDb },
-                    set: { value in model.editStrip(strip.id) { $0.manualGainDb = value } }),
-                    in: -24...24)
-                    .frame(width: 150)
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 26, height: 150)
+                    get: { strip.pan },
+                    set: { value in model.editStrip(strip.id) { $0.pan = value } }).stepped(0.05, in: -1...1),
+                    in: -1...1)
+                    .controlSize(.mini)
+                    .accessibilityLabel("\(label) pan")
+                Text(ConsoleStripLabels.pan(strip.pan)).font(.plexMono(8)).foregroundStyle(Studio.secondary)
+            }
+            HStack(spacing: 3) {
+                Button { model.editStrip(strip.id) { $0.muted.toggle() } } label: {
+                    Text("MUTE").font(.plexMono(9, .bold)).frame(maxWidth: .infinity).padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 4)
+                            .fill(strip.muted ? Studio.red : Studio.surface))
+                        .foregroundStyle(strip.muted ? Studio.textPrimary : Studio.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Mute in mix")
+                Button { model.editStrip(strip.id) { $0.solo.toggle() } } label: {
+                    Text("S").font(.plexMono(9, .bold)).frame(maxWidth: .infinity).padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 4)
+                            .fill(strip.solo ? Studio.amber : Studio.surface))
+                        .foregroundStyle(strip.solo ? Studio.onAccent : Studio.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Solo in mix")
+            }
+            VStack(spacing: 1) {
+                Text(ConsoleStripLabels.gain(strip.manualGainDb))
+                    .font(.plexMono(10, .semibold)).foregroundStyle(Studio.textPrimary)
+                if strip.sourceMuted {
+                    // Display only (#481): the guest muted themselves in Zoom.
+                    // XAML:1388-1392: FontSize 10, bold (the owner asked for 10-11 px).
+                    Text("ZOOM MUTED").font(.plexMono(10, .bold)).foregroundStyle(Studio.amber)
+                        .accessibilityLabel("\(label) is muted in Zoom")
+                }
+                if AudioConsolePolicy.isMeterOnly(strip.id, mode: model.zoomAudioMode) {
+                    // A1: in ProgramMix the guest is inside zoom-mix, so this strip's
+                    // mute and fader do not change program — say so (Windows status copy).
+                    Text("METER ONLY").font(.plexMono(9, .semibold)).foregroundStyle(Studio.secondary)
+                        .help("Zoom program mix is on: this guest reaches program through Zoom's combined mix")
+                }
+            }
+            // XAML:1394-1411: fader (*) beside a 42-wide meter with its dBFS
+            // scale, both stretching to the bank's height.
+            HStack(spacing: 4) {
+                GeometryReader { geo in
+                    Slider(value: Binding(
+                        get: { strip.manualGainDb },
+                        set: { value in model.editStrip(strip.id) { $0.manualGainDb = value } })
+                            .stepped(0.5, in: -24...24),
+                        in: -24...24)
+                        .frame(width: geo.size.height)
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .accessibilityLabel("\(label) gain")
+                }
                 let reading = AudioConsolePolicy.meterReading(strip)
-                SegmentedMeter(level: reading.level, dimmed: reading.dimmed)
-                    .frame(width: 12, height: 150)
-                MeterTickScale().frame(width: 18, height: 150)
+                HStack(spacing: 3) {
+                    SegmentedMeter(level: reading.level, dimmed: reading.dimmed).frame(width: 14)
+                    MeterTickScale().frame(width: 22)
+                }
+                .frame(width: 42)
+                .help(ConsoleStripLabels.meterTooltip(muted: strip.muted, sourceMuted: strip.sourceMuted))
+                .accessibilityLabel(label)
             }
-            if AudioConsolePolicy.isMeterOnly(strip.id, mode: model.zoomAudioMode) {
-                // A1: in ProgramMix the guest is inside zoom-mix, so this strip's
-                // mute and fader do not change program — say so (Windows status copy).
-                Text("METER ONLY").font(.plexMono(9, .semibold)).foregroundStyle(Studio.secondary)
-                    .help("Zoom program mix is on: this guest reaches program through Zoom's combined mix")
+            .frame(maxHeight: .infinity)
+            Button { model.selectAudioStrip(strip.id) } label: {
+                Text(label).font(.grotesk(10, .semibold))
+                    .foregroundStyle(AudioConsoleColor.nameText)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 2).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(AudioConsoleColor.nameFill))
+                    .overlay(RoundedRectangle(cornerRadius: 3)
+                        .stroke(selected ? AudioConsoleColor.title : AudioConsoleColor.chipStroke, lineWidth: 1))
+                    .contentShape(Rectangle())
             }
-            if strip.sourceMuted {
-                // Display only (#481): the guest muted themselves in Zoom.
-                Text("ZOOM MUTED").font(.plexMono(9, .semibold)).foregroundStyle(Studio.amber)
-                    .accessibilityLabel("\(label) is muted in Zoom")
-            }
-            Text(label).font(.grotesk(10, .medium))
-                .lineLimit(1).truncationMode(.tail)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Studio.surface))
-                .frame(maxWidth: 110)
+            .buttonStyle(.plain)
+            .help(label)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+        .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 6)
+        .frame(width: AudioLayout.stripWidth)
+        .frame(maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 3).fill(AudioConsoleColor.stripFill))   // XAML:1326
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(Studio.border, lineWidth: 1))
     }
 }
 
+// Master rail, XAML:1434-1488: 150 wide (the caller pins the width), meters
+// stretching to the bank's height, Monitor and its volume, L / R.
 struct MasterLufsRail: View {
     @EnvironmentObject var model: AppModel
 
@@ -414,52 +285,57 @@ struct MasterLufsRail: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            MonoLabel("Master")
-            Text(lufsLabel).font(.grotesk(22, .semibold))
+        VStack(spacing: 6) {
+            Text("MASTER").font(.plexMono(11, .heavy)).tracking(0.6).foregroundStyle(AudioConsoleColor.title)
+            Text(lufsLabel).font(.grotesk(22, .bold))
+                .lineLimit(1).minimumScaleFactor(0.6)
                 .accessibilityLabel("Master loudness \(lufsLabel)")
             // #870: the clock re-evaluates the observation age between snapshots,
             // so a stalled audio worker cannot leave held meters looking live.
             TimelineView(.periodic(from: .now, by: 0.25)) { context in
                 if let warning = model.meterWarning(now: context.date) {
-                    Text(warning).font(.grotesk(11, .medium)).foregroundStyle(Studio.amber)
-                        .multilineTextAlignment(.center)
+                    Text(warning).font(.grotesk(10, .medium)).foregroundStyle(Studio.amber)
+                        .multilineTextAlignment(.center).lineLimit(2)
                 } else {
                     Text(model.masterLevel > 0 ? "Live" : "Standing by")
-                        .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                        .font(.grotesk(10)).foregroundStyle(Studio.secondary)
                 }
             }
             // L and R from the pgm-l / pgm-r bus taps (StudioFooterReadout.masterLevels,
             // Windows ResolveMasterMeterReadout) — no longer the mono level twice.
-            HStack(spacing: 4) {
-                MeterTickScale().frame(width: 20, height: 170)
-                SegmentedMeter(level: model.masterLevelLeft).frame(width: 12, height: 170)
+            HStack(spacing: 6) {
+                MeterTickScale().frame(width: 20)
+                SegmentedMeter(level: model.masterLevelLeft).frame(width: 16)
                     .accessibilityLabel("Master left")
-                SegmentedMeter(level: model.masterLevelRight).frame(width: 12, height: 170)
+                SegmentedMeter(level: model.masterLevelRight).frame(width: 16)
                     .accessibilityLabel("Master right")
             }
-            Toggle("Monitor", isOn: Binding(
-                get: { model.monitorEnabled },
-                set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-            Slider(value: Binding(
-                get: { model.monitorVolume },
-                set: { model.setMonitor(enabled: model.monitorEnabled, volume: $0) }),
-                in: 0...1)
-                .frame(width: 110)
-            Text("\(Int(model.monitorVolume * 100))%")
-                .font(.plexMono(9)).foregroundStyle(Studio.textDim)
-            Text("L / R").font(.plexMono(10, .semibold))
+            .frame(maxHeight: .infinity)
+            VStack(spacing: 2) {
+                Toggle("Monitor", isOn: Binding(
+                    get: { model.monitorEnabled },
+                    set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .font(.grotesk(11))
+                Slider(value: Binding(
+                    get: { model.monitorVolume },
+                    set: { model.setMonitor(enabled: model.monitorEnabled, volume: $0) }),
+                    in: 0...1)
+                    .controlSize(.mini)
+                    .accessibilityLabel("Monitor volume")
+                Text("\(Int(model.monitorVolume * 100))%")
+                    .font(.plexMono(9)).foregroundStyle(Studio.secondary)
+            }
+            Text("L / R").font(.plexMono(10, .semibold)).foregroundStyle(AudioConsoleColor.nameText)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 4)
-                    .fill(Studio.blue.opacity(0.25)))
+                .background(RoundedRectangle(cornerRadius: 3).fill(AudioConsoleColor.nameFill))
         }
-        .padding(10)
-        .frame(width: 160)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+        .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 3).fill(AudioConsoleColor.railFill))   // XAML:1443
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(AudioConsoleColor.chipStroke, lineWidth: 1))
     }
 }
 
@@ -472,19 +348,6 @@ struct MeterTickScale: View {
                     .font(.plexMono(7)).foregroundStyle(Studio.textDim)
                     .position(x: geo.size.width / 2,
                               y: geo.size.height * (1 - CGFloat(AudioMeterScale.toLevel(tick + 0.0001)) / 100))
-            }
-        }
-    }
-}
-
-/// Compressor gain reduction, 0..24 dB, filled from the left.
-struct GainReductionBar: View {
-    let level: Int
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Rectangle().fill(Studio.surfaceRaised)
-                Rectangle().fill(Studio.amber).frame(width: geo.size.width * CGFloat(level) / 100)
             }
         }
     }
@@ -808,7 +671,9 @@ struct MasteringRack: View {
             if !model.masteringStatus.isEmpty {
                 Text(model.masteringStatus).font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
-            HStack(alignment: .top, spacing: 8) {
+            // Reflows (Task 5 review): the stages take as many equal columns as
+            // fit (MasteringRackLayout.stageColumns), so nothing clips at 900.
+            StageGridLayout {
                 stage("01 INPUT", engaged: abs(params.inputGainDb) > 0.05) {
                     knob("Gain", value: bind(\.inputGainDb), in: -12...12, unit: "dB")
                 }
@@ -863,7 +728,7 @@ struct MasteringRack: View {
     }
 
     var compareRow: some View {
-        HStack(spacing: 8) {
+        WrapRowLayout {
             MonoLabel("Compare")
             ForEach(["A", "B"], id: \.self) { slot in
                 Button(slot) { model.selectMasteringCompareSlot(slot) }
@@ -895,11 +760,12 @@ struct MasteringRack: View {
             .menuStyle(.borderlessButton).fixedSize()
             Text("A/B slots and the whole rack persist across restarts.")
                 .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     var presetsRow: some View {
-        HStack(spacing: 8) {
+        WrapRowLayout {
             MonoLabel("My presets")
             TextField("Preset name", text: $presetName)
                 .textFieldStyle(.roundedBorder).frame(width: 160)
@@ -935,7 +801,7 @@ struct MasteringRack: View {
             content()
         }
         .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
         .overlay(RoundedRectangle(cornerRadius: 8)
             .stroke(engaged ? Studio.accent.opacity(0.35) : Studio.border, lineWidth: 1))

@@ -670,7 +670,7 @@ struct FooterTransportGroup: View {
             Button {
                 Task { await model.take() }
             } label: {
-                Text("Take").font(.grotesk(13, .bold))
+                Text(model.takeButtonTitle).font(.grotesk(13, .bold))
                     .foregroundStyle(model.canTake ? Studio.textPrimary : Studio.textDim)
                     .frame(width: 84, height: 48)
                     .background(RoundedRectangle(cornerRadius: 8)
@@ -681,7 +681,7 @@ struct FooterTransportGroup: View {
             }
             .buttonStyle(.plain)
             .disabled(!model.canTake)
-            .accessibilityLabel("Take")
+            .accessibilityLabel(model.takeButtonTitle)
             .help(takeHelp)
 
             Button { transitionsShown.toggle() } label: {

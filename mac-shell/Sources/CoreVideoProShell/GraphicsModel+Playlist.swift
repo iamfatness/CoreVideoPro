@@ -132,6 +132,11 @@ extension GraphicsModel {
             return row
         }
         setRows(rows + added)
+        // Windows installs the preset Shot Layouts with the default rows when the show has none (D9).
+        if document.shotLayouts.isEmpty, GraphicsLayouts.saveRefusal(GraphicsLayouts.defaultLayouts(), playlist: document.playlist) == nil {
+            document.shotLayouts = GraphicsLayouts.defaultLayouts()
+            scheduleSave()
+        }
     }
 
     // ── edits (row inspector) ────────────────────────────────────────────────

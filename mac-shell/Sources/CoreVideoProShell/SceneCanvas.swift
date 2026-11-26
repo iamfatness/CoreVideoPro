@@ -54,7 +54,7 @@ struct ScenesPane: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                Button("Take") { Task { await model.take() } }
+                Button(model.takeButtonTitle) { Task { await model.take() } }
                     .buttonStyle(AccentButtonStyle())
                     .disabled(!model.canTake)
             }

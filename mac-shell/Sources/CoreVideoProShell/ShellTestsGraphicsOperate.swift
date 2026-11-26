@@ -37,12 +37,15 @@ final class ScriptedGraphicsCore {
             guard index < steps.count else { self.replayFaults.append("extra command \(command)"); return (false, "unexpected") }
             let step = steps[index]; index += 1
             let want = step["command"] as? JSONObject ?? [:]
+            if let owner = (command["graphics"] as? JSONObject)?["cueOwner"] as? String, owner.hasPrefix("layout-") { self.attemptId = owner }
             let got: JSONObject = ["type": command["type"] ?? "", "graphics": Self.normalized(command["graphics"] as? JSONObject ?? [:])]
             if !(got as NSDictionary).isEqual(to: want) { self.replayFaults.append("step \(index - 1): sent \(got), recorded \(want)") }
-            let operations = node["operations"]
-            node = step["nodeAfter"] as? JSONObject ?? node
+            let operations = node["operations"], templates = node["templates"]
+            node = self.withAttempt(step["nodeAfter"] as? JSONObject ?? node)
             node["operations"] = operations ?? [] as [Any]
-            self.replayPolls = step["pollsAfter"] as? [JSONObject] ?? []
+            // A recorded node may omit the template catalog (layout transcripts): the catalog is unchanged.
+            if node["templates"] == nil { node["templates"] = templates }
+            self.replayPolls = (step["pollsAfter"] as? [JSONObject] ?? []).map(self.withAttempt)
             return (true, "accepted")
         }
     }
@@ -54,13 +57,34 @@ final class ScriptedGraphicsCore {
     /// One wait passed: serve the next recorded node, if the core changed during the waits.
     func advanceReplayPoll() {
         guard !replayPolls.isEmpty else { return }
-        let operations = node["operations"]
+        let operations = node["operations"], templates = node["templates"]
         node = replayPolls.removeFirst()
         node["operations"] = operations ?? [] as [Any]
+        if node["templates"] == nil { node["templates"] = templates }
     }
 
+    /// The attempt id the Mac minted (recorded transcripts write ATTEMPT for Windows' own GUID).
+    var attemptId = ""
+
     static func normalized(_ graphics: JSONObject) -> JSONObject {
-        graphics.filter { !["requestId", "clientId", "schemaVersion", "coreEpoch"].contains($0.key) }
+        var out = graphics.filter { !["requestId", "clientId", "schemaVersion", "coreEpoch"].contains($0.key) }
+        if let owner = out["cueOwner"] as? String, owner.hasPrefix("layout-") { out["cueOwner"] = "ATTEMPT" }
+        return out
+    }
+
+    /// A recorded node with ATTEMPT replaced by the Mac's own attempt id.
+    func withAttempt(_ node: JSONObject) -> JSONObject {
+        guard !attemptId.isEmpty, let data = try? JSONSerialization.data(withJSONObject: node),
+              let text = String(data: data, encoding: .utf8)?.replacingOccurrences(of: "\"ATTEMPT\"", with: "\"\(attemptId)\""),
+              let back = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? JSONObject else { return node }
+        return back
+    }
+
+    /// A recorded step that is not a core command (the Shot Layout's scene select).
+    func pseudo(_ type: String, _ graphics: JSONObject) {
+        let command: JSONObject = ["type": type, "graphics": graphics]
+        commands.append(command)
+        _ = react(command, &node)
     }
 
     /// Command types in order ("graphics-instance-trigger:hide:<instance>").

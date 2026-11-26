@@ -70,6 +70,15 @@ final class GraphicsPlayout {
     /// Auto-out timers by instance id; the token makes a late fire a no-op.
     private(set) var autoOut: [String: (token: UUID, task: Task<Void, Never>)] = [:]
 
+    /// Shot Layouts (GraphicsPlayoutService.Layouts.cs): the prepared guarded layout, its progress, and
+    /// the running preparation.
+    var preparedLayout: GraphicsPreparedLayout?
+    var layoutProgress: GraphicsLayoutProgress?
+    var layoutPreparing = false
+    /// CancelLayoutAsync's token: the running preparation stops at its next check.
+    var layoutCancelRequested = false
+    var newAttemptId: () -> String = { "layout-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "") }
+
     private(set) var pending = 0
     var busy: Bool { pending > 0 }
     private(set) var status = ""
@@ -168,7 +177,14 @@ final class GraphicsPlayout {
 
     /// A new core epoch: drop every local timer (:126). In-flight sequences
     /// refuse on their own at the next `current(epoch)` check.
-    func epochChanged() { cancelAllAutoOut() }
+    /// A new core: auto-outs and any Shot Layout preparation or prepared layout belong to the old one.
+    func epochChanged() {
+        cancelAllAutoOut()
+        if layoutPreparing { layoutCancelRequested = true }
+        preparedLayout = nil
+        layoutProgress = nil
+        onChange()
+    }
 
     // ── playlist operations (G2) ────────────────────────────────────────────
 
@@ -223,8 +239,8 @@ final class GraphicsPlayout {
         }
     }
 
-    func ensureCore(_ entry: GraphicsPlaylistEntry) async throws -> GraphicsOperationResult {
-        guard let row = row(entry.rowId) else { return refuse("That playlist row no longer exists.") }
+    func ensureCore(_ entry: GraphicsPlaylistEntry, resolved: GraphicsResolvedRow? = nil) async throws -> GraphicsOperationResult {
+        guard let row = resolved?.row ?? row(entry.rowId) else { return refuse("That playlist row no longer exists.") }
         if row.needsFeedPlayback { return refuse(Self.unsupportedDataText(row.name)) }
         var state = try available()
         let epoch = state.coreEpoch
@@ -248,9 +264,10 @@ final class GraphicsPlayout {
         }
         state = try current(epoch)
         let declarative = installed.runtime == "declarative"
-        let values = Self.cueFields(row, entry, declarative: declarative, descriptors: installed.fields)
+        let values = resolved?.row.fields ?? Self.cueFields(row, entry, declarative: declarative, descriptors: installed.fields)
         let identity = entry.sourceId.isEmpty ? nil
             : state.sources.first { $0.videoOn && $0.identity?.sourceId == entry.sourceId }?.identity
+        if let resolved, resolved.identity != identity { return refuse("\(row.name): the selected source changed during preparation.") }
         let id = entry.instanceId
         let motion: JSONObject
         if var rowMotion = row.motion { rowMotion["layers"] = "whole"; motion = Self.normalizedMotion(rowMotion) }
@@ -290,17 +307,28 @@ final class GraphicsPlayout {
 
     /// Cue with rideTake, then wait for the cue revision to land (:280-307): 5 s
     /// budget polled every 50 ms on the injected sleep.
-    func cueCore(_ entry: GraphicsPlaylistEntry) async throws -> GraphicsOperationResult {
-        let ensured = try await ensureCore(entry)
+    /// With an `owner` (a guarded Shot Layout attempt) the cue does not ride an ordinary Take, carries the
+    /// owner, is recorded through `attempted` before it is sent, and shares the layout's `deadline`.
+    func cueCore(_ entry: GraphicsPlaylistEntry, resolved: GraphicsResolvedRow? = nil, owner: String? = nil, deadline: Date? = nil,
+                 attempted: (GraphicsLayoutCue) -> Void = { _ in }) async throws -> GraphicsOperationResult {
+        let ensured = try await ensureCore(entry, resolved: resolved)
         guard ensured.accepted else { return ensured }
         let id = ensured.instanceId, revision = ensured.currentRevision, epoch = self.epoch
-        let cued = try await send("graphics.instance.cue", ["instanceId": id, "expectedRevision": revision, "rideTake": true])
+        var body: JSONObject = ["instanceId": id, "expectedRevision": revision, "rideTake": owner == nil]
+        if let owner {
+            body["cueOwner"] = owner
+            attempted(GraphicsLayoutCue(instanceId: id, cueRevision: revision))
+        }
+        let cued = try await send("graphics.instance.cue", body)
         guard cued.accepted else { return cued }
-        let until = now().addingTimeInterval(5)
+        let until = deadline ?? now().addingTimeInterval(5)
         while true {
-            guard let current = try current(epoch).instance(id), current.revision == revision else {
+            guard let current = try current(epoch).instance(id),
+                  owner == nil ? current.revision == revision : current.cueOwner == owner else {
                 return refuse("The graphic changed while cueing. Retry explicitly.")
             }
+            if owner != nil && current.cuePreparation == "failed" { return refuse("Graphic preparation failed.") }
+            if owner != nil && layoutCancelRequested { throw CancellationError() }
             if current.cueRevision == revision && !current.cuePending { break }
             if now() >= until { return refuse("The graphic is still preparing. Retry when ready.") }
             await sleep(50_000_000)

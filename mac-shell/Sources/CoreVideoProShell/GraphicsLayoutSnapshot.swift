@@ -8,6 +8,8 @@
 //   1600x900 and 1920x1080)
 //   COREVIDEO_SHELL_GRAPHICS_SURFACE=design  renders the Design surface, plus the Create data table
 //   sheet over scores.csv as its own PNG
+//   COREVIDEO_SHELL_GRAPHICS_LAYOUTS=1  stages three Shot Layouts with one preparing (the SHOT LAYOUTS
+//   band with its progress block), plus the Edit Shot Layout sheet as its own PNG (G4-G7 Task 16)
 
 import AppKit
 import SwiftUI
@@ -47,6 +49,47 @@ enum GraphicsLayoutSnapshot {
         graphics.status = "Show title cued. Take carries it to Program."
         graphics.selectedKey = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SELECT"] ?? "guest"
         model.selectedTab = .overlays
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_LAYOUTS"] == "1" { seedLayouts(model) }
+    }
+
+    /// Three layouts on the Mac scenes (one guarded, with a title override) and the guarded one preparing.
+    static func seedLayouts(_ model: AppModel) {
+        let graphics = model.graphics
+        func layout(_ id: String, _ name: String, _ scene: String, _ rows: [String], _ hotkey: String, settings: JSONObject = [:]) -> GraphicsShotLayout {
+            var json: JSONObject = [:]
+            json["id"] = id; json["name"] = name; json["sceneId"] = scene; json["rowIds"] = rows
+            json["hotkey"] = hotkey; json["playOutOthers"] = false; json["rowSettings"] = settings
+            return GraphicsShotLayout(json: json)
+        }
+        let overrides: JSONObject = ["heading": "Thanks for watching"]
+        let finalSettings: JSONObject = ["title": ["overrides": overrides] as JSONObject]
+        graphics.document.shotLayouts = [
+            layout("open", "Open", "fullscreen", ["title", "logo"], "Shift+F1"),
+            layout("two-up", "Two-up", "two-up", ["guest", "logo"], "Shift+F2"),
+            layout("final", "Final word", "pip", ["guest", "title"], "Shift+F3", settings: finalSettings),
+        ]
+        graphics.selectedLayoutId = "final"
+        graphics.playout.layoutProgress = GraphicsLayoutProgress(layoutId: "final", state: "Preparing", reason: "", rows: [
+            GraphicsLayoutRowProgress(name: "Guest name", dataRevision: nil, dataReceivedAt: nil, state: "Ready"),
+            GraphicsLayoutRowProgress(name: "Show title", dataRevision: nil, dataReceivedAt: nil, state: "Preparing"),
+        ])
+        graphics.playout.onChange()
+    }
+
+    static func renderSheet<V: View>(_ view: V, to url: URL) {
+        let host = NSHostingView(rootView: view.environment(\.colorScheme, .dark))
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        host.layoutSubtreeIfNeeded(); host.display()
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: url)
+            print("graphics snapshot \(url.path) ok")
+        }
     }
 
     static func render(_ model: AppModel, size: CGSize, to url: URL) -> Bool {
@@ -95,7 +138,11 @@ enum GraphicsLayoutSnapshot {
                 print("graphics snapshot \(url.path) ok")
             }
         }
-        let tag = (design ? "design-" : "") + (ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SELECT"] ?? "guest")
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_LAYOUTS"] == "1" {
+            renderSheet(GraphicsLayoutEditorSheet(graphics: model.graphics, isPresented: .constant(true)),
+                        to: URL(fileURLWithPath: dir).appendingPathComponent("graphics-layout-editor-sheet.png"))
+        }
+        let tag = (ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_LAYOUTS"] == "1" ? "layouts-" : "") + (design ? "design-" : "") + (ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRAPHICS_SELECT"] ?? "guest")
             .replacingOccurrences(of: "|", with: "_").replacingOccurrences(of: ":", with: "-")
         for size in sizes {
             let url = URL(fileURLWithPath: dir).appendingPathComponent("graphics-\(tag)-\(Int(size.width))x\(Int(size.height)).png")

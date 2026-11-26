@@ -20,8 +20,9 @@ enum TabPageLayout {
         case .sources, .routing, .diagnose, .overlays: return .infinity
         // Comms fills the window, like Windows (Border margin 12, padding 20, no cap).
         case .comms: return .infinity
-        // The mixer asks for 1000 itself (AudioConsole.swift).
-        case .audio: return 1000
+        // The Audio tab too (OD-3): SHOW fills the window like the Windows
+        // console; SETUP caps its own right column at 820 (Task 5).
+        case .audio: return .infinity
         // Forms and cards: a readable measure.
         case .studio, .zoom, .scenes, .media, .automation, .settings: return 720
         }
@@ -31,8 +32,10 @@ enum TabPageLayout {
     /// no outer ScrollView. Graphics: Windows hosts it in a fixed-height Border, its playlist
     /// and inspector scroll on their own (StudioWorkspace.xaml:725-728). Comms: it pins its
     /// strip and ops strip like Windows' five-row grid (CommsPage.xaml:51-58), and inside an
-    /// outer scroll they would scroll away. Every other tab scrolls as one page.
-    static func fillsHeight(_ tab: StudioTab) -> Bool { tab == .overlays || tab == .comms }
+    /// outer scroll they would scroll away. Audio (OD-3, Windows AudioPage.xaml:31-36): SHOW
+    /// is a fixed viewport; its ROUTING and SETUP surfaces scroll inside AudioPane.
+    /// Every other tab scrolls as one page.
+    static func fillsHeight(_ tab: StudioTab) -> Bool { tab == .overlays || tab == .comms || tab == .audio }
 
     /// Tiles workspace (Windows SourcesPage Scene Builder `228 | * | 292`): while a
     /// Tiles wall is being edited the Scenes tab takes the window's width.
@@ -81,6 +84,8 @@ struct TabPageContent: View {
                    maxHeight: tab == .comms ? .infinity : nil)
             Spacer(minLength: 0)
         }
+        // The Audio tab is a fixed viewport (no page ScrollView): it fills the height.
+        .frame(maxHeight: tab == .audio ? .infinity : nil, alignment: .top)
         .padding(TabPageLayout.gutter)
     }
 }
@@ -102,6 +107,12 @@ enum TabSnapshotHarness {
                              connectionState: "connected", signalPresent: true, warning: ""),
             CaptureDeviceRow(id: "screen:0", name: "Display 1", kind: "video", vendor: "ScreenCaptureKit",
                              connectionState: "detected", signalPresent: false, warning: ""),
+            // Slots 6 and 7: capture slots with a paired mic, so the Audio tab's
+            // extra strips carry slot names (AppModel.audioSourceLabel) like real ones.
+            CaptureDeviceRow(id: "cam-podium", name: "Podium camera", kind: "video", vendor: "avfoundation",
+                             connectionState: "connected", signalPresent: true, warning: ""),
+            CaptureDeviceRow(id: "cam-stage", name: "Stage camera", kind: "video", vendor: "avfoundation",
+                             connectionState: "connected", signalPresent: true, warning: ""),
         ]
         ShowInputWriteScope.run("snapshot-seed") { seedSlots(model) }
         seedMedia(model)
@@ -172,6 +183,29 @@ enum TabSnapshotHarness {
         model.audioSends["101", default: [:]][bus.id] = -3
         model.setBusSend(bus.id, target: "master", enabled: true)
         model.setListening("aux-1", on: true)
+        // A7 Task 4: eight more channels, so the strip bank must scroll under the
+        // pinned master rail; an ordered chain on 101, and 101 selected.
+        let more: [(id: String, gain: Double, pan: Double, level: Int)] = [
+            ("zoom-mix", 0, 0, 40), ("media", -6, 0, 0), ("local-machine-audio", 3, -0.25, 55),
+            ("capture:cam-1", -2.5, 0.5, 62), ("capture:screen:0", 0, 0, 0), ("capture:cam-podium", 1.5, -1, 30),
+            ("capture:cam-stage", -12, 0.75, 20), ("capture:cam-gone", 0, 0, 0),
+        ]
+        // One channel routed only to a custom bus, so its chip shows that bus
+        // (primaryBusLabel), not the MASTER fallback.
+        model.audioSends["capture:cam-stage"] = [bus.id: 0]
+        for extra in more {
+            model.strips.append(AudioStrip(id: extra.id, outputLevel: extra.level, manualGainDb: extra.gain,
+                                           muted: extra.id == "media", solo: false, pan: extra.pan, status: "live"))
+        }
+        model.editInserts("101") { inserts in
+            for name in ["Built-in EQ", "Compressor", "Limiter"] { inserts.add(name) }
+            inserts.eqBandsDb[1] = -3; inserts.eqBandsDb[5] = 4
+        }
+        model.selectAudioStrip("101")
+        // A7 Task 5: SETUP opens on bus:master carrying Compressor + Limiter.
+        // The SHOW strip selection stays on 101.
+        model.busInserts["master"] = ["Compressor", "Limiter"]
+        model.selectProcessingTarget(AudioProcessingTargetPolicy.defaultTargetId)
     }
 
     private static func seedSlots(_ model: AppModel) {
@@ -181,6 +215,10 @@ enum TabSnapshotHarness {
         model.slots[2].audioDeviceId = "mic"; model.slots[2].audioDeviceName = "USB Audio Interface"
         model.assignSlot(4, kind: "capture", sourceId: "screen:0", name: "Display 1")
         model.assignSlot(5, kind: "capture", sourceId: "cam-gone", name: "Old desk camera")
+        model.assignSlot(6, kind: "capture", sourceId: "cam-podium", name: "Podium camera")
+        model.slots[5].audioDeviceId = "usb-mic"; model.slots[5].audioDeviceName = "USB mic"
+        model.assignSlot(7, kind: "capture", sourceId: "cam-stage", name: "Stage camera")
+        model.slots[6].audioDeviceId = "line-in"; model.slots[6].audioDeviceName = "Line in"
         model.toggleSlotIso(1)
     }
 
@@ -262,18 +300,23 @@ enum TabSnapshotHarness {
     /// NSHostingView in an offscreen, never-ordered-front window so AppKit-
     /// backed controls (menus, checkboxes, fields) draw for real — ImageRenderer
     /// draws those as placeholders.
-    static func render(_ model: AppModel, tab: StudioTab, width: CGFloat, to url: URL) -> CGSize? {
+    /// `height` nil = the page's fitting height (a scrolling page drawn whole);
+    /// a value renders at a real window height, which a fixed-viewport page
+    /// (the Audio SHOW surface) needs: its fitting height is its minimum.
+    static func render(_ model: AppModel, tab: StudioTab, width: CGFloat, height fixedHeight: CGFloat? = nil,
+                       to url: URL) -> CGSize? {
         let host = NSHostingView(rootView: TabPageContent(tab: tab).environmentObject(model)
-            .frame(width: width, alignment: .top)
+            .frame(width: width, height: fixedHeight, alignment: .top)
             .background(Studio.background)
             .environment(\.colorScheme, .dark))
-        host.frame = NSRect(x: 0, y: 0, width: width, height: 100)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: fixedHeight ?? 100)
         host.layoutSubtreeIfNeeded()
         // A page that fills the window has no fitting height of its own: give it a window's
-        // (Graphics a fixed 760; Comms 16:9-ish, so its pinned rows sit where a window puts them).
-        let height = tab == .overlays ? 760
+        // unless the harness asked for one (Graphics and Audio a fixed 760; Comms 16:9-ish,
+        // so its pinned rows sit where a window puts them).
+        let height = fixedHeight ?? (tab == .overlays || tab == .audio ? 760
             : tab == .comms ? (width * 768 / 1360).rounded()
-            : max(100, host.fittingSize.height)
+            : max(100, host.fittingSize.height))
         let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: width, height: height),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .darkAqua)
@@ -288,6 +331,22 @@ enum TabSnapshotHarness {
         return host.bounds.size
     }
 
+    /// COREVIDEO_SHELL_TAB_SNAPSHOT_WIDTHS (comma-separated points, e.g.
+    /// "900,1360,1920"; 900 is the Audio pop-out minimum); default 1360 and 1920.
+    static var snapshotWidths: [Double] {
+        let parsed = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_WIDTHS"]?
+            .split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            .filter { $0 >= 100 } ?? []
+        return parsed.isEmpty ? [1360, 1920] : parsed
+    }
+
+    /// COREVIDEO_SHELL_TAB_SNAPSHOT_HEIGHT: render at this window height
+    /// instead of the page's fitting height (the Audio SHOW viewport).
+    static var snapshotHeight: CGFloat? {
+        ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_HEIGHT"]
+            .flatMap(Double.init).flatMap { $0 >= 100 ? CGFloat($0) : nil }
+    }
+
     static func runAndExit(dir: String) -> Never {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let model = AppModel()
@@ -296,10 +355,10 @@ enum TabSnapshotHarness {
             .split(separator: ",").compactMap { StudioTab(rawValue: String($0)) }
             .filter { $0 != .comms || CommsGate.enabled }
         for tab in wanted ?? StudioTab.navigation where tab != .studio {
-            for width in [1360.0, 1920.0] {
+            for width in snapshotWidths {
                 let url = URL(fileURLWithPath: dir)
                     .appendingPathComponent("tab-\(tab.rawValue.lowercased())-\(Int(width)).png")
-                let size = render(model, tab: tab, width: CGFloat(width), to: url)
+                let size = render(model, tab: tab, width: CGFloat(width), height: snapshotHeight, to: url)
                 print("tab snapshot \(url.path) size=\(size.map { "\($0.width)x\($0.height)" } ?? "FAILED")")
             }
         }
