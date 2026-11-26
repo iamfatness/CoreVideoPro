@@ -696,6 +696,11 @@ final class AppModel: ObservableObject {
     @Published var telemetryConsentOn = false
     /// The "Preview what's sent" block (empty = hidden).
     @Published var telemetryPreviewJSON = ""
+    /// The crash report bar (nil = hidden) and what it offers (Phase 4 R5).
+    @Published var crashBar: CrashBarState?
+    var pendingCrashReports: [CrashReportFile] = []
+    var crashCoordinator: CrashReportCoordinator?
+    var crashScanStarted = false
     /// Test seams (production leaves them at their defaults): the request path,
     /// the "core is gone" answer when that path is replaced, and the timings.
     var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
@@ -6167,6 +6172,34 @@ final class AppModel: ObservableObject {
         telemetryService = service
         loadTelemetryConsent()
         service.start()
+        // R5: the consented crash report needs the same key, and only the key (Windows gates
+        // the send on the explicit click, not on telemetry consent).
+        startCrashReports(coordinator: makeCrashCoordinator(config: config, machineClass: machine.label,
+                                                            transport: CrashReportUploader.urlSessionTransport()))
+    }
+
+    /// The crash report coordinator as the app wires it. Production uses the defaults; tests pass
+    /// harness folders and a fake transport and keep every other piece of the real wiring.
+    func makeCrashCoordinator(config: TelemetryConfig, machineClass: String, transport: @escaping CrashTransport,
+                              directories: [String] = CrashReportScanner.defaultDirectories(),
+                              logFiles: [String] = [ShellLog.path, CoreLog.path],
+                              bundleDirectory: String = CrashReportCoordinator.defaultBundleDirectory(),
+                              store: CrashReportWatermarkStore = CrashReportWatermarkStore(path: CrashReportWatermarkStore.defaultPath()),
+                              now: @escaping () -> Date = Date.init) -> CrashReportCoordinator? {
+        CrashReportCoordinator.make(
+            config: config, store: store, directories: directories, logFiles: logFiles,
+            bundleDirectory: bundleDirectory,
+            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
+            machineClass: machineClass, transport: transport, now: now,
+            secretLiterals: { [weak self] in self?.liveSecretLiterals() ?? [] })
+    }
+
+    /// The ONE list of live secret values the shell holds, scrubbed by identity from every export
+    /// that leaves the machine (support bundle, crash report), so the two can never drift: the
+    /// stream key, SRT passphrase and meeting passcode, plus the stored social credentials
+    /// (YouTube API key, Twitch access and refresh tokens).
+    func liveSecretLiterals() -> [String] {
+        ([streamKey, srtPassphrase, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
     }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
@@ -6595,7 +6628,7 @@ final class AppModel: ObservableObject {
             (try? JSONSerialization.data(withJSONObject: lastZoomSnapshot)) ?? Data()
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
         input.warnings = warnings
-        input.knownSecretLiterals = ([streamKey, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
+        input.knownSecretLiterals = liveSecretLiterals()
         return input
     }
 }
