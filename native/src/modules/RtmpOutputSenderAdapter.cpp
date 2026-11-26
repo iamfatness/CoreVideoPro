@@ -640,14 +640,12 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
 
   void submitEncodedAudio(const ProgramAacPacket& packet) override {
     if (!useSharedAac_ || !useGpuDirect_ || packet.adts.empty()) return;
-#if defined(_WIN32)
     if (unifiedTsInput_) {
       enqueueTransportAudio(packet);
       sender_.audioFramesSent = audioFramesWritten_.load();
       sender_.audioBytesSent = audioBytesWritten_.load();
       return;
     }
-#endif
     if (!firstBitstreamToFfmpeg_.load(std::memory_order_acquire)) return;
     // The independent audio worker reaches the stream mux about three 1024-
     // sample AAC units behind the first exported Program video frame. Trim
@@ -983,10 +981,8 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     activeStage_.store(useGpuDirect_ ? "encoder-submit" : "raw-video-write", std::memory_order_relaxed);
     // Buffered frames carry their exact delivery deadline; record where the
     // delivery grid sits relative to frame numbers (#538 slot clock).
-#if defined(_WIN32)  // slotClock_ feeds only the Windows encoder sink (#538)
     if (frame->deliverySequence > 0)
       slotClock_.observe(frame->frameNumber, frame->timelineTimestamp100ns, (std::max)(1, configuredFps_));
-#endif
     const bool videoWriteOk =
         useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
     if (!videoWriteOk) {
@@ -1585,9 +1581,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     config.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 48000;
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
     config.audioBitstreamInput = useGpuDirect_ && useSharedAac_ && config.hasAudio;
-#if defined(_WIN32)
+    // Every platform (Phase 4 O5): with the unified TS the AAC rides pipe:0 and
+    // FFmpeg must get NO second input. (Left Windows-only, POSIX declared
+    // `-f aac -i pipe:0` beside the TS and FFmpeg split stdin between the two.)
     config.audioInTransportStream = unifiedTsInput_;
-#endif
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
@@ -1758,9 +1755,9 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     }
     audioStartupSamplesToSkip_ = corevideo::core::gpuStreamAudioStartupSkipSamples(
         useGpuDirect_, configuredProgramBufferFrames_, activeAudioSampleRate_, activeAudioChannels_);
-#if defined(_WIN32)
     // #538 Slice 8: shared H.264/HEVC + shared AAC travel as one core-stamped
     // TS on stdin. No second pipe, so FFmpeg has exactly one input clock.
+    // Phase 4 O5: every platform (POSIX used to keep a second PCM pipe).
     unifiedTsInput_ = useGpuDirect_ && useSharedAac_ && realAudioEnabledForProcess() &&
                       (gpuEncodeSentCodec_ == "h264" || gpuEncodeSentCodec_ == "hevc");
     muxInputMode_ = unifiedTsInput_ ? "unified-ts"
@@ -1777,6 +1774,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     slotShiftCount_.store(0, std::memory_order_relaxed);
     ::corevideo::core::nativeLogf("[stream-clock] destination=%s mux-input=%s\n", protocol_.destination.c_str(),
                                  muxInputMode_.c_str());
+#if defined(_WIN32)
     SECURITY_ATTRIBUTES securityAttributes{};
     securityAttributes.nLength = sizeof(securityAttributes);
     securityAttributes.bInheritHandle = TRUE;
@@ -1947,7 +1945,9 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     }
 
     int audioPipe[2] = {-1, -1};
-    if (activeAudioPresent_) {
+    // With the unified TS mux the shared AAC rides stdin: no second pipe.
+    const bool audioPipeNeeded = activeAudioPresent_ && !unifiedTsInput_;
+    if (audioPipeNeeded) {
       if (::pipe(audioPipe) != 0) {
         ::close(videoPipe[0]);
         ::close(videoPipe[1]);
@@ -1986,7 +1986,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     request.executable = ffmpegExecutable_;
     request.stderrPath = ffmpegStderrPath_.string();
     request.fds.push_back({videoPipe[0], 0});  // video read end -> child stdin
-    if (activeAudioPresent_) {
+    if (audioPipeNeeded) {
       request.fds.push_back({audioPipe[0], 3});  // audio read end -> child fd 3 (pipe:3)
       audioInputArg = "pipe:3";
     }
@@ -2011,12 +2011,12 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     // and leads its own process group so interrupt/stop reach guard and child.
     const auto spawned = posix_child::spawn(request);
     ::close(videoPipe[0]);
-    if (activeAudioPresent_) {
+    if (audioPipeNeeded) {
       ::close(audioPipe[0]);
     }
     if (spawned.pid <= 0) {
       ::close(videoPipe[1]);
-      if (activeAudioPresent_) {
+      if (audioPipeNeeded) {
         ::close(audioPipe[1]);
       }
       sender_.status = "failed";
@@ -2041,7 +2041,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     // Avoid SIGPIPE killing us when FFmpeg exits; writes return EPIPE instead.
     ::signal(SIGPIPE, SIG_IGN);
     ffmpegStdinFd_ = videoPipe[1];
-    ffmpegAudioFd_ = activeAudioPresent_ ? audioPipe[1] : -1;
+    ffmpegAudioFd_ = audioPipeNeeded ? audioPipe[1] : -1;
     {
       std::lock_guard<std::mutex> lock(ffmpegPidMutex_);
       ffmpegPid_ = pid;
@@ -3423,7 +3423,6 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
             currentMuxInputRate(muxVideoMbps_.load(std::memory_order_relaxed), nowMs, lastWriteMs),
             currentMuxInputRate(muxVideoFps_.load(std::memory_order_relaxed), nowMs, lastWriteMs),
             lastWriteMs > 0 ? (std::max)(int64_t{0}, nowMs - lastWriteMs) : -1};
-#if defined(_WIN32)  // POSIX publishes the stream clock with the unified TS mux (Task 5)
         sender.streamClock = OutputSender::StreamClock{
             muxInputMode_,
             streamClockFirstVideoPts_.load(std::memory_order_relaxed),
@@ -3433,7 +3432,6 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
             transportAudioUnanchored_.load(std::memory_order_relaxed),
             appliedSlotsPublished_.load(std::memory_order_relaxed),
             slotShiftCount_.load(std::memory_order_relaxed)};
-#endif
       }
       session.senders.push_back(std::move(sender));
       if (sender_.status == "live" || sender_.status == "warning" || sender_.status == "starting") {
