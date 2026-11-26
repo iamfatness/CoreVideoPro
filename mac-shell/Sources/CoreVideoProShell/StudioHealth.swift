@@ -32,6 +32,9 @@ enum StudioHealthReadout {
         let session = snapshot["outputSenderSession"] as? JSONObject ?? [:]
         let senders = session["senders"] as? [JSONObject] ?? []
         return senders.filter { sender in
+            // NDI is its own output, never "the stream" (Phase 4 N1b): its
+            // pressure must not read as stream health.
+            guard (sender["destination"] as? String) != "ndi" else { return false }
             let status = sender["status"] as? String ?? ""
             guard status == "live" || status == "warning" else { return false }
             if let lifecycle = sender["lifecycle"] as? JSONObject,

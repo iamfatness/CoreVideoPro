@@ -281,6 +281,11 @@ struct SettingsPane: View {
                 StreamDestinationSettingsView()
             }
 
+            // N1b: the Windows NDI card (ProductionSettingsWindow.xaml:451-494), after Streaming.
+            card("NDI") {
+                NdiOutputEditor()
+            }
+
             card("Monitor output") {
                 labeled("Output device") { MonitorDevicePicker() }
                 Text(model.monitorTargetStatus)

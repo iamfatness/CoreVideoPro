@@ -131,6 +131,7 @@ extension AppModel {
         }
         if let encoder = prefs.streamEncoder { streamEncoder = encoder.sanitized() }
         if let overlays = prefs.multiviewOverlays { multiviewOverlays = overlays }
+        if let ndi = prefs.ndiOutput { ndiOutput = ndi }
         if let tiles = prefs.multiviewTileCount {
             let range = ProductionSettingsPolicy.multiviewTileRange
             multiviewTileCount = min(max(tiles, range.lowerBound), range.upperBound)
@@ -150,6 +151,7 @@ extension AppModel {
         prefs.multiviewOverlays = multiviewOverlays
         prefs.recordingProfile = recordingProfile
         prefs.streamEncoder = streamEncoder
+        prefs.ndiOutput = ndiOutput
     }
 
     var canvasLabel: String {

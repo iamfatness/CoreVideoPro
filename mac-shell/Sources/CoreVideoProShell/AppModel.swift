@@ -1215,6 +1215,7 @@ final class AppModel: ObservableObject {
             self.streamStatus = "interrupted"
             self.streamDetail = "Media core exited; output continuity was interrupted."
             self.destinationRows = [:]
+            self.ndiSenders = []          // a stopped core reads Starting, never a stale Live
             self.warnedUnguardedChild = false
             self.streamChildGuard = nil
             self.pushWarning("media core exited (code \(code)) — relaunching")
@@ -1905,6 +1906,10 @@ final class AppModel: ObservableObject {
         sourcePreviewDemand.coreConnected()
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
+        // N1b / review focus 1: NDI is persisted on, but a fresh core has no
+        // output session. Re-arm it on EVERY generation (the core-exit handler
+        // already cleared Record/Stream intent, so this sends what is still wanted).
+        rearmNdiOutput()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -2115,7 +2120,9 @@ final class AppModel: ObservableObject {
         }
         if let session = snapshot["outputSenderSession"] as? JSONObject {
             applyStreamSenders(session)
+            applyNdiSenders(session)
         }
+        applyNdiCapability(snapshot)
         if let auto = snapshot["autoProduction"] as? JSONObject {
             autoRuleId = auto["ruleId"] as? String ?? ""
             autoSceneId = auto["recommendedSceneId"] as? String ?? ""
@@ -2677,6 +2684,14 @@ final class AppModel: ObservableObject {
     /// encoder settings, persisted and sent on every start.
     @Published var recordingProfile = RecordingProfile()
     @Published var streamEncoder = StreamEncoderSettings()
+    /// N1b (NdiOutput.swift): NDI output, persisted; independent of Record and Stream.
+    @Published var ndiOutput = NdiOutputSettings()
+    /// Why the last NDI-on was refused or NDI was turned off (Windows NdiOutputStatusReason).
+    @Published var ndiRefusalReason: String?
+    /// This core's `ndi` sender rows (destination "ndi"); [] when no core runs.
+    @Published var ndiSenders: [JSONObject] = []
+    /// profile.capabilityStates["ndi-output"] == available; nil before a core answered.
+    @Published var coreHasNdiOutput: Bool?
 
     /// Codecs this build can actually ENCODE, per the core's EncoderPolicy:
     /// HEVC encode is not shipped on any platform, and AV1 is non-Apple only, so
@@ -4597,6 +4612,10 @@ final class AppModel: ObservableObject {
         if streaming {
             destinations += StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets)
         }
+        // N1b: NDI is its own output. It rides every full-state start while it is
+        // on, whatever Record and Stream are doing (Windows parity).
+        let ndiRows = NdiOutputPolicy.destinationSettings(ndiOutput, streamFps: ndiStreamFps)
+        if !ndiRows.isEmpty { destinations.append("ndi") }
         let isoIds = resolvedIsoSourceIds(recording: recording)
         var command: JSONObject = [
             "type": "start-program-output", "destinations": destinations,
@@ -4615,6 +4634,9 @@ final class AppModel: ObservableObject {
                 activeStreamConfig, activeStreamSecrets, bitrateMbps: streamBitrateMbps)
                 .map { ($0["id"] as? String) == "srt" ? $0 : streamEncoder.apply(to: $0) }
         }
+        if !ndiRows.isEmpty {
+            command["destinationSettings"] = ((command["destinationSettings"] as? [JSONObject]) ?? []) + ndiRows
+        }
         // O1: Windows sends recordingOutputProfile on every start
         // (MediaCoreCommandBuilder.cs:743); without it the core records at its
         // built-in 1080p60 whatever the operator chose.
@@ -4631,8 +4653,11 @@ final class AppModel: ObservableObject {
         guard !quitFinishing else { return }   // outputs are closing (quit)
         if streamingDesired {
             streamingDesired = false
-            let commands: [JSONObject] = isRecordingActive
-                ? [startProgramOutput(recording: true, streaming: false)]
+            // Review focus 2: stopping the stream must not stop NDI (or Record).
+            // stop-encoder-session ends EVERY output, so it is sent only when
+            // nothing else is left; otherwise the full-state start for what remains.
+            let commands: [JSONObject] = isRecordingActive || ndiOutputActive
+                ? [startProgramOutput(recording: isRecordingActive, streaming: false)]
                 : [["type": "stop-encoder-session",
                     "reason": "Streaming stopped by operator."]]
             Task {
@@ -6044,7 +6069,7 @@ final class AppModel: ObservableObject {
     /// The operator's Record/Stream buttons go through here so the harness can
     /// drive the REAL start/stop paths (intent bookkeeping included) through the
     /// same seam the quit flow uses. Production: the bridge, default timeout.
-    private func outputRequest(_ body: JSONObject) async throws -> JSONObject {
+    func outputRequest(_ body: JSONObject) async throws -> JSONObject {
         if let seam = quitRequestForTesting { return try await seam(body, 6) }
         guard let bridge else { throw BridgeError.notRunning }
         return try await bridge.request(body)
