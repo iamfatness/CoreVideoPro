@@ -120,6 +120,13 @@ struct GraphicsInstance {
     var fieldName: String { GraphicsJSON.string(fields["name"]) }
     var animations: JSONObject?
     var clockConfigurationRevision: Int64 = 0
+    /// The template versions the cue and Program copies use (eviction keeps them), and the images.
+    var cueTemplateVersion = 0
+    var programTemplateVersion = 0
+    var image: GraphicsTemplateReference?
+    var cueImage: GraphicsTemplateReference?
+    var programImage: GraphicsTemplateReference?
+    var programFields: JSONObject?
     /// The instance's live clock (NativeGraphicsClock), nil when its template has none.
     var clock: GraphicsInstanceClock?
     var clockRequestedConfiguration: JSONObject?
@@ -208,6 +215,14 @@ struct GraphicsState {
         i.animations = json["animations"] as? JSONObject
         i.clockConfigurationRevision = GraphicsJSON.int(json["clockConfigurationRevision"])
         i.clockRequestedConfiguration = json["clockRequestedConfiguration"] as? JSONObject
+        i.cueTemplateVersion = Int(GraphicsJSON.int(json["cueTemplateVersion"]))
+        i.programTemplateVersion = Int(GraphicsJSON.int(json["programTemplateVersion"]))
+        func reference(_ key: String) -> GraphicsTemplateReference? {
+            guard let o = json[key] as? JSONObject, let id = o["templateId"] as? String else { return nil }
+            return GraphicsTemplateReference(templateId: id, templateVersion: Int(GraphicsJSON.int(o["templateVersion"])))
+        }
+        i.image = reference("image"); i.cueImage = reference("cueImage"); i.programImage = reference("programImage")
+        i.programFields = json["programFields"] as? JSONObject
         i.clock = (json["clock"] as? JSONObject).map {
             GraphicsInstanceClock(text: GraphicsJSON.string($0["text"]), state: GraphicsJSON.string($0["state"]),
                                   finishAction: GraphicsJSON.string($0["finishAction"]),

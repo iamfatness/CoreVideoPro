@@ -11,12 +11,16 @@
 
 import SwiftUI
 
-enum GraphicsSurface: String, CaseIterable { case operate = "Operate", design = "Design" }
+enum GraphicsSurface: String, CaseIterable {
+    case operate = "Operate", design = "Design"
+    /// The surface the tab opens on (the offscreen snapshot harness sets Design; operators start on Operate).
+    @MainActor static var initial = GraphicsSurface.operate
+}
 
 struct GraphicsTabPane: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var graphics: GraphicsModel
-    @State private var surface = GraphicsSurface.operate
+    @State private var surface = GraphicsSurface.initial
 
     var body: some View {
         if graphics.available {
@@ -33,7 +37,7 @@ struct GraphicsTabPane: View {
                 GraphicsOnAirStrip(graphics: graphics)
                 switch surface {
                 case .operate: GraphicsOperatePane(graphics: graphics)
-                case .design: ScrollView { GraphicsDesignPane() }
+                case .design: ScrollView { GraphicsDesignPane(graphics: graphics) }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -169,26 +173,5 @@ struct GraphicsOnAirStrip: View {
         Text(text).font(.plexMono(9)).foregroundStyle(Studio.secondary)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(RoundedRectangle(cornerRadius: 4).fill(Studio.surface))
-    }
-}
-
-/// Design: the Designer arrives in a later release (owner decision); until then
-/// it holds today's overlay controls in a drawer, as Windows does
-/// (W/Views/OverlaysPage.xaml:17,55-58).
-struct GraphicsDesignPane: View {
-    @State private var drawerOpen = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("The graphics Designer arrives in a later release.")
-                .font(.grotesk(12)).foregroundStyle(Studio.secondary)
-            DisclosureGroup(isExpanded: $drawerOpen) {
-                OverlaysPane().frame(minHeight: 480)
-            } label: {
-                Text("Existing overlay controls").font(.grotesk(13, .semibold)).foregroundStyle(Studio.textPrimary)
-            }
-            .accessibilityLabel("Existing overlay controls")
-            Spacer(minLength: 0)
-        }
     }
 }

@@ -1,0 +1,7 @@
+[
+  {"team": "Zebras", "points": 12, "qualified": true, "city": "Paris"},
+  {"team": "Ants", "points": 9, "qualified": false, "city": "Lyon, FR"},
+  {"team": "Bees", "points": 12, "qualified": null, "city": "Say \"hi\""},
+  {"team": "Cats", "points": 1e3, "qualified": true, "city": "Rome"},
+  {"team": "\u00c9lans", "points": 1.50, "qualified": null, "city": "Z\u00fcrich"}
+]
