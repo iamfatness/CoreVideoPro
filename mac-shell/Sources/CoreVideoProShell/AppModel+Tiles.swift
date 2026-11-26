@@ -62,6 +62,22 @@ extension AppModel {
         saveScenes()
     }
 
+    /// Windows `StudioViewModel.EditTiles`: only a Tiles scene; cue it on Preview
+    /// (Program never changes) and open the Tiles workspace on the Scenes tab.
+    func editTiles(_ sceneId: String) {
+        guard let scene = scenes.first(where: { $0.id == sceneId }), scene.tiles != nil else { return }
+        // A wall on Program is not edited in place (Program never changes without
+        // a Take; S4 review): say so instead of cueing Program onto Preview.
+        if sceneId == programSceneId {
+            studioCommandStatus = "\(scene.name) is on Program. Queue it in Preview to edit it."
+            return
+        }
+        selectPreviewScene(sceneId)
+        guard previewSceneId == sceneId else { return }
+        selectedTab = .scenes
+        studioCommandStatus = "Editing Tiles in \(scene.name)"
+    }
+
     /// True (and the refusal shown) when a layer edit targets a Tiles scene.
     func refuseLayerEditOnTiles(_ sceneId: String) -> Bool {
         guard isTilesScene(sceneId) else { return false }
@@ -118,14 +134,72 @@ extension AppModel {
 
     /// Edits the Preview wall, then syncs scenes. Refuses (status + throw) when
     /// Preview is not a Tiles scene; nothing is synced then.
-    func updateTiles(_ edit: (inout TilesSettings) -> Void) throws {
+    /// `save: .now` (discrete actions: membership intent is saved at once, S3
+    /// review); `.debounced` for continuous controls, so a 40-tick slider drag
+    /// writes the prefs file once, after the drag settles.
+    enum TilesSave { case now, debounced }
+
+    func updateTiles(save: TilesSave = .now, _ edit: (inout TilesSettings) -> Void) throws {
         guard let id = tilesEditTargetId, let index = scenes.firstIndex(where: { $0.id == id }),
               var settings = scenes[index].tiles else { throw refuseTiles(.notTilesPreview) }
+        // Windows hit a stack overflow from a two-way binding echo re-entering the
+        // gallery setter (StudioViewModel `_galleryEditGuard`). A re-entrant edit is
+        // dropped here, never recursed into; the depth is observable for the test.
+        guard tilesEditDepth == 0 else { return }
+        tilesEditDepth += 1
+        defer { tilesEditDepth -= 1 }
+        tilesEditMaxDepth = max(tilesEditMaxDepth, tilesEditDepth)
         edit(&settings)
         scenes[index].tiles = settings
-        syncScenes()
-        saveScenes()   // membership intent is saved at once, like the starter (S3 review)
+        syncScenes()   // debounced (120 ms): a drag sends one sync with the last value
+        switch save {
+        case .now: saveScenes()
+        case .debounced: scheduleTilesSave()
+        }
     }
+
+    private func scheduleTilesSave() {
+        tilesSaveTask?.cancel()
+        tilesSaveTask = Task { [weak self] in
+            await self?.timerSleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.saveScenes()
+        }
+    }
+
+    // MARK: Layout tab setters (Windows Gallery* setters, clamp for clamp)
+
+    /// C# `Math.Round` (banker's rounding) then clamp.
+    private static func windowsRound(_ v: Double) -> Double { v.rounded(.toNearestOrEven) }
+
+    func setTilesMaxTiles(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.maxTiles = Int(min(max(Self.windowsRound(v), 1), 64)) }
+    }
+    func setTilesAspect(_ v: String) throws { try updateTiles { $0.tileAspect = TilesLayerPayload.normalizeAspect(v) } }
+    func setTilesCustomAspect(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.customAspectRatio = min(max(v, 0.25), 4) }
+    }
+    func setTilesGutter(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.gutterPercent = min(max(v, 0), 10) }
+    }
+    func setTilesMargin(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.marginPercent = min(max(v, 0), 20) }
+    }
+    func setTilesAnimateLayout(_ on: Bool) throws { try updateTiles { $0.animateLayout = on } }
+    func setTilesAnimationDuration(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.animationDurationMs = Int(min(max(Self.windowsRound(v), 100), 2000)) }
+    }
+
+    /// Windows `GalleryTileAspectOptions`.
+    static let tilesAspectOptions: [(value: String, label: String)] = [
+        ("16:9", "16:9"), ("4:3", "4:3"), ("5:4", "5:4"), ("1:1", "Square"),
+        ("3:4", "Portrait 3:4"), ("9:16", "Portrait 9:16"), ("custom", "Custom"),
+    ]
 
     @discardableResult
     private func refuseTiles(_ error: TilesEditError) -> TilesEditError {
@@ -248,5 +322,274 @@ extension AppModel {
         return TilesWorkspaceMembership.build(scenes.first { $0.id == id }?.tiles, members: tilesMemberChoices.map(\.id),
                                               routed: TilesLocalSourcePolicy.routedSourceIds(slots),
                                               roster: tilesIdentityRoster, meetingId: currentTilesMeetingId)
+    }
+}
+
+// MARK: - Style tab (Task 17): Windows Gallery* style setters, presets and reset
+
+enum TilesStylePreset: String, CaseIterable { case clean, rounded, broadcast }
+
+/// Which colour a `TilesColorField` edits, and the picker's fallback when the hex
+/// does not parse (Windows `HexColor.ParseOrDefault`: black for background and
+/// border, white for glow).
+enum TilesColorRole {
+    case background, border, glow
+    var fallback: (r: UInt8, g: UInt8, b: UInt8) { self == .glow ? (255, 255, 255) : (0, 0, 0) }
+}
+
+extension AppModel {
+    func setTilesBorderShape(_ v: String) throws { try updateTiles { $0.borderShape = v == "rounded" ? "rounded" : "square" } }
+    func setTilesCornerRadius(_ v: Double) throws {
+        try updateTiles(save: .debounced) { $0.cornerRadius = v.isFinite ? min(max(v, 0), 100) : 16 }
+    }
+    func setTilesBorderThickness(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.borderThickness = min(max(v, 0), 32) }
+    }
+    func setTilesGlowSize(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.glowSize = min(max(v, 0), 64) }
+    }
+    func setTilesGlowIntensity(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.glowIntensity = min(max(v, 0), 100) }
+    }
+    func setTilesGlowSoftness(_ v: Double) throws {
+        guard v.isFinite else { return }
+        try updateTiles(save: .debounced) { $0.glowSoftness = min(max(v, 0), 100) }
+    }
+    /// `OnTilesTransparency` sets it from the checkbox.
+    func setTilesTransparentBackground(_ on: Bool) throws { try updateTiles { $0.transparentBackground = on } }
+    /// `WallOpacityPercent` (SourcesPage.Workspace.cs): 0-100 only, stored as v/100 (D7).
+    func setTilesWallOpacityPercent(_ v: Double) throws {
+        guard v.isFinite, (0...100).contains(v) else { return }
+        try updateTiles(save: .debounced) { $0.wallOpacity = v / 100 }
+    }
+
+    // The hex string is the ONLY colour truth: the text field commits through the
+    // Windows normalizer, and the picker reads/writes through TilesHex.
+    func tilesColor(_ role: TilesColorRole) -> String {
+        let s = tilesEditSettings
+        switch role {
+        case .background: return s.backgroundColor
+        case .border: return s.borderColor
+        case .glow: return s.glowColor
+        }
+    }
+    /// The text field's commit (Windows setters normalize every colour).
+    func setTilesColor(_ role: TilesColorRole, hex: String, save: TilesSave = .now) throws {
+        let value = TilesHex.normalize(hex)
+        try updateTiles(save: save) { s in
+            switch role {
+            case .background: s.backgroundColor = value
+            case .border: s.borderColor = value
+            case .glow: s.glowColor = value
+            }
+        }
+    }
+    /// What the picker shows: the parsed hex, else the role's fallback.
+    func tilesPickerColor(_ role: TilesColorRole) -> (r: UInt8, g: UInt8, b: UInt8) {
+        TilesHex.parse(tilesColor(role)) ?? role.fallback
+    }
+    /// The picker's write (Windows `HexColor.ToHex`).
+    func setTilesPickerColor(_ role: TilesColorRole, r: UInt8, g: UInt8, b: UInt8) throws {
+        // The colour panel streams changes while dragged: save once it settles.
+        try setTilesColor(role, hex: TilesHex.format(r: r, g: g, b: b), save: .debounced)
+    }
+
+    /// `OnTilesPreset` (SourcesPage.Workspace.cs) verbatim. Membership, crops,
+    /// overrides and capacity are untouched.
+    func applyTilesPreset(_ preset: TilesStylePreset) throws {
+        try updateTiles { w in
+            w.glowSize = 0; w.gutterPercent = 0.741; w.marginPercent = 0.741
+            if preset == .clean {
+                w.borderShape = "square"; w.borderThickness = 0; w.transparentBackground = true
+            } else {
+                w.borderShape = "rounded"; w.transparentBackground = false
+                w.cornerRadius = preset == .broadcast ? 12 : 24
+                w.borderThickness = preset == .broadcast ? 5 : 2
+                w.borderColor = preset == .broadcast ? "#8AE0CA" : "#657D87"
+                w.gutterPercent = preset == .broadcast ? 1.8 : 1.2; w.marginPercent = w.gutterPercent
+                w.glowSize = preset == .broadcast ? 12 : 0
+            }
+        }
+    }
+
+    /// `OnTilesResetStyle` verbatim.
+    func resetTilesStyle() throws {
+        try updateTiles { w in
+            w.borderShape = "rounded"; w.borderColor = "#657D87"; w.borderThickness = 2; w.cornerRadius = 16
+            w.glowColor = "#8AE0CA"; w.glowSize = 0; w.glowIntensity = 100; w.glowSoftness = 0
+            w.backgroundColor = "#101820"; w.transparentBackground = false; w.wallOpacity = 1
+        }
+    }
+}
+
+// MARK: - Members tab (Task 19): SceneWorkspaceMemberEditor + the member rows
+
+enum TilesPinField { case x, y, width, height }
+
+/// One row of the Members list (Windows `TilesMemberViewModel`).
+struct TilesMemberRow: Equatable, Identifiable {
+    let id: String
+    let label: String
+    let included: Bool
+    let canInclude: Bool
+    /// The Windows status word ("Excluded" | "Unused" | "Pinned" | "Auto"), plus
+    /// the Mac-only live suffix (D2) when the edited wall is on Program.
+    let status: String
+}
+
+extension AppModel {
+    /// Windows member rows: the member choices with their workspace state.
+    var tilesMemberRows: [TilesMemberRow] {
+        let states = tilesMemberStates
+        return tilesMemberChoices.map { choice in
+            let state = states[choice.id]
+            let excluded = state?.excluded == true, included = state?.selected == true
+            let word = excluded ? "Excluded" : !included ? "Unused" : state?.pinned == true ? "Pinned" : "Auto"
+            return TilesMemberRow(id: choice.id, label: choice.label, included: included,
+                                  canInclude: state?.canSelect == true, status: word + tilesLiveSuffix(for: choice.id))
+        }
+    }
+
+    /// The Mac-only live badge (D2): only when the core's `tiles` node (which
+    /// describes PROGRAM only) is the wall these rows belong to.
+    func tilesLiveSuffix(for sourceId: String) -> String {
+        guard let id = tilesEditTargetId, tilesLiveLayerId == TilesLayerPayload.layerId(sceneId: id) else { return "" }
+        return Self.liveSuffix(tilesLive.first { $0.sourceId == sourceId })
+    }
+
+    /// The member the editor acts on: the stored selection while it is a current
+    /// choice, else the first member (Windows `RefreshMembers`:
+    /// `Members.FirstOrDefault(selected) ?? Members.FirstOrDefault()`), else "".
+    /// Derived on every read, so a guest who leaves or a roster that fills later
+    /// never strands the editor (S5 review).
+    var tilesActiveMemberId: String {
+        let choices = tilesMemberChoices
+        if choices.contains(where: { $0.id == tilesSelectedMemberId }) { return tilesSelectedMemberId }
+        return choices.first?.id ?? ""
+    }
+
+    /// The selected member's saved override, or the Windows editor default.
+    var tilesSelectedOverride: TilesMemberOverride? {
+        tilesEditTargetId.flatMap { _ in tilesEditSettings.overrides[tilesActiveMemberId] }
+    }
+
+    /// `SceneWorkspaceMemberEditor.CanEdit`: a Preview wall and an available member.
+    var tilesCanEditSelectedMember: Bool {
+        tilesEditTargetId != nil && !tilesActiveMemberId.isEmpty
+    }
+
+    /// `FramingTitle`.
+    var tilesFramingTitle: String {
+        (tilesMemberChoices.first { $0.id == tilesActiveMemberId }?.label ?? "Select a member") + " · framing"
+    }
+
+    /// The wall in pixels (`wallRect` × the 1920×1080 canvas), never below 1.
+    var tilesWallPixels: (width: Double, height: Double) {
+        let r = tilesEditSettings.wallRect
+        return (max(1, r.width * 1920), max(1, r.height * 1080))
+    }
+
+    private func editSelectedOverride(save: TilesSave = .now, _ change: (inout TilesMemberOverride) -> Void) {
+        let id = tilesActiveMemberId
+        guard tilesCanEditSelectedMember else { return }
+        try? updateTiles(save: save) { w in
+            var value = w.overrides[id] ?? TilesMemberOverride()
+            change(&value)
+            w.overrides[id] = value
+        }
+    }
+
+    /// `NeverShow`.
+    func setTilesNeverShow(_ on: Bool) {
+        guard tilesCanEditSelectedMember else { return }
+        try? setTilesExclusion(tilesActiveMemberId, excluded: on)
+    }
+
+    /// `Crop`: 0-45 each, ignored out of range.
+    func setTilesCrop(left: Double? = nil, right: Double? = nil) {
+        for (value, isLeft) in [(left, true), (right, false)] {
+            guard let v = value, v.isFinite, (0...45).contains(v) else { continue }
+            let current = isLeft ? (tilesSelectedOverride?.cropLeftPercent ?? 0) : (tilesSelectedOverride?.cropRightPercent ?? 0)
+            if v == current { continue }
+            editSelectedOverride(save: .debounced) { if isLeft { $0.cropLeftPercent = v } else { $0.cropRightPercent = v } }
+        }
+    }
+
+    func resetTilesCrop() { editSelectedOverride { $0.cropLeftPercent = 0; $0.cropRightPercent = 0 } }
+
+    /// `Pinned`: on gives rect (0,0,0.48,1) and keeps the crop; off clears rect and z, keeps the crop.
+    var tilesSelectedPinned: Bool { tilesSelectedOverride?.rect != nil }
+    func setTilesPinned(_ on: Bool) {
+        guard on != tilesSelectedPinned else { return }
+        editSelectedOverride { v in
+            v.rect = on ? TilesRect(x: 0, y: 0, width: 0.48, height: 1) : nil
+            if !on { v.z = nil }
+        }
+    }
+
+    /// `Pin`: pixels relative to the wall; an out-of-wall result is refused with the Windows text.
+    func setTilesPin(field: TilesPinField, pixels: Double) {
+        guard tilesCanEditSelectedMember, tilesSelectedPinned, pixels.isFinite, var rect = tilesSelectedOverride?.rect else { return }
+        let wall = tilesWallPixels
+        switch field {
+        case .x: rect.x = pixels / wall.width
+        case .y: rect.y = pixels / wall.height
+        case .width: rect.width = pixels / wall.width
+        case .height: rect.height = pixels / wall.height
+        }
+        if rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0
+            || rect.x + rect.width > 1.00000001 || rect.y + rect.height > 1.00000001 {
+            studioCommandStatus = "The tile position and size must fit inside this wall."
+            return
+        }
+        editSelectedOverride(save: .debounced) { $0.rect = rect }
+    }
+
+    /// `Order`: only when pinned; an integer 0-63.
+    func setTilesOrder(_ z: Double) {
+        guard tilesSelectedPinned, z.isFinite, (0...63).contains(z), z == z.rounded(.towardZero) else { return }
+        editSelectedOverride(save: .debounced) { $0.z = Int(z) }
+    }
+}
+
+// MARK: - Live background and live badges (Task 20)
+
+/// One member of the PROGRAM wall as the core reports it (`sessionState.tiles.members`).
+struct TilesLiveMember: Equatable {
+    let sourceId: String
+    let held: Bool
+    let black: Bool
+}
+
+extension AppModel {
+    /// `SetTilesBackground`: "" clears; otherwise the id must be a current member choice.
+    func setTilesBackgroundSource(_ sourceId: String) throws {
+        guard tilesEditTargetId != nil else {
+            studioCommandStatus = TilesEditError.notTilesPreview.message
+            throw TilesEditError.notTilesPreview
+        }
+        if !sourceId.isEmpty, !TilesMemberChoicePolicy.contains(tilesMemberChoices, sourceId) {
+            studioCommandStatus = "Choose an available background source."
+            throw TilesEditError.unavailableSource
+        }
+        try updateTiles { s in s.backgroundColor = TilesHex.normalize(s.backgroundColor); s.backgroundSourceId = sourceId }
+    }
+
+    /// The core's `tiles` node (it describes PROGRAM only): `[]` when absent.
+    static func tilesLiveMembers(from snapshot: JSONObject) -> [TilesLiveMember] {
+        guard let node = snapshot["tiles"] as? JSONObject else { return [] }
+        return (node["members"] as? [JSONObject] ?? []).compactMap { m in
+            guard let id = m["sourceId"] as? String else { return nil }
+            return TilesLiveMember(sourceId: id, held: m["held"] as? Bool ?? false, black: (m["showing"] as? String) == "black")
+        }
+    }
+
+    /// "" | " · held" | " · black" (black wins).
+    static func liveSuffix(_ m: TilesLiveMember?) -> String {
+        guard let m else { return "" }
+        return m.black ? " · black" : m.held ? " · held" : ""
     }
 }

@@ -290,3 +290,32 @@ enum TilesWorkspaceMembership {
         return out
     }
 }
+
+/// A rejected override, carrying the Windows message.
+struct TilesOverrideError: Error, Equatable { let message: String }
+
+/// `TilesOverridePolicy` (Windows), verbatim.
+enum TilesOverridePolicy {
+    /// nil, blank or an unknown id gives a fresh default {rect (0,0,0.5,1), crop 0/0, z 0}; else a copy.
+    static func editorValues(_ s: TilesSettings?, sourceId: String?) -> TilesMemberOverride {
+        if let id = sourceId, !id.trimmingCharacters(in: .whitespaces).isEmpty, let value = s?.overrides[id] { return value }
+        return try! create(x: 0, y: 0, width: 0.5, height: 1, left: 0, right: 0, z: 0)
+    }
+
+    static func create(x: Double, y: Double, width: Double, height: Double, left: Double, right: Double, z: Double) throws -> TilesMemberOverride {
+        guard [x, y, width, height, left, right, z].allSatisfy(\.isFinite) else {
+            throw TilesOverrideError(message: "Tiles values must be finite numbers.")
+        }
+        if x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1 || y + height > 1 {
+            throw TilesOverrideError(message: "Tile rectangle must fit inside the canvas (coordinates 0–1).")
+        }
+        if !(0...45).contains(left) || !(0...45).contains(right) {
+            throw TilesOverrideError(message: "Left and right crop must each be between 0 and 45 percent.")
+        }
+        if z != z.rounded(.towardZero) || !(0...63).contains(z) {
+            throw TilesOverrideError(message: "Tile order must be an integer from 0 to 63.")
+        }
+        return TilesMemberOverride(rect: TilesRect(x: x, y: y, width: width, height: height),
+                                   cropLeftPercent: left, cropRightPercent: right, z: Int(z))
+    }
+}

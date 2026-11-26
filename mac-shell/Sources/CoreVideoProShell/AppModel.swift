@@ -400,6 +400,18 @@ struct RosterParticipant: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
+    /// Re-entrancy guard for `updateTiles` (current and highest depth seen).
+    var tilesEditDepth = 0
+    var tilesEditMaxDepth = 0
+    var tilesSaveTask: Task<Void, Never>?
+    /// The Program wall as the core reports it (`sessionState.tiles`), [] when absent.
+    @Published var tilesLive: [TilesLiveMember] = []
+    var tilesLiveLayerId = ""
+    /// The Members tab's selected member id: "" when nothing is selected, never nil
+    /// (Review Focus 3: a Take with an empty selection must not trap).
+    @Published var tilesSelectedMemberId = ""
+    /// The Tiles inspector's selected tab (Windows Pivot: Layout | Style | Members).
+    @Published var tilesInspectorTab: TilesInspectorTab = .layout
     /// Sticky Tiles audio (Windows TilesAudioSourceLatch), observed once per spine build.
     let tilesAudioLatch = TilesAudioSourceLatch()
     /// True once a Zoom snapshot with a non-empty meetingState arrived on this core generation.
@@ -2012,6 +2024,11 @@ final class AppModel: ObservableObject {
 
     private func applySnapshot(_ snapshot: JSONObject) {
         snapshotSequence &+= 1
+        if !snapshot.isEmpty {
+            let live = Self.tilesLiveMembers(from: snapshot)
+            if live != tilesLive { tilesLive = live }
+            tilesLiveLayerId = (snapshot["tiles"] as? JSONObject)?["layerId"] as? String ?? ""
+        }
         // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
         // the Health surface (an operator reads it hardest right when the
         // core is unhappy).

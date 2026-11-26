@@ -34,6 +34,18 @@ enum TabPageLayout {
     /// outer scroll they would scroll away. Every other tab scrolls as one page.
     static func fillsHeight(_ tab: StudioTab) -> Bool { tab == .overlays || tab == .comms }
 
+    /// Tiles workspace (Windows SourcesPage Scene Builder `228 | * | 292`): while a
+    /// Tiles wall is being edited the Scenes tab takes the window's width.
+    static func maxWidth(for tab: StudioTab, tilesEditing: Bool) -> CGFloat {
+        tab == .scenes && tilesEditing ? .infinity : maxWidth(for: tab)
+    }
+
+    /// Whether the tab scrolls as one page. The Tiles workspace does not: only the
+    /// inspector dock's tab content scrolls (each Windows Pivot item is its own ScrollViewer).
+    static func scrolls(_ tab: StudioTab, tilesEditing: Bool) -> Bool {
+        !(tab == .scenes && tilesEditing) && !fillsHeight(tab)
+    }
+
     /// The width a tab's page actually gets in a window this wide.
     static func pageWidth(for tab: StudioTab, window: CGFloat) -> CGFloat {
         min(maxWidth(for: tab), window - 2 * gutter)
@@ -65,7 +77,7 @@ struct TabPageContent: View {
                 case .diagnose: DiagnosePane()
                 }
             }
-            .frame(maxWidth: TabPageLayout.maxWidth(for: tab),
+            .frame(maxWidth: TabPageLayout.maxWidth(for: tab, tilesEditing: model.tilesEditTargetId != nil),
                    maxHeight: tab == .comms ? .infinity : nil)
             Spacer(minLength: 0)
         }
@@ -126,6 +138,13 @@ enum TabSnapshotHarness {
         // COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR=0 renders the table with it closed.
         if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR"] != "0" {
             model.sourcesWorkspace.inspect(3)
+        }
+        // COREVIDEO_SHELL_TAB_SNAPSHOT_TILES=1: a CoreVideo Tiles wall on Preview, so the
+        // Scenes tab renders the Tiles workspace (mac Tiles Task 15). =style|members picks
+        // the inspector tab.
+        if let tiles = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_TILES"], !tiles.isEmpty {
+            model.newTilesScene()
+            model.tilesInspectorTab = TilesInspectorTab(rawValue: tiles.capitalized) ?? .layout
         }
     }
 

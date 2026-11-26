@@ -377,3 +377,195 @@ No HIGH. The reviewer confirmed statement-level parity for identity, membership,
   - an existing member keeping one slot.
 - **LOW (recorded):** `currentTilesMeetingId` reads the typed field like Windows, and no code reads meeting ids today. Case folding is `caseInsensitiveCompare`, not ordinal-ignore-case, and only differs for exotic names.
 - `tiles/` filter: 392/392. Full suite: **8732 checks, 2 failed**, the known `.m4a` pair.
+
+## Slice S4
+
+### Task 15 — Edit Tiles, page layout and the workspace shell
+
+- `TabPageLayout.maxWidth(for:tilesEditing:)` and `scrolls(_:tilesEditing:)`. While a wall is being edited, the Scenes tab takes the window's width and stops scrolling as a page. `TabPage` and `TabPageContent` follow these rules.
+- `AppModel.editTiles(_:)` is Windows `EditTiles`: Tiles scenes only. It cues the wall on Preview, opens the Scenes tab and sets the status "Editing Tiles in <name>". Program is never touched. `tilesInspectorTab` is the dock's Pivot selection.
+- `SceneRow` gets an accent "Edit Tiles" button with the `square.grid.3x3` symbol, inside a Tiles scene's row card.
+- New `TilesInspector.swift`:
+  - `TilesWorkspace` is the centre column: the scene name in 18 pt, a PVW chip with "Changes ride Preview until Take.", the live Preview monitor at 16:9, and the Program strip with "Take to Program →".
+  - `TilesInspectorDock`: 292 pt, panel background, 1 pt border, radius 9, padding 12. It shows the name, "Tiles wall · n selected / m available", segmented Layout | Style | Members tabs, the selected tab in **its own** vertical ScrollView, and the footer "Changes affect this Preview draft."
+  - Helpers: `TilesSection`, `TilesHelp`, `TilesSliderRow` (double-click resets to the Windows default).
+  - The tab bodies are filled by Tasks 16, 17 and 19.
+- `ScenesPane` shows the Tiles workspace in place of the canvas whenever Preview is a wall. "Add layer" and "Reset to preset" are disabled there (D5).
+- Snapshot harness: `COREVIDEO_SHELL_TAB_SNAPSHOT_TILES=1` (or `style`/`members`) seeds a wall on Preview. Ran with `COREVIDEO_SHELL_TAB_LIST=Scenes`. **Checked by eye against the layout contract:**
+  - two columns, with a 292 pt dock on the right of a flexible centre;
+  - 12 pt spacing;
+  - no page scroll bar;
+  - the dock's own scroll area between the tabs and the footer;
+  - the header row unchanged.
+
+  Rendered at 1360×865 and 1920×1180 in the scratchpad. Not committed, because binary snapshots are not kept in the repo.
+- Tests:
+  - `testEditTilesCuesPreviewOpensTheInspectorAndNeverTouchesProgram`: a non-Tiles or unknown id does nothing, and the status text is exact;
+  - `testTheScenesTabStopsScrollingAndWidensOnlyWhileEditingTiles`: a table over every `StudioTab` × editing.
+- `tiles/` filter: 451/451.
+
+### Task 16 — Layout tab
+
+- `TilesLayoutTab` follows Windows `SourcesPage.xaml` Layout order:
+  - AUTOMATIC LAYOUT: tile aspect ratio with the 7 Windows labels, custom aspect ratio (shown only for custom), tile spacing and outer margin (format `0.###`), and the help text.
+  - WALL CAPACITY: maximum visible tiles, and the ceiling help text.
+  - "Advanced layout": animate roster changes and animation duration.
+  - Everything is disabled with "Queue this scene in Preview to edit it." when no Preview wall is being edited.
+- Setters follow the Windows `Gallery*` setters, clamp for clamp, with C# banker's rounding (`Math.Round`) for the integer ones.
+- `updateTiles` changes:
+  - A **re-entrancy guard**: a re-entrant edit is dropped, never recursed into. This answers the Windows `_galleryEditGuard` stack overflow. The depth is observable for tests.
+  - `save: .now | .debounced`. Continuous controls save once, 500 ms after the drag settles, through the timer seam. Discrete actions still save at once.
+- Tests:
+  - `testLayoutSettersClampLikeWindows`: 0 → 1, 99.6 → 64, 3.4 → 3, 4.5 → 4; 21:9 → 16:9; custom 9 → 4; gutter −1 → 0; margin 30 → 20; duration 50 → 100 and 1234.6 → 1235; a refusal without a Preview wall.
+  - `testAFortyTickSliderDragSendsOneSceneSyncWithTheLastValue` (Review Focus 2): 40 requests and a re-entrancy depth ≤ 1. Nothing is sent before the timer fires; then exactly **one** `set-preview-scene` with gutter 3.9, saved once.
+- `tiles/` filter: 471/471. Full suite: **8811 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 16) | Result |
+|---|---|
+| the scene-sync debounce does not cancel (a sync per tick) | red: "expected 1, got 40" |
+| drop the gutter clamp | red |
+
+### Task 17 — Style tab, presets and colour fields
+
+- `TilesStyleTab` follows Windows `SourcesPage.xaml` Style order:
+  - QUICK LOOKS: Clean, Rounded and Broadcast as equal columns, the help text, and the Mac-only D5 logo-bug note.
+  - TILE EDGES: shape, radius (shown only when rounded), thickness, and the border colour field.
+  - WALL BACKGROUND: the transparent checkbox, the background colour (hidden when transparent), the "Live background" disclosure (filled by Task 20), and wall opacity as a percentage.
+  - GLOW: size, colour, and the "Advanced glow" disclosure (intensity, softness).
+  - "Reset wall style".
+- `applyTilesPreset` / `resetTilesStyle` are `OnTilesPreset` / `OnTilesResetStyle`, ported verbatim. The style setters use the Windows clamps.
+- Colours: like Windows, every colour setter normalizes (`backgroundColor` included). `TilesColorField` is a 36 pt swatch with a `ColorPicker(supportsOpacity: false)` popover, beside a hex field. **The hex string is the only truth:** the picker reads `TilesHex.parse(hex) ?? fallback`, where the fallback is black for background and border and white for glow, and writes `TilesHex.format`. The field commits through the normalizer.
+- Snapshot of the Style tab (1360 and 1920) checked by eye. The first render wrapped "Broadcast" onto two lines; the preset buttons are now equal one-line columns. The Layout tab was rendered too.
+- Tests:
+  - `testPresetsAreTheWindowsPresetsAndKeepMembership`: every field, plus membership, overrides, capacity and glow colour untouched;
+  - `testResetWallStyleIsTheWindowsReset`;
+  - `testTheHexStringIsTheOnlyColourTruth`: 8ae0ca → (138,224,202); picker (1,2,3) → `#010203`; "zz" → `#44C1A1`; blank glow → white; an unparseable border → black; the picker follows a hex edit;
+  - `testWallOpacityAndTransparencyReachThePayload`: 40 % → 0.4, transparent on the wire, 140 % ignored.
+- `tiles/` filter: 509/509. Full suite: **8849 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 17) | Result |
+|---|---|
+| swap the Rounded and Broadcast radii | red: 3 failures |
+| a colour bypasses the normalizer | red |
+| the picker keeps its own colour copy | not built as a mutant: there is no stored colour anywhere to drift. The truth test's "the picker follows a hex edit" pins the property |
+
+### Task 18 — S4 pixel proofs
+
+`tiles-live/presets-change-program-pixels` runs against the real Metal core with the fake engine: 4 participants in primary colours. Wall A is on Program and wall B on Preview. Rounded is applied on Preview and taken, then Broadcast is applied to the other wall and taken. Program pixels are read at `tiles.members[0].rect`. **5/5 passed.**
+
+The measurements:
+- **Rounded** (2 px `#657D87`, radius 24): corner (2,2) is `(0,0,0)`, the background.
+  - Scanline across the left edge at mid-height (x = 28.08): `bg bg bg (80,100,108) (90,113,147) (26,43,222) tile…`.
+  - A 2 px border at a fractional position, with the shader's ~1 px anti-aliasing ramp on each side, has **no pure pixel**. The best one is 12 off the border colour.
+- **Broadcast** (5 px `#8AE0CA`, radius 12, 12 px white glow):
+  - Left edge: three pure `(138,224,202)` pixels, then the anti-aliasing ramp into the tile. 6 px outside the edge is `(72,72,72)`, the glow.
+  - Corner (2,2) is `(183,183,183)`. The corner is masked off the tile, but the glow, which is drawn outside the tile shape, fills it.
+
+**Plan fixture corrections (recorded as deviations; Windows thresholds are untouched).** The plan's Task 18 numbers were hand-written, not Windows-derived:
+- "The corner equals the wall background" holds only without glow. With Broadcast the test asserts a neutral grey glow corner, never the tile's colour.
+- "The border colour within 6 at 1 px inside" holds for the 5 px border. For the 2 px border the best of the first two pixels must be within 14, because anti-aliasing makes a pure pixel impossible at that width.
+- I treated the measurements as evidence of correct rendering, not as a defect. They are consistent with Task 2's Windows-derived decoration proof (border 8 px pure at its centre) and with the glow being clipped only by the wall rect.
+
+Tab snapshots of Layout and Style were rendered with the Task 15 harness and checked by eye (Task 17 entry). The S4 independent review is next.
+
+### S4 slice review (independent; Tasks 15-18)
+
+No HIGH. The reviewer confirmed that Layout and Style match the XAML in order and labels, that clamps, rounding, presets, reset, the hex normalizer and the picker fallbacks all match, and that the 292 pt dock and the scrolling rules are right. Findings:
+
+- **MEDIUM (fixed): a ColorPicker inside a popover.** On macOS that well drives the shared colour panel, and a transient popover would close and orphan it. The well is now inline, at its native size, beside the hex field. Re-checked in the snapshot.
+- **MEDIUM (fixed): every colour-panel tick wrote the prefs file.** The picker path now saves debounced. The text field still saves at once.
+- **MEDIUM (fixed): the hex field committed only on Return.** It now also commits on focus loss, through `@FocusState`, like Windows' LostFocus. An external change does not overwrite a draft being typed.
+- **MEDIUM (fixed): Edit Tiles on the Program wall cued Program onto Preview and opened nothing.** It now refuses with "<name> is on Program. Queue it in Preview to edit it." and leaves Preview alone. A test was added.
+- **LOW (fixed): the re-entrancy test could not fail.** The 40-tick test now also drives a genuinely re-entrant edit. The inner edit is dropped, the outer one lands, and the depth stays 1.
+- **LOW (fixed): one scroll view served all three tabs.** It is now keyed by tab (`.id`), so each tab keeps its own scroll position, like Windows' one ScrollViewer per PivotItem.
+- **LOW (fixed):** wall opacity no longer has a double-click default; Windows sets none. `TilesSliderRow.defaultValue` is now optional.
+- **LOW (recorded, not changed):**
+  - The dock's disabled state is unreachable, because the dock renders only for an editable Preview wall; a read-only dock for an on-air wall is S6.
+  - The debounced save cannot lose an edit on quit (`persistPrefsNow`) or on respawn; only a crash inside the 500 ms window can.
+  - The live preset test does not check Clean or the spacing values on Program.
+  - Nothing exercises the views themselves beyond the snapshots.
+- `tiles/` filter: 513/513.
+
+## Slice S5
+
+### Task 19 — Members tab
+
+- `TilesOverridePolicy` (`editorValues`, `create` with the 4 Windows messages verbatim).
+- `AppModel+Tiles` (the `SceneWorkspaceMemberEditor` port):
+  - `tilesSelectedMemberId` is a non-optional `String`, "" when nothing is selected;
+  - `tilesMemberRows` uses the Windows status words Excluded, Unused, Pinned and Auto;
+  - `tilesCanEditSelectedMember`, `tilesFramingTitle`, `tilesWallPixels` (`wallRect` × 1920×1080);
+  - `setTilesNeverShow`;
+  - `setTilesCrop`: 0-45, ignored out of range;
+  - `resetTilesCrop`;
+  - `setTilesPinned`: on gives (0,0,0.48,1) and keeps the crop; off clears the rect and z and keeps the crop;
+  - `setTilesPin`: pixels relative to the wall; out of the wall gives the Windows message and no edit;
+  - `setTilesOrder`: only when pinned, an integer 0-63.
+- `TilesMembersTab` follows Windows `SourcesPage.xaml` Members order:
+  - WHO APPEARS: the mode picker with the 3 Windows labels and help, and the member list (max 220 pt, its own scroll; checkbox include, name, status; click selects).
+  - "<name> · framing": never show, crop left/right, reset crop.
+  - TILE PLACEMENT: pin; X/Y/width/height in px when pinned; return to automatic; "Advanced placement" with tile order; the help text.
+  - NAMES: "Name each tile" disabled with the D3 caption, plus the Windows help.
+  - "Advanced membership": manual slot, assign/clear slot, the summary, clear stale.
+  - The snapshot was checked by eye.
+- Tests:
+  - the 4 Windows facts: `TakeRefreshWithClearedSelection…` (3 ids), `SwitchingEditorSource…`, `OverrideRoundTrip…`, and `InvalidOverrideIsRejectedBeforeMutation` (4 rows, NaN included) plus the messages;
+  - `testATakeWithAnEmptyMemberSelectionLoadsDefaultsAndKeepsOverrides` (Review Focus 3): no trap, defaults, nothing editable, overrides byte-equal;
+  - `testUnpinKeepsCropAndClearsOrder`, `testAPinOutsideTheWallIsRefusedWithTheWindowsMessage`, `testMemberStatusWordsAreTheWindowsWords`, `testNameEachTileIsDisabledAndTheWireStaysFalse`.
+- `tiles/` filter: 556/556. Full suite: **8896 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 19) | Result |
+|---|---|
+| unpin clears the crop | red |
+| order allowed while unpinned | red |
+| make the selection optional and force-unwrap it | not representable. The selection is a non-optional `String` by type, so Review Focus 3's trap cannot be written. The RF3 test pins the behaviour (defaults, nothing editable, overrides untouched) |
+
+### Task 20 — live background, live badges, pinned-member pixels
+
+- `setTilesBackgroundSource` is Windows `SetTilesBackground`: "" clears; otherwise the id must be a current member choice, else "Choose an available background source.". The Style tab's "Live background" disclosure has the meeting source picker, "Use selected member as background" and "Clear live background".
+- Live badges (D2):
+  - `AppModel.tilesLive` and `tilesLiveLayerId` are read from the snapshot's `tiles` node; `[]` when the node is absent.
+  - `liveSuffix` gives "", " · held" or " · black", with black winning.
+  - A row gets the suffix only when the core's `tiles` node is the edited wall.
+  - **Note for the owner:** `sessionState.tiles` describes Program only, and the Mac editor edits Preview only (an on-air wall is refused, per the S4 review). So the gate as specified means badges cannot appear until S6 adds a read-only on-air dock. Taking the plan's default, I kept the gate. The alternative, badging the Preview wall's rows from the Program wall's state, would misattribute: different scenes have different walls.
+- Tests:
+  - `testLiveBackgroundOnlyAcceptsACurrentChoiceAndReachesTheWireAndTheBudget`: payload `style.backgroundSourceId == "zoom:8"`; on Program the budget lists 8 at `program-tiles`; "" clears.
+  - `testLiveBadgesComeOnlyFromTheProgramWallSnapshot`.
+- **Live pixel proof** `tiles-live/pinned-and-cropped-member-pixels` (real Metal core + fake engine, primary colours), 4/4 passed:
+  - Member 101 is pinned at px (0,0,960,1080) with crop 25/25 and taken.
+  - The core reports 101 at `x 0, width 0.5`. The other three sit at `x 0.588` (≥ 0.5), reflowed into the right half.
+  - All nine left-half samples (corners, edges, centre) are `(13,28,250)`, member 1's colour edge to edge: a 16:9 source cropped 25/25 fills the 8:9 rect.
+- `tiles/` filter: 568/568. Full suite: **8908 checks, 2 failed**, the known `.m4a` pair.
+
+| Mutation (Task 20) | Result |
+|---|---|
+| badges without the Program-wall gate | red |
+| any id accepted as background | red: 2 failures |
+
+### Rebases and the stacked PR (2026-11-25)
+
+- `mac-tiles` (N1 + S1-S3) was rebased twice more as main moved, the last time onto `bf92530d`. The conflicts were the `ShellTests.swift` case list and `TabPageLayout` (the Comms fill-height from main); I kept both sides. At that tip the shell has 9586 checks, 2 failed (`.m4a`), and the lint passes. #1229 was force-pushed and is MERGEABLE.
+- S4/S5 moved to the stacked branch `mac-tiles-s4s5`, draft PR #1252 based on `mac-tiles`, so the green part can land first.
+- Seen once on the S4/S5 tip and not reproduced in 2 of 3 reruns: `ShellTestsGrade.swift:441` ("the store says the binding broke"). It comes from main and waits on a wall-clock `RunLoop.run(0.3)`. It is a timing flake, not caused by this lane. Candidate issue.
+
+### S5 slice review (independent; Tasks 19-20)
+
+- **HIGH (owner decision, recorded): the D2 badge gate can never pass in the real app.** The core's `tiles` node names the Program wall, and the editor edits Preview only; the S4 review made an on-air wall refuse editing. The gate is kept as the plan specifies. The positive-branch test is now labelled as reachable only once S6 adds the read-only on-air dock. **Decision needed:** keep the gate until S6, or badge Members rows from the Program wall's state for guests who are on it.
+- **MEDIUM (fixed): member sliders saved the prefs file on every tick.** Crop, tile X/Y/width/height and order now save debounced. Pin/unpin and reset crop still save at once.
+- **MEDIUM (fixed): the pinned-pixel proof was weak.** It now also asserts the colour is member 101's (blue), and that the core places 101 at (0,0,0.5,1). Re-run live: 5/5. The 25/25 crop itself cannot be seen in a solid fake frame; the edge-to-edge fill of the 8:9 rect is what the crop makes possible.
+- **MEDIUM (fixed): the selection fallback ran only on appear.** `tilesActiveMemberId` is derived on every read: the stored id while it is a current choice, else the first member, else "", like Windows `RefreshMembers`. A guest who leaves, or a roster that fills later, no longer strands the editor. Test: `testTheEditorFallsBackToTheFirstMemberLikeWindows`.
+- **MEDIUM (fixed): the Live background picker could hold a selection not in its list.** It is now bound to the active member, and its button is enabled by `tilesCanEditSelectedMember`.
+- **LOW (fixed):** Tile X/Y slider ranges only span what fits beside the tile's size, and the placement sliders hide on a wall under 2 px.
+- **LOW (recorded):**
+  - The Review Focus 3 test holds because the Take makes the wall Program, and nothing is editable then. `editorValues` is the Windows editor's loader and is only used by tests on Mac.
+  - `tilesMemberStates` recomputes per render; this is a performance note only.
+- `tiles/` filter: 575/575.
+
+### Owner decision D2 (2026-11-25)
+
+The plan's gate stays. Live held/black badges on Members rows appear only for the wall the core's `tiles` node describes, which is the Program wall. They arrive with S6's read-only on-air panel. No code change.
+
+## Remaining (Tasks 21-22)
+
+- **Task 21, the quiet-machine drill:** pending. It needs the other lane agents stopped and load below 2.5 (lane rules: performance verdicts are never taken on a loaded machine).
+- **Task 22, the owner's live acceptance:** pending. It needs the owner, 6-9 co-hosts and a signed build. Task 5's range normalization stays unverified until then.
