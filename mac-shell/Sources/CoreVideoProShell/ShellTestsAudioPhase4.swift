@@ -70,6 +70,10 @@ extension ShellTests {
             ("a7-fix7-popout-window-uses-layout", testFix7PopoutWindowUsesLayout),
             ("a7-fix8-plugin-host-real-shape", testFix8PluginHostRealShape),
             ("a7-fix8-stale-poll-cannot-finish-scan", testFix8StalePollCannotFinishScan),
+            // Review fix-ups 9: a new core resets the scan; scan-only plug-ins listed dimmed.
+            ("a7-fix9-respawn-resets-scan-state", testFix9RespawnResetsScanState),
+            ("a7-fix9-respawn-rescans-visible-surface", testFix9RespawnRescansVisibleSurface),
+            ("a7-fix9-scan-only-plugins-listed-dimmed", testFix9ScanOnlyPluginsListedDimmed),
         ]
     }
 
@@ -1323,7 +1327,9 @@ extension ShellTests {
         expect(!model.vstScanCompleted, "a scan the core still runs has not completed")
         expectEqual(model.vstAddMenuState, .scanning, "SHOW's menu: scanning")
         expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "SETUP's menu: scanning, not 'none found'")
-        model.applyPluginHostSnapshot(["status": "absent", "plugins": [] as [JSONObject]])
+        // A poll requested after the reply, through the real poll path (and its stale barrier).
+        let laterPoll = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: laterPoll)
         expect(model.vstScanCompleted, "absent after the scan: completed")
         expectEqual(model.setupVstMenuEmptyLine, P.noneFoundLine, "a completed scan found nothing")
         expectEqual(model.vstCapability, .missing, "and the host is really missing")
@@ -1348,7 +1354,8 @@ extension ShellTests {
         model.vstScanRequestForTesting = { _, _ in pluginHostReply("scanning") }
         model.scanVstPlugins()
         spin(until: { model.vstScanRequestReturned }, limit: 2)
-        model.applyPluginHostSnapshot(["status": "absent", "plugins": [] as [JSONObject]])
+        let laterPoll = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: laterPoll)
         expectEqual(model.vstCapability, .missing, "after a scan: missing")
         expect(model.vstStatusLine.hasPrefix("Plug-in host not found — build corevideo-plugin-host"),
                "the host-missing status line: \(model.vstStatusLine)")
@@ -1503,6 +1510,108 @@ extension ShellTests {
         // The window is closed: later snapshots apply normally again.
         model.applySnapshotForTesting(pluginHostSnapshot("ready", plugins: [["id": "a", "name": "A"]]))
         expectEqual(model.vstPlugins.map(\.name), ["A"], "after a fresh poll every snapshot applies")
+    }
+
+    // ── Review fix-ups 9 ────────────────────────────────────────────────────
+
+    /// A respawned core starts at the default "absent" with no scan. Scan state
+    /// left over from the previous core generation must not read that as a
+    /// finished scan ("none found" / "host not found"), and the kicked flag must
+    /// not block the next scan.
+    /// Mutation: drop the resetVstScanForNewCore() call from onConnected (red).
+    @MainActor
+    static func testFix9RespawnResetsScanState() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        var sent = 0
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { sent += 1 }
+            return pluginHostReply("scanning")
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        let ready = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("ready", plugins: [["id": "a", "name": "A"]]),
+                                      requestSeq: ready)
+        expectEqual(model.vstAddMenuState, .plugins, "precondition: the old core listed a plug-in")
+        expect(model.vstScratch.scanKicked, "precondition: the old core's scan was kicked")
+        // The core respawns: a new generation, whose first poll is the default "absent".
+        model.onConnected()
+        model.stopTimersForTesting()
+        let fresh = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: fresh)
+        expectEqual(model.vstAddMenuState, .notScanned, "SHOW's menu: the new core has not scanned")
+        expectEqual(model.setupVstMenuEmptyLine, P.notScannedLine, "SETUP's menu: not scanned, not 'none found'")
+        expectEqual(model.vstCapability, .notScanned, "not 'host missing'")
+        expectEqual(model.vstUnavailableNote, "Plug-in scan has not run yet.", "the insert note is not 'host not found'")
+        expect(!model.vstScanRequestReturned, "the old generation's returned scan is forgotten")
+        expect(!model.vstScratch.scanKicked, "the kicked flag is cleared")
+        expect(model.vstScratch.scanStaleBarrier == nil, "the old generation's barrier is cleared")
+        model.kickVstScanIfNeeded()
+        spin(until: { sent >= 2 }, limit: 2)
+        expectEqual(sent, 2, "the next kick sends a new scan request to the new core")
+    }
+
+    /// A VST surface that stays on screen across a respawn gets no new
+    /// onAppear, so the new core generation re-kicks the scan itself; with no
+    /// such surface visible it waits for the next one to appear.
+    /// Mutation: drop the visible-surface re-kick from resetVstScanForNewCore (red).
+    @MainActor
+    static func testFix9RespawnRescansVisibleSurface() {
+        let model = AppModel()
+        var sent = 0
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { sent += 1 }
+            return pluginHostReply("scanning")
+        }
+        model.vstSurfaceAppeared()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(sent, 1, "a VST surface appearing kicks the scan")
+        model.onConnected()
+        model.stopTimersForTesting()
+        spin(until: { sent >= 2 }, limit: 2)
+        expectEqual(sent, 2, "a still-visible surface rescans the new core")
+        model.vstSurfaceDisappeared()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        model.onConnected()
+        model.stopTimersForTesting()
+        spin(until: { false }, limit: 0.1)
+        expectEqual(sent, 2, "with no VST surface visible the respawn does not scan")
+        expect(!model.vstScratch.scanKicked, "and the next surface to appear will")
+    }
+
+    /// Off Windows `--probe` always fails (plugin-host.cpp), so every probed
+    /// plug-in reads probe "fail". With the host not live SHOW's add menu lists
+    /// the scanned plug-ins dimmed under the scan-only line (as the browser
+    /// does), during and after probing; a live host's real "fail" stays hidden
+    /// (Windows' filter, AudioPage.xaml.cs).
+    /// Mutation: filter probe == "fail" out of the not-live rows (red).
+    @MainActor
+    static func testFix9ScanOnlyPluginsListedDimmed() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        model.applyPluginHostSnapshot(["status": "ready", "plugins": [
+            ["id": "a", "name": "A", "probe": "fail"], ["id": "b", "name": "B", "probe": "fail"],
+        ] as [JSONObject]])
+        expectEqual(model.vstCapability, .scanOnly, "fixture: scan-only")
+        expectEqual(model.vstAddMenuState, .plugins, "the menu lists plug-ins")
+        let rows = model.vstAddMenuRows
+        expectEqual(rows.map(\.title), [model.vstStatusLine, "A", "B"], "the scan-only line, then both plug-ins")
+        expectEqual(rows.filter(\.enabled).count, 0, "every row is dimmed")
+        expectEqual(rows.compactMap(\.plugin).map(\.id), ["a", "b"], "the plug-in rows carry their plug-ins")
+        // During probing ("pending") the same rows.
+        let pending = P.pluginRows(plugins: model.vstPlugins.map { var p = $0; p.probe = "pending"; return p },
+                                   live: false, statusLine: model.vstStatusLine)
+        expectEqual(pending, rows.map { r in
+            P.Row(id: r.id, title: r.title, enabled: r.enabled,
+                  plugin: r.plugin.map { var p = $0; p.probe = "pending"; return p })
+        }, "probing and probed list the same dimmed rows")
+        // A live host: a real "fail" is hidden, the rest enabled, no scan-only line.
+        let live = P.pluginRows(plugins: [VstPlugin(id: "a", name: "A", probe: "fail"),
+                                          VstPlugin(id: "b", name: "B", probe: "pass")],
+                                live: true, statusLine: "unused")
+        expectEqual(live.map(\.title), ["B"], "live: a failed probe is filtered")
+        expect(live.allSatisfy(\.enabled), "live: rows enabled")
     }
 
     /// The Audio Mixer pop-out window takes its sizes from AudioLayout and no

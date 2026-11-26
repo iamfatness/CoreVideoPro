@@ -266,7 +266,8 @@ struct ProcessingWorkspace: View {
         // when the add menu opens. A SwiftUI Menu has no opening hook, so the
         // workspace asks when it appears (the PLUG-INS surface that used to
         // ask now sits inside SETUP's collapsed disclosure).
-        .onAppear { model.kickVstScanIfNeeded() }
+        .onAppear { model.vstSurfaceAppeared() }
+        .onDisappear { model.vstSurfaceDisappeared() }
     }
 
     // ── RACK (XAML:996-1092) ────────────────────────────────────────────────
@@ -316,16 +317,16 @@ struct ProcessingWorkspace: View {
                     Button(line) {}.disabled(true)
                 }
             } else {
-                if !model.vstInsertsLive {
-                    // The host cannot run an insert on this machine: say why, and
-                    // list the scanned plug-ins dimmed (honest reporting).
-                    Button(model.vstStatusLine) {}.disabled(true)
-                }
-                ForEach(model.vstPlugins.filter { $0.probe != "fail" }) { plugin in
-                    Button(plugin.name) {
-                        add(AppModel.vstInsertName(plugin: plugin, className: plugin.classNames.first))
+                // When the host cannot run an insert on this machine: say why, and
+                // list the scanned plug-ins dimmed (honest reporting;
+                // VstAddMenuPolicy.pluginRows).
+                ForEach(model.vstAddMenuRows) { row in
+                    Button(row.title) {
+                        if let plugin = row.plugin {
+                            add(AppModel.vstInsertName(plugin: plugin, className: plugin.classNames.first))
+                        }
                     }
-                    .disabled(!model.vstInsertsLive)
+                    .disabled(!row.enabled)
                 }
             }
         } label: {

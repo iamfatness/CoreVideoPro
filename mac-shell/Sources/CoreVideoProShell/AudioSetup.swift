@@ -280,7 +280,8 @@ struct InsertsAndPlugins: View {
             .opacity(strip == nil ? 0.45 : 1)
         }
         // SHOW's workspace kicks the scan on appear; SETUP may be opened first.
-        .onAppear { model.kickVstScanIfNeeded() }
+        .onAppear { model.vstSurfaceAppeared() }
+        .onDisappear { model.vstSurfaceDisappeared() }
     }
 
     var readouts: some View {
@@ -365,10 +366,16 @@ struct InsertsAndPlugins: View {
                     Button(line) {}.disabled(true)
                 }
             } else {
-                ForEach(model.vstPlugins.filter { $0.probe != "fail" }) { plugin in
-                    Button(plugin.name) {
-                        model.addProcessingInsert(AppModel.vstInsertName(plugin: plugin, className: plugin.classNames.first))
+                // The same rows as SHOW's add menu (VstAddMenuPolicy.pluginRows).
+                // The whole menu is disabled unless the host is live, so in
+                // practice these are the live rows.
+                ForEach(model.vstAddMenuRows) { row in
+                    Button(row.title) {
+                        if let plugin = row.plugin {
+                            model.addProcessingInsert(AppModel.vstInsertName(plugin: plugin, className: plugin.classNames.first))
+                        }
                     }
+                    .disabled(!row.enabled)
                 }
             }
         } label: {

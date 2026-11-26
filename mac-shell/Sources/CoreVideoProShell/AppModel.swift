@@ -1958,6 +1958,9 @@ final class AppModel: ObservableObject {
         // FIRST, before anything that can make a source audible (monitor, capture
         // mics, scenes with media): see reassertAudioConsole.
         reassertAudioConsole()
+        // The VST scan belongs to the old core: back to "not scanned" (and
+        // rescan if a VST surface is on screen) — VstInserts.swift.
+        resetVstScanForNewCore()
         // A fresh core opens the system default output until told otherwise:
         // re-list the devices and re-send the operator's monitor device on
         // EVERY core generation (gotchas: one-shot commands are lost on respawn).

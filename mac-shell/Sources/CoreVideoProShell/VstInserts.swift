@@ -94,6 +94,13 @@ final class VstScratch {
     /// predate the core's "scanning", so their pluginHost is skipped until a
     /// later-stamped snapshot lands (AppModel.applyPluginHostFromSnapshot).
     var scanStaleBarrier: Int?
+    /// Bumped on every core generation: a scan reply from an older generation
+    /// is dropped (its core is gone; its state would fake a finished scan).
+    var scanGeneration = 0
+    /// VST surfaces (SHOW workspace, SETUP, the plug-in browser) on screen now.
+    /// A surface that stays visible across a respawn gets no new onAppear, so
+    /// the new generation re-kicks the scan for it (resetVstScanForNewCore).
+    var visibleSurfaces = 0
 }
 
 // What SHOW's "＋ Add processing" menu says under VST3 PLUG-INS. The core's
@@ -125,6 +132,30 @@ enum VstAddMenuPolicy {
         if status == "scanning" || status == "probing" { return .scanning }
         if scanCompleted { return .noneFound }
         return scanFailed ? .scanFailed : .notScanned
+    }
+
+    /// One row of an add menu's plug-in list (state == .plugins).
+    struct Row: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let enabled: Bool
+        let plugin: VstPlugin?   // nil = the explanatory status line
+    }
+
+    /// The plug-in rows under VST3 PLUG-INS once there is a list. A live host
+    /// probes for real, so a "fail" is hidden and the rest are addable
+    /// (Windows' filter, W/Views/AudioPage.xaml.cs OnAddInsertFlyoutOpening).
+    /// When the host cannot run an insert, probe verdicts mean nothing (off
+    /// Windows `--probe` always fails, plugin-host.cpp), so every scanned
+    /// plug-in is listed dimmed under the status line saying why, during and
+    /// after probing alike, matching the browser's dimmed "NOT VERIFIED" list.
+    static func pluginRows(plugins: [VstPlugin], live: Bool, statusLine: String) -> [Row] {
+        if live {
+            return plugins.filter { $0.probe != "fail" }
+                .map { Row(id: "vst:" + $0.id, title: $0.name, enabled: true, plugin: $0) }
+        }
+        return [Row(id: "status", title: statusLine, enabled: false, plugin: nil)]
+            + plugins.map { Row(id: "vst:" + $0.id, title: $0.name, enabled: false, plugin: $0) }
     }
 
     /// The disabled line shown instead of a list, nil when there is a list.
@@ -419,11 +450,12 @@ extension AppModel {
         }
         vstScratch.scanKicked = true
         vstScanRequestFailed = false
+        let generation = vstScratch.scanGeneration
         Task { [weak self] in
             do {
                 let reply = try await send(["type": "scan-vst-plugins"], 20)
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self, self.vstScratch.scanGeneration == generation else { return }
                     if let node = Self.pluginHostNode(inSnapshot: reply["snapshot"] as? JSONObject) {
                         self.applyPluginHostSnapshot(node)
                         // Every snapshot request issued so far may predate "scanning".
@@ -435,7 +467,7 @@ extension AppModel {
                 }
             } catch {
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self, self.vstScratch.scanGeneration == generation else { return }
                     self.vstScratch.scanKicked = false
                     self.vstScanRequestFailed = true
                     self.pushWarning("VST3 scan failed: \(error.localizedDescription)")
@@ -456,9 +488,44 @@ extension AppModel {
                                scanCompleted: vstScanCompleted, scanFailed: vstScanRequestFailed)
     }
 
+    /// The rows both add menus list once vstAddMenuState == .plugins.
+    var vstAddMenuRows: [VstAddMenuPolicy.Row] {
+        VstAddMenuPolicy.pluginRows(plugins: vstPlugins, live: vstInsertsLive, statusLine: vstStatusLine)
+    }
+
     func kickVstScanIfNeeded() {
         guard !vstScratch.scanKicked, bridge != nil || vstScanRequestForTesting != nil else { return }
         scanVstPlugins()
+    }
+
+    /// A VST surface came on screen: count it and make sure a scan has run.
+    func vstSurfaceAppeared() {
+        vstScratch.visibleSurfaces += 1
+        kickVstScanIfNeeded()
+    }
+
+    func vstSurfaceDisappeared() {
+        vstScratch.visibleSurfaces = max(0, vstScratch.visibleSurfaces - 1)
+    }
+
+    /// Every core generation (AppModel.onConnected). A new core starts at the
+    /// default "absent" with no scan and no plug-ins (MediaCore.h
+    /// pluginHostStatus_), so the previous generation's scan bookkeeping would
+    /// read its first "absent" as a finished scan ("none found" / "host not
+    /// found") and the kicked flag would block the rescan. Back to the
+    /// pre-scan state; an in-flight reply from the old core is dropped by the
+    /// generation check in scanVstPlugins. If a VST surface is on screen it
+    /// gets no new onAppear, so the scan is re-kicked here; otherwise the next
+    /// surface to appear kicks it.
+    func resetVstScanForNewCore() {
+        vstScratch.scanGeneration += 1
+        vstScratch.scanKicked = false
+        vstScratch.scanStaleBarrier = nil
+        vstScanRequestReturned = false
+        vstScanRequestFailed = false
+        if vstHost != VstHostState() { vstHost = VstHostState() }
+        if !vstPlugins.isEmpty { vstPlugins = [] }
+        if vstScratch.visibleSurfaces > 0 { kickVstScanIfNeeded() }
     }
 
     // Opens the plug-in's own editor window in the isolated host process.
@@ -550,7 +617,8 @@ struct VstInsertsSurface: View {
                 VstParamRack()
             }
         }
-        .onAppear { model.kickVstScanIfNeeded() }
+        .onAppear { model.vstSurfaceAppeared() }
+        .onDisappear { model.vstSurfaceDisappeared() }
     }
 
     var header: some View {
