@@ -13,6 +13,10 @@
 //                                   can SIGKILL. The sibling must not hold the lifeline open.
 //
 //   argv-to <file>                  writes argv[1..] joined by single spaces to <file>, exits 0
+//   copy-stdin-to <file>            copies stdin to <file> until EOF, exits 0
+//   stubborn-stream <pidfile>       exits 0 when argv carries "null" (the encoder
+//                                   probe's `-f null -`), else behaves as stubborn:
+//                                   a wedged stream ffmpeg whose probe still passes
 //
 // When COREVIDEO_TEST_PROBE_MODE is set the mode comes from it and argv is
 // ignored, so a copy named "ffmpeg" can stand in for the sender's transport
@@ -23,6 +27,7 @@
 
 #include "modules/PosixChildProcess.h"
 
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -67,6 +72,21 @@ int argvTo(const char* path, int argc, char** argv) {
   return 0;
 }
 
+int copyStdinTo(const char* path) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  char buffer[65536];
+  for (;;) {
+    const ssize_t got = ::read(0, buffer, sizeof(buffer));
+    if (got == 0) return 0;
+    if (got < 0) {
+      if (errno == EINTR) continue;
+      return 9;
+    }
+    out.write(buffer, got);
+    out.flush();
+  }
+}
+
 int fakeCore(const char* probe, const char* guard, const char* pidfile) {
   corevideo::modules::posix_child::SpawnRequest request;
   request.executable = probe;
@@ -100,6 +120,13 @@ int main(int argc, char** argv) {
     if (name == "eof-exit") return eofExit();
     if (name == "exit" && !arg.empty()) return std::atoi(arg.c_str());
     if (name == "argv-to" && !arg.empty()) return argvTo(arg.c_str(), argc, argv);
+    if (name == "copy-stdin-to" && !arg.empty()) return copyStdinTo(arg.c_str());
+    if (name == "stubborn-stream" && !arg.empty()) {
+      for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "null") return 0;
+      }
+      return stubborn(arg.c_str());
+    }
     return 2;
   }
   if (argc < 2) return 2;

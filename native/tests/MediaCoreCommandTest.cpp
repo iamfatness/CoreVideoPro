@@ -6398,7 +6398,7 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 // direct-push seam next to it deliberately bypasses the bound, so it cannot
 // see this at all.
 TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender) {
-#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+#if COREVIDEO_WITH_RTMP_OUTPUT  // Phase 4 O4c: the bitstream queue runs on every platform
   auto rig = corevideo::modules::createRtmpOutputSenderForTest();
   auto& sender = rig.sender;
   auto* const queue = rig.queue;
@@ -6432,7 +6432,7 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
 #else
   // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
   std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender"
-                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+                       " (Needs the RTMP sender, COREVIDEO_WITH_RTMP_OUTPUT) - this test did NOT run\n");
   return;
 #endif
 }
@@ -6446,7 +6446,7 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
 // safety argument (every keyframe here is a self-contained IDR), strictly more
 // room freed, and nothing about which preceding chunks are headers.
 TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing) {
-#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+#if COREVIDEO_WITH_RTMP_OUTPUT  // Phase 4 O4c: the bitstream queue runs on every platform
   auto rig = corevideo::modules::createRtmpOutputSenderForTest();
   auto& sender = rig.sender;
   auto* const queue = rig.queue;
@@ -6476,7 +6476,7 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesR
 #else
   // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
   std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing"
-                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+                       " (Needs the RTMP sender, COREVIDEO_WITH_RTMP_OUTPUT) - this test did NOT run\n");
   return;
 #endif
 }
@@ -6488,7 +6488,7 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesR
 // a keyframe. Cutting to a QUEUED keyframe frees nothing here and the sender
 // fails; the decoder can resume at the ARRIVING IDR, so the whole backlog goes.
 TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog) {
-#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+#if COREVIDEO_WITH_RTMP_OUTPUT  // Phase 4 O4c: the bitstream queue runs on every platform
   auto rig = corevideo::modules::createRtmpOutputSenderForTest();
   auto& sender = rig.sender;
   auto* const queue = rig.queue;
@@ -6513,7 +6513,7 @@ TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueRepl
 #else
   // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
   std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog"
-                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+                       " (Needs the RTMP sender, COREVIDEO_WITH_RTMP_OUTPUT) - this test did NOT run\n");
   return;
 #endif
 }
@@ -6522,7 +6522,7 @@ TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueRepl
 // backlog and await a fresh keyframe; the encoder must not be rebuilt to
 // recover from one blocked network socket.
 TEST(RtmpOutputSenderBackpressure, AFullQueueWithoutKeyframeWaitsForFreshIdr) {
-#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+#if COREVIDEO_WITH_RTMP_OUTPUT  // Phase 4 O4c: the bitstream queue runs on every platform
   auto rig = corevideo::modules::createRtmpOutputSenderForTest();
   auto& sender = rig.sender;
   auto* const queue = rig.queue;
@@ -6552,7 +6552,7 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWithoutKeyframeWaitsForFreshIdr) {
 #else
   // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
   std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWithoutKeyframeWaitsForFreshIdr"
-                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+                       " (Needs the RTMP sender, COREVIDEO_WITH_RTMP_OUTPUT) - this test did NOT run\n");
   return;
 #endif
 }

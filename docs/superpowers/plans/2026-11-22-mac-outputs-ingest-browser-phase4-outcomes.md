@@ -460,3 +460,65 @@ Branch `mac-outputs-phase4-o4b`, stacked on `-o4`.
     0 failed**. The 7 VideoToolbox tests skipped loudly, because this branch does not carry #1242.
   - After the fixes: `MetalEncoderExport.*` + `VideoToolboxGpuVideoEncoder.*` + the two sender/core
     tests, **14/14, three runs**.
+
+### Metal compositor threads (coordinator follow-up to #1242): no change needed
+
+None of the three threads the #1242 review flagged creates autoreleased Cocoa objects per iteration, and none holds an IOSurface or VideoToolbox object across iterations:
+- **Full-res tap thread:** reads a plain (non-IOSurface) Metal texture with `getBytes` into a `std::vector`.
+- **Vcam tap thread:** copies an `MTLBuffer.contents` pointer into a vector and hands it to a C++ shared-memory publisher.
+- **Vcam prep thread:** runs once, is already pooled, and exits.
+
+The IOSurface-backed pixel and sample buffers are made in the separate virtual-camera helper process (`CmioVirtualCameraSink`). They use balanced CF create/release and a recycling pixel-buffer pool. No PR was opened.
+
+### #1242 CI segfault: a pre-existing decoder race, fixed on #1242
+
+CI's `native-metal-macos` on #1242 segfaulted in `AvfMediaPixel`.
+- **Crash report:** `EXC_BAD_ACCESS` in `FigSimpleMutexUnlock` under `-[AVAssetReaderTrackOutput copyNextSampleBuffer]`, on the media decoder's reader queue.
+- **Not caused by #1242:** with #1242's recorder change reverted, the suite crashed 1 run in 20, identically.
+- **Cause:** the clip reader destructors called `cancelReading` on the owner thread, concurrently with a read.
+- **Fix:** `cancelReading` now runs on the reader queue, in both the video and audio readers (commit 2 of #1242).
+- **Stress test:** 2 of 5 crashes before the fix; 10 of 10 passes after.
+- **With the fix:** `AvfMediaPixel` + `AvfMediaDecoder` had 0 failures in 20 runs.
+
+## Task 4 (O4c): POSIX bitstream queue, writer thread, TS envelope and backpressure
+
+Branch `mac-outputs-phase4-o4c`, stacked on `-o4b`.
+
+- **What changed.** The Windows-only GPU-direct machinery now runs on every platform:
+  - the queue (60 chunks / 2 MiB, GOP-tail discard);
+  - the writer thread with the `EncodedVideoTransportStream` TS envelope;
+  - `observeStreamBackpressure`, the pipe-write telemetry, and the failure state.
+
+  It is lifted, not copied. The only platform piece is `writeSomeToFfmpeg() -> PipeWriteOutcome{written, stopped, broken, error}`:
+  - **Windows:** the same blocking `WriteFile`; Stop still uses `CancelSynchronousIo`.
+  - **POSIX:** non-blocking stdin plus `poll({stdin POLLOUT, stop pipe POLLIN}, 100 ms)`. Stop writes the stop pipe, joins the writer, and only then closes stdin.
+  - **Latent POSIX defect fixed:** the POSIX encoder callback used to write raw Annex B into the pipe on the encoder thread, while the args declared a timestamped TS input. That would have been a garbage mux, and a wedged ffmpeg blocked the shared encoder. The callback now only enqueues.
+  - `streamClock` publication stays Windows-only until Task 5's unified TS mux.
+- **Tests.**
+  - New: `BitstreamQueuePosix.*` (4).
+    - The timestamped TS envelope: sync bytes at offsets 0 and 188; first PES PTS 0, then 3000.
+    - A wedged reader sheds GOP tails, with encoder `start` count 1 and the sender not failed.
+    - Stop takes under 2 s on a wedged pipe, and the stand-in is reaped.
+    - Review-added: an ffmpeg that exits breaks the pipe and fails the sender, and Stop is prompt.
+  - The four `RtmpOutputSenderBackpressure.*` queue cases (overflow, GOP-tail discard, fresh-IDR wait) were Windows-only. They now run and pass on the Mac.
+- **Plan fixture corrected (rule 5).** The plan expected the first PES PTS to be 9000. `EncodedVideoTransportStream` documents that the first video DTS is subtracted from every PID, so the first access unit is PTS 0. The second is 3000, which also pins the packetizer's round-to-nearest tick.
+- **Fixture trap found and fixed.** The Task 1 encoder probe runs the same fake `ffmpeg`. In plain `stubborn` mode it blocked every start for its 5 s budget and wrote the pidfile the stop test read. The new probe mode `stubborn-stream` exits 0 for the encoder probe's `-f null` and is stubborn otherwise.
+- **Not ported (plan step 1.4).** `StreamBackpressureRateProbeTest` drives the Media Foundation encoder on D3D11, so it stays Windows-only. Its Mac equivalent is Task 6's slow-sink gate.
+- **Mutations.**
+
+  | Mutation | Result |
+  |---|---|
+  | M4a: callback writes the pipe | TS test red; wedged test hangs |
+  | M4b: no TS packetizing | TS test red |
+  | M4c: no stop-pipe wake | **stays green, by design**: the 100 ms poll timeout re-checks the stop flag, so Stop is bounded without the wake (documented at the poll) |
+  | M4c′: no pipe and an infinite poll | hangs |
+  | M4d: no backpressure observation | wedged test red |
+  | M4e (review-added): broken pipe not recorded | failure-path test red |
+
+- **Counts.**
+  - Full native suite (before the review fixes): **2334 passed, 0 failed**.
+  - `BitstreamQueuePosix.*`: 4/4, three runs.
+- **Review** (independent agent). No production defect.
+  - Taken: the failure-path test, saving and restoring the env vars, and the PTS rounding comment.
+  - Stop pipe kept: it wakes at once, and the 100 ms timeout is the safety net.
+  - Windows log difference: only the transport-audio failure line now prints `err=0` for a zero-byte success, where it used to print a stale `GetLastError()`. There is no behaviour change.
