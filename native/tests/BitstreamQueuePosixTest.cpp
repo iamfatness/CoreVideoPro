@@ -121,6 +121,7 @@ struct Rig {
   // Program audio handed to sync(): real audio is what selects the unified TS
   // mux (realAudioEnabledForProcess needs activeAudioPresent_).
   bool withAudio = false;
+  bool withTexture = true;  // false: frames carry no encoder texture (the CPU fallback)
   std::vector<float> pcm = std::vector<float>(1600 * 2, 0.0f);  // 33 ms at 48 kHz stereo
 
   Rig(const std::string& tag, const std::string& probeMode, size_t payloadBytes, int gop) {
@@ -167,7 +168,7 @@ struct Rig {
     frame.programFullBgra.width = 320;
     frame.programFullBgra.height = 180;
     frame.programFullBgra.bgra.assign(320u * 180u * 4u, 0x40);
-    frame.encoderSharedTexture.iosurfaceId = 77;
+    frame.encoderSharedTexture.iosurfaceId = withTexture ? 77u : 0u;
     frame.encoderSharedTexture.width = 320;
     frame.encoderSharedTexture.height = 180;
     frame.encoderSharedTexture.frameNumber = frame.frameNumber;
@@ -324,6 +325,74 @@ TEST(OutputSenderAdapter, PosixGpuDirectUsesUnifiedTs) {
   EXPECT_EQ(argv.find("-f aac"), std::string::npos) << "no separate AAC demuxer: " << argv;
   EXPECT_NE(argv.find("-map 0:a:0"), std::string::npos) << "audio is mapped from the TS itself: " << argv;
   EXPECT_EQ(argv.find("pipe:3"), std::string::npos) << "no second audio pipe: " << argv;
+}
+
+// Phase 4 O4e: every sender row says which path the start TOOK and why.
+TEST(OutputSenderAdapter, PublishesTheChosenEncodePath) {
+  {
+    Rig rig("path-gpu", "copy-stdin-to @DIR@/out.ts", 256, 0);
+    OutputSenderSession last;
+    for (int i = 0; i < 3; ++i) last = rig.tick();
+    ASSERT_FALSE(last.senders.empty());
+    ASSERT_TRUE(last.senders.front().encodePath.has_value()) << "decided at start";
+    EXPECT_EQ(last.senders.front().encodePath->path, "gpu-direct");
+    EXPECT_EQ(last.senders.front().encodePath->reason, "gpu-direct");
+    EXPECT_EQ(last.senders.front().encodePath->codec, "h264");
+  }
+  {
+    Rig rig("path-cpu", "copy-stdin-to @DIR@/out.raw", 256, 0);
+    rig.withTexture = false;
+    OutputSenderSession last;
+    for (int i = 0; i < 3; ++i) last = rig.tick();
+    ASSERT_FALSE(last.senders.empty());
+    ASSERT_TRUE(last.senders.front().encodePath.has_value());
+    EXPECT_EQ(last.senders.front().encodePath->path, "cpu-fallback");
+    EXPECT_EQ(last.senders.front().encodePath->reason, "no-encoder-texture");
+  }
+}
+
+// A later start refused before it decides a path (here: AV1, refused as not
+// deliverable before any encoder binds) must not keep publishing the previous
+// start's path.
+TEST(OutputSenderAdapter, ARefusedRestartDoesNotKeepThePreviousPath) {
+  Rig rig("path-stale", "copy-stdin-to @DIR@/out.ts", 256, 0);
+  OutputSenderSession last;
+  for (int i = 0; i < 3; ++i) last = rig.tick();
+  ASSERT_FALSE(last.senders.empty());
+  ASSERT_TRUE(last.senders.front().encodePath.has_value()) << "fixture invariant: the first start decided";
+  ASSERT_EQ(last.senders.front().encodePath->path, "gpu-direct");
+  (void)rig.sender.sender->sync({}, nullptr, rig.elapsedMs += 34.0, {});  // stop
+  rig.settings.videoCodec = "av1";
+  for (int i = 0; i < 3; ++i) last = rig.tick();
+  ASSERT_FALSE(last.senders.empty());
+  ASSERT_NE(last.senders.front().status, "live")
+      << "fixture invariant: the AV1 restart was refused (code=" << last.senders.front().lastResultCode << ")";
+  EXPECT_FALSE(last.senders.front().encodePath.has_value())
+      << "still shows " << last.senders.front().encodePath->path << "/" << last.senders.front().encodePath->reason;
+}
+
+// The STARTED path, not the desired one: an encoder whose start() fails reads
+// cpu-fallback with that reason (mutation M6a publishes the desired path).
+class RefusingEncoder final : public GpuVideoEncoder {
+ public:
+  bool start(const GpuVideoEncoderConfig&, GpuEncodedChunkSink) override { return false; }
+  bool submit(const GpuVideoEncoderFrame&) override { return false; }
+  void stop() override {}
+  bool healthy() const override { return false; }
+  std::string lastFailure() const override { return "vt-session-create:-12903"; }
+};
+
+TEST(OutputSenderAdapter, AnEncoderThatFailsToStartPublishesTheFallback) {
+  Rig rig("path-refused", "copy-stdin-to @DIR@/out.raw", 256, 0);
+  rig.sender.queue->setGpuVideoEncoderFactoryForTest([] { return std::make_unique<RefusingEncoder>(); });
+  OutputSenderSession last;
+  for (int i = 0; i < 3; ++i) last = rig.tick();
+  ASSERT_FALSE(last.senders.empty());
+  ASSERT_TRUE(last.senders.front().encodePath.has_value());
+  EXPECT_EQ(last.senders.front().encodePath->path, "cpu-fallback")
+      << "reason=" << last.senders.front().encodePath->reason << " status=" << last.senders.front().status
+      << " code=" << last.senders.front().lastResultCode;
+  EXPECT_EQ(last.senders.front().encodePath->reason, "encoder-start-failed");
 }
 
 }  // namespace

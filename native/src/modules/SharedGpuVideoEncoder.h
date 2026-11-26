@@ -28,4 +28,9 @@ class SharedGpuVideoEncoderPool {
 // keeps the same platform fallback decision as the former per-sender encoder.
 [[nodiscard]] std::unique_ptr<GpuVideoEncoder> createSharedProgramGpuVideoEncoder();
 
+// The GPU video encoder this build carries: "videotoolbox" (Apple with the
+// VideoToolbox encoder compiled), "media-foundation" (Windows), else "".
+// Phase 4 O4e: names the gpu-direct-stream-encode capability.
+[[nodiscard]] const char* platformGpuVideoEncoderName();
+
 }  // namespace corevideo::modules

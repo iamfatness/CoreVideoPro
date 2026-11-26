@@ -145,6 +145,14 @@ enum TabSnapshotHarness {
             $0.applyWriters(["zoom:101": "armed"])
         }
         seedAudio(model)
+        // COREVIDEO_SHELL_TAB_SNAPSHOT_TELEMETRY=1: the Zoom tab's telemetry card with its preview
+        // open (an engine-off payload; no service, so the status reads "key missing").
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_TELEMETRY"] == "1" {
+            model.telemetryPreviewJSON = TelemetryPayloadBuilder.serializePreview(TelemetryPayloadBuilder.build(
+                name: TelemetryEventNames.sessionEnd, version: "1.2.3", sessionLengthSeconds: 3600, snapshot: nil,
+                crashCountSinceLastSend: 0,
+                machine: TelemetryMachineClass(label: "mac-arm64-cpu12-ram36gb", cpuCores: 12, ramBand: "32-64GB", gpuTier: "apple-m3-pro")))
+        }
         // The inspector open on slot 3 (beside the table at 1920, below it at 1360).
         // COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR=0 renders the table with it closed.
         if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR"] != "0" {

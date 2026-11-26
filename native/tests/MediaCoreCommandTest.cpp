@@ -1101,6 +1101,7 @@ class FullBackpressureFieldsSender : public corevideo::modules::IOutputSender {
     bp.runId = 4;
     bp.observedAtMs = 12345.0;
     sender.backpressure = bp;
+    sender.encodePath = corevideo::modules::OutputSender::EncodePath{"gpu-direct", "gpu-direct", "hevc"};
     out.senders.push_back(sender);
 
     // A healthy sibling must see actual compositor cadence even when another
@@ -1172,6 +1173,29 @@ TEST(MediaCoreCommand, OutputSenderSessionPublishesEveryBackpressureField) {
       << "a pressured sibling must not reduce the healthy destination's input rate";
   ASSERT_NE(bp->get("appliedDivisor"), nullptr);
   EXPECT_EQ(bp->getNumber("appliedDivisor"), 1);
+}
+
+// Phase 4 O4e: every sender row carries encodePath - the object once a start
+// decided it, JSON null before (never absent, so a reader can tell "not yet
+// decided" from "an old core that does not publish it").
+TEST(MediaCoreCommand, OutputSenderRowsPublishTheEncodePath) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.outputSender = std::make_unique<FullBackpressureFieldsSender>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "start-program-output"}, {"destinations", corevideo::rpc::Json::Array{"rtmp"}}}});
+  const auto* senders = state.get("outputSenderSession")->get("senders");
+  ASSERT_NE(senders, nullptr);
+  ASSERT_EQ(senders->asArray().size(), 2u);
+  const auto* decided = senders->asArray()[0].get("encodePath");
+  ASSERT_NE(decided, nullptr) << "senders[].encodePath must exist";
+  ASSERT_TRUE(decided->isObject());
+  EXPECT_EQ(decided->getString("path"), "gpu-direct");
+  EXPECT_EQ(decided->getString("reason"), "gpu-direct");
+  EXPECT_EQ(decided->getString("codec"), "hevc");
+  const auto* undecided = senders->asArray()[1].get("encodePath");
+  ASSERT_NE(undecided, nullptr) << "an undecided row still carries the key";
+  EXPECT_TRUE(undecided->isNull());
 }
 
 TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
@@ -10801,4 +10825,29 @@ TEST(MediaCore, EncoderTextureExportFollowsStreamDestinations) {
   EXPECT_FALSE(compositor->lastExport) << "NDI is not a stream encoder destination";
   ASSERT_TRUE(startWith(corevideo::rpc::Json::Array{"hls"}));
   EXPECT_TRUE(compositor->lastExport) << "hls exports";
+}
+
+// Phase 4 O4e: the shell's 60 fps / H.265 stream pickers read this capability.
+// Available only with a platform GPU encoder AND a compositor that exports the
+// encoder texture; a stub core reports omitted with the reason.
+TEST(MediaCore, AdvertisesGpuDirectStreamEncode) {
+  {
+    corevideo::core::MediaCore stub(corevideo::modules::createStubModules());
+    const auto stubProfile = stub.profile();
+    const auto* state = stubProfile.get("capabilityStates")->get("gpu-direct-stream-encode");
+    ASSERT_NE(state, nullptr) << "the capability is always reported";
+    EXPECT_EQ(state->getString("state"), "omitted") << state->getString("detail");
+  }
+#if defined(__APPLE__) && COREVIDEO_WITH_METAL && COREVIDEO_HAS_VT_GPU_ENCODER && !COREVIDEO_STUB
+  {
+    corevideo::core::MediaCore metal(corevideo::modules::createDefaultModules());
+    const auto profile = metal.profile();
+    const auto* states = profile.get("capabilityStates");
+    ASSERT_NE(states, nullptr) << "no capabilityStates in the default core's profile";
+    const auto* state = states->get("gpu-direct-stream-encode");
+    ASSERT_NE(state, nullptr) << states->stringify();
+    EXPECT_EQ(state->getString("state"), "available") << state->getString("detail");
+    EXPECT_EQ(state->getString("detail"), "videotoolbox");
+  }
+#endif
 }
