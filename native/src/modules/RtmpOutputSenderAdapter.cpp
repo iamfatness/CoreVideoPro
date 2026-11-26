@@ -1655,6 +1655,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
   }
 
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
+    // Phase 4 O4e: this start has not decided a path yet. A start refused
+    // before the decision below (FFmpeg missing, a stop still pending, a codec
+    // admission refusal) must not keep showing the PREVIOUS start's path.
+    sender_.encodePath.reset();
     startRefusedInadmissible_ = false;
     firstBitstreamToFfmpeg_.store(false, std::memory_order_release);
     muxVideoPayloadBytes_.store(0, std::memory_order_relaxed);
@@ -1731,6 +1735,12 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       ::corevideo::core::nativeLogf("[gpu-encode] path=cpu-fallback reason=%s\n",
                                    gpuEncodePathReason_.c_str());
     }
+    // Phase 4 O4e: publish the path this start TOOK, before admission can
+    // refuse it (a refused start still decided its path, and its reason is the
+    // operator's best clue). A GPU encoder that failed to start has already
+    // cleared useGpuDirect_ and named "encoder-start-failed".
+    sender_.encodePath = OutputSender::EncodePath{
+        useGpuDirect_ ? "gpu-direct" : "cpu-fallback", gpuEncodePathReason_, gpuEncodeSentCodec_};
     {
       StreamStartAdmissionInputs admission;
       admission.requestedCodec = compatibility.requestedVideoCodec;

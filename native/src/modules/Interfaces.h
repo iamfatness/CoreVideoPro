@@ -1049,6 +1049,15 @@ struct OutputSender {
     int64_t videoSlotShifts = 0;       // times the grid moved (render stalls) this process
   };
   std::optional<StreamClock> streamClock;
+  // Phase 4 O4e: the encode path the LAST start actually took (not the one it
+  // wanted: an encoder that failed to start reads cpu-fallback with its reason).
+  // Null until a start decided it. Additive on every platform.
+  struct EncodePath {
+    std::string path;    // gpu-direct | cpu-fallback
+    std::string reason;  // GpuEncodePathPolicy / chooseStreamEncodePath reason
+    std::string codec;   // the codec sent: h264 | hevc | av1
+  };
+  std::optional<EncodePath> encodePath;
   int64_t audioFramesSent = 0;
   int64_t audioBytesSent = 0;
   uint64_t droppedAudioPackets = 0;  // destination-local AAC queue shed
@@ -1635,6 +1644,10 @@ class ICompositor {
   // destination queue pressure. Defaulted false so Metal/stub read as not
   // exporting, which is the honest answer for a compositor that never does.
   [[nodiscard]] virtual bool encoderExporting() const { return false; }
+  // Phase 4 O4e: does this compositor produce ProgramFrame::encoderSharedTexture
+  // at all (D3D11: a keyed-mutex texture; Metal: the IOSurface ring)? Feeds the
+  // gpu-direct-stream-encode capability. Stub/software compositors: false.
+  [[nodiscard]] virtual bool supportsEncoderTextureExport() const { return false; }
 };
 
 // One clip, for the one decoder MediaTransports owns per source. Play, pause,

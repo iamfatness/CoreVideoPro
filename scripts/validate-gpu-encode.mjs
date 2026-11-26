@@ -22,7 +22,8 @@
  * Gate (GPU path): received fps >= 58 AND sink speed >= 0.97x over the window,
  * AND the core logged `[gpu-encode] path=gpu-direct`.
  * `--force-raw` sets COREVIDEO_GPU_ENCODE=0 and asserts the raw fallback still
- * streams (documents the A/B), without the realtime gate.
+ * streams (documents the A/B), without the realtime gate: it must deliver at
+ * least half the run's frames.
  *
  * `--codec av1` PASSES BY REFUSAL, NOT BY STREAMING (2026-09-20). GPU-direct AV1
  * binds the NVIDIA AV1 MFT and runs at the correct cadence but emits near-empty
@@ -88,7 +89,12 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const buildDir = join(repoRoot, "native", "build-dev");
+// Phase 4 O4e: --build-dir (relative to the repo) so the gate runs on the Mac
+// Metal build (`--build-dir native/build-metal`); Windows keeps build-dev.
+const buildDirArgIndex = process.argv.indexOf("--build-dir");
+const buildDir = buildDirArgIndex >= 0 && process.argv[buildDirArgIndex + 1]
+  ? resolve(repoRoot, process.argv[buildDirArgIndex + 1])
+  : join(repoRoot, "native", "build-dev");
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
 const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
@@ -221,14 +227,27 @@ const keep = args.includes("--keep");
 // stream; h264/hevc are untouched.
 const expectRefusal = wireCodec === "av1";
 
+// The RECEIVER/inspection tools. On the Mac the receiver may be Homebrew's
+// ffmpeg (test tooling only); the SENDER always runs the bundled LGPL build
+// named by senderFfmpegBinDir below.
 const ffBin = (name) => {
-  for (const bin of [name, `C:\\ffmpeg\\bin\\${name}.exe`]) {
+  for (const bin of [name, `C:\\ffmpeg\\bin\\${name}.exe`, `/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`]) {
     const probe = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 10000 });
     if (!probe.error && probe.status === 0) return bin;
   }
   return null;
 };
 const ffmpeg = ffBin("ffmpeg");
+// Where the core's SENDER finds ffmpeg. Windows: C:\\ffmpeg\\bin as before. Mac:
+// --ffmpeg-bin-dir, else COREVIDEO_FFMPEG_BIN_DIR - the bundled LGPL build
+// (scripts/build-macos-ffmpeg.sh), never Homebrew's GPL ffmpeg.
+const senderFfmpegBinDir = process.platform === "win32"
+  ? "C:\\ffmpeg\\bin"
+  : (argValue("ffmpeg-bin-dir", process.env.COREVIDEO_FFMPEG_BIN_DIR ?? ""));
+if (process.platform !== "win32" && !senderFfmpegBinDir) {
+  console.error("On macOS pass --ffmpeg-bin-dir <bundled LGPL ffmpeg bin dir> (or set COREVIDEO_FFMPEG_BIN_DIR).");
+  process.exit(1);
+}
 const ffprobe = ffBin("ffprobe");
 if (!ffmpeg || !ffprobe) {
   console.error("ffmpeg/ffprobe are required for the GPU-direct encode gate.");
@@ -499,7 +518,27 @@ function backpressureLines() {
 const kStopReapBoundSeconds = 5;
 
 function egressFfmpegChildCount() {
-  if (process.platform !== "win32") return -1;  // not measurable here; reported, never asserted
+  if (process.platform !== "win32") {
+    // POSIX: count ffmpeg PROCESSES (argv[0] is ffmpeg) whose command line
+    // names the egress URL. The core's corevideo-child-guard wrapper carries
+    // the whole ffmpeg command line after `--`, so matching anywhere in the
+    // line counted the guard as a second child (seen on the first Mac run).
+    // The listener carries -listen and is the receiver, so it is excluded.
+    const target = rtmpSink ? rtmpFullUrl : `srt://127.0.0.1:${port}`;
+    // `comm` is the executable path alone (spaces and all: the app bundle is
+    // "CoreVideo Pro.app"), joined to `args` by pid, so a path with a space is
+    // not split into a wrong argv[0].
+    const comm = spawnSync("ps", ["-axo", "pid=,comm="], { encoding: "utf8", timeout: 20000 });
+    const argsOut = spawnSync("ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8", timeout: 20000 });
+    if (comm.status !== 0 || argsOut.status !== 0) return -1;
+    const byPid = (text) => new Map(text.split("\n").map((line) => line.trim().match(/^(\d+)\s+(.*)$/))
+      .filter(Boolean).map((m) => [m[1], m[2]]));
+    const commandOf = byPid(argsOut.stdout);
+    return [...byPid(comm.stdout)].filter(([pid, exe]) => {
+      const line = commandOf.get(pid) ?? "";
+      return /(^|\/)ffmpeg$/.test(exe) && line.includes(target) && !line.includes("-listen");
+    }).length;
+  }
   const out = spawnSync("powershell", ["-NoProfile", "-Command",
     `@(Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe'" | ` +
     `Where-Object { $_.CommandLine -like '*${rtmpSink ? rtmpFullUrl : `srt://127.0.0.1:${port}`}*' -and ` +
@@ -625,7 +664,7 @@ try {
           encoderMode: "auto",
           videoCodec: wireCodec,
           allowEnhancedRtmp: true,
-          ffmpegBinDirectory: "C:\\ffmpeg\\bin",
+          ffmpegBinDirectory: senderFfmpegBinDir,
         } : {
           id: "srt",
           label: "validate-gpu-encode",
@@ -639,7 +678,7 @@ try {
           encoderMode: "auto",
           videoCodec: wireCodec,
           allowEnhancedRtmp: true,
-          ffmpegBinDirectory: "C:\\ffmpeg\\bin",
+          ffmpegBinDirectory: senderFfmpegBinDir,
         }],
         isoParticipantIds: [],
       },
@@ -896,9 +935,17 @@ if (size < 10000) {
       if (!forceRaw && !slowSink && fps < TARGET_FPS * 0.97) {
         failures.push(`received ${fps.toFixed(1)}fps < ${(TARGET_FPS * 0.97).toFixed(1)} (0.97x of ${TARGET_FPS}) — the GPU path is not keeping up with realtime`);
       }
+      // The raw fallback has no realtime gate, but it must still STREAM: a run
+      // that delivers a dozen frames and then wedges used to print PASS here
+      // (the Mac raw path after #1234, found by Phase 4 Task 6).
+      if (forceRaw && frames < TARGET_FPS * seconds * 0.5) {
+        failures.push(`raw fallback delivered ${frames} frames, under half of ${TARGET_FPS}fps x ${seconds}s — it stopped streaming`);
+      }
     } else {
       console.log("received rate : not measurable (short or unseekable capture)");
-      if (!forceRaw && !slowSink) failures.push("could not measure received frame rate");
+      if (!slowSink) failures.push(forceRaw
+        ? "raw fallback: could not measure a received frame rate — it did not stream"
+        : "could not measure received frame rate");
     }
   }
 }
@@ -1181,7 +1228,7 @@ if (slowSink) {
 // stopFfmpegProcess() (500 ms grace, then TerminateProcess), congested or not.
 // A child alive at the bound keeps publishing after Stop; only the job object
 // at core exit would end it, which is not a stop.
-if (slowSink && process.platform === "win32" && egressChildrenAfterStop !== 0) {
+if (slowSink && egressChildrenAfterStop > 0) {  // -1 = not measurable on this platform
   failures.push(`egress FFmpeg child still alive ${egressChildStopSeconds.toFixed(1)}s after Stop ` +
                 `(bound ${kStopReapBoundSeconds}s, census=${egressChildrenAfterStop})`);
 }

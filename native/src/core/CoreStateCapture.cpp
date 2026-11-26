@@ -1,4 +1,5 @@
 #include "core/BoundedAsyncLog.h"
+#include "modules/SharedGpuVideoEncoder.h"
 #include "modules/RecordingQueuePolicy.h"
 #include "core/MediaCore.h"
 #include "core/AudioObservationFootprint.h"
@@ -265,6 +266,17 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   add("zoom-raw-audio", {zoomState, zoomDetail, ""});
   intrinsic("program-recording", encoderSession.hardwareAccelerated);
   intrinsic("iso-recording", encoderSession.hardwareAccelerated);
+  // Phase 4 O4e: GPU-direct streaming needs BOTH a platform GPU encoder in this
+  // build and a compositor that exports the encoder texture. The shell's 60 fps
+  // and H.265 stream pickers read this (Task 7).
+  {
+    const std::string encoderName = modules::platformGpuVideoEncoderName();
+    const bool exports = modules.compositor && modules.compositor->supportsEncoderTextureExport();
+    add("gpu-direct-stream-encode", !encoderName.empty() && exports
+        ? modules::ModuleSet::CapabilityConstruction{"available", encoderName, ""}
+        : modules::ModuleSet::CapabilityConstruction{"omitted",
+              encoderName.empty() ? "no-platform-gpu-encoder" : "compositor-exports-no-encoder-texture", ""});
+  }
   for (const char* name : {"rtmp-output", "ndi-output", "ndi-ingest", "srt-output", "hls-output",
                            "srt-ingest", "rtmp-ingest",
                            "decklink-capture", "aja-capture", "uvc-capture", "media-clip-playback"}) factory(name);
@@ -2967,6 +2979,15 @@ rpc::Json CoreStateCapture::outputSenderSessionState(const AudioOutputObservatio
           {"lastWriteAgeMs", static_cast<double>(mux.lastWriteAgeMs)},
           {"boundary", "compressed video written to local FFmpeg input; remote delivery unverified"},
       });
+    }
+    if (sender.encodePath) {
+      senderJson.emplace("encodePath", rpc::Json::Object{
+          {"path", sender.encodePath->path},
+          {"reason", sender.encodePath->reason},
+          {"codec", sender.encodePath->codec},
+      });
+    } else {
+      senderJson.emplace("encodePath", rpc::Json(nullptr));
     }
     if (sender.streamClock) {
       const auto& clock = *sender.streamClock;

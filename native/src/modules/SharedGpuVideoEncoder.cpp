@@ -237,6 +237,16 @@ std::unique_ptr<GpuVideoEncoder> SharedGpuVideoEncoderPool::createClient() {
   return std::make_unique<Client>(state_);
 }
 
+const char* platformGpuVideoEncoderName() {
+#if defined(__APPLE__) && COREVIDEO_HAS_VT_GPU_ENCODER
+  return "videotoolbox";
+#elif defined(_WIN32)
+  return "media-foundation";
+#else
+  return "";
+#endif
+}
+
 std::unique_ptr<GpuVideoEncoder> createSharedProgramGpuVideoEncoder() {
 #if defined(__APPLE__) && COREVIDEO_HAS_VT_GPU_ENCODER
   // Phase 4 O4a: VideoToolbox on Apple (Media Foundation's factory is nullptr there).

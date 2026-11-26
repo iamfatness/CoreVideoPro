@@ -3629,6 +3629,8 @@ class D3D11Compositor final : public ICompositor {
   // renderGraphicsKeyPass / D3DGraphicsKeyTap / GraphicsKeyRing). The tap is
   // swapped on the render thread, so take the shared_ptr under its mutex first.
   bool supportsGraphicsKey() const override { return true; }
+  // Phase 4 O4e: the keyed-mutex encoder texture (encoderExport_).
+  bool supportsEncoderTextureExport() const override { return true; }
   bool selectGraphicsKey(int64_t programFrameNumber, int64_t nowMs, GraphicsKeySelection& out) override {
     std::shared_ptr<D3DGraphicsKeyTap> tap;
     { std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_); tap = graphicsKeyTap_; }
