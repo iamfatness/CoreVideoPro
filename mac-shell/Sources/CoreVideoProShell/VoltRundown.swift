@@ -44,6 +44,7 @@ extension AppModel {
     /// with scene.cueWithRoutes / scene.route.set: a Mac route id IS a layer id (D-C2).
     func sceneLayerCandidates(_ sceneId: String) -> [(id: String, opacity: Double)]? {
         guard let scene = scenes.first(where: { $0.id == sceneId }) else { return nil }
+        if scene.tiles != nil { return [] }   // a Tiles wall has no clip route (D5)
         if !scene.layers.isEmpty { return scene.layers.map { ($0.id, $0.opacity) } }
         guard let rects = Self.layoutRects[scene.layout] else { return [] }
         return rects.indices.map { ("\(sceneId)-layer-\($0)", 1.0) }

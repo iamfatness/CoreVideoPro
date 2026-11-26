@@ -941,8 +941,8 @@ struct MultiviewTileChrome: View {
 
     var title: String {
         switch tile.role {
-        case "pgm": return "PROGRAM"
-        case "pvw": return "PREVIEW"
+        // The core appends a bus's subscription-limit notice to the cell label.
+        case "pgm", "pvw": return AppModel.busCaption(role: tile.role, label: tile.label)
         default: return tile.label.isEmpty ? "Source" : tile.label
         }
     }
@@ -1213,7 +1213,8 @@ struct SceneRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(scene.name).font(.grotesk(12, .medium))
                         .foregroundStyle(Studio.textPrimary)
-                    Text(scene.layout).font(.grotesk(9))
+                    // Windows LayoutLabel (SceneDisplayItem.cs): "dynamic gallery".
+                    Text(scene.layout.replacingOccurrences(of: "-", with: " ")).font(.grotesk(9))
                         .foregroundStyle(Studio.secondary)
                 }
                 Spacer()

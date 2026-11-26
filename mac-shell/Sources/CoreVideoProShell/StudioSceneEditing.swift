@@ -129,6 +129,7 @@ extension AppModel {
             studioCommandStatus = Self.noPreviewSceneMessage
             return
         }
+        if refuseLayerEditOnTiles(target) { return }
         // Seed the editable layers from the preset the scene already shows,
         // so opening the editor never changes what is on screen.
         ensureLayers(for: target)
@@ -147,6 +148,7 @@ extension AppModel {
             studioCommandStatus = Self.noPreviewSceneMessage
             return Self.noPreviewSceneMessage
         }
+        if refuseLayerEditOnTiles(sceneId) { return Self.tilesLayersRefusal }
         var aspect: Double?
         var slotId: Int?
         var mediaAssetId: String?

@@ -1026,6 +1026,7 @@ if(BUILD_TESTING)
     tests/SourceAudioIngressTest.cpp
     tests/ZoomRangeExcursionProbeTest.cpp
     tests/I420ContentRangeTrackerTest.cpp
+    tests/I420EvenFrameTest.cpp
     tests/MediaTransportPolicyTest.cpp
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
@@ -1058,6 +1059,7 @@ if(BUILD_TESTING)
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
     tests/MetalGraphicsBoundsTest.cpp
+    tests/MetalTilesPixelTest.cpp
     tests/GraphicsFontResolverTest.cpp
     tests/GraphicsTextMeasureTest.cpp
     tests/MetalSourceGradePixelTest.cpp

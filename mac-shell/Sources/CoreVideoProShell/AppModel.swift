@@ -107,6 +107,9 @@ struct SceneDef: Identifiable {
     // Per-scene, exactly like Windows — the picker on the Studio rail describes
     // the selected scene, not a global setting.
     var backgroundAssetId = ""
+    /// CoreVideo Tiles settings: non-nil makes this a Tiles scene (Windows
+    /// `Scene.DynamicGallery`). A value type, so a copied scene never aliases it.
+    var tiles: TilesSettings? = nil
 }
 
 // One canvas layer: a slot binding plus its normalized rect/fit/opacity —
@@ -397,6 +400,10 @@ struct RosterParticipant: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
+    /// Sticky Tiles audio (Windows TilesAudioSourceLatch), observed once per spine build.
+    let tilesAudioLatch = TilesAudioSourceLatch()
+    /// True once a Zoom snapshot with a non-empty meetingState arrived on this core generation.
+    var tilesMeetingStateObserved = false
     @Published var meetingState = "idle" {
         didSet {
             latchZoomCameraCeilingIfJoined()   // Z1: a join reached the meeting
@@ -593,7 +600,10 @@ final class AppModel: ObservableObject {
     // Which source the AUTOMATIC lower third currently names; "" = automation
     // does not own key:lower-third (the manual lower third may).
     @Published var autoLowerThirdSourceId = ""
-    @Published var isoRecordingEnabled = false
+    @Published var isoRecordingEnabled = false {
+        // ISO-armed guests are sources: arming or disarming changes the spine.
+        didSet { if oldValue != isoRecordingEnabled { syncSpine() } }
+    }
     /// THE ISO selection (Windows ShowInputsCoordinator.IsoSelectedSourceIds):
     /// scheme-qualified source ids. The Sources-tab ISO toggles, the Routing
     /// matrix and the footer all write THIS; the slot `iso` flags and the
@@ -748,7 +758,7 @@ final class AppModel: ObservableObject {
     private var programOutputStarted = false
     private var joinInFlight = false
 
-    private var lastSavedPrefs = ShellPrefs()
+    private(set) var lastSavedPrefs = ShellPrefs()
     /// True once restorePrefs() ran; persistPrefsNow() refuses before that.
     private var prefsRestored = false
 
@@ -903,9 +913,18 @@ final class AppModel: ObservableObject {
                                               fitMode: layer.fitMode,
                                               opacity: layer.opacity,
                                               mediaAssetId: layer.mediaAssetId)
-                           })
+                           },
+                           tiles: scene.tiles?.persisted)
         }
         return prefs
+    }
+
+    /// `ScenePersistenceService.SceneFromPersisted`: explicit settings go through
+    /// the restore clamps; an older Tiles scene that kept the layout discriminator
+    /// but lost its settings gets the defaults (docs/archive/qa/tiles-incident-2026-09-07.md).
+    static func restoredTiles(_ saved: PersistedScene) -> TilesSettings? {
+        if let tiles = saved.tiles { return TilesSettings(persisted: tiles) }
+        return saved.layout == "dynamic-gallery" ? TilesSettings() : nil
     }
 
     private func restorePrefs() {
@@ -1005,7 +1024,8 @@ final class AppModel: ObservableObject {
                                         fitMode: layer.fitMode, opacity: layer.opacity,
                                         mediaAssetId: layer.mediaAssetId)
                          },
-                         backgroundAssetId: saved.backgroundAssetId)
+                         backgroundAssetId: saved.backgroundAssetId,
+                         tiles: Self.restoredTiles(saved))
             }
         }
         cameraExtensionOptedIn = prefs.cameraExtensionOptedIn
@@ -1821,6 +1841,7 @@ final class AppModel: ObservableObject {
     /// Every core generation (initial handshake AND respawn). Internal: the
     /// harness drives it to prove the console is re-asserted.
     func onConnected() {
+        tilesMeetingStateObserved = false   // a new core generation: the meeting state is unknown again
         // Comms: a new core generation has no held keys and no report yet
         // (every-core-generation rule). Private is re-sent only when the new
         // report disagrees, never blindly.
@@ -2123,6 +2144,9 @@ final class AppModel: ObservableObject {
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
         if acceptRoster {
+            // Observed only with the meetingState it vouches for (S2 review: a
+            // rejected stale snapshot must not mark a state we did not adopt).
+            if let state = snapshot["meetingState"] as? String, !state.isEmpty { tilesMeetingStateObserved = true }
             let previous = meetingState
             meetingState = snapshot["meetingState"] as? String ?? meetingState
             if meetingState == "idle", previous != "idle" { pruneStaleZoomIsoIntent() }
@@ -2170,6 +2194,11 @@ final class AppModel: ObservableObject {
             let presentAfter = Set(roster.map(\.id))
             if (cameraOnAfter != cameraOnBefore || presentAfter != presentBefore) && !lawChanged {
                 syncSpine()
+                // A wall's members ARE the camera-on roster: re-send the scene
+                // graph when a wall is on either bus (Windows rebuilds the tiles
+                // wire with every production sync). recomputeFromSlots already
+                // syncs scenes when the slot law changed.
+                if isTilesScene(programSceneId) || isTilesScene(previewSceneId) { syncScenes() }
             }
         }
     }
@@ -2538,7 +2567,10 @@ final class AppModel: ObservableObject {
 
     func setCapture(enabled: Bool) {
         captureEnabled = enabled
-        if !enabled { sourceFacts.mutate { $0.engineStopped() } }
+        if !enabled {
+            sourceFacts.mutate { $0.engineStopped() }
+            tilesAudioLatch.clear()   // Windows Engine off forgets every sticky member
+        }
         syncSpine()
         if !enabled {
             guard let bridge else { return }
@@ -3088,18 +3120,26 @@ final class AppModel: ObservableObject {
         spineSyncRequests += 1
         spineSyncTask?.cancel()
         spineSyncTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            await self?.timerSleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
             await self?.pushSpine()
         }
     }
 
+    /// Test seam for the spine push only (nil = the real bridge). Separate from
+    /// quitRequestForTesting so harnesses that count scene-sync bodies are not
+    /// handed spine requests they never asked for.
+    var spineRequestForTesting: ((JSONObject) async throws -> JSONObject)?
+
     private func pushSpine() async {
-        guard let bridge else { return }
+        let send: (JSONObject) async throws -> JSONObject
+        if let seam = spineRequestForTesting { send = seam }
+        else if let bridge { send = { try await bridge.request($0) } }
+        else { return }
         let requests = spinePushRequests()
         for request in requests {
             do {
-                _ = try await bridge.request(request)
+                _ = try await send(request)
             } catch {
                 if request["type"] as? String == "media-core-sync" {
                     // Not delivered: forget the memo so the debounced paths retry.
@@ -3133,7 +3173,8 @@ final class AppModel: ObservableObject {
                 "talking": participant.talking,
             ]
         }
-        let subscriptions = resolveSpineSubscriptions()
+        let parts = resolveSpineParts()
+        let subscriptions = parts.subscriptions
         refreshStrips()  // the console follows the audio source set just decided
         var audio: [JSONObject] = []
         let stripIds = Set(strips.map(\.id))
@@ -3152,7 +3193,9 @@ final class AppModel: ObservableObject {
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
-        let multiviewSources = Self.multiviewSourcePayloads(slots, mediaAssets: mediaAssets)
+        // The budget's labels ride the sources ("<name> · no video: subscription
+        // limit (10)"); the bus notices name a cued guest it left out.
+        let multiviewSources = parts.multiviewSources
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →
             // start_raw_media): without it every video subscription stays
@@ -3162,6 +3205,8 @@ final class AppModel: ObservableObject {
             "multiview": [
                 "canvasWidth": 1920, "canvasHeight": 1080,
                 "sources": multiviewSources,
+                "programNotice": parts.programNotice,   // always present: "" clears it
+                "previewNotice": parts.previewNotice,
             ],
             "readiness": [
                 "status": "ready", "platform": "darwin", "sdkVersion": "",
@@ -3169,8 +3214,11 @@ final class AppModel: ObservableObject {
             ],
             "participants": participants,
             "subscriptions": subscriptions,
+            // The core's speaker director follows the talker only among these (#478 R1).
+            "sourceParticipantIds": parts.sourceParticipantIds,
+            "videoSubscriptionShortfall": parts.shortfall,
             "blocked": false,
-            "warnings": [],
+            "warnings": parts.warnings,
             "summary": "mac shell spine sync",
         ]
         var requests: [JSONObject] = []
@@ -3187,31 +3235,45 @@ final class AppModel: ObservableObject {
     /// (`zoomAudioSourceIds` / `meetingAudioSubscribed`). Internal so the harness
     /// drives the real call site, not a hand-copied list.
     func resolveSpineSubscriptions() -> [JSONObject] {
-        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
-        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
-        // nondeterministic, uncapped and subscribed camera-off participants.
-        let programRouted = programSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
-        let previewRouted = previewSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
-        let multiviewAssigned = slots
-            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
-            .map(\.sourceId)
-        let isoArmed = isoRecordingEnabled
-            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
-        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
-        let audioIds = ZoomSourceBudget.audioParticipantIds(
-            programRouted: programRouted, previewRouted: previewRouted,
-            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed,
+        resolveSpineParts().subscriptions
+    }
+
+    /// The source-set half of a spine build: observes the sticky Tiles latch ONCE
+    /// with the FULL in-room roster, then resolves subscriptions, source ids, the
+    /// shortfall, the warning, the bus notices and the multiview labels.
+    func resolveSpineParts() -> ZoomSourceBudget.SpineParts {
+        var input = spineSourceInput()
+        input.stickyAudio = tilesAudioLatch.observe(
+            inMeeting: tilesLatchMeetingState,
+            programSceneId: programSceneId, programTiles: input.programTiles,
+            previewSceneId: previewSceneId, previewTiles: input.previewTiles,
             present: Set(roster.map(\.id)))
-        zoomAudioSourceIds = audioIds
+        let parts = ZoomSourceBudget.spineParts(input, names: Dictionary(
+            roster.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }))
+        zoomAudioSourceIds = parts.subscriptions
+            .filter { $0["kind"] as? String == "participant-audio" }
+            .compactMap { $0["participantId"] as? String }
         meetingAudioSubscribed = !roster.isEmpty
-        return Self.spineSubscriptionPayloads(
-            ZoomSourceBudget.videoEntries(
-                programRouted: programRouted, previewRouted: previewRouted,
-                multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn),
-            audioParticipantIds: audioIds,
-            meetingHasParticipants: !roster.isEmpty)
+        return parts
+    }
+
+    /// The source-set input for the current show (Windows ZoomSourceSetPolicy.Input):
+    /// the room, both buses' routes AND Tiles walls (the same `tilesPayload(for:)` the
+    /// scene sync sends), the multiview wall, and ISO-armed guests.
+    func spineSourceInput() -> ZoomSourceBudget.Input {
+        var input = ZoomSourceBudget.Input()
+        input.participants = roster.map { ($0.id, $0.hasVideo) }
+        if !programSceneId.isEmpty {
+            input.programRoutes = buildRoutes(for: programSceneId, isProgram: true)
+            input.programTiles = tilesPayload(for: programSceneId)
+        }
+        if !previewSceneId.isEmpty {
+            input.previewRoutes = buildRoutes(for: previewSceneId)
+            input.previewTiles = tilesPayload(for: previewSceneId)
+        }
+        input.multiview = Self.multiviewSourcePayloads(slots, mediaAssets: mediaAssets)
+        input.iso = isoRecordingEnabled ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
+        return input
     }
 
     // The multiview roster on the wire: one tile per in-show slot that still has
@@ -3262,7 +3324,7 @@ final class AppModel: ObservableObject {
     // Until this shipped the Mac subscribed VIDEO ONLY: a live 9-guest meeting had
     // raw media active and audioMixSession.participants == 0 — no channels, nothing
     // to monitor.
-    static func spineSubscriptionPayloads(
+    nonisolated static func spineSubscriptionPayloads(
         _ entries: [ZoomSourceBudget.Entry], audioParticipantIds: [String],
         meetingHasParticipants: Bool
     ) -> [JSONObject] {
@@ -3431,6 +3493,10 @@ final class AppModel: ObservableObject {
             bindSlot(slot, to: &route)
             return [route.json]
         }
+        // A Tiles scene sends NO routes (Windows BuildProductionSyncContext): the
+        // wall owns the scene, and a route beside it (the logo bug included)
+        // shares its order namespace and composites between tiles.
+        if isTilesScene(sceneId) { return [] }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
               let rects = Self.layoutRects[scene.layout] else { return [] }
         let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
@@ -3520,6 +3586,9 @@ final class AppModel: ObservableObject {
     // Seed the editable layer list from the layout preset the scene already
     // shows, so opening the editor never changes what is on screen.
     func ensureLayers(for sceneId: String) {
+        // A Tiles scene never gets layers (the wall owns it). Silent here: the
+        // scene editor calls this on appear; the explicit layer actions say why.
+        if isTilesScene(sceneId) { return }
         guard let index = scenes.firstIndex(where: { $0.id == sceneId }),
               scenes[index].layers.isEmpty,
               let rects = Self.layoutRects[scenes[index].layout] else { return }
@@ -3542,6 +3611,7 @@ final class AppModel: ObservableObject {
     }
 
     func addLayer(to sceneId: String) {
+        if refuseLayerEditOnTiles(sceneId) { return }
         guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
         ensureLayers(for: sceneId)
         let count = scenes[index].layers.count
@@ -3671,7 +3741,8 @@ final class AppModel: ObservableObject {
                                                mediaAssetId: l.mediaAssetId)
                                 return l
                             },
-                            backgroundAssetId: source.backgroundAssetId)
+                            backgroundAssetId: source.backgroundAssetId,
+                            tiles: source.tiles)
         scenes.append(copy)
         previewSceneId = newId
         studioCommandStatus = "\(name) duplicated from \(source.name) and cued on preview"
@@ -3680,7 +3751,8 @@ final class AppModel: ObservableObject {
     }
 
     func newScene(layout: String) {
-        let newId = "scene-\(Int(Date().timeIntervalSince1970))"
+        var newId = "scene-\(Int(Date().timeIntervalSince1970))"
+        while scenes.contains(where: { $0.id == newId }) { newId += "-n" }   // two new scenes in one second
         var suffix = railScenes.count + 1
         var name = "Scene \(suffix)"
         while scenes.contains(where: { $0.name == name }) {
@@ -3908,6 +3980,7 @@ final class AppModel: ObservableObject {
                 "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": batch,
             ])
             takeStatus = "Program updated"
+            syncSpine()   // the buses swapped: the source set follows
             return .success
         } catch {
             let untouched = programSceneId == taken && previewSceneId == previousProgram
@@ -4089,7 +4162,7 @@ final class AppModel: ObservableObject {
         sceneSyncRequestCount += 1
         sceneSyncTask?.cancel()
         sceneSyncTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            await self?.timerSleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
             await self?.pushScenes()
         }
@@ -4133,6 +4206,7 @@ final class AppModel: ObservableObject {
             if let background = backgroundPayload(for: programSceneId) {
                 graph["background"] = background
             }
+            if let tiles = tilesPayload(for: programSceneId) { graph["tiles"] = tiles }
             commands.append(graph)
         }
         if !previewSceneId.isEmpty {
@@ -4143,6 +4217,7 @@ final class AppModel: ObservableObject {
             if let background = backgroundPayload(for: previewSceneId) {
                 preview["background"] = background
             }
+            if let tiles = tilesPayload(for: previewSceneId) { preview["tiles"] = tiles }
             commands.append(preview)
         }
         // The bin SELECTION rides every scene sync (Windows BuildSyncCommands), so
@@ -4169,6 +4244,9 @@ final class AppModel: ObservableObject {
         } catch {
             pushWarning("scene sync failed: \(error.localizedDescription)")
         }
+        // A scene or bus change changes the source set (a wall's members, a
+        // cued route): re-push the spine. Windows rebuilds it every 500 ms.
+        syncSpine()
     }
 
     // ── auto-direct (the MagicScene policy ladder, reduced) ──────────────────
@@ -4306,6 +4384,7 @@ final class AppModel: ObservableObject {
         // and normalises the columns (the same path every other writer takes).
         isoSelectedSourceIds = selection
         isoRecordingEnabled = !visibleIsoSelection.isEmpty
+        syncSpine()   // a newly armed ISO guest is a source (S2 review)
     }
 
     /// The selected sources the operator can SEE (an assigned slot, so a
@@ -5326,6 +5405,10 @@ final class AppModel: ObservableObject {
         guard let asset = selectedMediaAsset,
               let index = scenes.firstIndex(where: { $0.id == previewSceneId }) else { return mediaStatus }
         let sceneId = previewSceneId
+        if isTilesScene(sceneId) {   // the wall owns the scene (D5): no layer is added
+            mediaStatus = Self.tilesLayersRefusal
+            return mediaStatus
+        }
         ensureLayers(for: sceneId)
         var free = 0
         while scenes[index].layers.contains(where: { $0.id == "\(sceneId)-layer-\(free)" }) { free += 1 }
@@ -5691,6 +5774,7 @@ final class AppModel: ObservableObject {
     /// meeting's sources from the console now rather than at the next spine push.
     /// Non-Zoom sources (zoom-mix, capture mics, media) keep their settings.
     func endMeetingAudioSession() {
+        tilesAudioLatch.clear()   // Zoom reuses per-meeting ids: a latch must not outlive the meeting
         let isZoom = AudioConsolePolicy.isZoomParticipantChannel
         let hasState = !zoomAudioSourceIds.isEmpty || meetingAudioSubscribed
             || rememberedStripSettings.keys.contains(where: isZoom)

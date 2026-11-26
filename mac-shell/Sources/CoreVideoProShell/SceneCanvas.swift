@@ -41,6 +41,7 @@ struct ScenesPane: View {
                     Button("New — fullscreen") { model.newScene(layout: "single") }
                     Button("New — side by side") { model.newScene(layout: "two-up") }
                     Button("New — picture in picture") { model.newScene(layout: "pip") }
+                    Button("New — CoreVideo Tiles · Auto-reflow wall") { model.newTilesScene() }
                     Divider()
                     Button("Restore starter scenes") { model.restoreStarterScenes() }
                         .help("Re-add any removed Fullscreen, Side by side or Picture in picture scene")

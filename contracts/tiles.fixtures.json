@@ -1,0 +1,900 @@
+{
+  "_comment": [
+    "CoreVideo Tiles `tiles` wire fixtures (docs/superpowers/plans/2026-11-22-mac-tiles.md Task 7).",
+    "Windows is the oracle: native-shell/CoreVideoPro.WinUI.Tests/TilesFixtureTests.cs runs every case through",
+    "ScenePersistenceService.FromPersisted -> TilesLayerPayloadBuilder.Build -> TilesLayerWire.From ->",
+    "MediaCoreCommandBuilder.BuildSceneGraphCommand. The Mac twin is ShellTestsTiles testEveryTilesFixtureMatchesTheSwiftBuilder.",
+    "Participant ids are BARE Zoom ids (TilesLayerPayloadBuilderTests explains why). If Windows disagrees, fix `expected`, never Windows.",
+    "`settings` is a persisted Tiles object (camelCase, same keys on both platforms); slots carry the Mac `kind` and the Windows ShowInputKind name.",
+    "Cases 6-10 cover manual holes/duplicates/exclusions, routed mode with local ids and omitted names, the eligible-mode rules (omitted ignored, pinned slots, a bare session id never seated), an ambiguous name and a degenerate wall rect.",
+    "Cases 11-12 (Task 13): a never-show entry keyed by name (case-insensitive) follows the person, and a legacy session id saved in another meeting seats nobody while a zoom-pid: slot follows the rejoined guest."
+  ],
+  "cases": [
+    {
+      "name": "eligible-roster-order-video-off-skipped",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible"
+      },
+      "participants": [
+        {
+          "id": "7",
+          "name": "Guest 7",
+          "videoOn": true
+        },
+        {
+          "id": "3",
+          "name": "Guest 3",
+          "videoOn": false
+        },
+        {
+          "id": "5",
+          "name": "Guest 5",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:7",
+          "zoom:5"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "max-tiles-truncates",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "maxTiles": 3
+      },
+      "participants": [
+        {
+          "id": "11",
+          "name": "Guest 11",
+          "videoOn": true
+        },
+        {
+          "id": "12",
+          "name": "Guest 12",
+          "videoOn": true
+        },
+        {
+          "id": "13",
+          "name": "Guest 13",
+          "videoOn": true
+        },
+        {
+          "id": "14",
+          "name": "Guest 14",
+          "videoOn": true
+        },
+        {
+          "id": "15",
+          "name": "Guest 15",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:11",
+          "zoom:12",
+          "zoom:13"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "in-show-capture-after-zoom",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible"
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Guest 1",
+          "videoOn": true
+        }
+      ],
+      "slots": [
+        {
+          "slot": 2,
+          "kind": "capture",
+          "sourceId": "cam-a",
+          "inShow": true,
+          "name": "Input 02",
+          "windowsKind": "UvcWebcam"
+        },
+        {
+          "slot": 3,
+          "kind": "capture",
+          "sourceId": "cam-b",
+          "inShow": false,
+          "name": "Input 03",
+          "windowsKind": "UvcWebcam"
+        },
+        {
+          "slot": 4,
+          "kind": "media",
+          "sourceId": "clip-7",
+          "inShow": true,
+          "name": "Input 04",
+          "windowsKind": "Media"
+        }
+      ],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:1",
+          "capture:cam-a"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "style-clamps-and-colour-quirks",
+      "sceneId": "scene-styled",
+      "settings": {
+        "membershipMode": "eligible",
+        "borderThickness": 99,
+        "cornerRadius": -5,
+        "glowSize": 200,
+        "glowIntensity": 150,
+        "animationDurationMs": 50,
+        "backgroundColor": "zz",
+        "borderColor": "abc123",
+        "borderShape": "rounded",
+        "tileAspect": "21:9",
+        "customAspectRatio": 9
+      },
+      "participants": [
+        {
+          "id": "7",
+          "name": "Guest 7",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-styled",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:7"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 4,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#44C1A1",
+          "backgroundSourceId": "",
+          "borderShape": "rounded",
+          "borderColor": "#ABC123",
+          "borderThickness": 32,
+          "cornerRadius": 0,
+          "glowColor": "#FFFFFF",
+          "glowSize": 64,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 100,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "overrides-and-wall-rect",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "wallRect": {
+          "x": 0.9,
+          "y": 0,
+          "width": 0.5,
+          "height": 1
+        },
+        "wallVisible": false,
+        "overrides": {
+          "zoom:7": {
+            "rect": {
+              "x": 0.5,
+              "y": 0,
+              "width": 0.5,
+              "height": 1
+            },
+            "cropLeftPercent": 10,
+            "cropRightPercent": 20,
+            "z": 3
+          },
+          "zoom:5": {
+            "rect": null,
+            "cropLeftPercent": 0,
+            "cropRightPercent": 5,
+            "z": null
+          }
+        }
+      },
+      "participants": [
+        {
+          "id": "7",
+          "name": "Guest 7",
+          "videoOn": true
+        },
+        {
+          "id": "5",
+          "name": "Guest 5",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0.5,
+          "y": 0,
+          "w": 0.5,
+          "h": 1
+        },
+        "opacity": 0,
+        "transparentBackground": false,
+        "members": [
+          "zoom:7",
+          "zoom:5"
+        ],
+        "overrides": {
+          "zoom:7": {
+            "rect": {
+              "x": 0.5,
+              "y": 0,
+              "w": 0.5,
+              "h": 1
+            },
+            "cropLeftPercent": 10,
+            "cropRightPercent": 20,
+            "z": 3
+          },
+          "zoom:5": {
+            "rect": null,
+            "cropLeftPercent": 0,
+            "cropRightPercent": 5,
+            "z": null
+          }
+        },
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "manual-holes-excluded-duplicate",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "manual",
+        "maxTiles": 5,
+        "manualSlots": [
+          "zoom-name:Ann",
+          null,
+          "zoom-name:Ann",
+          "zoom-name:Bob",
+          "capture:cam-a",
+          "zoom-name:Ann"
+        ],
+        "excludedSourceIds": [
+          "zoom-name:Bob"
+        ]
+      },
+      "participants": [
+        {
+          "id": "7",
+          "name": "Ann",
+          "videoOn": true
+        },
+        {
+          "id": "5",
+          "name": "Bob",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:7",
+          "",
+          "",
+          "",
+          "capture:cam-a"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "manual",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "routed-mixed-ids-and-omitted",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "routed",
+        "omittedSourceIds": [
+          "zoom-name:guest 3"
+        ]
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Guest 1",
+          "videoOn": true
+        },
+        {
+          "id": "2",
+          "name": "Guest 2",
+          "videoOn": true
+        },
+        {
+          "id": "3",
+          "name": "Guest 3",
+          "videoOn": true
+        }
+      ],
+      "slots": [
+        {
+          "slot": 1,
+          "kind": "zoom",
+          "sourceId": "2",
+          "inShow": true,
+          "name": "Guest 2",
+          "windowsKind": "ZoomParticipant"
+        },
+        {
+          "slot": 2,
+          "kind": "zoom",
+          "sourceId": "3",
+          "inShow": true,
+          "name": "Guest 3",
+          "windowsKind": "ZoomParticipant"
+        },
+        {
+          "slot": 3,
+          "kind": "capture",
+          "sourceId": "cam-a",
+          "inShow": true,
+          "name": "Input 03",
+          "windowsKind": "UvcWebcam"
+        },
+        {
+          "slot": 4,
+          "kind": "capture",
+          "sourceId": "cam-b",
+          "inShow": false,
+          "name": "Input 04",
+          "windowsKind": "UvcWebcam"
+        }
+      ],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:2",
+          "capture:cam-a"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "routed",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "eligible-ignores-omitted-honours-excluded-and-pins",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "maxTiles": 3,
+        "omittedSourceIds": [
+          "zoom-name:Guest 1"
+        ],
+        "excludedSourceIds": [
+          "zoom-pid:P-missing",
+          "capture:cam-x"
+        ],
+        "manualSlots": [
+          null,
+          "zoom-pid:P4",
+          "zoom:2"
+        ]
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Guest 1",
+          "videoOn": true
+        },
+        {
+          "id": "2",
+          "name": "Guest 2",
+          "videoOn": true
+        },
+        {
+          "id": "3",
+          "name": "Guest 3",
+          "videoOn": true
+        },
+        {
+          "id": "4",
+          "name": "Guest 4",
+          "videoOn": true,
+          "persistentId": "P4"
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:1",
+          "zoom:4",
+          "zoom:2"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "ambiguous-name-seats-nobody",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "manual",
+        "manualSlots": [
+          "zoom-name:Sam"
+        ]
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Sam",
+          "videoOn": true
+        },
+        {
+          "id": "2",
+          "name": "sam",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          ""
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "manual",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "wall-rect-degenerate",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "wallRect": {
+          "x": -0.2,
+          "y": 0.3,
+          "width": 0,
+          "height": 1.5
+        },
+        "wallOpacity": 0.4
+      },
+      "participants": [
+        {
+          "id": "1",
+          "name": "Guest 1",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8675309",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0.0001,
+          "h": 1
+        },
+        "opacity": 0.4,
+        "transparentBackground": false,
+        "members": [
+          "zoom:1"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "never-show-by-name",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "eligible",
+        "excludedSourceIds": [
+          "zoom-name:jason bache"
+        ],
+        "boundMeetingId": "97682593786"
+      },
+      "participants": [
+        {
+          "id": "16778240",
+          "name": "Someone else",
+          "videoOn": true
+        },
+        {
+          "id": "222",
+          "name": "Jason Bache",
+          "videoOn": true
+        },
+        {
+          "id": "333",
+          "name": "Guest 333",
+          "videoOn": true
+        }
+      ],
+      "slots": [],
+      "meetingId": "8916561023",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "zoom:16778240",
+          "zoom:333"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "eligible",
+          "nameEachTile": false
+        }
+      }
+    },
+    {
+      "name": "legacy-session-id-in-new-meeting",
+      "sceneId": "scene-wall",
+      "settings": {
+        "membershipMode": "manual",
+        "maxTiles": 4,
+        "manualSlots": [
+          "zoom:33556480",
+          "zoom-pid:P1"
+        ],
+        "boundMeetingId": "97682593786"
+      },
+      "participants": [
+        {
+          "id": "33556480",
+          "name": "Someone else",
+          "videoOn": true
+        },
+        {
+          "id": "900",
+          "name": "Rejoined",
+          "videoOn": true,
+          "persistentId": "P1"
+        }
+      ],
+      "slots": [],
+      "meetingId": "8916561023",
+      "expected": {
+        "layerId": "tiles:scene-wall",
+        "order": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "opacity": 1,
+        "transparentBackground": false,
+        "members": [
+          "",
+          "zoom:900"
+        ],
+        "overrides": {},
+        "style": {
+          "tileAspect": "16:9",
+          "customAspectRatio": 1.7777777777777777,
+          "gutterPercent": 0.741,
+          "marginPercent": 0.741,
+          "backgroundColor": "#000000",
+          "backgroundSourceId": "",
+          "borderShape": "square",
+          "borderColor": "#000000",
+          "borderThickness": 0,
+          "cornerRadius": 16,
+          "glowColor": "#FFFFFF",
+          "glowSize": 0,
+          "glowIntensity": 100,
+          "glowSoftness": 0,
+          "animateLayout": false,
+          "animationDurationMs": 350,
+          "fillMode": "manual",
+          "nameEachTile": false
+        }
+      }
+    }
+  ]
+}
