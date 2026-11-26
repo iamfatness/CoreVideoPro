@@ -5632,6 +5632,73 @@ TEST(OutputSenderAdapter, AppleRefusesHevcOffTheGpuPath) {
 }
 #endif
 
+// Phase 4 O4b: the sender treats a macOS IOSurface encoder texture like the
+// Windows keyed-mutex handle: GPU-direct is chosen and the encoder is handed
+// the surface id. A fake encoder records what it was given.
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(__APPLE__)
+TEST(OutputSenderAdapter, IosurfaceEncoderTextureChoosesGpuDirect) {
+  namespace fs = std::filesystem;
+  struct Seen {
+    std::mutex mutex;
+    std::vector<uint32_t> ids;
+    int starts = 0;
+  };
+  auto seen = std::make_shared<Seen>();
+  class FakeGpuEncoder final : public corevideo::modules::GpuVideoEncoder {
+   public:
+    explicit FakeGpuEncoder(std::shared_ptr<Seen> seen) : seen_(std::move(seen)) {}
+    bool start(const corevideo::modules::GpuVideoEncoderConfig&, corevideo::modules::GpuEncodedChunkSink) override {
+      std::lock_guard<std::mutex> lock(seen_->mutex);
+      ++seen_->starts;
+      return true;
+    }
+    bool submit(const corevideo::modules::GpuVideoEncoderFrame& frame) override {
+      std::lock_guard<std::mutex> lock(seen_->mutex);
+      seen_->ids.push_back(frame.iosurfaceId);
+      return true;
+    }
+    void stop() override {}
+    bool healthy() const override { return true; }
+   private:
+    std::shared_ptr<Seen> seen_;
+  };
+  const fs::path dir = fs::temp_directory_path() / ("cvp-iosurface-gpu-direct-" + std::to_string(::getpid()));
+  fs::create_directories(dir);
+  std::error_code error;
+  fs::copy_file(COREVIDEO_POSIX_CHILD_PROBE_PATH, dir / "ffmpeg", fs::copy_options::overwrite_existing, error);
+  struct Cleanup {
+    fs::path dir;
+    explicit Cleanup(fs::path d) : dir(std::move(d)) { ::setenv("COREVIDEO_TEST_PROBE_MODE", "eof-exit", 1); }
+    ~Cleanup() {
+      ::unsetenv("COREVIDEO_TEST_PROBE_MODE");
+      std::error_code ignored;
+      fs::remove_all(dir, ignored);
+    }
+  } cleanup(dir);
+  ASSERT_FALSE(error) << error.message();
+
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  ASSERT_NE(rig.sender, nullptr);
+  rig.queue->setGpuVideoEncoderFactoryForTest(
+      [seen] { return std::make_unique<FakeGpuEncoder>(seen); });
+  auto settings = rtmpAdmissionSettings("h264", false);
+  settings.ffmpegBinDirectory = dir.string();
+  for (int i = 0; i < 4; ++i) {
+    auto frame = startableProgramFrame("iosurface-gpu-direct");
+    frame.frameNumber = 10 + i;
+    frame.encoderSharedTexture.iosurfaceId = 77;   // a Metal ring slot
+    frame.encoderSharedTexture.width = 320;
+    frame.encoderSharedTexture.height = 180;
+    frame.encoderSharedTexture.frameNumber = frame.frameNumber;
+    (void)rig.sender->sync({"rtmp"}, &frame, 34.0 * i, {settings});
+  }
+  std::lock_guard<std::mutex> lock(seen->mutex);
+  EXPECT_EQ(seen->starts, 1) << "the GPU-direct path started the encoder once";
+  ASSERT_FALSE(seen->ids.empty()) << "no frame reached the GPU encoder: the IOSurface was not taken as a texture";
+  for (uint32_t id : seen->ids) EXPECT_EQ(id, 77u);
+}
+#endif
+
 TEST(OutputSenderAdapter, RtmpStillRefusesH265WithoutEnhancedRtmp) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (!senderAdmissionFfmpegPresent("RtmpStillRefusesH265WithoutEnhancedRtmp")) return;
@@ -10694,4 +10761,44 @@ TEST(MediaCoreRenderGather, IsoDisplayNamesFollowRosterChangesBeforeTheNextTick)
   EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
       << "ISO display name resolution took the Zoom engine mutex";
   core.reset();
+}
+
+// Phase 4 O4b: the encoder texture is exported only while a stream destination
+// (rtmp/srt/hls) is in the output set: a recording alone never pays for it.
+TEST(MediaCore, EncoderTextureExportFollowsStreamDestinations) {
+  class PlanCapture final : public corevideo::modules::ICompositor {
+   public:
+    explicit PlanCapture(std::unique_ptr<corevideo::modules::ICompositor> inner) : inner_(std::move(inner)) {}
+    std::string rendererName() const override { return inner_->rendererName(); }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      lastExport = plan.encoderTextureExport;
+      ++renders;
+      return inner_->render(plan, frames);
+    }
+    bool lastExport = false;
+    int renders = 0;
+   private:
+    std::unique_ptr<corevideo::modules::ICompositor> inner_;
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto owned = std::make_unique<PlanCapture>(std::move(modules.compositor));
+  auto* compositor = owned.get();
+  modules.compositor = std::move(owned);
+  corevideo::core::MediaCore core(std::move(modules));
+  auto startWith = [&](corevideo::rpc::Json::Array destinations) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+        {"type", "start-program-output"}, {"destinations", std::move(destinations)}}});
+    const int before = compositor->renders;
+    core.renderDisplayTick();
+    return compositor->renders > before;
+  };
+  ASSERT_TRUE(startWith(corevideo::rpc::Json::Array{"recording"}));
+  EXPECT_FALSE(compositor->lastExport) << "recording alone: no encoder texture";
+  ASSERT_TRUE(startWith(corevideo::rpc::Json::Array{"recording", "srt"}));
+  EXPECT_TRUE(compositor->lastExport) << "an srt destination exports the encoder texture";
+  ASSERT_TRUE(startWith(corevideo::rpc::Json::Array{"ndi"}));
+  EXPECT_FALSE(compositor->lastExport) << "NDI is not a stream encoder destination";
+  ASSERT_TRUE(startWith(corevideo::rpc::Json::Array{"hls"}));
+  EXPECT_TRUE(compositor->lastExport) << "hls exports";
 }

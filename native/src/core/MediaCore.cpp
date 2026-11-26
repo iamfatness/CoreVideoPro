@@ -6113,6 +6113,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
        modules_.compositor->wantsFullProgramReadbackForRecording());
 #endif
+  // Phase 4 O4b: the GPU-direct stream encoder's texture, only while a
+  // stream destination (rtmp/srt/hls) is in the output set.
+  renderPlan.encoderTextureExport = std::any_of(outputDestinations_.begin(), outputDestinations_.end(),
+      [](const std::string& d) { return d == "rtmp" || d == "srt" || d == "hls"; });
   // NDI graphics key: only while the operator's destination list carries it.
   // The compositor frees the key target and its reader thread the first tick
   // this reads false again, so an idle destination costs nothing.

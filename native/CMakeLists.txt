@@ -1168,8 +1168,9 @@ if(BUILD_TESTING)
     set_source_files_properties(tests/GraphicsParityImageApple.mm tests/MetalGraphicsParityTest.mm
       PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     # Zero-copy IOSurface media frames into the Metal compositor (N4).
-    target_sources(corevideo-native-tests PRIVATE tests/MetalZeroCopyTest.mm)
-    set_source_files_properties(tests/MetalZeroCopyTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_sources(corevideo-native-tests PRIVATE tests/MetalZeroCopyTest.mm tests/MetalEncoderExportTest.mm)
+    set_source_files_properties(tests/MetalZeroCopyTest.mm tests/MetalEncoderExportTest.mm
+      PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   endif()
   if(COREVIDEO_WITH_AVF_MEDIA_DECODER AND NOT COREVIDEO_STUB)
     # Real AVFoundation decode against fixtures written at test time.

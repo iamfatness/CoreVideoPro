@@ -122,6 +122,10 @@ class MetalCompositor final : public ICompositor {
     if (tapThread_.joinable()) {
       tapThread_.join();
     }
+    if (encRingThread_.joinable()) {
+      encRingThread_.join();
+    }
+    releaseEncoderRing();
     program_.release();
     multiview_.release();
     preview_.release();
@@ -151,11 +155,13 @@ class MetalCompositor final : public ICompositor {
     frame.renderPlanSignature = renderPlanSignature(deterministicPlan);
 
     if (!ensurePipeline()) {
+      encExporting_.store(false, std::memory_order_release);
       frame.health = "degraded";
       frame.warnings.push_back("Metal compositor unavailable: " + pipelineError_);
       return frame;
     }
     if (!ensureTarget(program_, deterministicPlan.width, deterministicPlan.height)) {
+      encExporting_.store(false, std::memory_order_release);
       frame.health = "degraded";
       return frame;
     }
@@ -211,6 +217,9 @@ class MetalCompositor final : public ICompositor {
     frame.sharedTexture.width = program_.width;
     frame.sharedTexture.height = program_.height;
     frame.sharedTexture.frameNumber = frame.frameNumber;
+    // Phase 4 O4b: the GPU-direct stream encoder's texture, on fast and full
+    // ticks alike (the stream is a 60 fps output). Never waits on the GPU.
+    exportEncoderTexture(frame, renderPlan.encoderTextureExport);
     // While an output/encoder session keeps every tick "full", cap the CPU
     // cost: readbacks every 2nd call (a 30fps encoder feed from a 60fps
     // render) and MOVE the full-res buffer instead of copying it. The
@@ -241,6 +250,16 @@ class MetalCompositor final : public ICompositor {
     }
     return frame;
   }
+
+  // ── Phase 4 O4b: the encoder IOSurface ring ─────────────────────────────
+  // D3: a ring of three BGRA IOSurfaces, blitted from Program after the Program
+  // pass while a stream destination is active. In-process IOSurfaceLookup finds
+  // a NON-global surface (Task 0 row E-1), so the deprecated kIOSurfaceIsGlobal
+  // the shell-facing Program surface needs is not used here. The VideoToolbox
+  // encoder holds a slot's use count while it encodes; a slot in use is never
+  // rewritten, and a tick with all three in use exports nothing (a counted shed).
+  bool encoderExporting() const override { return encExporting_.load(std::memory_order_acquire); }
+  std::int64_t encoderExportShedFrames() const override { return encShed_.load(std::memory_order_acquire); }
 
   CompositorSourceTexStats sourceTexStats() const override { return stats_; }
 
@@ -586,6 +605,142 @@ class MetalCompositor final : public ICompositor {
       }];
       [commandBuffer commit];
     }
+  }
+
+  static constexpr int kEncoderRingSize = 3;
+  static constexpr int64_t kSlotBeingRewritten = -2;
+  enum EncoderRingState : int { kEncRingNone = 0, kEncRingBuilding, kEncRingReady, kEncRingFailed };
+  struct EncoderSlot {
+    IOSurfaceRef surface = nullptr;
+    id<MTLTexture> texture = nil;
+    std::shared_ptr<std::atomic<int64_t>> published;
+  };
+
+  // Runs on encRingThread_ only. The render thread reads the ring only after
+  // observing kEncRingReady (acquire).
+  bool buildEncoderRing(id<MTLDevice> device, int width, int height) {
+    @autoreleasepool {
+      for (int i = 0; i < kEncoderRingSize; ++i) {
+        NSDictionary* properties = @{
+          (__bridge NSString*)kIOSurfaceWidth : @(width),
+          (__bridge NSString*)kIOSurfaceHeight : @(height),
+          (__bridge NSString*)kIOSurfaceBytesPerElement : @4,
+          (__bridge NSString*)kIOSurfacePixelFormat : @((uint32_t)'BGRA'),
+        };
+        EncoderSlot& slot = encRing_[i];
+        slot.surface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+        if (!slot.surface) return false;
+        MTLTextureDescriptor* desc =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                               width:static_cast<NSUInteger>(width)
+                                                              height:static_cast<NSUInteger>(height)
+                                                           mipmapped:NO];
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        desc.storageMode = MTLStorageModeShared;
+        slot.texture = [device newTextureWithDescriptor:desc iosurface:slot.surface plane:0];
+        if (!slot.texture) return false;
+        slot.published = std::make_shared<std::atomic<int64_t>>(-1);
+      }
+      return true;
+    }
+  }
+
+  void releaseEncoderRing() {
+    for (auto& slot : encRing_) {
+      slot.texture = nil;
+      if (slot.surface) CFRelease(slot.surface);
+      slot.surface = nullptr;
+      slot.published.reset();
+    }
+    encRingWidth_ = 0;
+    encRingHeight_ = 0;
+  }
+
+  // Render thread. Never blocks on the GPU.
+  void exportEncoderTexture(ProgramFrame& frame, bool wanted) {
+    // One store per tick (review): a reader on the snapshot thread must never
+    // see a transient false mid-render while the stream is healthy.
+    const bool exported = exportEncoderTextureOnce(frame, wanted);
+    encExporting_.store(exported, std::memory_order_release);
+  }
+
+  bool exportEncoderTextureOnce(ProgramFrame& frame, bool wanted) {
+    int state = encRingState_.load(std::memory_order_acquire);
+    if (state == kEncRingBuilding) return false;  // preparing: not exported, not a shed
+    if (!wanted || !program_.texture) {
+      // An idle export costs nothing: free the ring the first tick it is unwanted.
+      if (state == kEncRingReady || state == kEncRingFailed) {
+        if (encRingThread_.joinable()) encRingThread_.join();
+        releaseEncoderRing();
+        encRingState_.store(kEncRingNone, std::memory_order_release);
+      }
+      return false;
+    }
+    const bool sizeChanged = encRingWidth_ != program_.width || encRingHeight_ != program_.height;
+    if ((state == kEncRingReady || state == kEncRingFailed) && sizeChanged) {
+      if (encRingThread_.joinable()) encRingThread_.join();
+      releaseEncoderRing();
+      state = kEncRingNone;
+      encRingState_.store(kEncRingNone, std::memory_order_release);
+    }
+    if (state == kEncRingFailed) return false;  // logged once by the builder; retried on a size change
+    if (state == kEncRingNone) {
+      if (encRingThread_.joinable()) encRingThread_.join();
+      encRingWidth_ = program_.width;
+      encRingHeight_ = program_.height;
+      encRingState_.store(kEncRingBuilding, std::memory_order_release);
+      id<MTLDevice> device = device_;
+      const int width = program_.width;
+      const int height = program_.height;
+      encRingThread_ = std::thread([this, device, width, height] {
+        const bool ok = buildEncoderRing(device, width, height);
+        if (!ok) {
+          ::corevideo::core::nativeLogf("[gpu-encode] metal encoder ring unavailable (%dx%d)\n", width, height);
+        }
+        encRingState_.store(ok ? kEncRingReady : kEncRingFailed, std::memory_order_release);
+      });
+      return false;
+    }
+    int chosen = -1;
+    for (int k = 0; k < kEncoderRingSize; ++k) {
+      const int index = (encNext_ + k) % kEncoderRingSize;
+      if (!IOSurfaceIsInUse(encRing_[index].surface)) {
+        chosen = index;
+        break;
+      }
+    }
+    if (chosen < 0) {
+      encShed_.fetch_add(1, std::memory_order_acq_rel);
+      return false;
+    }
+    EncoderSlot& slot = encRing_[chosen];
+    const int64_t number = frame.frameNumber;
+    auto published = slot.published;
+    // Review: until this rewrite COMPLETES the slot must not still advertise
+    // the frame it held, or a backlogged encoder would read it mid-blit under
+    // the old frame's timestamp. -2 can never equal a frame number.
+    published->store(kSlotBeingRewritten, std::memory_order_release);
+    @autoreleasepool {
+      id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
+      id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+      [blit copyFromTexture:program_.texture toTexture:slot.texture];
+      [blit endEncoding];
+      // Published on COMPLETION, never at commit: the encoder waits for this
+      // number (up to 34 ms) before it reads the slot.
+      [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+        published->store(number, std::memory_order_release);
+      }];
+      [commandBuffer commit];
+    }
+    frame.encoderSharedTexture.sharedHandleHex.clear();
+    frame.encoderSharedTexture.iosurfaceId = IOSurfaceGetID(slot.surface);
+    frame.encoderSharedTexture.width = encRingWidth_;
+    frame.encoderSharedTexture.height = encRingHeight_;
+    frame.encoderSharedTexture.format = "B8G8R8A8_UNORM";
+    frame.encoderSharedTexture.frameNumber = number;
+    frame.encoderSharedTexture.publishedFrameNumber = published;
+    encNext_ = (chosen + 1) % kEncoderRingSize;
+    return true;
   }
 
   void ensureTapThread() {
@@ -1810,6 +1965,14 @@ class MetalCompositor final : public ICompositor {
   id<MTLTexture> previewScaleTex_ = nil;
   int previewScaleWidth_ = 0;
   int previewScaleHeight_ = 0;
+  EncoderSlot encRing_[kEncoderRingSize];
+  int encRingWidth_ = 0;
+  int encRingHeight_ = 0;
+  int encNext_ = 0;
+  std::atomic<int> encRingState_{kEncRingNone};
+  std::thread encRingThread_;
+  std::atomic<bool> encExporting_{false};
+  std::atomic<std::int64_t> encShed_{0};
   id<MTLTexture> tapTex_ = nil;
   int tapWidth_ = 0;
   int tapHeight_ = 0;
