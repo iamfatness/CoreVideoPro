@@ -456,19 +456,9 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   if (!activeLease_) {
     device->AddRef();
     Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height, strictResources};
-    uint64_t admissionBytes = uint64_t(width) * height * 8;
-    if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition) {
-      const auto& definition = *overlay.graphicsTemplate->definition;
-      const auto& motion = definition.motionSummary();
-      if (motion.layered && !overlay.graphicsTemplate->wholeGraphicMotion) {
-        // Each animated subtree can split its surrounding paint run twice.
-        // The worker charges the actual atlas dimensions after layout.
-        const auto maxRuns = 2 * motion.units + 1;
-        const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (height + 3) - 2);
-        const auto maxWidth = uint64_t(std::min(16384., 1 + std::ceil(height * definition.width() / definition.height())));
-        admissionBytes = std::min<uint64_t>(256ull * 1024 * 1024, maxWidth * maxHeight * 4);
-      }
-    }
+    // Bounds the atlas for layered motion AND crawls (shared with Metal).
+    // The worker charges the actual atlas dimensions after layout.
+    const uint64_t admissionBytes = graphics::overlayAdmissionBytes(overlay.graphicsTemplate.get(), width, height);
     activeLease_ = cache_.findOrRequest(key, std::move(request),
         admissionBytes + (overlay.imageUri.empty() ? 0 : 128ull * 1024 * 1024), preparationSlot);
   }
