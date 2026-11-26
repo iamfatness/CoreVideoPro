@@ -173,9 +173,11 @@ struct ShellApp: App {
             AudioPane(isPopout: true)
                 .environmentObject(model)
                 .modifier(MainWindowOpenerRegistration())
-                .frame(minWidth: 900, minHeight: 520)
+                .frame(minWidth: AudioLayout.popoutMin.width, minHeight: AudioLayout.popoutMin.height)
                 .studioChrome()
         }
+        // W/Views/AudioMixerWindow.xaml.cs:17-18, :68: Windows opens the mixer at 1080 x 700.
+        .defaultSize(width: AudioLayout.popoutDefault.width, height: AudioLayout.popoutDefault.height)
     }
 }
 
@@ -1377,13 +1379,22 @@ struct TabPage: View {
     // Width per tab comes from TabPageLayout (a flat 720 pt cap clipped the
     // Sources rows and the Routing grid).
     var body: some View {
-        if !TabPageLayout.scrolls(model.selectedTab, tilesEditing: model.tilesEditTargetId != nil) {
+        if !Self.wrapsInScrollView(model.selectedTab, tilesEditing: model.tilesEditTargetId != nil) {
             TabPageContent(tab: model.selectedTab).frame(maxHeight: .infinity, alignment: .top)
         } else {
             ScrollView {
                 TabPageContent(tab: model.selectedTab)
             }
         }
+    }
+
+    /// OD-3 (Windows AudioPage.xaml:31-36): the Audio tab's SHOW surface is a
+    /// fixed viewport that fills the window and never scrolls, so the Audio tab
+    /// is not wrapped in the page ScrollView; its other surfaces scroll inside
+    /// AudioPane. The Tiles workspace (Scenes while a wall is edited) does not
+    /// scroll either; every other tab keeps the page scroll.
+    static func wrapsInScrollView(_ tab: StudioTab, tilesEditing: Bool = false) -> Bool {
+        TabPageLayout.scrolls(tab, tilesEditing: tilesEditing)
     }
 }
 

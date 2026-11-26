@@ -201,7 +201,7 @@ struct ShowInputSlot: Identifiable, Equatable {
 // is silently ignored, so these names/keys must stay exact.
 //
 // A7 (Task 2): `chain` is the Windows `PluginInserts` list, in the order the
-// operator built it (SVM:5493-5516 ToggleSelectedRackInsert, SVM:5520-5542
+// operator built it (SVM:5493-5517 ToggleSelectedRackInsert, SVM:5520-5542
 // AddSelectedAudioInsert).
 // The three enable flags are now views of it. A VST name ("vst:<plugin>")
 // lives in the chain too; AppModel.pluginInsertNames drops it while the host
@@ -245,7 +245,7 @@ struct ChannelInserts: Equatable {
     var compEnabled: Bool { contains(Self.compName) }
     var limiterEnabled: Bool { contains(Self.limiterName) }
 
-    /// SVM:5493-5516 (ToggleSelectedRackInsert): remove it if present (case-insensitive),
+    /// SVM:5493-5517 (ToggleSelectedRackInsert): remove it if present (case-insensitive),
     /// else append it at the END of the chain.
     mutating func toggle(_ name: String) {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -532,6 +532,12 @@ final class AppModel: ObservableObject {
     // properties cannot be declared in an extension, so only the state is here).
     @Published var vstHost = VstHostState()
     @Published var vstPlugins: [VstPlugin] = []
+    /// The shell's scan-vst-plugins request came back (VstAddMenuPolicy.scanCompleted).
+    @Published var vstScanRequestReturned = false
+    /// The shell's last scan-vst-plugins request failed (no reply); cleared on the next request.
+    @Published var vstScanRequestFailed = false
+    /// Test seam for the scan-vst-plugins request (production: nil = bridge).
+    var vstScanRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
     @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
     let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
     // #870: the core's audioObservation envelope + when the shell received it.
@@ -742,6 +748,14 @@ final class AppModel: ObservableObject {
     // arrived AFTER the stop landed (a stale pre-stop `completed` never counts).
     private var quitGate = QuitGate()
     private(set) var snapshotSequence = 0
+    /// Snapshot requests stamped so far, in SEND order (`issueSnapshotRequest`).
+    /// Unlike `snapshotSequence` (arrival order) it tells whether a snapshot's
+    /// request left before or after some event, e.g. the VST scan reply.
+    private(set) var snapshotRequestsIssued = 0
+    func issueSnapshotRequest() -> Int {
+        snapshotRequestsIssued += 1
+        return snapshotRequestsIssued
+    }
     @Published var quitPromptVisible = false
     @Published var quitFinishing = false
     /// Test seam: replaces the real stop/finish/shutdown so the flow can be driven
@@ -1957,6 +1971,9 @@ final class AppModel: ObservableObject {
         // FIRST, before anything that can make a source audible (monitor, capture
         // mics, scenes with media): see reassertAudioConsole.
         reassertAudioConsole()
+        // The VST scan belongs to the old core: back to "not scanned" (and
+        // rescan if a VST surface is on screen) — VstInserts.swift.
+        resetVstScanForNewCore()
         // A fresh core opens the system default output until told otherwise:
         // re-list the devices and re-send the operator's monitor device on
         // EVERY core generation (gotchas: one-shot commands are lost on respawn).
@@ -2042,11 +2059,12 @@ final class AppModel: ObservableObject {
     private func syncTick() async {
         guard let bridge else { return }
         let commands: [JSONObject] = []
+        let requestSeq = issueSnapshotRequest()
         do {
             let response = try await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": commands,
             ])
-            applySnapshot(response["snapshot"] as? JSONObject ?? [:])
+            applySnapshot(response["snapshot"] as? JSONObject ?? [:], requestSeq: requestSeq)
             statusDetail = ""  // a recovered core clears the transient error
         } catch {
             statusDetail = error.localizedDescription
@@ -2091,7 +2109,9 @@ final class AppModel: ObservableObject {
         AudioObservationPolicy.warning(audioObservation, receivedAt: audioObservationReceivedAt, now: now)
     }
 
-    private func applySnapshot(_ snapshot: JSONObject) {
+    /// `requestSeq` is the `issueSnapshotRequest()` stamp of the request this
+    /// snapshot answers (the poll stamps it; one-shot command replies pass nil).
+    private func applySnapshot(_ snapshot: JSONObject, requestSeq: Int? = nil) {
         snapshotSequence &+= 1
         if !snapshot.isEmpty {
             let live = Self.tilesLiveMembers(from: snapshot)
@@ -2184,9 +2204,9 @@ final class AppModel: ObservableObject {
         if let matrix = snapshot["audioRoutingMatrix"] as? JSONObject {
             applyRoutingSnapshot(matrix)
         }
-        if let pluginHost = snapshot["pluginHost"] as? JSONObject {
-            applyPluginHostSnapshot(pluginHost)
-        }
+        // The core nests pluginHost under audioMixSession; one reader for the
+        // poll and the scan reply (VstInserts.swift pluginHostNode).
+        applyPluginHostFromSnapshot(snapshot, requestSeq: requestSeq)
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
             applySharedTexture(texture)
@@ -4871,6 +4891,17 @@ final class AppModel: ObservableObject {
     /// reassertAudioConsole() re-sends.
     @Published var busInserts: [String: [String]] = [:]
 
+    /// The strip SHOW (chips, workspace, strip highlight) and SETUP (readouts,
+    /// Mute) both show as selected: the explicit selection while that strip
+    /// still exists, else the first strip, else nil. Windows auto-selects the
+    /// first channel when the selection is empty (SVM:8856-8859); the Mac
+    /// resolves it here instead of writing it, so the fallback never moves
+    /// selectedProcessingTargetId off its bus:master default.
+    var effectiveAudioStrip: AudioStrip? {
+        if let id = selectedAudioStripId, let strip = strips.first(where: { $0.id == id }) { return strip }
+        return strips.first
+    }
+
     /// SVM:4688-4693 (SelectParticipant): selecting a strip also selects
     /// its channel processing target.
     func selectAudioStrip(_ id: String) {
@@ -4915,6 +4946,11 @@ final class AppModel: ObservableObject {
     /// Windows (SVM:11592-11597) falls back to the FIRST target; the Mac uses
     /// bus:master, the documented default, because the first target is a
     /// channel and moves with roster churn.
+    // KNOWN DIVERGENCE (recorded, not changed): Windows HOLDS a selection that
+    // is momentarily missing from the channel map and auto-selects only when the
+    // selection is empty (SVM:8846-8858, the 0xc000027b selection ping-pong
+    // lesson). The Mac clears a vanished selection here, so SHOW and SETUP fall
+    // back to the first strip (effectiveAudioStrip) until it is chosen again.
     private func reconcileAudioSelection() {
         let stripIds = Set(strips.map(\.id))
         if let selected = selectedAudioStripId, !stripIds.contains(selected) { selectedAudioStripId = nil }
@@ -4949,16 +4985,7 @@ final class AppModel: ObservableObject {
         let target = AudioProcessingTargetPolicy.parse(targetId)
         let name = processingTargetName(targetId)
         if let channel = target.channel, strips.contains(where: { $0.id == channel }) {
-            var inserts = channelInserts[channel] ?? ChannelInserts()
-            switch inserts.add(raw) {
-            case .duplicate(let normalized):
-                takeStatus = "\(normalized) is already on \(name)"
-            case .added(let normalized):
-                editInserts(channel) { $0 = inserts }   // schedules the mix sync
-                takeStatus = "\(normalized) added to \(name)"
-            case .rejectedBlank:
-                return   // unreachable behind the guard above; silent, as on Windows
-            }
+            addChannelInsert(raw, stripId: channel)
             return
         }
         guard let bus = target.bus, buses.contains(where: { $0.id == bus }) else {
@@ -4981,14 +5008,42 @@ final class AppModel: ObservableObject {
         pushRoutingBase()
     }
 
+    /// The channel branch of addProcessingInsert, aimed at a strip directly:
+    /// SHOW's rack adds to the channel it shows and never moves SETUP's
+    /// processing target (Windows' rack acts on the selected channel; only a
+    /// strip click selects its target, SVM:4688-4693). Statuses as above.
+    func addChannelInsert(_ raw: String, stripId channel: String) {
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              strips.contains(where: { $0.id == channel }) else { return }
+        let name = processingTargetName(AudioProcessingTargetPolicy.channelId(channel))
+        var inserts = channelInserts[channel] ?? ChannelInserts()
+        switch inserts.add(raw) {
+        case .duplicate(let normalized):
+            takeStatus = "\(normalized) is already on \(name)"
+        case .added(let normalized):
+            editInserts(channel) { $0 = inserts }   // schedules the mix sync
+            takeStatus = "\(normalized) added to \(name)"
+        case .rejectedBlank:
+            return   // unreachable behind the guard above; silent, as on Windows
+        }
+    }
+
+    /// The channel branch of removeProcessingInsert, aimed at a strip directly
+    /// (the rack; see addChannelInsert). Nothing removed, nothing said.
+    func removeChannelInsert(_ insertName: String, stripId channel: String) {
+        guard var inserts = channelInserts[channel], inserts.remove(insertName) else { return }
+        editInserts(channel) { $0 = inserts }
+        takeStatus = "Removed \(insertName) from \(processingTargetName(AudioProcessingTargetPolicy.channelId(channel)))"
+    }
+
     /// SVM:2618-2632 (RemoveAudioProcessingInsert): case-insensitive, the
     /// status names the insert as given; nothing removed, nothing said.
     func removeProcessingInsert(_ insertName: String) {
         let targetId = selectedProcessingTargetId
         let target = AudioProcessingTargetPolicy.parse(targetId)
         if let channel = target.channel {
-            guard var inserts = channelInserts[channel], inserts.remove(insertName) else { return }
-            editInserts(channel) { $0 = inserts }
+            removeChannelInsert(insertName, stripId: channel)
+            return
         } else if let bus = target.bus {
             guard var chain = busInserts[bus] else { return }
             let before = chain.count
@@ -6341,7 +6396,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Test seam: feed a snapshot through the real read path.
-    func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+    func applySnapshotForTesting(_ snapshot: JSONObject, requestSeq: Int? = nil) {
+        applySnapshot(snapshot, requestSeq: requestSeq)
+    }
     func handleEventForTesting(_ event: JSONObject) { handleEvent(event) }
     /// Test seam: feed a zoom-snapshot through the real read path.
     func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }

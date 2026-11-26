@@ -42,6 +42,39 @@ extension ShellTests {
             ("a7-fix-vst-repick-is-noop", testFixVstRepickIsNoop),
             ("a7-fix-empty-prefs-clears-vst", testFixEmptyPrefsClearsVst),
             ("a7-fix-bus-vst-gated-on-host", testFixBusVstGatedOnHost),
+            // Task 4: SHOW layout (fixed viewport, Windows workspace, strip bank).
+            ("a7-layout-cell-widths", testLayoutCellWidths),
+            ("a7-pan-gain-tooltip-strings", testPanGainTooltipStrings),
+            ("a7-param-specs-are-windows", testParamSpecsAreWindows),
+            ("a7-show-not-in-page-scroll", testShowNotInPageScroll),
+            // Task 4 review fix-ups.
+            ("a7-fix4-popout-size", testFix4PopoutSize),
+            ("a7-fix4-vst-menu-state", testFix4VstMenuState),
+            ("a7-fix4-rack-keeps-target", testFix4RackKeepsTarget),
+            ("a7-fix4-seed-strips-named", testFix4SeedStripsNamed),
+            // Task 5: SETUP layout (two columns, Inserts & plug-ins, VST browser folded in).
+            ("a7-setup-add-buttons", testSetupAddButtons),
+            ("a7-surface-pills", testSurfacePills),
+            ("a7-setup-target-picker-drives-list", testSetupTargetPickerDrivesList),
+            ("a7-setup-unrouted-bus-note", testSetupUnroutedBusNote),
+            // Task 5 review fix-ups.
+            ("a7-fix5-bus-to-bus-feed-is-unrouted", testFix5BusToBusFeedIsUnrouted),
+            ("a7-fix5-readout-strings", testFix5ReadoutStrings),
+            ("a7-fix5-rack-stage-columns", testFix5RackStageColumns),
+            ("a7-fix5-setup-vst-menu-state", testFix5SetupVstMenuState),
+            ("a7-fix5-effective-strip-shared", testFix5EffectiveStripShared),
+            // Review fix-ups 7: VST scan state, pop-out window constants.
+            ("a7-fix7-scan-reply-applied", testFix7ScanReplyApplied),
+            ("a7-fix7-unscanned-is-not-host-missing", testFix7UnscannedIsNotHostMissing),
+            ("a7-fix7-failed-scan-retries", testFix7FailedScanRetries),
+            ("a7-fix7-popout-window-uses-layout", testFix7PopoutWindowUsesLayout),
+            ("a7-fix8-plugin-host-real-shape", testFix8PluginHostRealShape),
+            ("a7-fix8-stale-poll-cannot-finish-scan", testFix8StalePollCannotFinishScan),
+            // Review fix-ups 9: a new core resets the scan; scan-only plug-ins listed dimmed.
+            ("a7-fix9-respawn-resets-scan-state", testFix9RespawnResetsScanState),
+            ("a7-fix9-respawn-rescans-visible-surface", testFix9RespawnRescansVisibleSurface),
+            ("a7-fix9-scan-only-plugins-listed-dimmed", testFix9ScanOnlyPluginsListedDimmed),
+            ("a7-fix9-old-core-reply-dropped", testFix9OldCoreReplyDropped),
         ]
     }
 
@@ -677,6 +710,10 @@ extension ShellTests {
         expectEqual(inserts.add("\n\t"), .rejectedBlank, "a newline/tab name is rejected")
         expectEqual(inserts.chain, [], "nothing entered the chain")
         // The SETUP path says nothing for a blank name, on a channel or a bus.
+        // Coverage note: this half pins the observable behaviour only. It
+        // never reaches the ChannelInserts.add guard above, because
+        // addProcessingInsert returns early on a blank raw name; the mutation
+        // named above is caught by the first half alone.
         let model = targetModel()
         model.selectProcessingTarget(AudioProcessingTargetPolicy.channelId("101"))
         expectEqual(model.selectedProcessingTargetId, "channel:101", "precondition: channel target")
@@ -809,7 +846,9 @@ extension ShellTests {
     @MainActor
     private static func testFixBusVstGatedOnHost() {
         let model = targetModel()
-        model.busInserts = ["master": ["Compressor", "vst:Test"]]
+        // "Host Test" is host-handled (contains "host") but NOT Windows isVst,
+        // so swapping the wire filter back to isVst keeps it and turns red.
+        model.busInserts = ["master": ["Compressor", "vst:Test", "Host Test"]]
         expect(!model.vstInsertsLive, "precondition: no live host")
         // Base matrix (routingBaseCommand -> baseRoutingSends).
         // Mutation: pass busInserts instead of wireBusInserts there -> red.
@@ -838,16 +877,811 @@ extension ShellTests {
             expectEqual(chainOf(send), ["Compressor"], "legacy master send: the plug-in is dropped without a host")
         }
         // Wire-only: the operator's chain is kept, and its slot says why.
-        expectEqual(model.busInserts["master"], ["Compressor", "vst:Test"], "busInserts keeps the operator's chain")
+        expectEqual(model.busInserts["master"], ["Compressor", "vst:Test", "Host Test"], "busInserts keeps the operator's chain")
         let slots = InsertChainPolicy.slots(chain: model.busInserts["master"] ?? [], onBus: true,
                                             vstLive: model.vstInsertsLive, vstStatusLine: model.vstStatusLine,
                                             labelStyle: .target)
-        expectEqual(slots.map(\.statusLabel), ["LIVE", "BYPASS"], "the bus plug-in slot reads BYPASS")
+        expectEqual(slots.map(\.statusLabel), ["LIVE", "BYPASS", "BYPASS"], "the bus plug-in slots read BYPASS")
         expectEqual(slots.last?.tooltip, model.vstStatusLine, "with the host status line")
         // A live host gets the full chain in the base matrix.
         model.vstHost.serveRunning = true
         for send in sends(model.routingBaseCommand()) where send["busId"] as? String == "master" {
-            expectEqual(chainOf(send), ["Compressor", "vst:Test"], "a live host gets the bus plug-in")
+            expectEqual(chainOf(send), ["Compressor", "vst:Test", "Host Test"], "a live host gets the bus plug-ins")
         }
+    }
+
+    // ── Task 4: SHOW layout ─────────────────────────────────────────────────
+
+    /// XAML:988-994: columns 190 | * | * | 1.4*, ColumnSpacing 10. A 1000 pt
+    /// workspace leaves 1000 - 190 - 3*10 = 780 for the cells: 780 / 3.4 each
+    /// star. Mutation: equal thirds (eq / gate == 1, red).
+    static func testLayoutCellWidths() {
+        let widths = AudioLayout.cellWidths(total: 1000)
+        expectEqual(AudioLayout.rackWidth, 190, "rack column 190 (XAML:990)")
+        expectEqual(AudioLayout.columnSpacing, 10, "column spacing 10 (XAML:988)")
+        expect(abs(widths.gate - widths.comp) < 0.01, "gate == comp (\(widths.gate), \(widths.comp))")
+        expect(abs(widths.eq / widths.gate - 1.4) < 0.01, "eq / gate == 1.4 (got \(widths.eq / widths.gate))")
+        let sum: CGFloat = widths.gate + widths.comp + widths.eq
+        expect(abs(sum - 780) < 0.01, "gate + comp + eq == 1000 - 190 - 30 (got \(sum))")
+        // Too narrow to hold the rack: no negative widths.
+        let tiny = AudioLayout.cellWidths(total: 100)
+        expect(tiny.gate >= 0 && tiny.comp >= 0 && tiny.eq >= 0, "no negative cell widths")
+        expectEqual(AudioLayout.workspaceHeight, 255, "workspace height 255 (XAML:986)")
+        expectEqual(AudioLayout.stripWidth, 120, "strip width 120 (XAML:1326)")
+        expectEqual(AudioLayout.railWidth, 150, "rail width 150 (XAML:1435)")
+    }
+
+    /// SVM:11451-11456 (GainLabel, PanLabel) and SVM:11464 (MuteStateLabel).
+    static func testPanGainTooltipStrings() {
+        expectEqual(ConsoleStripLabels.pan(0.004), "C", "pan 0.004 -> C")
+        expectEqual(ConsoleStripLabels.pan(0), "C", "pan 0 -> C")
+        expectEqual(ConsoleStripLabels.pan(-0.25), "L 0.25", "pan -0.25")
+        expectEqual(ConsoleStripLabels.pan(0.5), "R 0.50", "pan 0.5")
+        expectEqual(ConsoleStripLabels.pan(-1), "L 1.00", "pan -1")
+        expectEqual(ConsoleStripLabels.gain(3), "+3.0 dB", "gain +3")
+        expectEqual(ConsoleStripLabels.gain(-2.5), "-2.5 dB", "gain -2.5")
+        expectEqual(ConsoleStripLabels.gain(0), "0.0 dB", "gain 0 has no sign")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: true, sourceMuted: false), "Muted in mix", "muted")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: true, sourceMuted: true), "Muted in mix",
+                    "the console mute wins over the Zoom mute")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: false, sourceMuted: true), "Source muted", "Zoom-muted")
+        expectEqual(ConsoleStripLabels.meterTooltip(muted: false, sourceMuted: false), "Live", "live")
+    }
+
+    /// W/Views/AudioPage.xaml.cs:137-166 (InsertParamSpecs), less the EQ
+    /// presence rows (dead keys since C6b). Mutation: port the presence rows
+    /// (red on the EQ count).
+    static func testParamSpecsAreWindows() {
+        typealias S = InsertParamSpec
+        expectEqual(InsertChainPolicy.paramSpecs("Noise Gate"), [
+            S(label: "Threshold (dBFS)", key: "thresholdDb", min: -80, max: -12, step: 1, defaultValue: -48),
+            S(label: "Release (ms)", key: "releaseMs", min: 20, max: 500, step: 5, defaultValue: 120),
+        ], "gate specs")
+        let highpass = [S(label: "High-pass (Hz)", key: "highpassHz", min: 20, max: 400, step: 5, defaultValue: 90)]
+        expectEqual(InsertChainPolicy.paramSpecs("High-pass"), highpass, "high-pass specs")
+        expectEqual(InsertChainPolicy.paramSpecs("Built-in EQ"), highpass, "EQ: the high-pass row only")
+        expectEqual(InsertChainPolicy.paramSpecs("Built-in EQ").count, 1, "EQ has exactly one spec")
+        expectEqual(InsertChainPolicy.paramSpecs("Compressor"), [
+            S(label: "Threshold (dBFS)", key: "thresholdDb", min: -40, max: -6, step: 1, defaultValue: -18),
+            S(label: "Ratio", key: "ratio", min: 1, max: 20, step: 0.5, defaultValue: 4),
+        ], "compressor specs")
+        expectEqual(InsertChainPolicy.paramSpecs("Limiter"), [
+            S(label: "Ceiling (dBFS)", key: "ceilingDb", min: -12, max: -0.1, step: 0.1, defaultValue: -1),
+        ], "limiter specs")
+        expectEqual(InsertChainPolicy.paramSpecs("vst:Some Plugin"), [], "a plug-in has no built-in specs")
+        expectEqual(InsertChainPolicy.paramSpecs("Mystery"), [], "an unknown name has none")
+        // The slot popover writes the same field the cell reads.
+        var inserts = ChannelInserts()
+        inserts.setParam("Compressor", key: "ratio", 8)
+        expectEqual(inserts.compRatio, 8, "popover ratio edits the COMP cell's ratio")
+        expectEqual(inserts.param("Compressor", key: "ratio"), 8, "and reads it back")
+        inserts.setParam("Limiter", key: "ceilingDb", -3)
+        expectEqual(inserts.limiterCeilingDb, -3, "popover ceiling edits limiterCeilingDb")
+        inserts.setParam("Built-in EQ", key: "highpassHz", 150)
+        expectEqual(inserts.eqHighpassHz, 150, "popover high-pass edits the EQ cell's low cut")
+    }
+
+    /// OD-3, XAML:31-36: SHOW is a fixed viewport, so the Audio tab is not in
+    /// the page ScrollView and its width is uncapped. Mutation: revert the
+    /// TabPage change (red).
+    static func testShowNotInPageScroll() {
+        expectEqual(TabPage.wrapsInScrollView(.audio), false, "the Audio tab brings its own scrolling")
+        expectEqual(TabPage.wrapsInScrollView(.settings), true, "a form tab keeps the page scroll")
+        expectEqual(TabPage.wrapsInScrollView(.sources), true, "Sources keeps the page scroll")
+        expect(TabPageLayout.maxWidth(for: .audio) == .infinity, "the Audio tab width is uncapped")
+    }
+
+    // ── Task 5: SETUP layout ────────────────────────────────────────────────
+
+    /// XAML:762-786: the 2x2 grid Add EQ / Add compressor / Add VST3 plug-in /
+    /// Clear chain. OD-1 dims Add EQ on a bus target with the refusal sentence.
+    /// Mutation: enable Add EQ on buses (red).
+    static func testSetupAddButtons() {
+        let status = "Plug-in host not running"
+        let titles = ["Add EQ", "Add compressor", "Add VST3 plug-in", "Clear chain"]
+        let bus = AudioSetupPolicy.addButtons(target: "bus:master", vstLive: false, vstStatusLine: status,
+                                              chain: ["Compressor"])
+        expectEqual(bus.map(\.title), titles, "the four buttons, in XAML order")
+        expectEqual(bus[0].enabled, false, "Add EQ is dimmed on a bus (OD-1)")
+        expectEqual(bus[0].reason, "Built-in EQ does not process on a bus yet; add a compressor or limiter.",
+                    "with the OD-1 sentence (AudioProcessingTargetPolicy.busRefusal)")
+        expectEqual(bus[1].enabled, true, "Add compressor is enabled on a bus")
+        expect(bus[1].reason == nil, "an enabled button gives no reason")
+        expectEqual(bus[2].enabled, false, "Add VST3 is dimmed while the host is not live")
+        expectEqual(bus[2].reason, status, "with the host status line")
+        expectEqual(bus[3].enabled, true, "Clear chain is enabled on a non-empty chain")
+        let channel = AudioSetupPolicy.addButtons(target: "channel:101", vstLive: false, vstStatusLine: status,
+                                                  chain: ["Built-in EQ"])
+        expectEqual(channel.map(\.enabled), [true, true, false, true], "a channel: all enabled except Add VST3")
+        expectEqual(channel[2].reason, status, "Add VST3 says why")
+        let live = AudioSetupPolicy.addButtons(target: "channel:101", vstLive: true, vstStatusLine: status,
+                                               chain: [])
+        expectEqual(live[2].enabled, true, "a live host enables Add VST3")
+        expectEqual(live[3].enabled, false, "Clear chain is dimmed on an empty chain")
+        expectEqual(live[3].reason, "The insert chain is already empty.", "and says why")
+        let emptyBus = AudioSetupPolicy.addButtons(target: "bus:aux-1", vstLive: true, vstStatusLine: status, chain: [])
+        expectEqual(emptyBus[3].enabled, false, "Clear chain is dimmed on an empty bus chain")
+    }
+
+    /// OD-2, XAML:62-73: three pills; the Mac-only PLUG-INS pill is gone and
+    /// its env value opens SETUP with the VST browser disclosure open.
+    /// Mutation: keep PLUG-INS (red).
+    static func testSurfacePills() {
+        expectEqual(AudioPane.surfaces, ["SHOW", "ROUTING", "SETUP"], "the Windows pills")
+        let plugins = AudioPane.resolveSurface("PLUG-INS")
+        expectEqual(plugins.surface, "SETUP", "PLUG-INS resolves to SETUP")
+        expectEqual(plugins.vstBrowserOpen, true, "with the VST browser open")
+        let setup = AudioPane.resolveSurface("SETUP")
+        expectEqual(setup.surface, "SETUP", "SETUP stays SETUP")
+        expectEqual(setup.vstBrowserOpen, false, "with the browser collapsed (XAML:647 IsExpanded=False)")
+        expectEqual(AudioPane.resolveSurface("ROUTING").surface, "ROUTING", "ROUTING")
+        expectEqual(AudioPane.resolveSurface(nil).surface, "SHOW", "no env opens SHOW")
+        expectEqual(AudioPane.resolveSurface("bogus").surface, "SHOW", "an unknown value opens SHOW")
+    }
+
+    /// XAML:636-643, 714-760: the target picker drives the SIGNAL FLOW list.
+    @MainActor
+    static func testSetupTargetPickerDrivesList() {
+        let model = targetModel()
+        model.selectProcessingTarget("bus:aux-1")
+        expectEqual(model.selectedProcessingTargetId, "bus:aux-1", "precondition: aux-1 is a target")
+        model.addProcessingInsert("Compressor")
+        let slots = model.selectedTargetSlots
+        expectEqual(slots.map(\.slotLabel), ["01"], "target-style slot label")
+        expectEqual(slots.map(\.name), ["Compressor"], "the bus chain")
+        expectEqual(slots.map(\.statusLabel), ["LIVE"], "a bus compressor processes")
+        expectEqual(model.selectedProcessingTarget?.insertLabel, "Compressor", "the insert label")
+        expectEqual(model.selectedProcessingTarget?.label, "AUX 1", "the target label")
+        // Switching the target switches the list.
+        model.selectProcessingTarget("channel:101")
+        expectEqual(model.selectedTargetSlots.map(\.name), [], "channel 101 has its own (empty) chain")
+        expectEqual(model.selectedProcessingTarget?.insertLabel, "No inserts", "SVM:11611")
+        // Windows binds the readouts to SelectedAudioMix (SVM:2195-2233), the
+        // SHOW-selected strip, whatever the target: a bus target picked in the
+        // model still reads strip 101. Mutation: dash on a bus target (red).
+        model.editStrip("101") { $0.manualGainDb = 3 }
+        model.selectAudioStrip("101")
+        model.selectProcessingTarget("bus:aux-1")
+        expect(model.selectedProcessingTarget.map { AudioProcessingTargetPolicy.parse($0.id).bus != nil } == true,
+               "precondition: the model's selected target is a bus")
+        expectEqual(model.setupReadouts.gain, "+3 dB", "the readouts follow the selected strip on a bus target")
+        expectEqual(model.setupReadouts.manual, "+3 dB", "manual gain too")
+        // No explicit selection: the effective strip is the first one (101), as
+        // SHOW shows it (a7-fix5-effective-strip-shared covers the empty case).
+        model.selectedAudioStripId = nil
+        expectEqual(model.setupReadouts.gain, "+3 dB", "no explicit selection reads the first strip")
+    }
+
+    /// Honest reporting (Task 3 review): the core reads a bus chain only from
+    /// sends TO that bus (MediaCore.cpp:7195-7212), so a chain on a bus nothing
+    /// is routed to never runs. Mutation: always hide the note (red).
+    @MainActor
+    static func testSetupUnroutedBusNote() {
+        let note = "Nothing is routed to this bus yet, so its inserts do not run."
+        expectEqual(AudioSetupPolicy.unroutedBusNote, note, "the sentence")
+        let model = targetModel()
+        model.selectProcessingTarget("bus:aux-1")
+        expectEqual(model.selectedTargetUnroutedNote, note, "aux-1 has no sends by default")
+        model.selectProcessingTarget("bus:master")
+        expect(model.selectedTargetUnroutedNote == nil, "master carries the default sends")
+        model.selectProcessingTarget("channel:101")
+        expect(model.selectedTargetUnroutedNote == nil, "a channel target never shows it")
+        // An operator route to aux-1 (the grid's audioSends) clears it.
+        model.selectProcessingTarget("bus:aux-1")
+        model.selectOrRouteSend(source: "101", bus: "aux-1")
+        expect(model.selectedTargetUnroutedNote == nil, "a routed source makes the chain run")
+        // A custom bus that only SENDS to master is still unrouted: its chain is
+        // read from source sends to it, and with no source its PCM is empty.
+        let custom = model.addCustomBus()
+        model.setBusSend(custom.id, target: "master", enabled: true)
+        model.selectProcessingTarget("bus:\(custom.id)")
+        expectEqual(model.selectedTargetUnroutedNote, note, "a bus-to-bus output does not feed its chain")
+        model.selectOrRouteSend(source: "102", bus: custom.id)
+        expect(model.selectedTargetUnroutedNote == nil, "a source routed to the custom bus clears it")
+        // Pure form.
+        expectEqual(AudioSetupPolicy.unroutedNote(target: "bus:aux-2", routedBusIds: ["master"]), note, "pure: unrouted")
+        expect(AudioSetupPolicy.unroutedNote(target: "bus:aux-2", routedBusIds: ["aux-2"]) == nil, "pure: routed")
+    }
+
+    // ── Task 4 review fix-ups ───────────────────────────────────────────────
+
+    /// W/Views/AudioMixerWindow.xaml.cs:17-18 (1080 x 700). The minimum height
+    /// is the smallest that renders SHOW usably (strip faders, tick scale and
+    /// master meters, checked in renders at 900 x 640).
+    /// Mutations: default back to no size / 900 x 520, or the minimum back to 520 (red).
+    static func testFix4PopoutSize() {
+        expectEqual(AudioLayout.popoutDefault.width, 1080, "Windows WindowWidth")
+        expectEqual(AudioLayout.popoutDefault.height, 700, "Windows WindowHeight")
+        expectEqual(AudioLayout.popoutMin.width, 900, "the minimum width the Task 4 render held at")
+        expectEqual(AudioLayout.popoutMin.height, 640, "the minimum height SHOW stays usable at")
+        expect(AudioLayout.popoutMin.width <= AudioLayout.popoutDefault.width
+               && AudioLayout.popoutMin.height <= AudioLayout.popoutDefault.height,
+               "the default size satisfies the minimum")
+    }
+
+    /// Honest reporting: before any scan has completed the add menu must not
+    /// claim "No VST3 plugins found" (the core's status starts at "absent").
+    /// Mutation: state() returns .noneFound for an un-scanned "absent" (red).
+    @MainActor
+    static func testFix4VstMenuState() {
+        typealias P = VstAddMenuPolicy
+        expectEqual(P.state(status: "absent", pluginCount: 0, scanCompleted: false), .notScanned, "never scanned")
+        expectEqual(P.emptyLine(.notScanned), "Plug-in scan has not run yet — reopen this menu in a moment",
+                    "the not-scanned line")
+        expectEqual(P.state(status: "scanning", pluginCount: 0, scanCompleted: false), .scanning, "scanning")
+        expectEqual(P.state(status: "probing", pluginCount: 0, scanCompleted: true), .scanning, "probing")
+        expectEqual(P.emptyLine(.scanning), "Scanning for plugins — reopen this menu in a moment", "xaml.cs copy")
+        expectEqual(P.state(status: "ready", pluginCount: 0, scanCompleted: true), .noneFound, "scanned, none")
+        expectEqual(P.emptyLine(.noneFound), "No VST3 plugins found on this machine", "xaml.cs copy")
+        expectEqual(P.state(status: "probing", pluginCount: 2, scanCompleted: false), .plugins, "a list wins")
+        expect(P.emptyLine(.plugins) == nil, "a list has no empty line")
+        // Completion.
+        expect(!P.scanCompleted(status: "absent", pluginCount: 0, requestReturned: false), "absent before a scan")
+        expect(P.scanCompleted(status: "absent", pluginCount: 0, requestReturned: true), "absent after the scan: host not found")
+        expect(!P.scanCompleted(status: "scanning", pluginCount: 0, requestReturned: true), "still scanning")
+        expect(P.scanCompleted(status: "ready", pluginCount: 0, requestReturned: false), "a core-kicked scan finished")
+        expect(P.scanCompleted(status: "error", pluginCount: 0, requestReturned: false), "a failed scan finished")
+        // A fresh model (no bridge, no scan) reads "not scanned", never "none found".
+        let model = AppModel()
+        expect(!model.vstScanCompleted, "a fresh model has not scanned")
+        expectEqual(P.state(status: model.vstHost.status, pluginCount: model.vstPlugins.count,
+                            scanCompleted: model.vstScanCompleted), .notScanned, "fresh model state")
+        model.applyPluginHostSnapshot(["status": "ready", "plugins": [] as [JSONObject]])
+        expect(model.vstScanCompleted, "a ready snapshot completes the scan")
+    }
+
+    /// The SHOW rack adds/removes on the channel it shows and leaves SETUP's
+    /// processing target alone (Windows' rack never changes the target).
+    /// Mutation: rackAdd selects the strip first (the old targetThisStrip) (red).
+    @MainActor
+    static func testFix4RackKeepsTarget() {
+        let model = targetModel()
+        model.selectProcessingTarget(AudioProcessingTargetPolicy.defaultTargetId)
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "precondition: bus:master is the target")
+        ProcessingWorkspace.rackAdd(model, stripId: "101", "Limiter")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "the target stays bus:master")
+        expectEqual(model.channelInserts["101"]?.chain, ["Limiter"], "strip 101's chain gets the Limiter")
+        expect(model.busInserts["master"] == nil, "the master chain is untouched")
+        expectEqual(model.takeStatus, "Limiter added to \(model.audioSourceLabel("101"))", "the Windows status")
+        ProcessingWorkspace.rackAdd(model, stripId: "101", "Limiter")
+        expectEqual(model.takeStatus, "Limiter is already on \(model.audioSourceLabel("101"))", "duplicate status")
+        ProcessingWorkspace.rackRemove(model, stripId: "101", "Limiter")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "remove keeps the target too")
+        expectEqual(model.channelInserts["101"]?.chain ?? [], [], "removed from 101")
+        expectEqual(model.takeStatus, "Removed Limiter from \(model.audioSourceLabel("101"))", "remove status")
+        // The target path still works the same way through the channel branch.
+        model.selectAudioStrip("102")
+        model.addProcessingInsert("Compressor")
+        expectEqual(model.channelInserts["102"]?.chain, ["Compressor"], "addProcessingInsert on a channel target")
+    }
+
+    /// Harness: every seeded Audio strip reads a display name, not a raw id.
+    /// Mutation: seed the extras as unslotted capture ids (red).
+    @MainActor
+    static func testFix4SeedStripsNamed() {
+        let model = AppModel()
+        TabSnapshotHarness.seed(model)
+        expect(model.strips.count >= 10, "the seeded bank (\(model.strips.count) strips)")
+        for strip in model.strips {
+            expect(model.audioSourceLabel(strip.id) != strip.id, "\(strip.id) has a display name")
+        }
+    }
+
+    // ── Task 5 review fix-ups ───────────────────────────────────────────────
+
+    /// The core reads a bus chain only from SOURCE sends to that bus
+    /// (MediaCore.cpp:7195-7212): a bus fed only by another bus's output, or
+    /// master with no sources, carries a chain that never runs.
+    /// Mutations: count bus-to-bus destinations as routed (red on stream);
+    /// hard-code master as routed (red on master).
+    @MainActor
+    static func testFix5BusToBusFeedIsUnrouted() {
+        let note = AudioSetupPolicy.unroutedBusNote
+        let model = AppModel()
+        expect(model.strips.isEmpty, "fixture: no sources")
+        model.selectProcessingTarget("bus:master")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "precondition: master is a target")
+        expectEqual(model.selectedTargetUnroutedNote, note, "master with no sources does not run its chain")
+        let custom = model.addCustomBus()
+        model.setBusSend(custom.id, target: "stream", enabled: true)
+        model.setBusSend(custom.id, target: "master", enabled: true)
+        model.selectProcessingTarget("bus:stream")
+        expectEqual(model.selectedProcessingTargetId, "bus:stream", "precondition: stream is a target")
+        expectEqual(model.selectedTargetUnroutedNote, note, "stream fed only by a bus-to-bus send stays unrouted")
+        model.selectProcessingTarget("bus:master")
+        expectEqual(model.selectedTargetUnroutedNote, note, "so does master")
+        // Sources make the default sends, and master/stream run.
+        model.zoomAudioSourceIds = ["101"]
+        model.refreshStrips()
+        expect(model.selectedTargetUnroutedNote == nil, "a source's default send makes master run")
+    }
+
+    /// SVM:2200-2230: the readout and Mute strings.
+    static func testFix5ReadoutStrings() {
+        expectEqual(AudioSetupPolicy.muteLabel(muted: false), "Mute in mix", "SVM:2230")
+        expectEqual(AudioSetupPolicy.muteLabel(muted: true), "Unmute in mix", "SVM:2230")
+        func strip(_ gain: Double, level: Int = 42) -> AudioStrip {
+            AudioStrip(id: "101", outputLevel: level, manualGainDb: gain, muted: false, solo: false, pan: 0, status: "live")
+        }
+        let unity = AudioSetupPolicy.readouts(strip: strip(0))
+        expectEqual(unity.gain, "0 dB", "unity gain has no sign")
+        expectEqual(unity.manual, "Auto", "manual 0 reads Auto (SVM:2220)")
+        expectEqual(unity.output, "42", "output level is the core's 0..100")
+        let up = AudioSetupPolicy.readouts(strip: strip(3.4))
+        expectEqual(up.gain, "+3 dB", "positive gain is signed, {gain:0}")
+        expectEqual(up.manual, "+3 dB", "manual likewise")
+        let down = AudioSetupPolicy.readouts(strip: strip(-6))
+        expectEqual(down.gain, "-6 dB", "negative gain")
+        expectEqual(down.manual, "-6 dB", "negative manual")
+        let none = AudioSetupPolicy.readouts(strip: nil)
+        expectEqual([none.gain, none.manual, none.output], ["—", "—", "—"], "no strip reads dashes")
+    }
+
+    /// The rack reflows: the seven stages fit one row in the capped column
+    /// (820 - 2 x 16 = 788) and fall to fewer columns in the minimum-width
+    /// pop-out's right column, derived from the layout constants: window 900,
+    /// AudioPane padding 2 x 10, SETUP trailing 8, left column 340, spacing 12
+    /// -> right column 520; minus the section padding 2 x 16 -> 488 for the
+    /// stage grid. Mutation: a fixed 7 columns (red at the pop-out width).
+    static func testFix5RackStageColumns() {
+        let L = AudioLayout.self
+        let capped = L.setupRightMaxWidth - 2 * L.setupSectionPadding
+        expectEqual(capped, 788, "the capped column's grid width")
+        expectEqual(MasteringRackLayout.stageColumns(width: capped), 7, "one row in the capped column")
+        let rightColumn = L.popoutMin.width - 2 * L.panePadding - L.setupTrailingPadding
+            - L.setupLeftWidth - L.setupColumnSpacing
+        expectEqual(rightColumn, 520, "the pop-out minimum's SETUP right column")
+        let popoutGrid = min(rightColumn, L.setupRightMaxWidth) - 2 * L.setupSectionPadding
+        expectEqual(popoutGrid, 488, "the pop-out minimum's stage grid width")
+        expectEqual(MasteringRackLayout.stageColumns(width: popoutGrid), 4, "four columns at the pop-out minimum")
+        expectEqual(MasteringRackLayout.stageColumns(width: 100), 1, "never zero columns")
+        expectEqual(MasteringRackLayout.stageColumns(width: 5000), 7, "never more columns than stages")
+    }
+
+    /// SETUP's add-VST menu reads the same scan state as SHOW's (honest
+    /// reporting): before any scan it never claims "No VST3 plugins found".
+    /// Mutation: setupVstMenuEmptyLine is the old literal path
+    /// (vstPlugins.isEmpty ? noneFoundLine : nil) (red).
+    @MainActor
+    static func testFix5SetupVstMenuState() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        expectEqual(model.setupVstMenuEmptyLine, P.notScannedLine, "never scanned: not 'none found'")
+        model.applyPluginHostSnapshot(["status": "scanning", "plugins": [] as [JSONObject]])
+        expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "scanning")
+        model.applyPluginHostSnapshot(["status": "ready", "plugins": [] as [JSONObject]])
+        expectEqual(model.setupVstMenuEmptyLine, P.noneFoundLine, "a completed scan found nothing")
+        // SHOW and SETUP agree in every state.
+        let show = P.emptyLine(P.state(status: model.vstHost.status, pluginCount: model.vstPlugins.count,
+                                       scanCompleted: model.vstScanCompleted))
+        expectEqual(model.setupVstMenuEmptyLine, show, "SETUP says what SHOW says")
+    }
+
+    /// SHOW and SETUP resolve the same effective strip: the explicit selection
+    /// while it exists, else the first strip, else nil (Windows auto-selects
+    /// the first channel, SVM:8856-8859). The fallback never moves the target.
+    /// Mutation: setupSelectedStrip reads the raw selectedAudioStripId (red).
+    @MainActor
+    static func testFix5EffectiveStripShared() {
+        let model = targetModel()
+        // Fixture gains that tell the two strips apart in the readouts.
+        model.editStrip("101") { $0.manualGainDb = 4 }
+        model.editStrip("102") { $0.manualGainDb = -2 }
+        expect(model.selectedAudioStripId == nil, "precondition: nothing explicitly selected")
+        expectEqual(AudioPane.selectedStrip(model)?.id, "101", "SHOW falls back to the first strip")
+        expectEqual(model.setupSelectedStrip?.id, "101", "SETUP shows the same strip")
+        expectEqual(model.setupReadouts.gain, "+4 dB", "SETUP readouts show the fallback strip 101's gain")
+        expectEqual(model.selectedProcessingTargetId, "bus:master", "the fallback leaves the target on bus:master")
+        model.selectAudioStrip("102")
+        expectEqual(AudioPane.selectedStrip(model)?.id, "102", "SHOW: explicit 102")
+        expectEqual(model.setupSelectedStrip?.id, "102", "SETUP: explicit 102")
+        expectEqual(model.setupReadouts.gain, "-2 dB", "SETUP readouts show strip 102's gain")
+        model.zoomAudioSourceIds = ["101"]
+        model.refreshStrips()
+        expectEqual(AudioPane.selectedStrip(model)?.id, "101", "SHOW: 102 gone, back to 101")
+        expectEqual(model.setupSelectedStrip?.id, "101", "SETUP: 102 gone, back to 101")
+        model.zoomAudioSourceIds = []
+        model.refreshStrips()
+        // refreshStrips may keep non-Zoom strips; clear them for the empty case.
+        model.strips = []
+        expect(AudioPane.selectedStrip(model) == nil, "SHOW: no strips, nil")
+        expect(model.setupSelectedStrip == nil, "SETUP: no strips, nil")
+        let r = model.setupReadouts
+        expectEqual([r.gain, r.manual, r.output], ["—", "—", "—"], "no strips reads dashes")
+    }
+
+    // ── Review fix-ups 7 ────────────────────────────────────────────────────
+
+    /// The scan reply in the core's real shape: `snapshot` is sessionState and
+    /// the plugin-host node sits under audioMixSession (CoreStateCapture.cpp
+    /// audioMixSessionState), never at the root.
+    private static func pluginHostReply(_ status: String) -> JSONObject {
+        ["snapshot": pluginHostSnapshot(status)]
+    }
+
+    /// A sessionState snapshot carrying only the nested plugin-host node.
+    private static func pluginHostSnapshot(_ status: String, plugins: [JSONObject] = []) -> JSONObject {
+        ["audioMixSession": ["pluginHost": ["status": status, "plugins": plugins] as JSONObject] as JSONObject]
+    }
+
+    /// The scan request's reply snapshot (taken after the core set "scanning",
+    /// MediaCore.cpp startPluginHostScan) is applied before the scan counts as
+    /// returned: with the model's state still the stale pre-scan "absent", the
+    /// menus say "scanning", never "none found"; a later absent + zero plug-ins
+    /// snapshot after completion says "none found".
+    /// Mutation: discard the reply (`_ = try await ...`, returned = true) (red).
+    @MainActor
+    static func testFix7ScanReplyApplied() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        expectEqual(model.vstHost.status, "absent", "precondition: the stale pre-scan status")
+        var sent: [JSONObject] = []
+        model.vstScanRequestForTesting = { body, _ in
+            await MainActor.run { sent.append(body) }
+            return pluginHostReply("scanning")
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(sent.map { $0["type"] as? String ?? "" }, ["scan-vst-plugins"], "one scan request")
+        expect(model.vstScanRequestReturned, "the request returned")
+        expectEqual(model.vstHost.status, "scanning", "the reply's pluginHost state is applied")
+        expect(!model.vstScanCompleted, "a scan the core still runs has not completed")
+        expectEqual(model.vstAddMenuState, .scanning, "SHOW's menu: scanning")
+        expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "SETUP's menu: scanning, not 'none found'")
+        // A poll requested after the reply, through the real poll path (and its stale barrier).
+        let laterPoll = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: laterPoll)
+        expect(model.vstScanCompleted, "absent after the scan: completed")
+        expectEqual(model.setupVstMenuEmptyLine, P.noneFoundLine, "a completed scan found nothing")
+        expectEqual(model.vstCapability, .missing, "and the host is really missing")
+    }
+
+    /// Before any scan, the core's default "absent" is not "host missing":
+    /// SETUP's Add VST3 hint and the VST3 insert control's note say the scan
+    /// has not run; after a completed scan that leaves "absent" they say the
+    /// host was not found.
+    /// Mutation: vstCapability maps "absent" to .missing regardless of the scan (red).
+    @MainActor
+    static func testFix7UnscannedIsNotHostMissing() {
+        let model = AppModel()
+        expectEqual(model.vstCapability, .notScanned, "a fresh model has not scanned")
+        expectEqual(model.vstStatusLine, "Plug-in scan has not run yet.", "the unscanned status line")
+        let hint = AudioSetupPolicy.addButtons(target: "channel:101", vstLive: model.vstInsertsLive,
+                                               vstStatusLine: model.vstStatusLine, chain: [])
+            .first { $0.title == "Add VST3 plug-in" }
+        expectEqual(hint?.reason, "Plug-in scan has not run yet.", "SETUP's Add VST3 hint")
+        expectEqual(model.vstUnavailableNote, "Plug-in scan has not run yet.", "the insert control's note")
+        // A completed scan (the request returned, its reply then a later poll) leaving "absent".
+        model.vstScanRequestForTesting = { _, _ in pluginHostReply("scanning") }
+        model.scanVstPlugins()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        let laterPoll = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: laterPoll)
+        expectEqual(model.vstCapability, .missing, "after a scan: missing")
+        expect(model.vstStatusLine.hasPrefix("Plug-in host not found — build corevideo-plugin-host"),
+               "the host-missing status line: \(model.vstStatusLine)")
+        expectEqual(model.vstUnavailableNote, "Plug-in host not found.", "the insert control's host-missing note")
+    }
+
+    /// A failed scan request clears the kicked flag so the next kick retries,
+    /// and the menus and status line say the request failed instead of "has
+    /// not run yet — reopen in a moment" forever.
+    /// Mutation: the catch leaves scanKicked true / sets no failure (red).
+    @MainActor
+    static func testFix7FailedScanRetries() {
+        typealias P = VstAddMenuPolicy
+        struct ScanDown: Error {}
+        let model = AppModel()
+        var attempts = 0
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { attempts += 1 }
+            throw ScanDown()
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestFailed }, limit: 2)
+        expectEqual(attempts, 1, "one request")
+        expect(model.vstScanRequestFailed, "the failure is recorded")
+        expect(!model.vstScratch.scanKicked, "the kicked flag is cleared")
+        expectEqual(model.vstAddMenuState, .scanFailed, "SHOW's menu: the request failed")
+        expectEqual(model.setupVstMenuEmptyLine, "Plug-in scan request failed — click to retry", "SETUP's menu line")
+        expectEqual(model.vstStatusLine, "Plug-in scan request failed — rescan to retry.", "the status line")
+        expect(model.setupVstMenuEmptyLine != P.notScannedLine, "not stuck on 'has not run yet'")
+        // Reopening retries; a good reply clears the failure.
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { attempts += 1 }
+            return pluginHostReply("scanning")
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(attempts, 2, "the next kick sent a second request")
+        expect(!model.vstScanRequestFailed, "a new request clears the failure")
+        expectEqual(model.setupVstMenuEmptyLine, P.scanningLine, "and the menu follows the reply")
+    }
+
+    // ── Review fix-ups 8 ────────────────────────────────────────────────────
+
+    /// A sessionState snapshot shaped like the real core: the key layout of
+    /// CoreStateCapture.cpp sessionState ({"audioMixSession", ...} at the root)
+    /// and audioMixSessionState ({"pluginHost", pluginHostState()} inside it,
+    /// fields from MediaCore.cpp pluginHostState). There is no root-level
+    /// `pluginHost`, so a root read applies nothing.
+    private static let realShapeSessionStateJson = """
+    {
+      "sceneId": "scene-1",
+      "active": true,
+      "audioMixSession": {
+        "status": "live",
+        "masterLevel": 0.5,
+        "loudnessLufs": -18.0,
+        "pluginHost": {
+          "status": "ready",
+          "plugins": [
+            {"id": "vst3:abc", "name": "Pro-Q 3", "vendor": "FabFilter", "probe": "pass",
+             "classNames": ["Pro-Q 3"]}
+          ],
+          "serve": {
+            "running": true, "exchanges": 10, "deadlineMisses": 0,
+            "activePlugin": "Pro-Q 3", "statusCode": 0, "lastError": "",
+            "editorStatusCode": 0, "editorActivePlugin": "", "editorLastError": "",
+            "latencySamples": 0, "latencyMs": 0,
+            "paramPluginClass": "", "paramTotalCount": 0,
+            "paramListGeneration": 0, "paramValuesGeneration": 0, "params": [],
+            "respawn": {"attempts": 0, "gaveUp": false}
+          }
+        },
+        "limiterEnabled": false,
+        "limiterActive": false,
+        "participants": [],
+        "warnings": []
+      },
+      "audioRoutingMatrix": {"routes": []}
+    }
+    """
+
+    private static func realShapeSessionState() -> JSONObject {
+        (try? JSONSerialization.jsonObject(with: Data(realShapeSessionStateJson.utf8))) as? JSONObject ?? [:]
+    }
+
+    /// The core nests pluginHost under audioMixSession (CoreStateCapture.cpp
+    /// audioMixSessionState; Windows reads LastSnapshot.AudioMixSession.PluginHost,
+    /// StudioViewModel.cs:2265). A real-shaped snapshot updates vstHost through
+    /// BOTH the poll path (applySnapshot) and the scan reply.
+    /// Mutation: read `snapshot["pluginHost"]` (the root) in the poll path (red,
+    /// poll half); read `reply["snapshot"]["pluginHost"]` in the scan reply (red,
+    /// reply half).
+    @MainActor
+    static func testFix8PluginHostRealShape() {
+        let snapshot = realShapeSessionState()
+        expect(!snapshot.isEmpty, "the real-shape fixture parses")
+        expect(snapshot["pluginHost"] == nil, "the real core has no root-level pluginHost")
+        // Poll path.
+        let polled = AppModel()
+        polled.applySnapshotForTesting(snapshot)
+        expectEqual(polled.vstHost.status, "ready", "poll: status applied from audioMixSession.pluginHost")
+        expectEqual(polled.vstPlugins.map(\.name), ["Pro-Q 3"], "poll: plug-ins applied")
+        expect(polled.vstHost.serveRunning, "poll: serve.running applied")
+        expectEqual(polled.vstCapability, .live, "poll: a running host gates inserts live")
+        expect(polled.vstInsertsLive, "poll: vstInsertsLive follows serve.running")
+        // Scan reply path.
+        let scanned = AppModel()
+        scanned.vstScanRequestForTesting = { _, _ in ["snapshot": snapshot] }
+        scanned.scanVstPlugins()
+        spin(until: { scanned.vstScanRequestReturned || !scanned.vstScratch.scanKicked }, limit: 2)
+        expect(scanned.vstScanRequestReturned, "reply: the nested node counts as a reply with pluginHost")
+        expectEqual(scanned.vstHost.status, "ready", "reply: status applied from audioMixSession.pluginHost")
+        expectEqual(scanned.vstPlugins.map(\.name), ["Pro-Q 3"], "reply: plug-ins applied")
+        expectEqual(scanned.vstAddMenuState, .plugins, "reply: the menu lists the plug-ins")
+        // The shared reader.
+        expectEqual(AppModel.pluginHostNode(inSnapshot: snapshot)?["status"] as? String, "ready",
+                    "pluginHostNode reads audioMixSession.pluginHost")
+        expect(AppModel.pluginHostNode(inSnapshot: ["pluginHost": ["status": "ready"] as JSONObject]) == nil,
+               "a root-level pluginHost is not the core's shape")
+    }
+
+    /// A poll requested before the scan reply was applied may carry a capture
+    /// from before the core set "scanning": its pre-scan "absent" must not
+    /// count as a finished scan. Only a poll requested after the reply does.
+    /// Mutation: apply pluginHost from every snapshot (drop the stale-barrier
+    /// check in applyPluginHostFromSnapshot) (red).
+    @MainActor
+    static func testFix8StalePollCannotFinishScan() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        // A poll is in flight when the scan starts: requested before the reply.
+        let stalePoll = model.issueSnapshotRequest()
+        model.vstScanRequestForTesting = { _, _ in pluginHostReply("scanning") }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(model.vstHost.status, "scanning", "the reply says scanning")
+        // ... and lands after the reply with the pre-scan default.
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: stalePoll)
+        expectEqual(model.vstHost.status, "scanning", "a stale poll does not regress the status")
+        expect(!model.vstScanCompleted, "a stale poll does not finish the scan")
+        expect(model.setupVstMenuEmptyLine != P.noneFoundLine, "SETUP's menu never flashes 'none found'")
+        expectEqual(model.vstAddMenuState, .scanning, "SHOW's menu: still scanning")
+        // An unstamped snapshot (a one-shot command reply) during the window is skipped too.
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"))
+        expectEqual(model.vstAddMenuState, .scanning, "an unordered snapshot cannot finish the scan either")
+        // A poll requested after the reply reports the finished scan.
+        let freshPoll = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: freshPoll)
+        expect(model.vstScanCompleted, "a fresh absent after the reply: completed")
+        expectEqual(model.setupVstMenuEmptyLine, P.noneFoundLine, "a completed scan found nothing")
+        expectEqual(model.vstCapability, .missing, "and the host is really missing")
+        // The window is closed: later snapshots apply normally again.
+        model.applySnapshotForTesting(pluginHostSnapshot("ready", plugins: [["id": "a", "name": "A"]]))
+        expectEqual(model.vstPlugins.map(\.name), ["A"], "after a fresh poll every snapshot applies")
+    }
+
+    // ── Review fix-ups 9 ────────────────────────────────────────────────────
+
+    /// A respawned core starts at the default "absent" with no scan. Scan state
+    /// left over from the previous core generation must not read that as a
+    /// finished scan ("none found" / "host not found"), and the kicked flag must
+    /// not block the next scan.
+    /// Mutation: drop the resetVstScanForNewCore() call from onConnected (red).
+    @MainActor
+    static func testFix9RespawnResetsScanState() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        var sent = 0
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { sent += 1 }
+            return pluginHostReply("scanning")
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        let ready = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("ready", plugins: [["id": "a", "name": "A"]]),
+                                      requestSeq: ready)
+        expectEqual(model.vstAddMenuState, .plugins, "precondition: the old core listed a plug-in")
+        expect(model.vstScratch.scanKicked, "precondition: the old core's scan was kicked")
+        // The core respawns: a new generation, whose first poll is the default "absent".
+        model.onConnected()
+        model.stopTimersForTesting()
+        let fresh = model.issueSnapshotRequest()
+        model.applySnapshotForTesting(pluginHostSnapshot("absent"), requestSeq: fresh)
+        expectEqual(model.vstAddMenuState, .notScanned, "SHOW's menu: the new core has not scanned")
+        expectEqual(model.setupVstMenuEmptyLine, P.notScannedLine, "SETUP's menu: not scanned, not 'none found'")
+        expectEqual(model.vstCapability, .notScanned, "not 'host missing'")
+        expectEqual(model.vstUnavailableNote, "Plug-in scan has not run yet.", "the insert note is not 'host not found'")
+        expect(!model.vstScanRequestReturned, "the old generation's returned scan is forgotten")
+        expect(!model.vstScratch.scanKicked, "the kicked flag is cleared")
+        expect(model.vstScratch.scanStaleBarrier == nil, "the old generation's barrier is cleared")
+        model.kickVstScanIfNeeded()
+        spin(until: { sent >= 2 }, limit: 2)
+        expectEqual(sent, 2, "the next kick sends a new scan request to the new core")
+    }
+
+    /// A scan reply still in flight from the OLD core when a new core generation
+    /// starts is dropped: its core is gone, and applying its "ready" list would
+    /// show plug-ins the new core has never scanned. The new generation's own
+    /// reply is applied. The seam is MainActor-isolated, so a released reply runs
+    /// the whole reply path in the same main-actor job that sets its marker:
+    /// once the marker reads true the reply has been applied or dropped.
+    /// Mutation: drop the generation check from scanVstPlugins' reply path (red).
+    @MainActor
+    static func testFix9OldCoreReplyDropped() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        var held: [CheckedContinuation<JSONObject, Never>] = []
+        var returned = 0
+        model.vstScanRequestForTesting = { @MainActor _, _ in
+            let reply = await withCheckedContinuation { held.append($0) }
+            returned += 1
+            return reply
+        }
+        model.kickVstScanIfNeeded()
+        spin(until: { held.count == 1 }, limit: 2)
+        expectEqual(held.count, 1, "precondition: the old core's scan request is held")
+        // The core respawns while the old reply is still in flight.
+        model.onConnected()
+        model.stopTimersForTesting()
+        expectEqual(model.vstHost, VstHostState(), "precondition: the new generation starts pre-scan")
+        // The old core's reply arrives, in the real nesting, listing one plug-in.
+        let oneReady: JSONObject = ["snapshot": pluginHostSnapshot("ready", plugins: [["id": "old", "name": "Old"]])]
+        held[0].resume(returning: oneReady)
+        spin(until: { returned >= 1 }, limit: 2)
+        expectEqual(returned, 1, "the old reply was delivered to the reply path")
+        expectEqual(model.vstHost, VstHostState(), "the old core's reply is ignored: still the pre-scan default")
+        expect(model.vstPlugins.isEmpty, "no plug-ins from the old core")
+        expect(!model.vstScanRequestReturned, "the old reply does not count as the new core's scan")
+        expectEqual(model.vstAddMenuState, .notScanned, "SHOW's menu: not scanned, not plug-ins")
+        expectEqual(model.setupVstMenuEmptyLine, P.notScannedLine, "SETUP's menu: not scanned")
+        // The new generation's own scan reply IS applied.
+        model.kickVstScanIfNeeded()
+        spin(until: { held.count == 2 }, limit: 2)
+        expectEqual(held.count, 2, "the new core gets its own scan request")
+        held[1].resume(returning: ["snapshot": pluginHostSnapshot("ready", plugins: [["id": "new", "name": "New"]])])
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expect(model.vstScanRequestReturned, "the new core's reply returned")
+        expectEqual(model.vstHost.status, "ready", "the new core's reply is applied")
+        expectEqual(model.vstPlugins.map(\.name), ["New"], "the new core's plug-in is listed")
+        expectEqual(model.vstAddMenuState, .plugins, "SHOW's menu lists plug-ins")
+    }
+
+    /// A VST surface that stays on screen across a respawn gets no new
+    /// onAppear, so the new core generation re-kicks the scan itself; with no
+    /// such surface visible it waits for the next one to appear.
+    /// Mutation: drop the visible-surface re-kick from resetVstScanForNewCore (red).
+    @MainActor
+    static func testFix9RespawnRescansVisibleSurface() {
+        let model = AppModel()
+        var sent = 0
+        model.vstScanRequestForTesting = { _, _ in
+            await MainActor.run { sent += 1 }
+            return pluginHostReply("scanning")
+        }
+        model.vstSurfaceAppeared()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        expectEqual(sent, 1, "a VST surface appearing kicks the scan")
+        model.onConnected()
+        model.stopTimersForTesting()
+        spin(until: { sent >= 2 }, limit: 2)
+        expectEqual(sent, 2, "a still-visible surface rescans the new core")
+        model.vstSurfaceDisappeared()
+        spin(until: { model.vstScanRequestReturned }, limit: 2)
+        model.onConnected()
+        model.stopTimersForTesting()
+        spin(until: { false }, limit: 0.1)
+        expectEqual(sent, 2, "with no VST surface visible the respawn does not scan")
+        expect(!model.vstScratch.scanKicked, "and the next surface to appear will")
+    }
+
+    /// Off Windows `--probe` always fails (plugin-host.cpp), so every probed
+    /// plug-in reads probe "fail". With the host not live SHOW's add menu lists
+    /// the scanned plug-ins dimmed under the scan-only line (as the browser
+    /// does), during and after probing; a live host's real "fail" stays hidden
+    /// (Windows' filter, AudioPage.xaml.cs).
+    /// Mutation: filter probe == "fail" out of the not-live rows (red).
+    @MainActor
+    static func testFix9ScanOnlyPluginsListedDimmed() {
+        typealias P = VstAddMenuPolicy
+        let model = AppModel()
+        model.applyPluginHostSnapshot(["status": "ready", "plugins": [
+            ["id": "a", "name": "A", "probe": "fail"], ["id": "b", "name": "B", "probe": "fail"],
+        ] as [JSONObject]])
+        expectEqual(model.vstCapability, .scanOnly, "fixture: scan-only")
+        expectEqual(model.vstAddMenuState, .plugins, "the menu lists plug-ins")
+        let rows = model.vstAddMenuRows
+        expectEqual(rows.map(\.title), [model.vstStatusLine, "A", "B"], "the scan-only line, then both plug-ins")
+        expectEqual(rows.filter(\.enabled).count, 0, "every row is dimmed")
+        expectEqual(rows.compactMap(\.plugin).map(\.id), ["a", "b"], "the plug-in rows carry their plug-ins")
+        // During probing ("pending") the same rows.
+        let pending = P.pluginRows(plugins: model.vstPlugins.map { var p = $0; p.probe = "pending"; return p },
+                                   live: false, statusLine: model.vstStatusLine)
+        expectEqual(pending, rows.map { r in
+            P.Row(id: r.id, title: r.title, enabled: r.enabled,
+                  plugin: r.plugin.map { var p = $0; p.probe = "pending"; return p })
+        }, "probing and probed list the same dimmed rows")
+        // A live host: a real "fail" is hidden, the rest enabled, no scan-only line.
+        let live = P.pluginRows(plugins: [VstPlugin(id: "a", name: "A", probe: "fail"),
+                                          VstPlugin(id: "b", name: "B", probe: "pass")],
+                                live: true, statusLine: "unused")
+        expectEqual(live.map(\.title), ["B"], "live: a failed probe is filtered")
+        expect(live.allSatisfy(\.enabled), "live: rows enabled")
+    }
+
+    /// The Audio Mixer pop-out window takes its sizes from AudioLayout and no
+    /// literal: ShellApp's Window block names popoutMin and popoutDefault and
+    /// carries no number, so a literal that could drift from the constants is red.
+    /// Mutation: write `minWidth: 900` (or any literal size) in ShellApp (red).
+    static func testFix7PopoutWindowUsesLayout() {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("ShellApp.swift")
+        guard let source = try? String(contentsOf: file, encoding: .utf8),
+              let start = source.range(of: "Window(\"Audio Mixer\""),
+              let end = source.range(of: ".defaultSize(", range: start.upperBound..<source.endIndex),
+              let close = source.range(of: ")", range: end.upperBound..<source.endIndex) else {
+            expect(false, "ShellApp.swift's Audio Mixer Window block must be readable from the harness"); return
+        }
+        // Comment lines (the Windows citation carries "1080 x 700") are not code.
+        let code = source[start.lowerBound..<close.upperBound].split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+        for name in ["minWidth: AudioLayout.popoutMin.width", "minHeight: AudioLayout.popoutMin.height",
+                     "width: AudioLayout.popoutDefault.width", "height: AudioLayout.popoutDefault.height"] {
+            expect(code.contains(name), "the pop-out window reads \(name)")
+        }
+        expect(code.range(of: "[0-9]", options: .regularExpression) == nil,
+               "no numeric literal in the pop-out window's sizes")
     }
 }

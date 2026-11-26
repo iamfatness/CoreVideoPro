@@ -116,7 +116,8 @@ extension ShellTests {
 
     @MainActor static func testCommsPageOwnsItsScrolling() {
         expect(TabPageLayout.fillsHeight(.comms), "Comms owns its scrolling")
-        expect(!TabPageLayout.fillsHeight(.audio), "other tabs keep the outer ScrollView")
+        // .audio fills the window too (OD-3, the Audio SHOW fixed viewport), so the example is .settings.
+        expect(!TabPageLayout.fillsHeight(.settings), "other tabs keep the outer ScrollView")
         let height: CGFloat = 768
         let (f, _) = layoutComms(manyCells(30), width: 1360, height: height)
         expect(f.ops != .zero, "ops strip measured")

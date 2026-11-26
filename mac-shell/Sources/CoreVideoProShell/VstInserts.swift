@@ -29,7 +29,7 @@
 // process, show an editor, or read parameters from one. This file therefore
 // ships a real scan/browse surface and DIMS every control that would need the
 // audio transport — it never renders a live-looking insert that does nothing.
-// The gating is derived from the core's runtime `pluginHost.serve.running`
+// The gating is derived from the core's runtime `audioMixSession.pluginHost.serve.running`
 // (never a hardcoded platform check), so the day the host gains a macOS
 // transport this surface lights up with no change here.
 //
@@ -89,11 +89,103 @@ final class VstScratch {
     var pendingParams: [UInt32: Double] = [:]
     var paramEditedAt: [UInt32: Date] = [:]
     var scanKicked = false
+    /// Set when a scan reply is applied: the last snapshot-request stamp issued
+    /// before it. Snapshots answering those requests (or unstamped ones) may
+    /// predate the core's "scanning", so their pluginHost is skipped until a
+    /// later-stamped snapshot lands (AppModel.applyPluginHostFromSnapshot).
+    var scanStaleBarrier: Int?
+    /// Bumped on every core generation: a scan reply from an older generation
+    /// is dropped (its core is gone; its state would fake a finished scan).
+    var scanGeneration = 0
+    /// VST surfaces (SHOW workspace, SETUP, the plug-in browser) on screen now.
+    /// A surface that stays visible across a respawn gets no new onAppear, so
+    /// the new generation re-kicks the scan for it (resetVstScanForNewCore).
+    var visibleSurfaces = 0
+}
+
+// What SHOW's "＋ Add processing" menu says under VST3 PLUG-INS. The core's
+// status starts at "absent" before any scan ran (MediaCore.h pluginHostStatus_),
+// the same word it uses for "host executable not found", so "absent" alone
+// cannot mean "none found": until a scan has completed the menu says the scan
+// has not run. Windows' copy (W/Views/AudioPage.xaml.cs:349-357) for the rest.
+enum VstAddMenuState: Equatable {
+    case notScanned   // no scan has completed yet
+    case scanning     // a scan or its probes are running
+    case noneFound    // a scan completed and found nothing
+    case scanFailed   // the shell's scan request failed; reopening retries
+    case plugins      // list the scanned plug-ins
+}
+
+enum VstAddMenuPolicy {
+    static let notScannedLine = "Plug-in scan has not run yet — reopen this menu in a moment"
+    static let scanningLine = "Scanning for plugins — reopen this menu in a moment"   // xaml.cs:353
+    static let noneFoundLine = "No VST3 plugins found on this machine"                 // xaml.cs:354
+    // Mac-authored: Windows has no request-failure copy (its scan rides the next
+    // media-core sync as a one-shot command, StudioViewModel.cs:5189-5199, so
+    // there is no separate scan request to fail). Reopening the menu retries.
+    // The line is the retry action (a SwiftUI Menu has no opening hook to retry on).
+    static let scanFailedLine = "Plug-in scan request failed — click to retry"
+
+    static func state(status: String, pluginCount: Int, scanCompleted: Bool,
+                      scanFailed: Bool = false) -> VstAddMenuState {
+        if pluginCount > 0 { return .plugins }
+        if status == "scanning" || status == "probing" { return .scanning }
+        if scanCompleted { return .noneFound }
+        return scanFailed ? .scanFailed : .notScanned
+    }
+
+    /// One row of an add menu's plug-in list (state == .plugins).
+    struct Row: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let enabled: Bool
+        let plugin: VstPlugin?   // nil = the explanatory status line
+    }
+
+    /// The plug-in rows under VST3 PLUG-INS once there is a list. A live host
+    /// probes for real, so a "fail" is hidden and the rest are addable
+    /// (Windows' filter, W/Views/AudioPage.xaml.cs OnAddInsertFlyoutOpening).
+    /// When the host cannot run an insert, probe verdicts mean nothing (off
+    /// Windows `--probe` always fails, plugin-host.cpp), so every scanned
+    /// plug-in is listed dimmed under the status line saying why, during and
+    /// after probing alike, matching the browser's dimmed "NOT VERIFIED" list.
+    static func pluginRows(plugins: [VstPlugin], live: Bool, statusLine: String) -> [Row] {
+        if live {
+            return plugins.filter { $0.probe != "fail" }
+                .map { Row(id: "vst:" + $0.id, title: $0.name, enabled: true, plugin: $0) }
+        }
+        return [Row(id: "status", title: statusLine, enabled: false, plugin: nil)]
+            + plugins.map { Row(id: "vst:" + $0.id, title: $0.name, enabled: false, plugin: $0) }
+    }
+
+    /// The disabled line shown instead of a list, nil when there is a list.
+    static func emptyLine(_ state: VstAddMenuState) -> String? {
+        switch state {
+        case .notScanned: return notScannedLine
+        case .scanning: return scanningLine
+        case .noneFound: return noneFoundLine
+        case .scanFailed: return scanFailedLine
+        case .plugins: return nil
+        }
+    }
+
+    /// A scan has completed once the core reports a terminal status that only a
+    /// scan produces ("ready", "error"), once it has listed plug-ins, or once
+    /// the shell's own scan request returned and the core is no longer scanning
+    /// (an "absent" after that is the real "host not found"). `requestReturned`
+    /// is set only after the request's reply snapshot (taken after the core set
+    /// "scanning", MediaCore.cpp startPluginHostScan) has been applied, so a
+    /// stale pre-scan "absent" never reads as a completed scan.
+    static func scanCompleted(status: String, pluginCount: Int, requestReturned: Bool) -> Bool {
+        if pluginCount > 0 || status == "ready" || status == "error" { return true }
+        return requestReturned && status != "scanning" && status != "probing"
+    }
 }
 
 // How much of the plug-in host is actually usable right now.
 enum VstCapability: Equatable {
-    case missing      // the host executable was never found — status "absent"
+    case notScanned   // status "absent" but no scan has completed: unknown yet
+    case missing      // a completed scan did not find the host — status "absent"
     case scanOnly     // enumeration works; the audio transport does not
     case live         // the resident host is running: inserts/params/editor real
 }
@@ -133,8 +225,24 @@ extension AppModel {
     // Runtime truth, never a platform constant — see the header note.
     var vstCapability: VstCapability {
         if vstHost.serveRunning { return .live }
-        if vstHost.status == "absent" { return .missing }
+        // "absent" is also the core's pre-scan default (MediaCore.h
+        // pluginHostStatus_): only a completed scan makes it "host not found".
+        if vstHost.status == "absent" { return vstScanCompleted ? .missing : .notScanned }
         return .scanOnly
+    }
+
+    /// The status line while no scan has completed (honest reporting: the host
+    /// is not known to be missing yet).
+    static let vstNotScannedStatusLine = "Plug-in scan has not run yet."
+    static let vstScanFailedStatusLine = "Plug-in scan request failed — rescan to retry."
+
+    /// The VST3 insert control's note when the host cannot run an insert.
+    var vstUnavailableNote: String {
+        switch vstCapability {
+        case .missing: return "Plug-in host not found."
+        case .notScanned: return vstScanRequestFailed ? Self.vstScanFailedStatusLine : Self.vstNotScannedStatusLine
+        case .scanOnly, .live: return "Unavailable on macOS — the isolated VST3 host is Windows-only."
+        }
     }
 
     var vstInsertsLive: Bool { vstCapability == .live }
@@ -146,6 +254,8 @@ extension AppModel {
 
     var vstStatusLine: String {
         switch vstCapability {
+        case .notScanned:
+            return vstScanRequestFailed ? Self.vstScanFailedStatusLine : Self.vstNotScannedStatusLine
         case .missing:
             return "Plug-in host not found — build corevideo-plugin-host into "
                 + "native/build-metal, then rescan."
@@ -156,6 +266,38 @@ extension AppModel {
         case .live:
             return "Isolated VST3 host running — inserts process live."
         }
+    }
+
+    /// The plugin-host node of a sessionState snapshot. The core nests it under
+    /// audioMixSession — every branch of CoreStateCapture.cpp
+    /// audioMixSessionState emits {"pluginHost", pluginHostState()} — and
+    /// Windows reads `_bridge.LastSnapshot?.AudioMixSession.PluginHost`
+    /// (StudioViewModel.cs:2265). The poll (applySnapshot) and the scan reply
+    /// (scanVstPlugins) both read through here so they cannot drift again.
+    static func pluginHostNode(inSnapshot snapshot: JSONObject?) -> JSONObject? {
+        (snapshot?["audioMixSession"] as? JSONObject)?["pluginHost"] as? JSONObject
+    }
+
+    /// Poll intake for the plugin-host node, guarded against a stale capture.
+    ///
+    /// Why: once the scan reply ("scanning", MediaCore.cpp startPluginHostScan)
+    /// has been applied and `vstScanRequestReturned` is true, an "absent" reads
+    /// as a finished scan. A poll whose request left BEFORE the reply may carry
+    /// a capture from before the scan started — the core's pre-scan "absent" —
+    /// and core replies are not ordered, so applying it would flash "none
+    /// found" / "host not found" mid-scan. The core exposes no revision for the
+    /// plugin-host state, and a real host-missing result is ALSO "absent", so
+    /// status alone cannot tell them apart. Request send order can: a request
+    /// sent after the reply was applied reached the core after it set
+    /// "scanning". So until one snapshot stamped later than the barrier lands,
+    /// snapshots stamped at/below it, and unstamped ones, leave the node alone.
+    func applyPluginHostFromSnapshot(_ snapshot: JSONObject, requestSeq: Int?) {
+        guard let node = Self.pluginHostNode(inSnapshot: snapshot) else { return }
+        if let barrier = vstScratch.scanStaleBarrier {
+            guard let requestSeq, requestSeq > barrier else { return }
+            vstScratch.scanStaleBarrier = nil
+        }
+        applyPluginHostSnapshot(node)
     }
 
     // pluginHost node → model. Assignments are change-gated: snapshots arrive at
@@ -242,6 +384,7 @@ extension AppModel {
     // silently does nothing in the audio path. "Plug-in name" is the CORE's
     // rule (InsertChainPolicy.isHostHandled: contains "vst" or "host"), not the
     // narrower Windows isVst: "Host Test" or "vst pro" go to the host too.
+    // A host going live does not re-send by itself: the full chain waits for the next mix push.
     func pluginInsertNames(for stripId: String) -> [String] {
         let chain = (channelInserts[stripId] ?? ChannelInserts()).chain
         return vstInsertsLive ? chain : chain.filter { !InsertChainPolicy.isHostHandled($0) }
@@ -252,6 +395,7 @@ extension AppModel {
     // the host is not live, exactly as pluginInsertNames does for a channel.
     // Wire-only: busInserts itself keeps the operator's chain, and the slot
     // for a dropped name reads BYPASS (InsertChainPolicy.slots).
+    // A host going live does not re-send by itself: the full chain waits for the next routing push.
     var wireBusInserts: [String: [String]] {
         vstInsertsLive ? busInserts
             : busInserts.mapValues { $0.filter { !InsertChainPolicy.isHostHandled($0) } }
@@ -287,23 +431,101 @@ extension AppModel {
     // `scan-vst-plugins` is routed as a TOP-LEVEL request (JsonRpcServer.cpp
     // handle(): the open-vst-editor / scan-vst-plugins guard) and returns the
     // fresh snapshot. The core walks the roots on a detached thread.
+    //
+    // The reply's snapshot is taken AFTER the core set "scanning" synchronously
+    // (MediaCore.cpp startPluginHostScan), so it is applied before the request
+    // counts as returned: the model's stale pre-scan "absent" never reads as a
+    // completed scan ("none found" / "host not found"). A reply without a
+    // pluginHost node reports nothing, so the scan stays unknown and the next
+    // menu open asks again. A failed request clears the kicked flag (reopening
+    // retries) and the menus say the request failed.
     func scanVstPlugins() {
-        guard let bridge else { return }
+        let send: (JSONObject, TimeInterval) async throws -> JSONObject
+        if let seam = vstScanRequestForTesting {
+            send = seam
+        } else if let bridge {
+            send = { body, timeout in try await bridge.request(body, timeout: timeout) }
+        } else {
+            return
+        }
         vstScratch.scanKicked = true
+        vstScanRequestFailed = false
+        let generation = vstScratch.scanGeneration
         Task { [weak self] in
             do {
-                _ = try await bridge.request(["type": "scan-vst-plugins"], timeout: 20)
+                let reply = try await send(["type": "scan-vst-plugins"], 20)
+                await MainActor.run {
+                    guard let self, self.vstScratch.scanGeneration == generation else { return }
+                    if let node = Self.pluginHostNode(inSnapshot: reply["snapshot"] as? JSONObject) {
+                        self.applyPluginHostSnapshot(node)
+                        // Every snapshot request issued so far may predate "scanning".
+                        self.vstScratch.scanStaleBarrier = self.snapshotRequestsIssued
+                        self.vstScanRequestReturned = true
+                    } else {
+                        self.vstScratch.scanKicked = false
+                    }
+                }
             } catch {
                 await MainActor.run {
-                    self?.pushWarning("VST3 scan failed: \(error.localizedDescription)")
+                    guard let self, self.vstScratch.scanGeneration == generation else { return }
+                    self.vstScratch.scanKicked = false
+                    self.vstScanRequestFailed = true
+                    self.pushWarning("VST3 scan failed: \(error.localizedDescription)")
                 }
             }
         }
     }
 
+    /// SHOW's add menu (VstAddMenuPolicy): whether any scan has completed.
+    var vstScanCompleted: Bool {
+        VstAddMenuPolicy.scanCompleted(status: vstHost.status, pluginCount: vstPlugins.count,
+                                       requestReturned: vstScanRequestReturned)
+    }
+
+    /// What both add menus (SHOW workspace and SETUP) say under VST3 PLUG-INS.
+    var vstAddMenuState: VstAddMenuState {
+        VstAddMenuPolicy.state(status: vstHost.status, pluginCount: vstPlugins.count,
+                               scanCompleted: vstScanCompleted, scanFailed: vstScanRequestFailed)
+    }
+
+    /// The rows both add menus list once vstAddMenuState == .plugins.
+    var vstAddMenuRows: [VstAddMenuPolicy.Row] {
+        VstAddMenuPolicy.pluginRows(plugins: vstPlugins, live: vstInsertsLive, statusLine: vstStatusLine)
+    }
+
     func kickVstScanIfNeeded() {
-        guard !vstScratch.scanKicked, bridge != nil else { return }
+        guard !vstScratch.scanKicked, bridge != nil || vstScanRequestForTesting != nil else { return }
         scanVstPlugins()
+    }
+
+    /// A VST surface came on screen: count it and make sure a scan has run.
+    func vstSurfaceAppeared() {
+        vstScratch.visibleSurfaces += 1
+        kickVstScanIfNeeded()
+    }
+
+    func vstSurfaceDisappeared() {
+        vstScratch.visibleSurfaces = max(0, vstScratch.visibleSurfaces - 1)
+    }
+
+    /// Every core generation (AppModel.onConnected). A new core starts at the
+    /// default "absent" with no scan and no plug-ins (MediaCore.h
+    /// pluginHostStatus_), so the previous generation's scan bookkeeping would
+    /// read its first "absent" as a finished scan ("none found" / "host not
+    /// found") and the kicked flag would block the rescan. Back to the
+    /// pre-scan state; an in-flight reply from the old core is dropped by the
+    /// generation check in scanVstPlugins. If a VST surface is on screen it
+    /// gets no new onAppear, so the scan is re-kicked here; otherwise the next
+    /// surface to appear kicks it.
+    func resetVstScanForNewCore() {
+        vstScratch.scanGeneration += 1
+        vstScratch.scanKicked = false
+        vstScratch.scanStaleBarrier = nil
+        vstScanRequestReturned = false
+        vstScanRequestFailed = false
+        if vstHost != VstHostState() { vstHost = VstHostState() }
+        if !vstPlugins.isEmpty { vstPlugins = [] }
+        if vstScratch.visibleSurfaces > 0 { kickVstScanIfNeeded() }
     }
 
     // Opens the plug-in's own editor window in the isolated host process.
@@ -360,7 +582,8 @@ extension AppModel {
 
 // ── views ────────────────────────────────────────────────────────────────────
 
-// The PLUG-INS surface of the audio console: host health, the scanned bundle
+// The content of SETUP's collapsed "Advanced · VST3 plug-in browser" disclosure
+// (A7 Task 5, OD-2; it was the Mac-only PLUG-INS pill): host health, the scanned bundle
 // browser, and the active selection's generic parameter sliders.
 struct VstInsertsSurface: View {
     @EnvironmentObject var model: AppModel
@@ -394,7 +617,8 @@ struct VstInsertsSurface: View {
                 VstParamRack()
             }
         }
-        .onAppear { model.kickVstScanIfNeeded() }
+        .onAppear { model.vstSurfaceAppeared() }
+        .onDisappear { model.vstSurfaceDisappeared() }
     }
 
     var header: some View {
@@ -416,6 +640,7 @@ struct VstInsertsSurface: View {
     var statusChip: some View {
         let (label, tint): (String, Color) = {
             switch model.vstCapability {
+            case .notScanned: return ("NOT SCANNED", Studio.secondary)
             case .missing: return ("HOST ABSENT", Studio.red)
             case .scanOnly: return ("SCAN ONLY", Studio.amber)
             case .live: return ("HOST LIVE", Studio.accent)
@@ -637,9 +862,7 @@ struct VstChannelInsertControl: View {
             } else {
                 Text(selectionLabel)
                     .font(.grotesk(12)).foregroundStyle(Studio.textDim).lineLimit(2)
-                Text(model.vstCapability == .missing
-                     ? "Plug-in host not found."
-                     : "Unavailable on macOS — the isolated VST3 host is Windows-only.")
+                Text(model.vstUnavailableNote)
                     .font(.plexMono(9)).foregroundStyle(Studio.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
