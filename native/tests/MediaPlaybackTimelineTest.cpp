@@ -1197,43 +1197,152 @@ class StallableBedDecoder final : public IMediaDecoder, public IMediaVideoPrefet
 };
 }  // namespace
 
-TEST(MediaTransports, AnAudioBedStalledPastTheBackstopRecoversWhenItsAudioComesBack) {
-  auto stall = std::make_shared<BedStall>();
+namespace {
+// One bed on a virtual worker clock. The test thread is the audio consumer, so
+// it decides whether popAudio() or the decoder worker acts first after a clock
+// jump. That order decides how many prepared windows are queued when the
+// backstop ends the bed, and each test below forces one order. Queue depth is
+// read from the Entry; nothing here depends on how fast a thread is scheduled.
+struct StalledBedRig {
+  std::shared_ptr<BedStall> stall = std::make_shared<BedStall>();
   std::atomic<int64_t> virtualMs{1'000'000};
-  MediaTransports t(corevideo::testing::mediaFactoryOf<StallableBedDecoder>(stall));
-  t.setWorkerClockForTesting([&virtualMs] { return virtualMs.load(); });
-  auto opened = t.apply({testDesired(true, false)}, 0);
-  ASSERT_EQ(opened.size(), 1u);
-  if (opened.empty()) return;
-  auto e = opened.front().entry;
+  std::atomic<int> clockReads{0};  // one per decoder-worker iteration
+  MediaTransports t;
+  std::shared_ptr<MediaTransports::Entry> e;
   int heard = 0;
-  // Drives the bus side on the virtual clock (1 virtual ms per real ms) until
-  // `done` holds or `realMs` of real time pass.
-  const auto pump = [&](const std::function<bool(MediaTransportState)>& done, int realMs) {
-    for (const auto deadline = steadyNowMs() + realMs; steadyNowMs() < deadline;) {
+
+  StalledBedRig() : t(corevideo::testing::mediaFactoryOf<StallableBedDecoder>(stall)) {}
+  explicit StalledBedRig(MediaTransports::DecoderFactory factory) : t(std::move(factory)) {}
+
+  bool open(bool loop) {
+    t.setWorkerClockForTesting([this] { clockReads.fetch_add(1); return virtualMs.load(); });
+    auto opened = t.apply({testDesired(true, false, loop)}, 0);
+    if (opened.size() != 1u) return false;
+    e = opened.front().entry;
+    return true;
+  }
+  MediaTransportState state() {
+    std::lock_guard<std::mutex> lock(e->mutex);
+    return e->state;
+  }
+  size_t queued() {
+    std::lock_guard<std::mutex> lock(e->mutex);
+    return e->audio.size();
+  }
+  // Waits, WITHOUT pulling audio and without moving the clock. The limit only
+  // stops a broken product from hanging the run; it measures nothing. Keep it
+  // well above the ~200 pump steps a recovery takes at a 15.6 ms Windows sleep.
+  static bool waitFor(const std::function<bool()>& done) {
+    for (const auto deadline = steadyNowMs() + 20000; steadyNowMs() < deadline;) {
+      if (done()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  }
+  // Jumps the clock without pulling audio, then waits until the worker has run
+  // at least one whole iteration at the new time.
+  bool jumpAndLetTheWorkerRunFirst(int64_t ms) {
+    virtualMs.fetch_add(ms);
+    const int before = clockReads.load();
+    return waitFor([&] { return clockReads.load() >= before + 3; });
+  }
+  // Drives the bus side on the virtual clock (1 virtual ms per real ms).
+  bool pump(const std::function<bool()>& done) {
+    return waitFor([&] {
       const auto now = virtualMs.fetch_add(1) + 1;
       MediaTransports::selectVideo(*e, now * 10000);
       for (const auto& window : t.popAudio(now)) {
         if (!window.pcm.empty() && window.pcm.front() != 0.f) ++heard;
       }
-      const auto status = statusOf(t, "media:test");
-      if (status && done(status->state)) return true;
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    return false;
-  };
-  ASSERT_TRUE(pump([&](MediaTransportState s) { return s == MediaTransportState::Live && heard > 0; }, 3000))
-      << "the bed never went Live with audible audio";
+      return done();
+    });
+  }
+  bool playAudibly() { return pump([&] { return state() == MediaTransportState::Live && heard > 0; }); }
+  // "Recovered" is Live AND several further windows heard, so a bed that flips
+  // to Live once and then wedges does not pass.
+  bool recovers() {
+    const int before = heard;
+    return pump([&] { return state() == MediaTransportState::Live && heard >= before + 5; });
+  }
+};
+constexpr int64_t kPastBedBackstopMs = 6500;  // past kEndedBackstopNoNewFrameMs in one jump
+}  // namespace
 
-  stall->stalled.store(true);
-  virtualMs.fetch_add(6500);  // past kEndedBackstopNoNewFrameMs in one jump
-  ASSERT_TRUE(pump([](MediaTransportState s) { return s == MediaTransportState::Ended; }, 3000))
+// The decoder alone stalls: the consumer keeps pulling, so the queue is empty
+// when the backstop fires. This covers the still-polled-while-Ended path.
+TEST(MediaTransports, AnAudioBedStalledPastTheBackstopRecoversWhenItsAudioComesBack) {
+  StalledBedRig rig;
+  ASSERT_TRUE(rig.open(false));
+  ASSERT_TRUE(rig.playAudibly()) << "the bed never went Live with audible audio";
+
+  rig.stall->stalled.store(true);
+  ASSERT_TRUE(rig.pump([&] { return rig.queued() == 0; })) << "fixture: the consumer never drained the queue";
+  rig.virtualMs.fetch_add(kPastBedBackstopMs);
+  ASSERT_TRUE(rig.pump([&] { return rig.state() == MediaTransportState::Ended; }))
       << "fixture: a bed with no audio for 6.5 s must reach the backstop's Ended";
 
-  const int heardBefore = heard;
-  stall->stalled.store(false);
-  EXPECT_TRUE(pump([&](MediaTransportState s) { return s == MediaTransportState::Live && heard > heardBefore; }, 3000))
-      << "the bed stayed Ended (and silent) after its audio came back";
+  rig.stall->stalled.store(false);
+  EXPECT_TRUE(rig.recovers()) << "the bed stayed Ended (and silent) after its audio came back";
+}
+
+// Everything stalls (a loaded or suspended machine) and the decoder worker is
+// first to run again: the backstop fires with prepared windows still queued.
+// popAudio() never drains an Ended entry, so a full queue used to leave the
+// recovery poll no room, for good. This was the intermittent CI failure.
+TEST(MediaTransports, AnAudioBedEndedWithAFullAudioQueueRecoversWhenItsAudioComesBack) {
+  StalledBedRig rig;
+  ASSERT_TRUE(rig.open(false));
+  ASSERT_TRUE(rig.playAudibly()) << "the bed never went Live with audible audio";
+  ASSERT_TRUE(StalledBedRig::waitFor([&] { return rig.queued() == 2; })) << "fixture: the queue never filled";
+
+  rig.stall->stalled.store(true);
+  rig.virtualMs.fetch_add(kPastBedBackstopMs);
+  ASSERT_TRUE(StalledBedRig::waitFor([&] { return rig.state() == MediaTransportState::Ended; }))
+      << "fixture: a bed with no audio for 6.5 s must reach the backstop's Ended";
+
+  rig.stall->stalled.store(false);
+  EXPECT_TRUE(rig.recovers()) << "the bed stayed Ended (and silent) after its audio came back";
+}
+
+// Only the consumer stalls: the decoder is healthy throughout. The full queue
+// stops the worker polling, so the backstop counts that as no progress.
+TEST(MediaTransports, AnAudioBedWhoseConsumerStalledPastTheBackstopRecoversWhenPullingResumes) {
+  StalledBedRig rig;
+  ASSERT_TRUE(rig.open(false));
+  ASSERT_TRUE(rig.playAudibly()) << "the bed never went Live with audible audio";
+  ASSERT_TRUE(StalledBedRig::waitFor([&] { return rig.queued() == 2; })) << "fixture: the queue never filled";
+
+  ASSERT_TRUE(rig.jumpAndLetTheWorkerRunFirst(kPastBedBackstopMs)) << "fixture: the worker never ran";
+
+  EXPECT_TRUE(rig.recovers()) << "the bed stayed Ended (and silent) after its consumer came back";
+}
+
+// The same, through the decoder that plays audio beds in production on the Mac
+// (MediaClipDecoder behind AVFoundation), over the 9 s scripted bed above.
+TEST(MediaTransports, AMediaClipDecoderBedWhoseConsumerStalledRecoversWhenPullingResumes) {
+  StalledBedRig rig([] { return std::make_unique<MediaClipDecoder>(std::make_shared<BedReaders>()); });
+  ASSERT_TRUE(rig.open(false));
+  ASSERT_TRUE(rig.playAudibly()) << "the bed never went Live with audible audio";
+  ASSERT_TRUE(StalledBedRig::waitFor([&] { return rig.queued() == 2; })) << "fixture: the queue never filled";
+
+  ASSERT_TRUE(rig.jumpAndLetTheWorkerRunFirst(kPastBedBackstopMs)) << "fixture: the worker never ran";
+
+  EXPECT_TRUE(rig.recovers()) << "the bed stayed Ended (and silent) after its consumer came back";
+}
+
+// A LOOPING bed never takes the backstop at all.
+TEST(MediaTransports, ALoopingAudioBedStaysLiveThroughAStallOfEverything) {
+  StalledBedRig rig;
+  ASSERT_TRUE(rig.open(true));
+  ASSERT_TRUE(rig.playAudibly()) << "the bed never went Live with audible audio";
+  ASSERT_TRUE(StalledBedRig::waitFor([&] { return rig.queued() == 2; })) << "fixture: the queue never filled";
+
+  rig.stall->stalled.store(true);
+  ASSERT_TRUE(rig.jumpAndLetTheWorkerRunFirst(kPastBedBackstopMs)) << "fixture: the worker never ran";
+  EXPECT_TRUE(rig.state() == MediaTransportState::Live) << "a loop must never be ended by the backstop";
+
+  rig.stall->stalled.store(false);
+  EXPECT_TRUE(rig.recovers()) << "the looping bed went silent after the stall";
 }
 
 // ---------------------------------------------------------------------------
