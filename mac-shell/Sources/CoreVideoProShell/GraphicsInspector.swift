@@ -127,8 +127,7 @@ struct GraphicsInspectorPanel: View {
         case .namesList:
             GraphicsNamesListButton(graphics: graphics, row: row)
         case .data:
-            // Tasks 10-11 fill this with the data actions.
-            Text("Data: published values").font(.grotesk(11)).foregroundStyle(Studio.secondary)
+            GraphicsDataActions(graphics: graphics, row: row)
         case .hidesAfter:
             field("Hides after") {
                 Picker("", selection: Binding(get: { row.playOutAfterMs }, set: { graphics.setHidesAfter(row.id, $0) })) {
@@ -161,6 +160,65 @@ struct GraphicsInspectorPanel: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.grotesk(12)).foregroundStyle(Studio.secondary)
             content().frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Inspector data actions (GraphicsPlayoutControl.Data.cs, local rows): the revision line, then
+/// Load CSV / JSON… and Publish data, both disabled while either runs; results go to the status line.
+struct GraphicsDataActions: View {
+    @ObservedObject var graphics: GraphicsModel
+    let row: GraphicsRow
+    @State private var running = false
+
+    var body: some View {
+        let binding = row.dataBinding.flatMap(GraphicsDataBinding.init(json:))
+        VStack(alignment: .leading, spacing: 6) {
+            Text(graphics.dataLine(row: row)).font(.grotesk(12)).foregroundStyle(Studio.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let binding, binding.crawl != nil {
+                if let source = graphics.document.dataSources.first(where: { $0.id == binding.sourceId }), source.revision > binding.revision {
+                    Text(GraphicsCrawlControls.loadedLine(source, binding)).font(.grotesk(11)).foregroundStyle(Studio.secondary).lineLimit(3)
+                }
+                Toggle("Live follow local reloads", isOn: Binding(get: { binding.liveFollow },
+                                                               set: { on in run { await graphics.setLiveFollow(rowId: row.id, enabled: on).value } }))
+                    .toggleStyle(StudioToggleStyle()).font(.grotesk(12)).foregroundStyle(Studio.textPrimary).disabled(running)
+                if let live = graphics.playout.crawlOnProgram(row.id) {
+                    Text(GraphicsCrawlControls.programLine(live)).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 6) {
+                        ForEach([("Pause", "pause"), ("Resume", "resume"), ("Restart", "restart")], id: \.1) { label, action in
+                            Button(label) { run { await graphics.controlCrawl(rowId: row.id, action: action).value } }
+                                .buttonStyle(GhostButtonStyle()).disabled(!GraphicsCrawlControls.enabled(action, playback: live.crawlPlayback))
+                        }
+                    }
+                }
+            }
+            if binding?.remote != true {
+                Button { load(binding) } label: { Text("Load CSV / JSON…").frame(maxWidth: .infinity) }
+                    .buttonStyle(GhostButtonStyle()).disabled(running || binding == nil)
+            }
+            Button { run { await graphics.publishData(rowId: row.id).value } } label: { Text("Publish data").frame(maxWidth: .infinity) }
+                .buttonStyle(AccentButtonStyle()).disabled(running || binding?.remote == true)
+        }
+    }
+
+    func run(_ body: @escaping @MainActor () async -> GraphicsOperationResult) {
+        running = true
+        Task { @MainActor in _ = await body(); running = false }
+    }
+
+    /// Windows reads the file with the binding's key column (GraphicsLocalData.ReadAsync(path, binding.KeyColumn)).
+    func load(_ binding: GraphicsDataBinding?) {
+        guard let binding else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try GraphicsLocalData.read(url: url, key: binding.keyColumn)
+            run { await graphics.stageData(rowId: row.id, binding: binding, data: data).value }
+        } catch {
+            graphics.status = (error as? GraphicsDataError)?.message ?? error.localizedDescription
         }
     }
 }

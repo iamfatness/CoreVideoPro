@@ -153,14 +153,17 @@ extension ShellTests {
         let create = core.commands.first?["graphics"] as? JSONObject
         expectEqual((create?["fields"] as? JSONObject)?["heading"] as? String, "Home 3 - 1 Away", "the published values")
         let before = core.commands.count
-        let refusedCrawl = awaitMain(5) { await model.playout.show(GraphicsPlayout.entry(for: crawl)) }
-        expectEqual(refusedCrawl?.reason, GraphicsPlayout.unsupportedDataText("Ticker"), "a crawl is refused with a clear reason")
+        let crawlShow = awaitMain(5) { await model.playout.show(GraphicsPlayout.entry(for: crawl)) }
+        expect(crawlShow?.reason != GraphicsPlayout.unsupportedDataText("Ticker"), "a local crawl is no longer refused (G4-G7 Task 11)")
+        expectEqual(crawlShow?.accepted, true, "and it plays (\(crawlShow?.reason ?? ""))")
+        let afterCrawl = core.commands.count
         let refusedRemote = awaitMain(5) { await model.playout.show(GraphicsPlayout.entry(for: remote)) }
         expectEqual(refusedRemote?.reason, GraphicsPlayout.unsupportedDataText("Feed"), "a live feed row is refused")
-        expectEqual(core.commands.count, before, "nothing sent for either")
+        expect(afterCrawl > before, "the crawl was sent")
+        expectEqual(core.commands.count, afterCrawl, "nothing sent for the remote feed row")
         let lines = model.lines()
-        expect(lines.first { $0.row.id == "ticker" }?.canShow == false, "the crawl line cannot Show")
-        expectEqual(lines.first { $0.row.id == "ticker" }?.state, .failed(GraphicsPlayout.unsupportedDataText("Ticker")), "and says why")
+        expect(lines.first { $0.row.id == "feed" }?.canShow == false, "the remote feed line cannot Show (until G9, plan D7)")
+        expectEqual(lines.first { $0.row.id == "feed" }?.state, .failed(GraphicsPlayout.unsupportedDataText("Feed")), "and says why")
         expectEqual(lines.first { $0.row.id == "scores" }?.state, .onProgram, "the local data line played and offers Hide")
     }
 

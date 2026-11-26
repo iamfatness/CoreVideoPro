@@ -28,7 +28,7 @@ struct GraphicsRowLine: Identifiable, Equatable {
 
     var canCue: Bool {
         if case .preparing = state { return false }
-        return state != .onProgram && !row.templateId.isEmpty && !row.needsDataPlayback
+        return state != .onProgram && !row.templateId.isEmpty && !row.needsFeedPlayback
     }
     var canShow: Bool { canCue }
     var canHide: Bool { state == .onProgram }
@@ -278,7 +278,7 @@ extension GraphicsModel {
             let entries = row.hasVariants ? GraphicsPlayout.variantEntries(row)
                 : row.kind == GraphicsRow.guest ? guestEntries(row) : [GraphicsPlayout.entry(for: row)]
             for entry in entries {
-                let lineState = row.needsDataPlayback ? .failed(GraphicsPlayout.unsupportedDataText(row.name))
+                let lineState = row.needsFeedPlayback ? .failed(GraphicsPlayout.unsupportedDataText(row.name))
                     : GraphicsRowStates.project(state?.instance(entry.instanceId))
                 lines.append(GraphicsRowLine(row: row, entry: entry, state: lineState,
                                              label: row.kind == GraphicsRow.guest || row.hasVariants ? row.name + " · " + entry.label : row.name))

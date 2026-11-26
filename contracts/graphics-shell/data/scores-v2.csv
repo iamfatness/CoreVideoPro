@@ -1,0 +1,9 @@
+team,points,qualified,city
+Zebras,15,True,Paris
+  Ants  ,  9 ,false,"Lyon, FR"
+
+Bees,12,,"Say ""hi"""
+Cats,1e3,TRUE, Rome 
+Dingoes, 7 ,False,"Multi
+line"
+Élans,3.50,,Zürich
