@@ -522,3 +522,44 @@ Branch `mac-outputs-phase4-o4c`, stacked on `-o4b`.
   - Taken: the failure-path test, saving and restoring the env vars, and the PTS rounding comment.
   - Stop pipe kept: it wakes at once, and the 100 ms timeout is the safety net.
   - Windows log difference: only the transport-audio failure line now prints `err=0` for a zero-byte success, where it used to print a stale `GetLastError()`. There is no behaviour change.
+
+## Task 5 (O4d): AudioToolbox shared AAC; one-clock TS mux on POSIX
+
+Branch `mac-outputs-phase4-o4d`, stacked on `-o4c`.
+
+- **What changed.**
+  - **AAC encoder.** `ProgramAacEncoder` has an Apple branch: AudioToolbox `AudioConverter` from Float32 48 kHz stereo to AAC-LC at 160 kbps (D4, the MF encoder's 20000 B/s), one 1024-frame packet at a time, with a hand-written 7-byte ADTS header.
+  - **Link.** AudioToolbox is now linked in every Apple build, because the encoder is compiled in every configuration.
+  - **Sender.** The `#538 Slice 8` unified-TS decision (shared H.264/HEVC plus shared AAC in one core-stamped TS on stdin) now runs on every platform. When it is on, POSIX no longer opens the fd 3 PCM pipe. The slot clock and the `streamClock` publication run on POSIX too.
+- **Priming (a deliberate deviation from the plan).**
+  - AudioToolbox primes AAC-LC with **2112** frames (logged at start). That is not a multiple of 1024, so the plan's "first packet's pts100ns is 0" cannot hold exactly.
+  - Packet n is stamped `sampleIndex = n*1024 - 2112`. Packets wholly before sample 0 are dropped.
+  - So the first kept packet is **sampleIndex 960 / pts 200000**, pinned by a test.
+  - Review notes: ffmpeg's ADTS decode applies no skip of its own, so this mapping leaves no constant offset. Windows' MF path stamps raw input time and may carry a constant audio-late offset that Apple now compensates. The live clap gate decides; it is still owed on a quiet machine.
+- **Tests.**
+  - The existing `EmitsSampleCountedAdtsAtFortyEightKhzStereo` now also runs on Apple.
+  - New:
+    - `AppleAdtsHeadersAreLc48kStereo`: sync, LC, index 3, channels 2, `frame_length` equals the packet size.
+    - `AppleSampleIndexAdvancesBy1024`: steps of +1024 and 213333 ±1 (100 ns); first kept packet at 960 / 200000; `acceptedSamples() == 48000`.
+    - `AppleDecodesToTheInputTone`: decoded through ExtAudioFile; RMS within 10% of 0.3536; strongest 10 Hz bin at 1000 Hz.
+    - `OutputSenderAdapter.PosixGpuDirectUsesUnifiedTs`: `streamClock.muxInput == "unified-ts"`, and the ffmpeg argv has no `pipe:3`.
+- **Mutations.**
+
+  | Mutation | Result |
+  |---|---|
+  | M5b: ADTS profile 2 | header test and tone test red |
+  | M5c: unified TS kept Windows-only | sender test red |
+  | M5d (the unit form of the plan's M5a): priming ignored | first-packet assertion red |
+
+  The live clap-gate form of M5a is deferred to a quiet machine, along with the five-run `validate-av-clap.mjs --shared-aac-gate` content gate in Step 5.
+- **Counts.** Full native suite **2340 passed, 0 failed**; the touched sender/AAC suites 41/41 after the review fix.
+- **Review** (independent agent). No issue at or above threshold.
+  - Taken: `close()` of the unused audio pipe is now guarded.
+  - Kept: the start event's `audioInput:"pcm"` label in unified mode matches Windows.
+  - Noted gap: nothing feeds an encoded AAC packet through the POSIX unified writer in a unit test. The live clap gate is that coverage.
+- **Defect found afterwards by the Task 6 end-to-end gate, and fixed on this branch.**
+  - **What failed.** The first real run of the Mac GPU-direct stream failed: ffmpeg could not probe the video ("unspecified size") and decoded the AAC as garbage.
+  - **Cause.** `config.audioInTransportStream = unifiedTsInput_` had stayed inside `#if defined(_WIN32)`, even though the plan named that line. So on POSIX the unified-TS sender still declared a second `-f aac -i pipe:0` input, and ffmpeg split stdin between the TS and an AAC demuxer.
+  - **Why the test missed it.** `PosixGpuDirectUsesUnifiedTs` checked only that `pipe:3` was absent. It asserted a proxy, not the property (rule 10).
+  - **The test now asserts the property:** exactly one ` -i `, no `-f aac`, and `-map 0:a:0`. Mutation **M5e** (the guard put back) turns it red.
+  - **After the fix**, `scripts/validate-gpu-encode.mjs --build-dir native/build-metal --codec h264 --sink-protocol rtmp` **passes on this Mac**: GPU-direct, decoded h264 1920x1080, 58.4 fps of 60 received, sink speed 1.07x. That run was on a loaded machine, so it is functional evidence only; the quiet-machine gate is still owed.

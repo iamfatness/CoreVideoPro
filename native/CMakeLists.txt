@@ -238,6 +238,11 @@ if(APPLE)
 endif()
 
 target_include_directories(corevideo_native PUBLIC src)
+# Phase 4 O5: ProgramAacEncoder.cpp (built in every configuration) uses
+# AudioToolbox on Apple for the shared stream AAC.
+if(APPLE)
+  target_link_libraries(corevideo_native PUBLIC "-framework AudioToolbox" "-framework CoreFoundation")
+endif()
 target_include_directories(corevideo_native PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_include_directories(corevideo_native PRIVATE zoom-engine/shared)
 target_include_directories(corevideo_native PUBLIC plugin-host)
