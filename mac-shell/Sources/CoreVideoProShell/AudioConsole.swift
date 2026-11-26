@@ -29,10 +29,10 @@ struct AudioPane: View {
               ["SHOW", "ROUTING", "PLUG-INS", "SETUP"].contains(wanted) else { return "SHOW" }
         return wanted
     }
-    @State private var selectedStripId: String?
-
+    // The selection is model state (AppModel.selectedAudioStripId, A7 Task 3):
+    // the pop-out and the main window share it.
     var selected: AudioStrip? {
-        model.strips.first { $0.id == (selectedStripId ?? model.strips.first?.id) }
+        model.strips.first { $0.id == (model.selectedAudioStripId ?? model.strips.first?.id) }
     }
 
     var body: some View {
@@ -122,7 +122,7 @@ struct AudioPane: View {
             HStack(spacing: 6) {
                 ForEach(model.strips) { strip in
                     Button {
-                        selectedStripId = strip.id
+                        model.selectAudioStrip(strip.id)
                     } label: {
                         VStack(alignment: .leading, spacing: 0) {
                             Text(stripLabel(strip)).font(.grotesk(11, .medium))
@@ -193,7 +193,7 @@ struct ProcessingWorkspace: View {
             }
             .frame(width: 150, alignment: .leading)
             cell("GATE", on: inserts.gateEnabled,
-                 toggle: { model.editInserts(stripId) { $0.gateEnabled.toggle() } }) {
+                 toggle: { model.editInserts(stripId) { $0.toggle(ChannelInserts.gateName) } }) {
                 CurveCanvas { size in
                     var path = Path()
                     let knee = (inserts.gateThresholdDb + 80) / 68 * size.width * 0.8
@@ -214,7 +214,7 @@ struct ProcessingWorkspace: View {
                 }
             }
             cell("COMP", on: inserts.compEnabled,
-                 toggle: { model.editInserts(stripId) { $0.compEnabled.toggle() } }) {
+                 toggle: { model.editInserts(stripId) { $0.toggle(ChannelInserts.compName) } }) {
                 CurveCanvas { size in
                     var path = Path()
                     let knee = (inserts.compThresholdDb + 40) / 34 * size.width
@@ -245,7 +245,7 @@ struct ProcessingWorkspace: View {
                 }
             }
             cell("EQ", on: inserts.eqEnabled,
-                 toggle: { model.editInserts(stripId) { $0.eqEnabled.toggle() } }) {
+                 toggle: { model.editInserts(stripId) { $0.toggle(ChannelInserts.eqName) } }) {
                 CurveCanvas { size in
                     var path = Path()
                     let bands = inserts.eqBandsDb

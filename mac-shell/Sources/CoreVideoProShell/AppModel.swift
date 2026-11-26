@@ -193,20 +193,28 @@ struct ShowInputSlot: Identifiable, Equatable {
     var dropoutPolicy = ""
 }
 
-// Per-channel built-in inserts. Names and keys are the CORE's contract
-// (AudioDsp.h applyChannelInserts): inserts match by lowercase SUBSTRING —
-// "gate"/"noise", "eq"/"voice", "compressor", "limiter" — and each reads its
-// own keys, clamped core-side to the ranges mirrored below. An unknown key is
-// silently ignored, so these names/keys must stay exact.
+// Per-channel insert chain. Names and keys are the CORE's contract
+// (AudioDsp.h applyChannelInsertChain): the chain runs IN LIST ORDER, each name
+// matches by lowercase SUBSTRING ("gate"/"noise", "high-pass", "eq"/"voice",
+// "compressor", "limiter") and reads its own keys from insertSettings[<exact
+// chain name>], clamped core-side to the ranges mirrored below. An unknown key
+// is silently ignored, so these names/keys must stay exact.
+//
+// A7 (Task 2): `chain` is the Windows `PluginInserts` list, in the order the
+// operator built it (SVM:5493-5516 ToggleSelectedRackInsert, SVM:5520-5542
+// AddSelectedAudioInsert).
+// The three enable flags are now views of it. A VST name ("vst:<plugin>")
+// lives in the chain too; AppModel.pluginInsertNames drops it while the host
+// is not live.
 struct ChannelInserts: Equatable {
-    var gateEnabled = false
+    var chain: [String] = []
+
     var gateThresholdDb = -48.0   // [-80, -12]
     var gateRangeDb = -60.0       // [-80, -6]
     var gateAttackMs = 5.0        // [0.5, 50]
     var gateHoldMs = 50.0         // [0, 500]
     var gateReleaseMs = 120.0     // [20, 500]
 
-    var compEnabled = false
     var compThresholdDb = -18.0   // [-40, -6]
     var compRatio = 4.0           // [1, 20]
     var compAttackMs = 10.0       // [0.1, 100]
@@ -214,46 +222,95 @@ struct ChannelInserts: Equatable {
     var compKneeDb = 6.0          // [0, 24]
     var compMakeupDb = 0.0        // [0, 24]
 
-    var eqEnabled = false
     var eqHighpassHz = 90.0       // [20, 400]
     var eqBandsDb = [Double](repeating: 0, count: 8)  // band1Db…band8Db, [-12, 12]
 
-    // The Windows shell's built-in insert names (StudioViewModel
-    // BuiltInInsertNames) — they satisfy the core's substring matcher.
+    var limiterCeilingDb = -1.0   // [-12, -0.1], clamped on the wire (AudioDsp.h limiter branch)
+
+    // The Windows shell's built-in insert names (SVM:2250 BuiltInInsertNames:
+    // ["Noise Gate", "Built-in EQ", "Compressor", "Limiter"]). They satisfy the
+    // core's substring matcher.
     static let gateName = "Noise Gate"
     static let eqName = "Built-in EQ"
     static let compName = "Compressor"
+    static let limiterName = "Limiter"
+    static let builtInNames = [gateName, eqName, compName, limiterName]
 
-    var activeNames: [String] {
-        var names: [String] = []
-        if gateEnabled { names.append(Self.gateName) }
-        if eqEnabled { names.append(Self.eqName) }
-        if compEnabled { names.append(Self.compName) }
-        return names
+    func contains(_ name: String) -> Bool {
+        chain.contains { InsertChainPolicy.sameName($0, name) }
     }
 
+    var gateEnabled: Bool { contains(Self.gateName) }
+    var eqEnabled: Bool { contains(Self.eqName) }
+    var compEnabled: Bool { contains(Self.compName) }
+    var limiterEnabled: Bool { contains(Self.limiterName) }
+
+    /// SVM:5493-5516 (ToggleSelectedRackInsert): remove it if present (case-insensitive),
+    /// else append it at the END of the chain.
+    mutating func toggle(_ name: String) {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let index = chain.firstIndex(where: { InsertChainPolicy.sameName($0, name) }) {
+            chain.remove(at: index)
+        } else {
+            chain.append(name)
+        }
+    }
+
+    /// SVM:5520-5542 (AddSelectedAudioInsert): a blank name is a silent no-op
+    /// (SVM:5522), else normalise, refuse a case-insensitive duplicate, else
+    /// append.
+    @discardableResult
+    mutating func add(_ raw: String) -> InsertChainPolicy.AddOutcome {
+        let normalized = InsertChainPolicy.normalize(raw)
+        guard !normalized.isEmpty else { return .rejectedBlank }
+        if contains(normalized) { return .duplicate(normalized) }
+        chain.append(normalized)
+        return .added(normalized)
+    }
+
+    /// Removes every case-insensitive match (SVM:2622, RemoveAudioProcessingInsert's
+    /// RemoveAll). False when nothing matched.
+    @discardableResult
+    mutating func remove(_ name: String) -> Bool {
+        let before = chain.count
+        chain.removeAll { InsertChainPolicy.sameName($0, name) }
+        return chain.count != before
+    }
+
+    /// SVM:5544-5558 (ClearSelectedAudioInserts).
+    mutating func clear() { chain.removeAll() }
+
+    /// Settings for EVERY built-in on the chain, keyed by its exact chain name
+    /// (the core looks them up by that name). Kind follows the core matcher.
     var settingsJson: JSONObject {
         var settings: JSONObject = [:]
-        if gateEnabled {
-            settings[Self.gateName] = [
-                "thresholdDb": gateThresholdDb, "rangeDb": gateRangeDb,
-                "attackMs": gateAttackMs, "holdMs": gateHoldMs,
-                "releaseMs": gateReleaseMs,
-            ]
-        }
-        if eqEnabled {
-            var eq: JSONObject = ["highpassHz": eqHighpassHz]
-            for (index, gain) in eqBandsDb.enumerated() {
-                eq["band\(index + 1)Db"] = gain
+        for name in chain {
+            switch InsertChainPolicy.coreKind(name) {
+            case .gate:
+                settings[name] = [
+                    "thresholdDb": gateThresholdDb, "rangeDb": gateRangeDb,
+                    "attackMs": gateAttackMs, "holdMs": gateHoldMs,
+                    "releaseMs": gateReleaseMs,
+                ]
+            case .highpass:
+                settings[name] = ["highpassHz": eqHighpassHz]
+            case .eq:
+                var eq: JSONObject = ["highpassHz": eqHighpassHz]
+                for (index, gain) in eqBandsDb.enumerated() {
+                    eq["band\(index + 1)Db"] = gain
+                }
+                settings[name] = eq
+            case .compressor:
+                settings[name] = [
+                    "thresholdDb": compThresholdDb, "ratio": compRatio,
+                    "attackMs": compAttackMs, "releaseMs": compReleaseMs,
+                    "kneeDb": compKneeDb, "makeupDb": compMakeupDb,
+                ]
+            case .limiter:
+                settings[name] = ["ceilingDb": max(-12.0, min(-0.1, limiterCeilingDb))]
+            case nil:
+                break
             }
-            settings[Self.eqName] = eq
-        }
-        if compEnabled {
-            settings[Self.compName] = [
-                "thresholdDb": compThresholdDb, "ratio": compRatio,
-                "attackMs": compAttackMs, "releaseMs": compReleaseMs,
-                "kneeDb": compKneeDb, "makeupDb": compMakeupDb,
-            ]
         }
         return settings
     }
@@ -467,13 +524,14 @@ final class AppModel: ObservableObject {
         let percent = Double(recordingDroppedFrames) / Double(attempted) * 100
         return String(format: "%d (%.1f%%)", recordingDroppedFrames, percent)
     }
-    @Published var strips: [AudioStrip] = []
+    @Published var strips: [AudioStrip] = [] {
+        didSet { reconcileAudioSelection() }
+    }
     @Published var channelInserts: [String: ChannelInserts] = [:]
     // VST3 plug-in inserts — all logic lives in VstInserts.swift (stored
     // properties cannot be declared in an extension, so only the state is here).
     @Published var vstHost = VstHostState()
     @Published var vstPlugins: [VstPlugin] = []
-    @Published var vstChannelSelection: [String: String] = [:]  // stripId -> "vst:<name>"
     @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
     let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
     // #870: the core's audioObservation envelope + when the shell received it.
@@ -908,6 +966,7 @@ final class AppModel: ObservableObject {
             PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
                           name: SlotNamePolicy.persisted($0), inShow: $0.inShow)
         }
+        // A7: the last VST name in each chain (Windows persists no built-in chain).
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.autoAssignInputs = autoAssignInputsEnabled
         prefs.zoomAudioMode = zoomAudioMode.persisted
@@ -1005,7 +1064,17 @@ final class AppModel: ObservableObject {
             gradeSaturation = prefs.colorGrade[2]
             gradeTemperature = prefs.colorGrade[3]
         }
-        vstChannelSelection = prefs.vstChannelSelections ?? [:]
+        // A7: the saved VST selections REPLACE the current ones, as the
+        // pre-A7 `vstChannelSelection = prefs.vstChannelSelections ?? [:]` did:
+        // a strip with no saved selection (or empty prefs) loses its VST, and a
+        // saved selection is appended to that strip's chain after the built-ins.
+        let savedVst = (prefs.vstChannelSelections ?? [:]).filter { !$0.value.isEmpty }
+        for stripId in Set(channelInserts.keys).union(savedVst.keys) {
+            var inserts = channelInserts[stripId] ?? ChannelInserts()
+            inserts.chain.removeAll(where: InsertChainPolicy.isVst)
+            if let selection = savedVst[stripId] { inserts.chain.append(selection) }
+            channelInserts[stripId] = inserts
+        }
         restoreMastering(from: prefs)
         joinMeetingId = prefs.joinMeetingId
         displayName = prefs.displayName
@@ -4734,6 +4803,10 @@ final class AppModel: ObservableObject {
     @discardableResult
     func removeBus(_ id: String) -> Bool {
         guard let next = AudioBusPolicy.remove(id, from: buses) else { return false }
+        // A7 (review focus 4): the bus's processing chain goes with it, and a
+        // selected bus target falls back to bus:master, so no stale
+        // busPluginInserts can ride a later matrix.
+        busInserts[id] = nil
         for (source, sendsByBus) in audioSends where sendsByBus[id] != nil {
             audioSends[source]?[id] = nil
             editRoute(source: source, bus: id, enabled: false, gainDb: 0)
@@ -4742,6 +4815,7 @@ final class AppModel: ObservableObject {
         if selectedSend?.bus == id { selectedSend = nil }
         buses = next
         if listenBusId == id { listenBusId = nil }
+        reconcileAudioSelection()
         pushRoutingBase()
         return true
     }
@@ -4782,6 +4856,166 @@ final class AppModel: ObservableObject {
 
     /// Routed sources per bus (Windows RefreshBusRoutedCounts).
     func routedCount(bus: String) -> Int { audioSends.values.filter { $0[bus] != nil }.count }
+
+    // ── A7 Task 3: selection and processing targets ─────────────────────────
+
+    /// The console's selected strip. Model state (it was AudioPane @State) so
+    /// the main window and the pop-out share one selection, as one Windows view
+    /// model backs both. nil = the view shows the first strip.
+    @Published var selectedAudioStripId: String?
+    /// The SETUP processing target (SVM:508, default "bus:master").
+    @Published var selectedProcessingTargetId = AudioProcessingTargetPolicy.defaultTargetId
+    /// Each bus's insert chain, by bus id. SESSION state, never persisted
+    /// (Windows `_audioProcessingInserts`, SVM:59, is not saved). It reaches a
+    /// respawned core on every send of its bus in the base matrix, which
+    /// reassertAudioConsole() re-sends.
+    @Published var busInserts: [String: [String]] = [:]
+
+    /// SVM:4688-4693 (SelectParticipant): selecting a strip also selects
+    /// its channel processing target.
+    func selectAudioStrip(_ id: String) {
+        selectedAudioStripId = id
+        selectProcessingTarget(AudioProcessingTargetPolicy.channelId(id))
+    }
+
+    /// SVM:4695-4713 (SelectAudioProcessingTarget): only a target that
+    /// exists is selected.
+    func selectProcessingTarget(_ id: String) {
+        guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              processingTargets.contains(where: { $0.id == id }) else { return }
+        selectedProcessingTargetId = id
+    }
+
+    var processingTargets: [AudioProcessingTarget] {
+        AudioProcessingTargetPolicy.targets(
+            strips: strips.map { (id: $0.id, label: audioSourceLabel($0.id), primaryBus: primaryBusLabel($0.id)) },
+            buses: buses, channelChains: channelInserts.mapValues(\.chain), busChains: busInserts)
+    }
+
+    /// SVM:11651-11661 (ResolvePrimaryAudioBusLabel): the first routed bus
+    /// in header order, else "MASTER".
+    func primaryBusLabel(_ stripId: String) -> String {
+        buses.first { audioSends[stripId]?[$0.id] != nil }?.label ?? "MASTER"
+    }
+
+    /// The core's echoed bus chains (CoreStateCapture audioRoutingMatrix
+    /// .busProcessing[] {busId, pluginInserts}), empty chains dropped. For the
+    /// drill and diagnostics only: the shell never adopts it as intent.
+    static func busChainFromSnapshot(_ matrix: JSONObject) -> [String: [String]] {
+        var chains: [String: [String]] = [:]
+        for entry in matrix["busProcessing"] as? [JSONObject] ?? [] {
+            guard let bus = entry["busId"] as? String, !bus.isEmpty,
+                  let inserts = entry["pluginInserts"] as? [String], !inserts.isEmpty else { continue }
+            chains[bus] = inserts
+        }
+        return chains
+    }
+
+    /// A strip or bus that left while selected falls back to bus:master.
+    /// Windows (SVM:11592-11597) falls back to the FIRST target; the Mac uses
+    /// bus:master, the documented default, because the first target is a
+    /// channel and moves with roster churn.
+    private func reconcileAudioSelection() {
+        let stripIds = Set(strips.map(\.id))
+        if let selected = selectedAudioStripId, !stripIds.contains(selected) { selectedAudioStripId = nil }
+        let target = AudioProcessingTargetPolicy.parse(selectedProcessingTargetId)
+        let vanished: Bool
+        if let channel = target.channel {
+            vanished = !stripIds.contains(channel)
+        } else if let bus = target.bus {
+            vanished = !buses.contains { $0.id == bus }
+        } else {
+            vanished = true
+        }
+        if vanished, selectedProcessingTargetId != AudioProcessingTargetPolicy.defaultTargetId {
+            selectedProcessingTargetId = AudioProcessingTargetPolicy.defaultTargetId
+        }
+    }
+
+    /// SVM:5653-5665 (ResolveAudioProcessingTargetName): a channel's
+    /// display name, else the bus header label, else the raw id.
+    private func processingTargetName(_ targetId: String) -> String {
+        let target = AudioProcessingTargetPolicy.parse(targetId)
+        if let channel = target.channel { return audioSourceLabel(channel) }
+        if let bus = target.bus, let header = buses.first(where: { $0.id == bus }) { return header.label }
+        return targetId
+    }
+
+    /// SVM:5570-5599 (AddAudioProcessingInsert), statuses verbatim. On a
+    /// bus target, an insert the bus chain cannot process is refused (OD-1).
+    func addProcessingInsert(_ raw: String) {
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let targetId = selectedProcessingTargetId
+        let target = AudioProcessingTargetPolicy.parse(targetId)
+        let name = processingTargetName(targetId)
+        if let channel = target.channel, strips.contains(where: { $0.id == channel }) {
+            var inserts = channelInserts[channel] ?? ChannelInserts()
+            switch inserts.add(raw) {
+            case .duplicate(let normalized):
+                takeStatus = "\(normalized) is already on \(name)"
+            case .added(let normalized):
+                editInserts(channel) { $0 = inserts }   // schedules the mix sync
+                takeStatus = "\(normalized) added to \(name)"
+            case .rejectedBlank:
+                return   // unreachable behind the guard above; silent, as on Windows
+            }
+            return
+        }
+        guard let bus = target.bus, buses.contains(where: { $0.id == bus }) else {
+            takeStatus = "Choose an audio processing target first"   // SVM:5580
+            return
+        }
+        let normalized = InsertChainPolicy.normalize(raw)
+        var chain = busInserts[bus] ?? []
+        if chain.contains(where: { InsertChainPolicy.sameName($0, normalized) }) {
+            takeStatus = "\(normalized) is already on \(name)"
+            return
+        }
+        if let refusal = AudioProcessingTargetPolicy.busRefusal(normalized) {
+            takeStatus = refusal
+            return
+        }
+        chain.append(normalized)
+        busInserts[bus] = chain
+        takeStatus = "\(normalized) added to \(name)"
+        pushRoutingBase()
+    }
+
+    /// SVM:2618-2632 (RemoveAudioProcessingInsert): case-insensitive, the
+    /// status names the insert as given; nothing removed, nothing said.
+    func removeProcessingInsert(_ insertName: String) {
+        let targetId = selectedProcessingTargetId
+        let target = AudioProcessingTargetPolicy.parse(targetId)
+        if let channel = target.channel {
+            guard var inserts = channelInserts[channel], inserts.remove(insertName) else { return }
+            editInserts(channel) { $0 = inserts }
+        } else if let bus = target.bus {
+            guard var chain = busInserts[bus] else { return }
+            let before = chain.count
+            chain.removeAll { InsertChainPolicy.sameName($0, insertName) }
+            guard chain.count != before else { return }
+            busInserts[bus] = chain.isEmpty ? nil : chain
+            pushRoutingBase()
+        } else {
+            return
+        }
+        takeStatus = "Removed \(insertName) from \(processingTargetName(targetId))"
+    }
+
+    /// SVM:5615-5631 (ClearAudioProcessingInserts).
+    func clearProcessingInserts() {
+        let targetId = selectedProcessingTargetId
+        let target = AudioProcessingTargetPolicy.parse(targetId)
+        if let channel = target.channel {
+            editInserts(channel) { $0.clear() }
+        } else if let bus = target.bus {
+            busInserts[bus] = nil
+            pushRoutingBase()
+        } else {
+            return
+        }
+        takeStatus = "Insert chain cleared for \(processingTargetName(targetId))"
+    }
 
     /// The base-matrix memo: the sends AND the bus state. Comparing only `sends`
     /// would swallow a bus-send or LISTEN change (nothing else moved).
@@ -4860,7 +5094,8 @@ final class AppModel: ObservableObject {
             captureAudioIds: consoleCaptureAudioIds,
             mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
             operatorEdits: operatorRouteEdits,
-            zoomAudioMode: zoomAudioMode, meetingAudio: meetingAudioSubscribed)
+            zoomAudioMode: zoomAudioMode, meetingAudio: meetingAudioSubscribed,
+            busInserts: wireBusInserts)
         let busSends = AudioBusPolicy.busSends(buses)
         let monitorBusId = listenBusId ?? ""
         // Never an EMPTY matrix (the core holds-last on a blank). A matrix whose
@@ -4939,10 +5174,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Harness seam for the legacy routing path (pushAudioRouting); production
+    /// leaves it nil and uses the bridge.
+    var audioRoutingRequestForTesting: ((JSONObject) async throws -> JSONObject)?
+
+    private func audioRoutingRequest(_ body: JSONObject) async throws -> JSONObject {
+        if let seam = audioRoutingRequestForTesting { return try await seam(body) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body)
+    }
+
     private func pushAudioRouting() async {
-        guard let bridge else { return }
+        guard bridge != nil || audioRoutingRequestForTesting != nil else { return }
         if audioRouteControl.authorityEpoch.isEmpty {
-            if let response = try? await bridge.request([
+            if let response = try? await audioRoutingRequest([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
             ]), let snapshot = response["snapshot"] as? JSONObject {
                 applySnapshot(snapshot)
@@ -4951,12 +5196,12 @@ final class AppModel: ObservableObject {
         if !audioRouteControl.authorityEpoch.isEmpty {
             while let command = audioRouteControl.nextCommand() {
                 do {
-                    let response = try await bridge.request([
+                    let response = try await audioRoutingRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [command],
                     ])
                     if let snapshot = response["snapshot"] as? JSONObject { applySnapshot(snapshot) }
                 } catch {
-                    if let response = try? await bridge.request([
+                    if let response = try? await audioRoutingRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
                     ]), let snapshot = response["snapshot"] as? JSONObject {
                         applySnapshot(snapshot)
@@ -4972,12 +5217,15 @@ final class AppModel: ObservableObject {
             return
         }
         var sends: [JSONObject] = []
+        let wireBusChains = wireBusInserts
         for (source, buses) in audioSends {
             for (bus, gainDb) in buses {
                 sends.append([
                     "sourceId": source, "busId": bus,
                     "gainDb": max(-60, min(10, gainDb)),
-                    "busPluginInserts": [] as [String],
+                    // A7: the bus chain rides this path too (SVM:9222-9230),
+                    // plug-in names gated on the host like the base matrix.
+                    "busPluginInserts": wireBusChains[bus] ?? [],
                 ])
             }
         }
@@ -4985,7 +5233,7 @@ final class AppModel: ObservableObject {
         // empty matrix during a UI rebuild would read as "unroute everything".
         guard !sends.isEmpty else { return }
         do {
-            _ = try await bridge.request([
+            _ = try await audioRoutingRequest([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
                 "commands": [[
                     "type": "sync-audio-routing-matrix", "sends": sends,
