@@ -599,6 +599,16 @@ if(COREVIDEO_WITH_RTMP_OUTPUT)
   if(UNIX AND NOT APPLE)
     target_link_libraries(corevideo_native PUBLIC dl)
   endif()
+  # Phase 4 O4a: the VideoToolbox GPU-direct encoder behind GpuVideoEncoder
+  # (the macOS twin of MediaFoundationGpuVideoEncoder).
+  if(APPLE AND NOT COREVIDEO_STUB)
+    target_sources(corevideo_native PRIVATE src/modules/VideoToolboxGpuVideoEncoder.mm)
+    set_source_files_properties(src/modules/VideoToolboxGpuVideoEncoder.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_compile_definitions(corevideo_native PUBLIC COREVIDEO_HAS_VT_GPU_ENCODER=1)
+    target_link_libraries(corevideo_native PUBLIC
+      "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo" "-framework IOSurface"
+      "-framework Foundation")
+  endif()
 endif()
 
 if(COREVIDEO_WITH_NDI_OUTPUT)
@@ -1130,6 +1140,11 @@ if(BUILD_TESTING)
     tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native corevideo_comms_core)
+  if(APPLE AND COREVIDEO_WITH_RTMP_OUTPUT AND NOT COREVIDEO_STUB)
+    # Phase 4 O4a: VideoToolbox encoder round trips (encode, then decode with VTDecompressionSession).
+    target_sources(corevideo-native-tests PRIVATE tests/VideoToolboxGpuVideoEncoderTest.mm)
+    set_source_files_properties(tests/VideoToolboxGpuVideoEncoderTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  endif()
   if(COREVIDEO_WITH_AVF_ENCODER AND NOT COREVIDEO_STUB)  # frameworks are only linked in the non-stub config
     # AVAssetReader decode helper for the Mac ISO recording pixel tests.
     target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm tests/AvfRecorderSessionReleaseTest.mm)

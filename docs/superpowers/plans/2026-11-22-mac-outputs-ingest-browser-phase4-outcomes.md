@@ -212,3 +212,102 @@ fixes are in "Task 1 note found in advance" above. Mutation M1d does not apply.
     `OutputSenderAdapter`, `RtmpCompatibility`, `FfmpegChildRetirement`, `PosixChildProcess`):
     **53/53**.
   - `build-macos-ffmpeg.sh --audit` passes on the cached LGPL ffmpeg, and still refuses Homebrew's build.
+
+## Task 2 (O4a): `VideoToolboxGpuVideoEncoder`
+
+Branch `mac-outputs-phase4-o4`, stacked on slice 2 (`-o3`).
+
+- **What changed.**
+  - New `VideoToolboxGpuVideoEncoder.{h,mm}` behind `GpuVideoEncoder`.
+  - `createSharedProgramGpuVideoEncoder()` builds its pool from the VideoToolbox factory on Apple
+    (`COREVIDEO_HAS_VT_GPU_ENCODER`, defined when the RTMP-output build compiles the `.mm`) and from Media
+    Foundation elsewhere.
+  - **Nothing streams through it yet.** A sender takes the GPU path only for a frame that carries an
+    encoder texture, and Metal exports none until Task 3.
+  - The shared pool's H.264 CBR SEI filler (`H264CbrFiller`) applies on Apple exactly as on Windows.
+- **Encoder settings.**
+  - Hardware is required. Real time on; frame reordering off (D2).
+  - Profile: H.264 High/Main/Baseline AutoLevel, HEVC Main AutoLevel.
+  - `MaxKeyFrameInterval` = `configuredGopFrames`, plus `MaxKeyFrameIntervalDuration`.
+  - BT.709 primaries, transfer and matrix, on the session and as source attachments.
+  - Rate control:
+    - `AverageBitRate` always.
+    - CBR adds `ConstantBitRate` (row E-2).
+    - VBR adds a 1 s `DataRateLimits` cap at 1.5x.
+- **Frame handling.**
+  - `submit` never blocks. A serial queue waits up to 34 ms for `publishedFrameNumber`. A missing surface,
+    a wait timeout, an already-rewritten slot or more than 2 frames in flight count as **skips**, never
+    failures.
+  - PTS = `frameNumber * 10'000'000 / fps`, the same absolute epoch as
+    `MediaFoundationGpuVideoEncoder.cpp:685`.
+  - Output is Annex B, with SPS/PPS (or VPS/SPS/PPS) leading each keyframe. `requestKeyframe` makes the
+    next picture `kVTEncodeFrameOptionKey_ForceKeyFrame`.
+  - `healthy()` turns false on an invalid session, an encoder malfunction or 30 consecutive errors.
+  - `stop` drains, completes, invalidates, and is idempotent.
+- **Defect the tests found in my first cut:** `stop()` let queued frames return without encoding and
+  without counting a skip. As a result 1 frame in 11 vanished in three tests. Queued frames now encode
+  while stop drains; `running` gates only new submits.
+- **Plan fixture corrected (rule 4: suspect the test first).** `BitrateIsHonoured` specified pure LCG
+  noise. A raw VideoToolbox spike (scratchpad `p4spike/bitrate.mm`, 1280x720@30, 300 frames, 4 Mbps)
+  gave:
+
+  | Content and settings | Bytes (target 5.00 MB) |
+  |---|---|
+  | Pure noise; CBR; average+cap+CBR; max QP 51; real-time pacing (every combination tried) | **31.27 MB** |
+  | Moving gradient + light noise, CBR | **5.01 MB** |
+
+  Noise is incompressible, so no correct encoder could pass. The test now uses the moving gradient
+  (still a new picture every frame), and the fixture comment records why.
+- **Tests:** `VideoToolboxGpuVideoEncoder.*` **8/8**. Neighbouring `SharedGpuVideoEncoder*`,
+  `GpuVideoEncoder*`, `GpuEncodePath*`, `ChooseStreamEncodePath*`, `H264CbrFiller*` and
+  `OutputSenderAdapter.*`: 32/32.
+- **Mutations** (each applied alone, rebuilt; the restored file is byte-identical to the original):
+
+  | Mutation | Result |
+  |---|---|
+  | M2a: reordering on | HEVC no-reordering red (pts != dts) |
+  | M2b: no parameter sets on keyframes | H.264 and HEVC round trips red, colour red |
+  | M2c: keyframe flag ignored | requested-IDR test red |
+  | M2d: AverageBitRate and ConstantBitRate both dropped | bitrate test red (7.95 MB > 6 MB) |
+  | M2e: 601 matrix | colour test red |
+  | M2f: AVCC length prefixes left in | both round trips and colour red |
+  | M2g: missing surface fails the encoder | missing-surface test red |
+
+  - M2a also reddened three more tests. With reordering on, the encoder holds frames, the two-in-flight
+    limit fills, and frames are skipped. That is a second reason the setting must stay off.
+  - **Dropping only one of the two rate keys stays green, and that is correct behaviour:** each key alone
+    holds the 4 Mbps target on structured content (spike: CBR alone gives 5.01 MB). The test pins "a rate
+    is honoured", not which key carries it.
+- **Review** (independent agent):
+  1. *Important:* `submit()` could race `stop()`, by dispatching onto the queue stop had just drained and
+     released, or reading `session` while stop tore it down. This is not reachable through the shared
+     pool, which serializes under its own mutex, but the `GpuVideoEncoder` contract promises it. Fixed: a
+     `submitMutex` covers submit's running check, in-flight increment and dispatch, and stop's flip of
+     `running`, so the drain is final.
+  2. *Important:* the decode helper returned the last good picture's luma, so a stream with broken
+     P-frames could pass. It now requires every chunk to decode.
+  3. The HEVC `pts == dts` check is marked confirmatory, because `emit` defaults `dts` to `pts`. The
+     input-order check is the real evidence.
+  4. Lower findings taken:
+     - a malformed or truncated VideoToolbox output is counted (`vt-output-malformed`, skip) instead of
+       lost silently;
+     - a keyframe request survives a refused encode.
+  5. Lower finding **not** taken: when the slot was rewritten (published > frameNumber), Windows encodes
+     the newer picture under the published number. The Mac skips, because encoding it would duplicate
+     that number's PTS when its own submit arrives. This is recorded as a deliberate divergence.
+- **Hardware-session starvation (candidate issue, outside this lane).**
+  - In one test process, `AvfEncoderRecording.*` + `AvfCaptureArrival.*` + `AvfProgramTail.*` leave
+    VideoToolbox answering **-12903** (`kVTVideoEncoderNotAvailableNowErr`) for every later hardware
+    session until the process exits. Bisected: no single suite does it; the third one in the sequence
+    tips it.
+  - `AVFoundationEncoderAdapter.mm` has no `@autoreleasepool`. That is consistent with autoreleased
+    writer objects outliving their recordings, but **not proven**.
+  - Whether the shipping recorder holds hardware sessions across recordings is **unverified**. If it
+    does, a GPU-direct stream could fail to start after several recordings in one core. Owed: a
+    record-N-times-then-stream check in Task 6's drill on a quiet machine.
+  - Meanwhile the hardware tests probe for a session first. Without one they skip loudly, using the
+    repo idiom: `[  SKIPPED ] … - this test did NOT run`. That covers CI virtual machines too. **Run
+    alone they all execute: 8/8.**
+- **Full native suite** (`-DCOREVIDEO_WITH_NDI_OUTPUT=ON` build, before the skip guard): 2256 passed,
+  7 failed. The 7 failures were exactly the hardware tests failing with -12903 as described above. With
+  the guard, the AVF+VT ordering runs 40 passed, 0 failed, with 7 loud skips.
