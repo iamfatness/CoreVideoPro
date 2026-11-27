@@ -92,7 +92,8 @@
    "source": "manifest:segoe-substitution.json",
    "fields": {},
    "brand": {},
-   "textTolerance": 2
+   "textTolerance": 2,
+   "recordedDifference": "Selawik in place of Segoe UI on the Mac (owner decision 5, open: judged from the parity sheet)"
   },
   {
    "name": "text-small-14px",
@@ -104,7 +105,8 @@
    "name": "text-emoji",
    "source": "manifest:text-emoji.json",
    "fields": {},
-   "brand": {}
+   "brand": {},
+   "recordedDifference": "Colour emoji glyphs differ between Apple Color Emoji and Segoe UI Emoji (plan default D6)"
   },
   {
    "name": "curated-logo-accent",

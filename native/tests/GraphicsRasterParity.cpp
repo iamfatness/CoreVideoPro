@@ -444,6 +444,7 @@ std::vector<ParityFixture> loadParityIndex(const std::string& indexPath, std::st
     f.height = int(row.getNumber("height", 0));
     f.atlas = row.get("atlas") && row.get("atlas")->isBool() && row.get("atlas")->asBool();
     f.textTolerance = row.getNumber("textTolerance", 1);
+    f.recordedDifference = row.getString("recordedDifference");
     out.push_back(std::move(f));
   }
   error.clear();

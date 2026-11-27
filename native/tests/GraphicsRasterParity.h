@@ -115,6 +115,11 @@ struct ParityFixture {
   int width = 0, height = 0;  // 0: the template's bounds
   bool atlas = false;
   double textTolerance = 1;
+  // An owner-recorded Windows/Mac difference (index "recordedDifference": its
+  // reason). The fixture is still rendered, judged and printed on the sheet,
+  // but its failures do not fail MacMatchesWindowsReference. Tolerances are
+  // unchanged; every other fixture still blocks. Owner ruling 2026-11-27.
+  std::string recordedDifference;
 };
 std::vector<ParityFixture> loadParityIndex(const std::string& indexPath, std::string& error);
 

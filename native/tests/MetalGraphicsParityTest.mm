@@ -220,7 +220,7 @@ TEST(GraphicsRasterParity, MacMatchesWindowsReference) {
                      "<tr><th>fixture</th><th>Windows</th><th>Mac</th><th>diff</th><th>result</th></tr>";
   std::map<std::string, Json> rows;
   for (const auto& row : reference->get("fixtures")->asArray()) rows[row.getString("name")] = row;
-  int failed = 0;
+  int failed = 0, recordedFailed = 0;
   std::string allFailures;
   for (const auto& fixture : fixtures) {
     const auto found = rows.find(fixture.name);
@@ -242,16 +242,27 @@ TEST(GraphicsRasterParity, MacMatchesWindowsReference) {
     const auto mac = renderFixture(device, fixture);
     const auto failures = judge(fixture.name, windows, *found->second.get("layout"), mac.image, mac.layout,
                                 mac.textTolerance);
-    failed += failures.empty() ? 0 : 1;
+    // A recorded difference is judged and printed like any fixture but does
+    // not fail the test (GraphicsRasterParity.h, ParityFixture).
+    const bool recorded = !fixture.recordedDifference.empty();
+    if (!failures.empty() && !recorded) ++failed;
+    if (!failures.empty() && recorded) ++recordedFailed;
     // The vendored EXPECT_* throws on the first failure, so collect every
     // fixture's failures and fail once after the loop: one run lists them all.
     std::string cell;
+    if (recorded && !failures.empty()) {
+      std::fprintf(stderr, "[parity] RECORDED %s: %s\n", fixture.name.c_str(), fixture.recordedDifference.c_str());
+      cell += "recorded difference: " + fixture.recordedDifference + "<br>";
+    }
     for (const auto& f : failures) {
-      std::fprintf(stderr, "[parity] FAIL %s\n", f.c_str());
-      allFailures += f + "; ";
+      std::fprintf(stderr, "[parity] %s %s\n", recorded ? "differs" : "FAIL", f.c_str());
+      if (!recorded) allFailures += f + "; ";
       cell += f + "<br>";
     }
-    if (failures.empty()) std::fprintf(stderr, "[parity] pass %s\n", fixture.name.c_str());
+    if (failures.empty() && recorded)
+      std::fprintf(stderr, "[parity] pass %s (recorded difference no longer differs: remove the record)\n",
+                   fixture.name.c_str());
+    else if (failures.empty()) std::fprintf(stderr, "[parity] pass %s\n", fixture.name.c_str());
     if (artifacts && !mac.image.bgraPremultiplied.empty()) {
       const std::string base = std::string(artifacts) + "/" + fixture.name;
       writeParityPng(base + "-windows.png", windows, error);
@@ -274,7 +285,8 @@ TEST(GraphicsRasterParity, MacMatchesWindowsReference) {
     }
   }
   if (artifacts) std::ofstream(std::string(artifacts) + "/index.html") << html << "</table>";
-  std::fprintf(stderr, "[parity] %d of %zu fixtures outside tolerance\n", failed, fixtures.size());
+  std::fprintf(stderr, "[parity] %d of %zu fixtures outside tolerance (%d more recorded differences)\n", failed,
+               fixtures.size(), recordedFailed);
   EXPECT_EQ(0, failed) << allFailures;
 }
 

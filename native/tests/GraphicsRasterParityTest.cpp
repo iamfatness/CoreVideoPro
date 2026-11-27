@@ -160,8 +160,13 @@ TEST(GraphicsRasterParity, IndexIsWellFormed) {
   ASSERT_TRUE(error.empty()) << error;
   ASSERT_FALSE(fixtures.empty());
   std::set<std::string> names, curated;
+  // Recorded differences are a closed, owner-ruled list (2026-11-27): a new
+  // one is a ruling, not an index edit.
+  const std::set<std::string> recordable{"segoe-substitution", "text-emoji"};
   for (const auto& fixture : fixtures) {
     EXPECT_TRUE(names.insert(fixture.name).second) << "duplicate fixture name " << fixture.name;
+    if (!fixture.recordedDifference.empty())
+      EXPECT_TRUE(recordable.count(fixture.name)) << fixture.name << ": not an owner-recorded difference";
     if (fixture.source.rfind("curated:", 0) == 0) curated.insert(fixture.source.substr(8));
     ParityInput input;
     std::string inputError;
