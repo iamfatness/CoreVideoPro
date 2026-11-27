@@ -401,6 +401,35 @@ TEST(D3D11OverlayRaster, WarningsTravelByReferenceWithoutAPerTickCopy) {
   EXPECT_EQ(raster.sharedWarning(), pendingA);
 }
 
+// G2 D7 on D3D11: the facts loop calls preparedResource() for every
+// preparation on every Program tick. Once anyone holds the resource, the same
+// prepared texture must yield the SAME resource pointer (it used to allocate a
+// new one per call). Identity matters: the adapter pushes a "ready" fact only
+// when the resource differs from the plan's accepted one. Fixture invariant:
+// no prepared resource is passed in, so the raster builds the resource itself
+// rather than adopting one (adoption always returned the caller's pointer).
+TEST(D3D11OverlayRaster, PreparedResourceIsStableWhileHeld) {
+  auto* device = B::device();
+  if (!device) { std::fprintf(stderr, "[d3d11-raster] unavailable: no graphics device\n"); return; }
+  corevideo::modules::CompositorOverlayRaster raster;
+  const auto overlay = overlayContract::legacyLowerThird("PREPARED RESOURCE NAME LONGER THAN SSO", "STABLE IDENTITY");
+  ASSERT_EQ(overlayContract::waitTerminal<B>(raster, device, overlay, 400, 80).state, "ready");
+  const auto held = raster.preparedResource();
+  ASSERT_TRUE(held);
+  EXPECT_EQ(held->backend, corevideo::graphics::GraphicsPreparedResource::Backend::D3D11);
+  EXPECT_EQ(held->width, 400);
+  EXPECT_EQ(held->height, 80);
+  bool same = true;
+  for (int tick = 0; tick < 50; ++tick) {
+    B::raster(raster, device, overlay, 400, 80, false, {});
+    same = same && raster.preparedResource() == held;
+  }
+  EXPECT_TRUE(same) << "the same prepared texture must keep one resource identity";
+  // Different content is a different resource.
+  const auto other = overlayContract::legacyLowerThird("ANOTHER NAME", "ANOTHER TITLE");
+  ASSERT_EQ(overlayContract::waitTerminal<B>(raster, device, other, 400, 80).state, "ready");
+  EXPECT_NE(raster.preparedResource(), held);
+}
 
 TEST(GraphicsRasterReference, WriteWindowsReference) {
   const char* root = std::getenv("COREVIDEO_WRITE_GRAPHICS_REFERENCE");

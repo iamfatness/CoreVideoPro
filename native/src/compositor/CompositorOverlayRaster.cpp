@@ -545,6 +545,19 @@ std::shared_ptr<const graphics::GraphicsRunLayout> CompositorOverlayRaster::acti
 std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaster::preparedResource() {
   if (!activeLease_ || !activeLease_->asset || std::string_view(lastState_) != "ready") return {};
   if (activeResource_) return activeResource_;
+  // Same prepared texture -> same resource object, with no allocation, while
+  // anyone (an instance that adopted it) still holds it. Keyed by the cache
+  // result's address: a live weak entry proves that result is still alive, so
+  // the address cannot have been reused. Plan G2 D7; the Metal twin is
+  // CoreTextOverlayRaster::preparedResource.
+  const void* source = activeLease_.get();
+  for (const auto& entry : resourceCache_) {
+    if (entry.source != source) continue;
+    if (auto cached = entry.resource.lock()) {
+      activeResource_ = std::move(cached);
+      return activeResource_;
+    }
+  }
   auto resource = std::make_shared<graphics::GraphicsPreparedResource>();
   resource->backend = graphics::GraphicsPreparedResource::Backend::D3D11;
   resource->deviceIdentity = activeDevice_; resource->signature = activeSignature_;
@@ -555,6 +568,8 @@ std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaste
     resource->crawl = graphics::GraphicsCrawlPlayback{crawl.speed, crawl.passWidth, crawl.loop};
   }
   activeResource_ = resource;
+  resourceCache_[resourceCacheNext_] = {source, resource};
+  resourceCacheNext_ = (resourceCacheNext_ + 1) % resourceCache_.size();
   return resource;
 }
 

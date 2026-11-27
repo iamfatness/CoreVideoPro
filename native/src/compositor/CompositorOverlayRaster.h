@@ -25,6 +25,7 @@
 #include <dwrite.h>
 #include <wincodec.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <map>
@@ -170,6 +171,14 @@ class CompositorOverlayRaster {
   int activeWidth_ = 0, activeHeight_ = 0;
   std::array<uint8_t, 32> activeContentHash_{};
   bool activeHasContentHash_ = false;
+  // Weak, fixed-size memo of resources handed out (preparedResource(); Metal
+  // graphics G2 D7, the twin of CoreTextOverlayRaster::resourceCache_).
+  struct CachedResource {
+    const void* source = nullptr;
+    std::weak_ptr<const graphics::GraphicsPreparedResource> resource;
+  };
+  std::array<CachedResource, 32> resourceCache_{};
+  size_t resourceCacheNext_ = 0;
   // Last member: join the owner before destroying its factories or callback state.
   Cache cache_;
 };
