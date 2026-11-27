@@ -160,6 +160,27 @@ Task 4 "release on trim" (the trim never ran in the planned shape).
    D3D11 branch onto a shared helper with the new Metal branch; extracting the raster front half
    (spec 5.1).
 
+   **Done in the Windows session (2026-11-27, branch `codex/graphics-g4-agenda`, draft PR stacked on
+   #1258).** One commit per item, no rendered pixel changed: `WindowsMatchesItsOwnReference` passes
+   against the committed reference.
+   - *Fact warning copy:* `CompositorOverlayRaster` gained `sharedWarning()` and `setWarning()`, as on
+     Metal. The D3D11 adapter's `graphicsPreparations` loop passes the warning as the fact's
+     `sharedReason` instead of copying `lastWarning()`. Test:
+     `D3D11OverlayRaster.WarningsTravelByReferenceWithoutAPerTickCopy`.
+   - *`preparedResource()` memo:* the Metal weak, 32-entry memo was ported to D3D11. The same
+     prepared texture keeps one resource identity while anyone holds it. Test:
+     `D3D11OverlayRaster.PreparedResourceIsStableWhileHeld`.
+   - *Thumbnail fold:* `GraphicsThumbnail.cpp` now has one `thumbnailInput()` and one
+     `thumbnailResult()` shared by the D3D11 and Metal branches. Only the raster call and the
+     `backend` label differ between them.
+   - *Front half:* `native/src/compositor/OverlayRasterFrontHalf.h` (portable, header-only) holds
+     rules 1-4 and 7-8: the metadata bound, dimensions, the strict-salted signature, prepared
+     compatibility, the state table, capacity detection, the operator wording and the interned
+     warning. Both rasters call it. Rules 5-6 (cache find/request) stay per backend, because the
+     `Cache`, `Request` and texture types differ. Portable test: `OverlayRasterFrontHalf.*`.
+   - The Metal edits (thumbnail branch, the front half in `CoreTextOverlayRaster.mm`) were not
+     compiled on Windows. CI's `native-metal-macos` job compiles them.
+
 ## Known limits of the parity comparator
 
 - The spec's "truncated" flag is not observable without editing the Windows raster. A different
