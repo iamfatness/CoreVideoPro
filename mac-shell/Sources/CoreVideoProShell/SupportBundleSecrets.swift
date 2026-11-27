@@ -39,8 +39,12 @@ enum SupportBundleSecrets {
     /// Decoded; the matcher re-finds encoded copies. Prose around a link can
     /// stick to the value, so each value is offered in three cuts.
     private static func linkPasscodes(_ field: String) -> [String] {
+        // Decoded word by word: one stray "%" in the prose around a link would
+        // otherwise make the whole field undecodable.
         var texts = [field]
-        if let decoded = field.removingPercentEncoding, decoded != field { texts.append(decoded) }
+        texts += field.split(whereSeparator: \.isWhitespace).compactMap { word in
+            String(word).removingPercentEncoding.flatMap { $0 == String(word) ? nil : $0 }
+        }
         var found: [String] = []
         for text in texts {
             let spaced = text.replacingOccurrences(of: "&amp;", with: "&")
@@ -68,15 +72,19 @@ enum SupportBundleSecrets {
               let scheme = url.range(of: "://"),
               let slash = url[scheme.upperBound...].firstIndex(of: "/") else { return [] }
         let path = String(url[slash...].dropLast(".m3u8".count))
-        // A one-part path ("/live") is an ordinary word, not an origin id.
-        return path.dropFirst().contains("/") ? [url, path] : [url]
+        // Only a path with a long part can be an origin id. "/live" or
+        // "/live/stream" would shred ordinary file paths and other URLs.
+        return path.split(separator: "/").contains { $0.count >= 8 } ? [url, path] : [url]
     }
 
-    /// Held values plus the stored sign-ins and environment secrets. Trimmed,
-    /// because the core is sent (and logs) the trimmed value.
+    /// Held values plus the stored sign-ins and environment secrets. The core
+    /// is sent (and logs) the trimmed value.
     static func literals(_ held: Held,
                          environment: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
-        var values = [held.joinPasscode]
+        // The editable stream key, the passcode and the social sign-ins come
+        // first, in the order the bundle has always replaced them.
+        var values = [held.destinations.first?.secrets.rtmpKey ?? "", held.joinPasscode]
+        values += SocialRedaction.secretLiterals()
         values += held.meetingTargets.flatMap(linkPasscodes)
         for destination in held.destinations {
             values += [destination.secrets.rtmpKey, destination.secrets.srtPassphrase]
@@ -86,13 +94,18 @@ enum SupportBundleSecrets {
                 values.append(streamId)
             }
         }
-        values += SocialRedaction.secretLiterals()
         if let data = ZoomOAuth.keychain.read(),
            let tokens = try? JSONDecoder().decode(ZoomOAuth.Tokens.self, from: data) {
             values += [tokens.accessToken, tokens.refreshToken]
         }
         values += environmentNames.compactMap { environment[$0] }
-        return values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        // Trimmed, and also as held when that differs (a short value with
+        // spaces can fall under the length floor once trimmed).
+        return values.flatMap { value -> [String] in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { return [] }
+            return trimmed == value ? [value] : [value, trimmed]
+        }
     }
 
     /// What a headless export (no model) scrubs: the same values, read from where
@@ -142,8 +155,8 @@ struct LiteralScrubber {
     private typealias Spellings = [[Unit]]
 
     private let literals: [[Spellings]]
-    /// The values as held, longest first, for the Foundation search below.
-    private let held: [String]
+    /// The values as held, in the order given, for the Foundation search.
+    let held: [String]
     /// Per literal, the bytes that can follow a run of backslashes its match
     /// STARTS with: lets a position in a long run be refused without matching.
     private let afterBackslashes: [[Bool]]
@@ -153,7 +166,8 @@ struct LiteralScrubber {
     var isEmpty: Bool { literals.isEmpty }
 
     init(_ values: [String]) {
-        held = Set(values).filter { $0.count >= Self.minimumLength }.sorted { $0.utf8.count > $1.utf8.count }
+        var seen = Set<[UInt8]>()
+        held = values.filter { $0.count >= Self.minimumLength && seen.insert(Array($0.utf8)).inserted }
         var parsed: [[Spellings]] = []
         var starts = [Bool](repeating: false, count: 256)
         for value in Set(values) where value.count >= Self.minimumLength {
@@ -242,23 +256,62 @@ struct LiteralScrubber {
         }
     }
 
-    /// `text` with every occurrence replaced. Occurrences are all found in the
-    /// ORIGINAL text and overlapping ones merged, so a secret contained in (or
-    /// overlapping) another never leaves the other's remainder behind.
+    /// `text` with every occurrence replaced, and how many there were.
     func scrub(_ text: String) -> (text: String, hits: Int) {
-        if literals.isEmpty || text.isEmpty { return (text, 0) }
-        var (result, hits) = scrubSpellings(text)
-        // Foundation's search equates more than the spellings above (a singleton
-        // code point in the text, such as the Kelvin sign for "K"). Run it too,
-        // so this layer never matches less than a plain replace would.
-        for value in held where result.range(of: value) != nil {
-            hits += result.components(separatedBy: value).count - 1
-            result = result.replacingOccurrences(of: value, with: Redactor.placeholder)
-        }
-        return (result, hits)
+        let found = spans(text)
+        return found.isEmpty ? (text, 0) : (Self.replacing(found, in: text), found.count)
     }
 
-    private func scrubSpellings(_ text: String) -> (text: String, hits: Int) {
+    static func replacing(_ spans: [Range<Int>], in text: String) -> String {
+        let source = text as NSString
+        var out = ""
+        var copied = 0
+        for span in spans {
+            out += source.substring(with: NSRange(location: copied, length: span.lowerBound - copied))
+            out += Redactor.placeholder
+            copied = span.upperBound
+        }
+        return out + source.substring(from: copied)
+    }
+
+    /// The ranges Foundation's replace would take: left to right, no overlap.
+    static func occurrences(of value: String, in text: NSString) -> [NSRange] {
+        var found: [NSRange] = []
+        var from = 0
+        while from < text.length {
+            let range = text.range(of: value, options: [], range: NSRange(location: from, length: text.length - from))
+            if range.location == NSNotFound || range.length == 0 { break }
+            found.append(range)
+            from = NSMaxRange(range)
+        }
+        return found
+    }
+
+    /// Every occurrence as merged UTF-16 ranges. All are found in the ORIGINAL
+    /// text and overlapping ones merged, so a secret contained in (or
+    /// overlapping) another never leaves the other's remainder behind.
+    func spans(_ text: String) -> [Range<Int>] {
+        if literals.isEmpty || text.isEmpty { return [] }
+        var found = spelledSpans(text)
+        // Foundation's search equates more than the spellings above (a singleton
+        // code point in the text, such as the Kelvin sign for "K"). Include it,
+        // so this layer never matches less than a plain replace would.
+        let source = text as NSString
+        for value in held {
+            found += Self.occurrences(of: value, in: source).map { $0.location..<NSMaxRange($0) }
+        }
+        var merged: [Range<Int>] = []
+        for range in found.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = merged.last, range.lowerBound < last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
+    }
+
+    private func spelledSpans(_ text: String) -> [Range<Int>] {
         let bytes = Array(text.utf8)
         var found: [Range<Int>] = []
         bytes.withUnsafeBufferPointer { buffer in
@@ -277,17 +330,23 @@ struct LiteralScrubber {
                 }
             }
         }
-        if found.isEmpty { return (text, 0) }
-        var out: [UInt8] = []
-        out.reserveCapacity(bytes.count)
-        var copied = 0
-        for range in found {
-            out += bytes[copied..<range.lowerBound]
-            out += Array(Redactor.placeholder.utf8)
-            copied = range.upperBound
+        if found.isEmpty { return [] }
+        // Byte offsets to UTF-16 offsets, in one walk (matches are ascending
+        // and start and end between characters).
+        var byte = 0
+        var unit = 0
+        var cursor = text.unicodeScalars.makeIterator()
+        func advance(to target: Int) -> Int {
+            while byte < target, let scalar = cursor.next() {
+                byte += UTF8.width(scalar)
+                unit += UTF16.width(scalar)
+            }
+            return unit
         }
-        out += bytes[copied...]
-        return (String(decoding: out, as: UTF8.self), found.count)
+        return found.map { range in
+            let low = advance(to: range.lowerBound)
+            return low..<advance(to: range.upperBound)
+        }
     }
 
     /// The byte after the (capped) run of backslashes at `start`; 0 at the end.

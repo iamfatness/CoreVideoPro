@@ -117,14 +117,147 @@ enum Redactor {
         // Layer 3 — KNOWN LITERALS (SupportBundleSecrets): an identity match,
         // raw or escaped, cannot be fooled by a shape the pattern rules did not
         // anticipate.
-        var result = known.scrub(text).text
-        guard !result.isEmpty else { return result }
+        let spans = known.spans(text)
+        if spans.isEmpty { return applyRules(text) }
+        // NO LAYER FEEDS ANOTHER'S BLIND SPOT. A literal replaced first can
+        // remove the "://" or "key=" a rule needs (leaving an unheld secret),
+        // and a rule run first can cut a literal in half. So the characters
+        // removed are the UNION of three views of the original:
+        //   1. every literal occurrence;
+        //   2. what the rules remove from the untouched text;
+        //   3. what a plain literal replace followed by the rules removes.
+        let original = Array(text.utf16)
+        var dead = [Bool](repeating: false, count: original.count)
+        for span in spans { for index in span { dead[index] = true } }
+        var untouched = Tracked(original)
+        var replaced = Tracked(original)
+        for value in known.held { replaced.replace(value) }
+        guard applyRules(&untouched), applyRules(&replaced) else { return placeholder }
+        for survivors in [untouched.survivors(of: original.count), replaced.survivors(of: original.count)] {
+            for index in dead.indices where !survivors[index] { dead[index] = true }
+        }
+        var removed: [Range<Int>] = []
+        for index in dead.indices where dead[index] {
+            if let last = removed.last, last.upperBound == index {
+                removed[removed.count - 1] = last.lowerBound..<(index + 1)
+            } else {
+                removed.append(index..<(index + 1))
+            }
+        }
+        return LiteralScrubber.replacing(removed, in: text)
+    }
+
+    /// Every match of `rule`, or nil when the matcher GAVE UP. ICU does that on
+    /// some very long runs and `stringByReplacingMatches` then returns quietly
+    /// with the rest unfiltered; the caller drops the whole string instead.
+    private static func matches(_ rule: Rule, in text: NSString) -> [NSTextCheckingResult]? {
+        var found: [NSTextCheckingResult] = []
+        var gaveUp = false
+        rule.regex.enumerateMatches(in: text as String, options: [.reportCompletion],
+                                    range: NSRange(location: 0, length: text.length)) { match, flags, _ in
+            if flags.contains(.internalError) { gaveUp = true }
+            if let match { found.append(match) }
+        }
+        return gaveUp ? nil : found
+    }
+
+    private static func applyRules(_ text: String) -> String {
+        var result = text
         for rule in rules {
-            let range = NSRange(result.startIndex..., in: result)
-            result = rule.regex.stringByReplacingMatches(
-                in: result, options: [], range: range, withTemplate: rule.template)
+            let source = result as NSString
+            guard let found = matches(rule, in: source) else { return placeholder }
+            if found.isEmpty { continue }
+            var out = ""
+            var copied = 0
+            for match in found {
+                out += source.substring(with: NSRange(location: copied, length: match.range.location - copied))
+                out += rule.regex.replacementString(for: match, in: result, offset: 0, template: rule.template)
+                copied = NSMaxRange(match.range)
+            }
+            result = out + source.substring(from: copied)
         }
         return result
+    }
+
+    /// Text being redacted that remembers which characters of the original are
+    /// still in it (UTF-16 units; `origin` is -1 for inserted text).
+    private struct Tracked {
+        var units: [UInt16]
+        var origin: [Int]
+
+        init(_ original: [UInt16]) {
+            units = original
+            origin = Array(original.indices)
+        }
+
+        var string: String { String(decoding: units, as: UTF16.self) }
+
+        func survivors(of count: Int) -> [Bool] {
+            var alive = [Bool](repeating: false, count: count)
+            for index in origin where index >= 0 { alive[index] = true }
+            return alive
+        }
+
+        /// Replaces each (range, new units, their origins), in ascending order.
+        mutating func splice(_ edits: [(NSRange, [UInt16], [Int])]) {
+            if edits.isEmpty { return }
+            var newUnits: [UInt16] = []
+            var newOrigin: [Int] = []
+            var copied = 0
+            for (range, with, from) in edits {
+                newUnits += units[copied..<range.location]
+                newOrigin += origin[copied..<range.location]
+                newUnits += with
+                newOrigin += from
+                copied = NSMaxRange(range)
+            }
+            newUnits += units[copied...]
+            newOrigin += origin[copied...]
+            units = newUnits
+            origin = newOrigin
+        }
+
+        /// `replacingOccurrences(of:with: placeholder)`, tracked.
+        mutating func replace(_ value: String) {
+            let inserted = Array(Redactor.placeholder.utf16)
+            let none = [Int](repeating: -1, count: inserted.count)
+            splice(LiteralScrubber.occurrences(of: value, in: string as NSString).map { ($0, inserted, none) })
+        }
+    }
+
+    /// The rules, tracked. False when the matcher gave up.
+    private static func applyRules(_ text: inout Tracked) -> Bool {
+        // A noncharacter standing for the placeholder, so the common prefix and
+        // suffix of a match and its replacement can never reach into a secret.
+        let mark: UInt16 = 0xFFFF
+        let inserted = Array(placeholder.utf16)
+        for rule in rules {
+            let current = text.string
+            guard let found = matches(rule, in: current as NSString) else { return false }
+            let template = rule.template.replacingOccurrences(of: placeholder, with: "\u{FFFF}")
+            var edits: [(NSRange, [UInt16], [Int])] = []
+            for match in found {
+                let new = Array(rule.regex.replacementString(for: match, in: current, offset: 0,
+                                                             template: template).utf16)
+                let low = match.range.location
+                let length = match.range.length
+                var prefix = 0
+                while prefix < min(length, new.count), text.units[low + prefix] == new[prefix] { prefix += 1 }
+                var suffix = 0
+                while suffix < min(length, new.count) - prefix,
+                      text.units[low + length - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
+                var units: [UInt16] = []
+                var origin: [Int] = []
+                for unit in new[prefix..<(new.count - suffix)] {
+                    let add = unit == mark ? inserted : [unit]
+                    units += add
+                    origin += [Int](repeating: -1, count: add.count)
+                }
+                edits.append((NSRange(location: low + prefix, length: length - prefix - suffix), units, origin))
+            }
+            text.splice(edits)
+        }
+        return true
     }
 
     /// Walks a decoded JSON tree, blanking secret-named keys and scrubbing every

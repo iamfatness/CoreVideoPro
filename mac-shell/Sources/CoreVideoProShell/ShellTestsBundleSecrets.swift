@@ -20,6 +20,7 @@ extension ShellTests {
             ("bundle-secrets/no-over-redaction", testBundleKeepsDiagnosticKeysAndWords),
             ("bundle-secrets/long-run", testBundleKeyValueRuleStaysLinear),
             ("bundle-secrets/never-less-than-main", testBundleStillMatchesWhatMainMatched),
+            ("bundle-secrets/matcher-gives-up", testBundleDropsTextTheMatcherGivesUpOn),
         ]
     }
 
@@ -327,6 +328,15 @@ extension ShellTests {
             FileHandle.standardError.write(Data("    large-input \(label): \(String(format: "%.2f", seconds)) s\n".utf8))
             expect(seconds < 60, "\(label) took \(seconds) s")
         }
+        // The union path (a line WITH hits) tracks every character: one 2 MB
+        // line with 60k hits and rule matches must stay quick too.
+        let busy = String(repeating: "x fkunionhit {\"streamKey\": \"v\"} y ", count: 60_000)
+        let began = Date()
+        let busyOut = Redactor.scrub(busy, literals: (0..<18).map { "fkunused\($0)" } + ["fkunionhit"])
+        let took = Date().timeIntervalSince(began)
+        FileHandle.standardError.write(Data("    large-input union path: \(String(format: "%.2f", took)) s\n".utf8))
+        expect(took < 60, "union path took \(took) s")
+        expect(!busyOut.contains("fkunionhit") && !busyOut.contains("\"v\""), "union path filtered")
         // And it still finds a secret at the far end of a large line.
         let hit = scrubber.scrub(String(repeating: "\\ %25 ", count: 100_000) + "fklarge-secret%20%22%5C%2F%257")
         expect(hit.text.hasSuffix(" [redacted]") && hit.hits == 1, "found after 600 KB")
@@ -395,6 +405,17 @@ extension ShellTests {
         plain.destinations = [(StreamDestinationsConfig(hlsPlaylistUrl: "https://h.example/live.m3u8"),
                                StreamDestinationSecrets())]
         expect(!SupportBundleSecrets.literals(plain, environment: [:]).contains("/live"), "a one-part path is a word")
+        for (url, path, kept) in [("https://h.example/live/stream.m3u8", "/live/stream", false),
+                                  ("https://h.example/k1abcdefgh.m3u8", "/k1abcdefgh", true)] {
+            plain.destinations = [(StreamDestinationsConfig(hlsPlaylistUrl: url), StreamDestinationSecrets())]
+            expectEqual(SupportBundleSecrets.literals(plain, environment: [:]).contains(path), kept, "path of \(url)")
+        }
+        // A short key with spaces was a literal as typed; trimming must not drop it.
+        plain.destinations = [(StreamDestinationsConfig(), StreamDestinationSecrets(rtmpKey: "ab  "))]
+        expect(SupportBundleSecrets.literals(plain, environment: [:]).contains("ab  "), "the as-held form is kept")
+        // One stray "%" in the prose must not hide a wrapped link.
+        plain.meetingTargets = ["100% join https://wrap.example/?url=https%3A%2F%2Fzoom.us%2Fj%2F1%3Fpwd%3DfkStray9q&d=1"]
+        expect(SupportBundleSecrets.literals(plain, environment: [:]).contains("fkStray9q"), "wrapped link after a %")
         // Punctuation around a pasted link, HTML "&amp;", and a wrapped link.
         for target in ["see <https://zoom.us/j/1?pwd=fkTail.9q>", "(https://zoom.us/j/1?pwd=fkTail.9q).",
                        "go to https://zoom.us/j/1?pwd=fkTail.9q.", "\"https://zoom.us/j/1?a=1&amp;pwd=fkTail.9q\";x",
@@ -477,19 +498,185 @@ extension ShellTests {
         }
     }
 
-    /// Main replaced literals with Foundation's search, which also equates a
-    /// singleton code point in the TEXT (Kelvin sign for K, U+0958) with the
-    /// plain spelling of the secret. That must still match.
+    /// For the same held literals, whatever main removed from a text is removed.
     static func testBundleStillMatchesWhatMainMatched() {
+        // Singletons in the text, which Foundation's search equates.
         for (held, written) in [("fkKelvinq", "fk\u{212A}elvinq"), ("fk\u{915}\u{93C}secret", "fk\u{958}secret"),
                                 ("fk;semiq", "fk\u{37E}semiq")] {
             let out = Redactor.scrub("saw <\(written)> end", literals: [held])
             expect(out.utf8.elementsEqual("saw <[redacted]> end".utf8), "as main did: \(held) -> \(out)")
             var input = SupportBundleInput()
             input.knownSecretLiterals = [held]
-            let files = writeSecretBundle(input, shellLog: "saw <\(written)>", coreLog: "x",
-                                          crashNames: [])
+            let files = writeSecretBundle(input, shellLog: "saw <\(written)>", coreLog: "x")
             expect(files["shell-log-tail.txt"]?.contains("saw <[redacted]>") == true, "in a bundle: \(held)")
         }
+        // A literal that removes the anchor a pattern rule needs must not
+        // leave the secret that only the rule knew about.
+        let split = "Ab1xxxxxxxxxxxxx7788yyyyyyyyyyyyyyyy"
+        let anchors: [(String, [String], [String])] = [
+            ("push rtmp://ingest.example/live/stream_OLDKEY99 ok", ["/live/stream"], ["OLDKEY99"]),
+            ("srt://ingest.example/live/stream?mode=caller&streamid=OLDSID99", ["/live/stream"], ["OLDSID99"]),
+            ("token \(split) end", ["7788"], ["Ab1x", "yyyy"]),
+            ("Authorization: Bearer abc.def.ghi", ["Bearer"], ["abc.def.ghi"]),
+            ("rtmp://h.example/app/OLDKEY-unheld-123", ["rtmp"], ["OLDKEY-unheld-123"]),
+            ("url http://yy:fkpw99@cdn.example/x", ["http://y"], ["fkpw99"]),
+        ]
+        for (text, literals, gone) in anchors {
+            let out = Redactor.scrub(text, literals: literals)
+            for secret in gone { expect(!out.contains(secret), "unheld \(secret) survived \(literals): \(out)") }
+            let tree = Redactor.redact([text: text], literals: literals) as? JSONObject ?? [:]
+            for secret in gone {
+                expect(!tree.contains { "\($0.key) \($0.value)".contains(secret) }, "\(secret) in a key or value: \(tree)")
+            }
+        }
+        // Literals that overlap, or contain rule syntax, or start with a mark.
+        let exact: [(String, [String], [String])] = [
+            ("&:/key:/key::/k:", [":/key:"], ["/k:"]),
+            ("a fk\u{212A}ey-ABCD-tail z", ["fkKey-ABCD", "ABCD-tail"], ["tail", "ey-"]),
+            ("e\u{301}eb\u{212A} z", ["\u{301}ebK"], ["eb\u{212A}"]),
+        ]
+        for (text, literals, probes) in exact {
+            let main = MainRedactor.scrub(text, literals: literals)
+            let out = Redactor.scrub(text, literals: literals)
+            for probe in probes where !main.contains(probe) {
+                expect(!out.contains(probe), "main removed \(probe) from \(text): main \(main), now \(out)")
+            }
+        }
+        randomDifferentialAgainstMain()
+    }
+
+    /// Seeded: random lines built from rule anchors, with a fresh marker between
+    /// them. A marker main removed must not appear. With no literal, identical.
+    private static func randomDifferentialAgainstMain() {
+        let pieces = [
+            "rtmp://h.example/", "srt://i.example:9/live/stream", "://user:", "@host.example/", "?pwd=", "&sig=",
+            "streamKey=", "token: ", "\"userZak\" : \"", "\"", "Bearer ", "Authorization: ", "eyJabcdefgh.", ".", " ",
+            "/live/stream", "7788", ",", ";", "}", "]", "-", "_", "\\/", "%2F", "\u{212A}", "\u{301}", "\n",
+            "Ab1xxxxxxxxxxxxx", "yyyyyyyyyyyyyyyy", "[redacted]", "key",
+        ]
+        var state: UInt64 = 0x9E3779B97F4A7C15
+        func random(_ bound: Int) -> Int {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Int((state >> 33) % UInt64(bound))
+        }
+        var lessThanMain: [String] = []
+        var different: [String] = []
+        var marker = 0
+        for _ in 0..<4_000 {
+            var text = ""
+            var markers: [String] = []
+            for _ in 0..<(3 + random(8)) {
+                text += pieces[random(pieces.count)]
+                if random(2) == 0 {
+                    marker += 1
+                    markers.append("Zq\(marker)mk")
+                    text += markers.last!
+                }
+            }
+            if Redactor.scrub(text) != MainRedactor.scrub(text) { different.append(text) }
+            var literals: [String] = []
+            let scalars = Array(text.unicodeScalars)
+            for _ in 0..<(1 + random(3)) where scalars.count > 4 {
+                if random(3) == 0 {
+                    literals.append(["/live/stream", "7788", "Bearer", "rtmp", "streamKey", ":/key:", "pwd="][random(7)])
+                } else {
+                    let low = random(scalars.count - 4)
+                    var view = String.UnicodeScalarView()
+                    view.append(contentsOf: scalars[low..<min(scalars.count, low + 4 + random(14))])
+                    literals.append(String(view))
+                }
+            }
+            let main = MainRedactor.scrub(text, literals: literals)
+            let out = Redactor.scrub(text, literals: literals)
+            for name in markers where !main.contains(name) && out.contains(name) {
+                lessThanMain.append("\(name) in \(text.debugDescription) with \(literals)")
+                break
+            }
+        }
+        expectEqual(different.count, 0, "no literal: identical to main, e.g. \(different.prefix(1))")
+        expectEqual(lessThanMain.count, 0, "never less than main, e.g. \(lessThanMain.prefix(2))")
+    }
+
+    /// ICU gives up on a very long segment and, unchecked, leaves the rest of
+    /// the string unfiltered. The string must then be dropped, never passed.
+    static func testBundleDropsTextTheMatcherGivesUpOn() {
+        let later = "eyJlaterabcd.fkLaterJwtSig"
+        for (label, long) in [
+            ("long third segment", "eyJabcdefghij.aaaaaaaaaa." + String(repeating: "b", count: 300_000)),
+            ("long second segment", "eyJabcdefghij." + String(repeating: "b", count: 400_000) + ".c"),
+        ] {
+            for literals in [[], ["fkheldliteral"]] {
+                let out = Redactor.scrub("\(long) fkheldliteral \(later)", literals: literals)
+                expect(!out.contains("fkLaterJwtSig"), "\(label): a later token survived")
+                expect(!out.contains(String(repeating: "b", count: 64)), "\(label): the long token survived")
+            }
+        }
+    }
+}
+
+/// origin/main's Redactor.scrub (18904684), copied verbatim: the floor the
+/// bundle scrubber must never fall below.
+private enum MainRedactor {
+    static let placeholder = "[redacted]"
+
+    private struct Rule {
+        let regex: NSRegularExpression
+        let template: String
+
+        init(_ pattern: String, _ template: String,
+             _ options: NSRegularExpression.Options = [.caseInsensitive]) {
+            // A malformed literal here is a programming error; crashing at first
+            // use beats silently shipping an unfiltered bundle.
+            // swiftlint:disable:next force_try
+            regex = try! NSRegularExpression(pattern: pattern, options: options)
+            self.template = template
+        }
+    }
+
+    private static let rules: [Rule] = [
+        // URL userinfo — rtmp://user:password@host/…
+        Rule("(://)[^/\\s:@\"']+:[^/\\s@\"']+@", "$1" + placeholder + "@"),
+        // Any rtmp/rtmps/srt URL: scheme + host survive (they name the service,
+        // which IS diagnostic); everything after the authority is treated as a
+        // stream key. Same rule as the Windows RtmpUrlPath.
+        Rule("((?:rtmps?|srt)://[^/\\s\"']+/)[^\\s\"',}\\]]+", "$1" + placeholder),
+        // Secret query parameters on any URL.
+        Rule("([?&][A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt|sig|auth)=)[^&\\s\"'<>]+",
+             "$1" + placeholder),
+        // "someKey": "value" in JSON-ish text.
+        Rule("\"([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt))\"\\s*:\\s*\"[^\"]*\"",
+             "\"$1\":\"" + placeholder + "\""),
+        // someKey=value / someKey: value in log lines.
+        Rule("([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt)\\s*[:=]\\s*)[^&\\s\"',;}\\]]+",
+             "$1" + placeholder),
+        // Authorization headers.
+        Rule("\\bBearer\\s+[A-Za-z0-9\\-_.=+/]+", "Bearer " + placeholder, []),
+        // JWT-shaped blobs (Zoom ZAKs and sdkJwts arrive in this shape).
+        Rule("\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}(?:\\.[A-Za-z0-9_-]*)?",
+             placeholder, []),
+        // Catch-all for opaque high-entropy tokens: a >=28 char run of
+        // [A-Za-z0-9_-] carrying lower AND upper AND digits. The lookbehind
+        // excludes runs preceded by / or . so FILE PATHS are never touched, and
+        // the mixed-case requirement spares UUIDs, lowercase ids and
+        // SCREAMING_SNAKE env-var names.
+        Rule("(?<![A-Za-z0-9_\\-/.])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{28,}",
+             placeholder, []),
+    ]
+
+    static func scrub(_ text: String, literals: [String] = []) -> String {
+        var result = text
+        // Layer 3 — KNOWN LITERALS. The shell holds the operator's live stream
+        // key and meeting passcode in memory; an identity match cannot be fooled
+        // by a shape the pattern rules did not anticipate.
+        for literal in literals where literal.count >= 4 {
+            result = result.replacingOccurrences(of: literal, with: placeholder)
+        }
+        guard !result.isEmpty else { return result }
+        for rule in rules {
+            let range = NSRange(result.startIndex..., in: result)
+            result = rule.regex.stringByReplacingMatches(
+                in: result, options: [], range: range, withTemplate: rule.template)
+        }
+        return result
     }
 }
