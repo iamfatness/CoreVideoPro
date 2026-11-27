@@ -333,7 +333,11 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
     }
   };
   const size_t targetWidth = CGBitmapContextGetWidth(cg), targetHeight = CGBitmapContextGetHeight(cg);
-  const CGRect device = CGRectIntersection(CGRectIntegral(CGContextConvertRectToDeviceSpace(cg, textClip)),
+  // The layer, the composite and this rect must all use the CTM. Do not use
+  // CGContextConvertRectToDeviceSpace: on a CI run it returned the text clip
+  // flipped vertically against the CTM, which cut text off at the clip edge.
+  const CGAffineTransform ctm = CGContextGetCTM(cg);
+  const CGRect device = CGRectIntersection(CGRectIntegral(CGRectApplyAffineTransform(textClip, ctm)),
                                            CGRectMake(0, 0, CGFloat(targetWidth), CGFloat(targetHeight)));
   if (CGRectIsNull(device) || CGRectIsEmpty(device)) return true;  // the text clip is off the bitmap
   const size_t width = size_t(device.size.width), height = size_t(device.size.height);
@@ -345,7 +349,6 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
     return false;
   }
   // Same user space as `cg`, shifted so the layer's origin is the device rect.
-  const CGAffineTransform ctm = CGContextGetCTM(cg);
   CGContextTranslateCTM(layer.get(), -device.origin.x, -device.origin.y);
   CGContextConcatCTM(layer.get(), ctm);
   CGContextClipToRect(layer.get(), textClip);
