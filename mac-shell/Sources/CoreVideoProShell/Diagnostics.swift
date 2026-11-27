@@ -86,13 +86,19 @@ enum Redactor {
         Rule("\"([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt))\"\\s*:\\s*\"[^\"]*\"",
              "\"$1\":\"" + placeholder + "\""),
         // someKey=value / someKey: value in log lines.
-        Rule("([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt)\\s*[:=]\\s*)[^&\\s\"',;}\\]]+",
+        // The lookbehind starts a match only at the start of a run: without it
+        // every position rescans the rest, and one long line hangs the export.
+        Rule("(?<![A-Za-z0-9_-])([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt)\\s*[:=]\\s*)[^&\\s\"',;}\\]]+",
              "$1" + placeholder),
         // Authorization headers.
         Rule("\\bBearer\\s+[A-Za-z0-9\\-_.=+/]+", "Bearer " + placeholder, []),
         // JWT-shaped blobs (Zoom ZAKs and sdkJwts arrive in this shape).
-        Rule("\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}(?:\\.[A-Za-z0-9_-]*)?",
-             placeholder, []),
+        // Linear form of \beyJ…: from the start of a run, commit (atomically)
+        // to its first "eyJ". Later ones end at the same place, so if the first
+        // fails they all would; trying each was quadratic ("eyJ-eyJ-…").
+        Rule("(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?\\b(?=eyJ[A-Za-z0-9_-]{8})))"
+             + "eyJ[A-Za-z0-9_-]{8,}+\\.[A-Za-z0-9_-]{8,}+(?:\\.[A-Za-z0-9_-]*+)?",
+             "$1" + placeholder, []),
         // Catch-all for opaque high-entropy tokens: a >=28 char run of
         // [A-Za-z0-9_-] carrying lower AND upper AND digits. The lookbehind
         // excludes runs preceded by / or . so FILE PATHS are never touched, and
@@ -102,57 +108,244 @@ enum Redactor {
              placeholder, []),
     ]
 
-    /// Scrubs one string: known literals first (layer 3), then value patterns.
-    static func scrub(_ text: String, literals: [String] = []) -> String {
-        var result = text
-        // Layer 3 — KNOWN LITERALS. The shell holds the operator's live stream
-        // key and meeting passcode in memory; an identity match cannot be fooled
-        // by a shape the pattern rules did not anticipate.
-        for literal in literals where literal.count >= 4 {
-            result = result.replacingOccurrences(of: literal, with: placeholder)
+    /// Scrubs one string by known literals (layer 3) and value patterns.
+    /// `floor` (default: `literals`) is replayed on its own; see below.
+    static func scrub(_ text: String, literals: [String] = [], floor: [String]? = nil) -> String {
+        scrub(text, known: LiteralScrubber(literals, floor: floor))
+    }
+
+    /// `alsoRemove`: UTF-16 ranges of `text` already known to hold a secret.
+    private static func scrub(_ text: String, known: LiteralScrubber,
+                              alsoRemove: [Range<Int>] = []) -> String {
+        // Layer 3 — KNOWN LITERALS (SupportBundleSecrets): an identity match,
+        // raw or escaped, cannot be fooled by a shape the pattern rules did not
+        // anticipate.
+        let spans = known.spans(text)
+        if spans.isEmpty && alsoRemove.isEmpty { return applyRules(text) }
+        // NO LAYER FEEDS ANOTHER'S BLIND SPOT. A literal replaced first can
+        // remove the "://" or "key=" a rule needs (leaving an unheld secret),
+        // and a rule run first can cut a literal in half. So the characters
+        // removed are the UNION of what is removed from three versions of the
+        // original, each then run through the rules (the third also removes
+        // every literal occurrence itself):
+        //   - FLOOR: the floor list replaced in order. This is exactly what the
+        //     bundle did before this layer grew, so whatever it removed stays
+        //     removed, whatever the other views do. Do not "simplify" it away.
+        //   - UNTOUCHED: a longer literal list cannot take a rule's anchor.
+        //   - EVERY SPELLING REMOVED: a rule that an escaped secret's "/",
+        //     space or quote had stopped can now reach its neighbour.
+        let original = Array(text.utf16)
+        var dead = [Bool](repeating: false, count: original.count)
+        var floor = Tracked(original)
+        for value in known.floor { floor.replace(value) }
+        // Marked here only, not taken out of the text a view's rules read.
+        for range in alsoRemove { for index in range { dead[index] = true } }
+        let untouched = Tracked(original)
+        var unspelled = Tracked(original)
+        unspelled.remove(spans)
+        for var view in [floor, untouched, unspelled] {
+            guard applyRules(&view) else { return placeholder }
+            let survivors = view.survivors(of: original.count)
+            for index in dead.indices where !survivors[index] { dead[index] = true }
         }
-        guard !result.isEmpty else { return result }
+        var removed: [Range<Int>] = []
+        for index in dead.indices where dead[index] {
+            if let last = removed.last, last.upperBound == index {
+                removed[removed.count - 1] = last.lowerBound..<(index + 1)
+            } else {
+                removed.append(index..<(index + 1))
+            }
+        }
+        return LiteralScrubber.replacing(removed, in: text)
+    }
+
+    /// Every match of `rule`, or nil when the matcher GAVE UP. ICU does that on
+    /// some very long runs and `stringByReplacingMatches` then returns quietly
+    /// with the rest unfiltered; the caller drops the whole string instead.
+    private static func matches(_ rule: Rule, in text: NSString) -> [NSTextCheckingResult]? {
+        var found: [NSTextCheckingResult] = []
+        var gaveUp = false
+        rule.regex.enumerateMatches(in: text as String, options: [.reportCompletion],
+                                    range: NSRange(location: 0, length: text.length)) { match, flags, _ in
+            if flags.contains(.internalError) { gaveUp = true }
+            if let match { found.append(match) }
+        }
+        return gaveUp ? nil : found
+    }
+
+    private static func applyRules(_ text: String) -> String {
+        var result = text
         for rule in rules {
-            let range = NSRange(result.startIndex..., in: result)
-            result = rule.regex.stringByReplacingMatches(
-                in: result, options: [], range: range, withTemplate: rule.template)
+            let source = result as NSString
+            guard let found = matches(rule, in: source) else { return placeholder }
+            if found.isEmpty { continue }
+            var out = ""
+            var copied = 0
+            for match in found {
+                out += source.substring(with: NSRange(location: copied, length: match.range.location - copied))
+                out += rule.regex.replacementString(for: match, in: result, offset: 0, template: rule.template)
+                copied = NSMaxRange(match.range)
+            }
+            result = out + source.substring(from: copied)
         }
         return result
     }
 
+    /// Text being redacted that remembers which characters of the original are
+    /// still in it (UTF-16 units; `origin` is -1 for inserted text).
+    private struct Tracked {
+        var units: [UInt16]
+        var origin: [Int]
+
+        init(_ original: [UInt16]) {
+            units = original
+            origin = Array(original.indices)
+        }
+
+        var string: String { String(decoding: units, as: UTF16.self) }
+
+        func survivors(of count: Int) -> [Bool] {
+            var alive = [Bool](repeating: false, count: count)
+            for index in origin where index >= 0 { alive[index] = true }
+            return alive
+        }
+
+        /// Replaces each (range, new units, their origins), in ascending order.
+        mutating func splice(_ edits: [(NSRange, [UInt16], [Int])]) {
+            if edits.isEmpty { return }
+            var newUnits: [UInt16] = []
+            var newOrigin: [Int] = []
+            var copied = 0
+            for (range, with, from) in edits {
+                newUnits += units[copied..<range.location]
+                newOrigin += origin[copied..<range.location]
+                newUnits += with
+                newOrigin += from
+                copied = NSMaxRange(range)
+            }
+            newUnits += units[copied...]
+            newOrigin += origin[copied...]
+            units = newUnits
+            origin = newOrigin
+        }
+
+        /// `replacingOccurrences(of:with: placeholder)`, tracked.
+        mutating func replace(_ value: String) {
+            remove(LiteralScrubber.occurrences(of: value, in: string as NSString)
+                .map { $0.location..<NSMaxRange($0) })
+        }
+
+        mutating func remove(_ spans: [Range<Int>]) {
+            let inserted = Array(Redactor.placeholder.utf16)
+            let none = [Int](repeating: -1, count: inserted.count)
+            splice(spans.map { (NSRange(location: $0.lowerBound, length: $0.count), inserted, none) })
+        }
+    }
+
+    /// The rules, tracked. False when the matcher gave up.
+    private static func applyRules(_ text: inout Tracked) -> Bool {
+        // A noncharacter standing for the placeholder, so the common prefix and
+        // suffix of a match and its replacement can never reach into a secret.
+        let mark: UInt16 = 0xFFFF
+        let inserted = Array(placeholder.utf16)
+        for rule in rules {
+            let current = text.string
+            guard let found = matches(rule, in: current as NSString) else { return false }
+            let template = rule.template.replacingOccurrences(of: placeholder, with: "\u{FFFF}")
+            var edits: [(NSRange, [UInt16], [Int])] = []
+            for match in found {
+                let new = Array(rule.regex.replacementString(for: match, in: current, offset: 0,
+                                                             template: template).utf16)
+                let low = match.range.location
+                let length = match.range.length
+                var prefix = 0
+                while prefix < min(length, new.count), text.units[low + prefix] == new[prefix] { prefix += 1 }
+                var suffix = 0
+                while suffix < min(length, new.count) - prefix,
+                      text.units[low + length - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
+                var units: [UInt16] = []
+                var origin: [Int] = []
+                for unit in new[prefix..<(new.count - suffix)] {
+                    let add = unit == mark ? inserted : [unit]
+                    units += add
+                    origin += [Int](repeating: -1, count: add.count)
+                }
+                edits.append((NSRange(location: low + prefix, length: length - prefix - suffix), units, origin))
+            }
+            text.splice(edits)
+        }
+        return true
+    }
+
     /// Walks a decoded JSON tree, blanking secret-named keys and scrubbing every
-    /// surviving string. The KEY is kept (so a reader can see the field existed)
-    /// — only the value is replaced.
-    static func redact(_ value: Any, literals: [String] = []) -> Any {
+    /// surviving string, keys included. A secret-NAMED key keeps its name (so a
+    /// reader can see the field existed) — only the value is replaced.
+    static func redact(_ value: Any, literals: [String] = [], floor: [String]? = nil) -> Any {
+        redact(value, known: LiteralScrubber(literals, floor: floor))
+    }
+
+    private static func redact(_ value: Any, known: LiteralScrubber) -> Any {
         if let object = value as? [String: Any] {
             var result: [String: Any] = [:]
-            for (key, child) in object {
+            // Sorted, so two keys that scrub to the same text are numbered the
+            // same way every time instead of one overwriting the other.
+            for (key, child) in object.sorted(by: { $0.key < $1.key }) {
+                // A key is filtered exactly as a value is: an id used as a key
+                // can quote a secret nobody told the shell about.
+                let cleanKey = scrub(key, known: known)
+                var name = cleanKey
+                var copy = 2
+                while result[name] != nil {
+                    name = "\(cleanKey) (\(copy))"
+                    copy += 1
+                }
                 if isSecretKey(key) {
                     // Preserve presence/absence: "was a key configured at all"
                     // is the question the operator actually needs answered.
                     if let text = child as? String {
-                        result[key] = text.isEmpty ? "absent" : "present-" + placeholder
+                        result[name] = text.isEmpty ? "absent" : "present-" + placeholder
                     } else {
-                        result[key] = placeholder
+                        result[name] = placeholder
                     }
                     continue
                 }
-                result[key] = redact(child, literals: literals)
+                result[name] = redact(child, known: known)
             }
             return result
         }
         if let array = value as? [Any] {
-            return array.map { redact($0, literals: literals) }
+            return array.map { redact($0, known: known) }
         }
         if let text = value as? String {
-            return scrub(text, literals: literals)
+            return scrub(text, known: known)
         }
         return value
     }
 
-    static func redactLines(_ text: String, literals: [String] = []) -> String {
-        text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { scrub(String($0), literals: literals) }
+    static func redactLines(_ text: String, literals: [String] = [], floor: [String]? = nil) -> String {
+        let known = LiteralScrubber(literals, floor: floor)
+        // A multi-line value is intact only BEFORE the split: once one of its
+        // lines is replaced nothing can find it again, and a line under the
+        // length floor would stay. So find it in the whole text, and hand each
+        // line its share.
+        let across = known.spansLines ? known.spans(text) : []
+        var next = 0      // first span of `across` not wholly behind us
+        var start = 0     // this line's UTF-16 offset in `text`
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                let end = start + line.utf16.count
+                while next < across.count, across[next].upperBound <= start { next += 1 }
+                var share: [Range<Int>] = []
+                var index = next
+                while index < across.count, across[index].lowerBound < end {
+                    let low = max(across[index].lowerBound, start)
+                    let high = min(across[index].upperBound, end)
+                    if low < high { share.append((low - start)..<(high - start)) }
+                    index += 1
+                }
+                start = end + 1   // the "\n"
+                return scrub(String(line), known: known, alsoRemove: share)
+            }
             .joined(separator: "\n")
     }
 }
@@ -311,6 +504,9 @@ struct SupportBundleInput {
     /// Live secret VALUES held by the shell. These are never written; they are
     /// used to scrub by identity and then to VERIFY no copy survived.
     var knownSecretLiterals: [String] = []
+    /// The part of them the bundle has always replaced (AppModel sets it); nil
+    /// means all. See Redactor.scrub.
+    var floorSecretLiterals: [String]?
     var shellLogPath = ShellLog.path
     var coreLogPath = CoreLog.path
     var crashReportDirectory = NSHomeDirectory() + "/Library/Logs/DiagnosticReports"
@@ -351,7 +547,9 @@ enum SupportBundle {
     /// it). A missing log is never fatal — it becomes a manifest skip note,
     /// exactly like the Windows builder.
     static func write(_ input: SupportBundleInput) throws -> SupportBundleResult {
-        let literals = input.knownSecretLiterals.filter { $0.count >= 4 }
+        let literals = input.knownSecretLiterals.filter { $0.count >= LiteralScrubber.minimumLength }
+        let floor = input.floorSecretLiterals
+        let known = LiteralScrubber(literals, floor: floor)
         let name = "corevideo-support-" + DiagFormat.stamp.string(from: input.createdAt)
         let folder = input.destinationRoot.appendingPathComponent(name, isDirectory: true)
         do {
@@ -378,7 +576,7 @@ enum SupportBundle {
                 notes.append("[skipped] \(file): no \(label) captured this session")
                 return
             }
-            let redacted = Redactor.redact(decoded, literals: literals)
+            let redacted = Redactor.redact(decoded, literals: literals, floor: floor)
             guard let encoded = try? JSONSerialization.data(
                 withJSONObject: redacted,
                 options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed]) else {
@@ -401,7 +599,7 @@ enum SupportBundle {
             writeText("No warnings recorded this session.\n", to: "warnings.txt")
         } else {
             writeText(Redactor.redactLines(input.warnings.joined(separator: "\n"),
-                                           literals: literals) + "\n",
+                                           literals: literals, floor: floor) + "\n",
                       to: "warnings.txt")
         }
 
@@ -413,7 +611,7 @@ enum SupportBundle {
             let header = "# \(path)\n# \(tail.totalBytes) bytes on disk"
                 + (tail.truncated ? " (tail of the last \(input.tailByteLimit) bytes)" : "")
                 + "\n\n"
-            writeText(header + Redactor.redactLines(tail.text, literals: literals), to: file)
+            writeText(header + Redactor.redactLines(tail.text, literals: literals, floor: floor), to: file)
         }
 
         writeLogTail(path: input.shellLogPath, to: "shell-log-tail.txt")
@@ -431,13 +629,9 @@ enum SupportBundle {
         var verifiedCount = 0
         for file in result.includedFiles {
             let url = folder.appendingPathComponent(file)
-            guard var text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard let original = try? String(contentsOf: url, encoding: .utf8) else { continue }
             verifiedCount += 1
-            var hits = 0
-            for literal in literals where text.contains(literal) {
-                hits += text.components(separatedBy: literal).count - 1
-                text = text.replacingOccurrences(of: literal, with: Redactor.placeholder)
-            }
+            let (text, hits) = known.scrub(original)
             if hits > 0 {
                 result.literalHits += hits
                 try? Data(text.utf8).write(to: url)
@@ -447,8 +641,9 @@ enum SupportBundle {
         }
         result.notes = notes
 
-        // Manifest LAST so it can report the verification outcome.
-        writeText(manifest(input: input, result: result, verified: verifiedCount),
+        // Manifest LAST so it can report the verification outcome. It is written
+        // after that pass and quotes paths and errors, so it is scrubbed here.
+        writeText(known.scrub(manifest(input: input, result: result, verified: verifiedCount)).text,
                   to: "manifest.txt")
 
         result.archive = makeArchive(folder: folder)
@@ -513,9 +708,17 @@ enum SupportBundle {
         lines.append("  its VALUE replaced. (2) VALUE PATTERN: URL userinfo, rtmp+srt URL")
         lines.append("  paths, secret query parameters, Bearer headers, JWT-shaped blobs and")
         lines.append("  opaque >=28 character mixed-case tokens are replaced everywhere,")
-        lines.append("  including raw log lines. (3) KNOWN LITERAL: the shell's live stream")
-        lines.append("  key and meeting passcode are matched by identity. Every written file")
-        lines.append("  is then RE-READ and re-checked against layer 3.")
+        lines.append("  including raw log lines. (3) KNOWN LITERAL: the secrets the shell")
+        lines.append("  holds (stream key, SRT passphrase and Stream ID, meeting passcodes,")
+        lines.append("  Zoom, YouTube and Twitch sign-ins, control API token) are matched by")
+        lines.append("  identity, also when JSON-escaped or URL-encoded. Only values held at")
+        lines.append("  export time, and destinations streamed this session, are known: any")
+        lines.append("  other secret changed, cleared or signed out earlier is left to layers")
+        lines.append("  1 and 2. Values under 4")
+        lines.append("  characters, and Stream IDs under 6 or a common word, are not matched.")
+        lines.append("  Every file listed under")
+        lines.append("  CONTENTS is then RE-READ and re-checked against layer 3, and this")
+        lines.append("  manifest is filtered by it too.")
         lines.append("  Verification: \(verified) file(s) re-read, "
                      + "\(result.literalHits) known-secret occurrence(s) found.")
         lines.append("  FILE PATHS ARE NOT SECRETS and are included verbatim — they carry")
@@ -637,8 +840,9 @@ enum DiagnosticsSelfCheck {
         var input = SupportBundleInput()
         input.coreSnapshotJson = (try? JSONSerialization.data(withJSONObject: snapshot)) ?? Data()
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
-        input.warnings = ["stream: failed with key \(streamKey)"]
-        input.knownSecretLiterals = [streamKey, passcode]
+        input.warnings = ["stream: failed with key \(streamKey)",
+                          "srt: handshake refused \(passphrase)"]
+        input.knownSecretLiterals = [streamKey, passphrase, passcode]
         input.shellLogPath = shellLog.path
         input.coreLogPath = coreLog.path
         input.crashReportDirectory = temp.path
@@ -709,10 +913,7 @@ enum DiagnosticsSelfCheck {
     ///     COREVIDEO_SHELL_EXPORT_BUNDLE=1 .build/release/CoreVideoProShell
     ///     COREVIDEO_SHELL_EXPORT_BUNDLE=/some/dir  (destination override)
     static func exportHeadlessAndExit(destination: String) -> Never {
-        var input = SupportBundleInput()
-        if destination != "1", !destination.isEmpty {
-            input.destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
-        }
+        let input = headlessInput(destination: destination)
         do {
             let bundle = try SupportBundle.write(input)
             print("support bundle: \(bundle.revealTarget.path)")
@@ -723,6 +924,19 @@ enum DiagnosticsSelfCheck {
             print("support bundle FAILED: \(error.localizedDescription)")
             exit(1)
         }
+    }
+
+    static func headlessInput(destination: String) -> SupportBundleInput {
+        var input = SupportBundleInput()
+        if destination != "1", !destination.isEmpty {
+            input.destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
+        }
+        // No model here, but the log tails can still quote a stored secret.
+        // (This export scrubbed no literal before, so its floor is empty.)
+        input.floorSecretLiterals = []
+        input.knownSecretLiterals = SupportBundleSecrets.literals(
+            SupportBundleSecrets.storedHeld(prefs: ShellPrefs.load()))
+        return input
     }
 
     /// Entry point for the env-var harness run.

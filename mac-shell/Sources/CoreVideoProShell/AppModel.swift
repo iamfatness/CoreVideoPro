@@ -698,6 +698,9 @@ final class AppModel: ObservableObject {
             // silently restarted the destination with half-typed settings.
             if streamingDesired {
                 liveStreamDestinations = (streamConfig, streamSecrets)
+                if !streamedDestinations.contains(where: { $0.config == streamConfig && $0.secrets == streamSecrets }) {
+                    streamedDestinations.append((streamConfig, streamSecrets))
+                }
             } else {
                 liveStreamDestinations = nil
             }
@@ -705,6 +708,9 @@ final class AppModel: ObservableObject {
     }
     /// The config + secrets captured when streaming started (nil when off).
     private(set) var liveStreamDestinations: (config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)?
+    /// Every distinct copy frozen this session, in memory only: the logs still
+    /// quote them after Stop, so the support bundle scrubs them (SupportBundleSecrets).
+    private var streamedDestinations: [(config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)] = []
     /// True while destination settings must not change (the editor is locked).
     var streamDestinationsLocked: Bool { streamingDesired || streamingObservedLive }
     @Published var streamStatus = ""       // sender status from outputSenderSession
@@ -6903,13 +6909,20 @@ final class AppModel: ObservableObject {
 
     // ── support bundle input (Diagnostics.swift owns the writing) ────────────
 
+    func liveSecretLiterals() -> [String] {
+        let destinations = [(config: streamDestinations, secrets: streamSecrets)] + streamedDestinations
+        return SupportBundleSecrets.literals(SupportBundleSecrets.Held(
+            destinations: destinations, joinPasscode: joinPasscode,
+            meetingTargets: [joinMeetingId] + recentMeetings))
+    }
+
     // Gathers the shell side of a support bundle ON THE MAIN ACTOR and hands it
     // over as plain Data + value types, so the export can run off-main without
     // dragging live model state across the hop.
     //
     // SECRETS: the stream key and the meeting passcode are DELIBERATELY not put
-    // in the payload — only their presence is. They are still passed as
-    // `knownSecretLiterals` so the writer can scrub them out of the LOG TAILS
+    // in the payload — only their presence is. Every held secret
+    // (SupportBundleSecrets) is still passed as `knownSecretLiterals` so the writer can scrub them out of the LOG TAILS
     // by identity and then verify no copy survived anywhere in the bundle.
     func supportBundleInput() -> SupportBundleInput {
         let paths = ShellPaths.resolve()
@@ -7005,7 +7018,9 @@ final class AppModel: ObservableObject {
             (try? JSONSerialization.data(withJSONObject: lastZoomSnapshot)) ?? Data()
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
         input.warnings = warnings
-        input.knownSecretLiterals = ([streamKey, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
+        input.knownSecretLiterals = liveSecretLiterals()
+        // The floor: do not add to it, reorder it or trim it (Redactor.scrub).
+        input.floorSecretLiterals = ([streamKey, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
         return input
     }
 }
