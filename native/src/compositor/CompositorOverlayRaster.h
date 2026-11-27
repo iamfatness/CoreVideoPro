@@ -102,13 +102,16 @@ class CompositorOverlayRaster {
   struct ImageInput {
     ComPtrLite<IWICBitmapFrameDecode> frame;
     uint64_t cpuBytes = 0;
+    // False when the packaged PNG's pixel stream does not inflate. WIC would
+    // decode it to blank pixels with S_OK (see pngPixelStreamDecodes).
+    bool pixelsDecode = true;
   };
   // Probe and retain the same decoder frame before reserving conversion memory.
   // No path is reopened between sizing and decode. Native instance assets will
   // additionally use the versioned package importer; this preserves legacy URIs.
   ImageInput openOverlayImage(const std::string& imageUri);
   ImageInput openPackagedImage(const graphics::GraphicsAsset& asset);
-  ComPtrLite<ID2D1Bitmap> decodeOverlayImage(ID2D1RenderTarget* target, IWICBitmapFrameDecode* frame, bool referenceDpi = false);
+  ComPtrLite<ID2D1Bitmap> decodeOverlayImage(ID2D1RenderTarget* target, const ImageInput& image, bool referenceDpi = false);
 
   // Draws one line of text into `box`, vertically centered, trimmed with an
   // ellipsis when it overflows. Returns false only on factory/format failure.
