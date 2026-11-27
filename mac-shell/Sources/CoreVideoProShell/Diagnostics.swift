@@ -114,12 +114,14 @@ enum Redactor {
         scrub(text, known: LiteralScrubber(literals, floor: floor))
     }
 
-    private static func scrub(_ text: String, known: LiteralScrubber) -> String {
+    /// `alsoRemove`: UTF-16 ranges of `text` already known to hold a secret.
+    private static func scrub(_ text: String, known: LiteralScrubber,
+                              alsoRemove: [Range<Int>] = []) -> String {
         // Layer 3 — KNOWN LITERALS (SupportBundleSecrets): an identity match,
         // raw or escaped, cannot be fooled by a shape the pattern rules did not
         // anticipate.
         let spans = known.spans(text)
-        if spans.isEmpty { return applyRules(text) }
+        if spans.isEmpty && alsoRemove.isEmpty { return applyRules(text) }
         // NO LAYER FEEDS ANOTHER'S BLIND SPOT. A literal replaced first can
         // remove the "://" or "key=" a rule needs (leaving an unheld secret),
         // and a rule run first can cut a literal in half. So the characters
@@ -136,6 +138,8 @@ enum Redactor {
         var dead = [Bool](repeating: false, count: original.count)
         var floor = Tracked(original)
         for value in known.floor { floor.replace(value) }
+        // Marked here only, not taken out of the text a view's rules read.
+        for range in alsoRemove { for index in range { dead[index] = true } }
         let untouched = Tracked(original)
         var unspelled = Tracked(original)
         unspelled.remove(spans)
@@ -320,8 +324,28 @@ enum Redactor {
 
     static func redactLines(_ text: String, literals: [String] = [], floor: [String]? = nil) -> String {
         let known = LiteralScrubber(literals, floor: floor)
+        // A multi-line value is intact only BEFORE the split: once one of its
+        // lines is replaced nothing can find it again, and a line under the
+        // length floor would stay. So find it in the whole text, and hand each
+        // line its share.
+        let across = known.spansLines ? known.spans(text) : []
+        var next = 0      // first span of `across` not wholly behind us
+        var start = 0     // this line's UTF-16 offset in `text`
         return text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { scrub(String($0), known: known) }
+            .map { line -> String in
+                let end = start + line.utf16.count
+                while next < across.count, across[next].upperBound <= start { next += 1 }
+                var share: [Range<Int>] = []
+                var index = next
+                while index < across.count, across[index].lowerBound < end {
+                    let low = max(across[index].lowerBound, start)
+                    let high = min(across[index].upperBound, end)
+                    if low < high { share.append((low - start)..<(high - start)) }
+                    index += 1
+                }
+                start = end + 1   // the "\n"
+                return scrub(String(line), known: known, alsoRemove: share)
+            }
             .joined(separator: "\n")
     }
 }

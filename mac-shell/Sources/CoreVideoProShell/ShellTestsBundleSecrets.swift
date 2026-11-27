@@ -21,6 +21,9 @@ extension ShellTests {
             ("bundle-secrets/long-run", testBundleKeyValueRuleStaysLinear),
             ("bundle-secrets/never-less-than-main", testBundleStillMatchesWhatMainMatched),
             ("bundle-secrets/matcher-gives-up", testBundleDropsTextTheMatcherGivesUpOn),
+            ("bundle-secrets/multi-line-short-lines", testBundleScrubsShortLinesOfAMultiLineSecret),
+            ("bundle-secrets/multi-line-blank-lines", testBundleBlankLinesAreNotLiterals),
+            ("bundle-secrets/multi-line-differential", testBundleMultiLineNeverLessThanMain),
             ("bundle-secrets/nul-literal", testBundleSurvivesANulInALiteral),
             ("bundle-secrets/rules-after-every-spelling", testBundleRulesSeeTextWithEverySpellingRemoved),
         ]
@@ -349,6 +352,14 @@ extension ShellTests {
         FileHandle.standardError.write(Data("    large-input union path: \(String(format: "%.2f", took)) s\n".utf8))
         expect(took < 60, "union path took \(took) s")
         expect(!busyOut.contains("fkunionhit") && !busyOut.contains("\"v\""), "union path filtered")
+        // A multi-line value adds one whole-text search before the split.
+        let tail = String(repeating: "plain log words fkml1abc\nxy9 more\n", count: 60_000)
+        let from = Date()
+        let tailOut = Redactor.redactLines(tail, literals: ["fkml1abc\nxy9"] + (0..<18).map { "fkunused\($0)" })
+        let spent = Date().timeIntervalSince(from)
+        FileHandle.standardError.write(Data("    large-input multi-line tail: \(String(format: "%.2f", spent)) s\n".utf8))
+        expect(spent < 60, "multi-line tail took \(spent) s")
+        expect(!tailOut.contains("xy9") && !tailOut.contains("fkml1abc"), "multi-line tail filtered")
         // And it still finds a secret at the far end of a large line.
         let hit = scrubber.scrub(String(repeating: "\\ %25 ", count: 100_000) + "fklarge-secret%20%22%5C%2F%257")
         expect(hit.text.hasSuffix(" [redacted]") && hit.hits == 1, "found after 600 KB")
@@ -756,6 +767,131 @@ extension ShellTests {
         expectAbsent("abcd", "the passcode beside the NUL", in: ["warnings.txt": files["warnings.txt"] ?? "",
                                                                "core-log-tail.txt": files["core-log-tail.txt"]?
                                                                 .components(separatedBy: "\n\n").last ?? ""])
+    }
+}
+
+extension ShellTests {
+    /// A line under 4 characters is not a literal of its own, so only the INTACT
+    /// secret covers it, and it must be found before the log is split into lines.
+    static func testBundleScrubsShortLinesOfAMultiLineSecret() {
+        for (held, label) in [("fkml1abc\nxy9", "short last line"), ("ab1\nfkml2def", "short first line"),
+                              ("q7\nfkml3ghi\nz8", "short outer lines"), ("fkml1abc\r\nxy9", "CRLF")] {
+            for floor in [[held], []] {
+                var input = SupportBundleInput()
+                input.knownSecretLiterals = [held]
+                input.floorSecretLiterals = floor
+                // Twice, once beside a rule anchor that takes part of the value.
+                let text = "pass \(held) end\nkeep me\ntoken: \(held) end"
+                input.warnings = [text]
+                let files = writeSecretBundle(input, shellLog: text, coreLog: text)
+                for name in ["warnings.txt", "shell-log-tail.txt", "core-log-tail.txt"] {
+                    let body = files[name]?.components(separatedBy: "\n\n").last ?? ""
+                    for line in held.split(whereSeparator: \.isNewline) {
+                        expect(!has(body, String(line)), "\(label) floor \(floor.count): \(line) in \(name): \(body.debugDescription)")
+                    }
+                    expect(has(body, "pass [redacted]") && has(body, "keep me") && has(body, " end"),
+                           "\(label): the text around it survives in \(name): \(body.debugDescription)")
+                }
+            }
+        }
+        // An encoded first line, and a rule that needs its own anchor on a line
+        // a cross-line match touches.
+        let out = Redactor.redactLines("v fkml%31abc\nxy9 streamKey=fkneighbourq end", literals: ["fkml1abc\nxy9"])
+        expect(!has(out, "xy9") && !has(out, "fkneighbourq") && has(out, " end"), "encoded and anchored: \(out)")
+    }
+
+    /// A blank line of a multi-line value is not a literal: four spaces would
+    /// shred every indented line and the pretty-printed JSON.
+    static func testBundleBlankLinesAreNotLiterals() {
+        for held in ["fkkey1234\n    ", "    \nfkkey1234", "fkkey1234\n\t\t\t\t\nfktail567", "fkkey1234\n  ab  ",
+                     "fkkey1234\u{0}    "] {
+            let indented = "    indented line\n\t\t\t\ttabbed   ab   spaced"
+            expectEqual(Redactor.redactLines(indented, literals: [held], floor: []), indented,
+                        "ordinary whitespace survives \(held.debugDescription)")
+            var input = SupportBundleInput()
+            input.knownSecretLiterals = [held]
+            input.floorSecretLiterals = []
+            input.coreSnapshotJson = (try? JSONSerialization.data(withJSONObject: ["a": ["b": ["c": 1]]])) ?? Data()
+            input.shellStateJson = input.coreSnapshotJson
+            let files = writeSecretBundle(input, shellLog: indented, coreLog: "saw fkkey1234 once")
+            for name in ["core-snapshot.json", "shell-state.json"] {
+                let json = files[name] ?? ""
+                expect((try? JSONSerialization.jsonObject(with: Data(json.utf8))) != nil && !has(json, "[redacted]"),
+                       "\(name) intact for \(held.debugDescription): \(json.debugDescription)")
+            }
+            expect(has(files["shell-log-tail.txt"] ?? "", indented), "log indentation survives")
+            expect(!has(files["core-log-tail.txt"] ?? "", "fkkey1234"), "the real line is still a literal")
+        }
+        // The intact value is still removed, indentation and all, where it occurs.
+        let whole = Redactor.redactLines("a fkkey1234\n    b", literals: ["fkkey1234\n    "])
+        expect(!has(whole, "fkkey1234") && has(whole, "b"), "intact: \(whole.debugDescription)")
+    }
+
+    /// Seeded: multi-line secrets with short and blank lines, in log text, each
+    /// path as the bundle runs it (line pass, then the whole-file pass), against
+    /// main's. No secret line may appear more often than in main's output.
+    static func testBundleMultiLineNeverLessThanMain() {
+        var state: UInt64 = 0x0BAD_5EED_1234_5678
+        func random(_ bound: Int) -> Int {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Int((state >> 33) % UInt64(bound))
+        }
+        func mainFile(_ text: String, _ literals: [String]) -> String {
+            var out = text.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { MainRedactor.scrub(String($0), literals: literals) }.joined(separator: "\n")
+            for literal in literals.filter({ $0.count >= 4 }) {
+                out = out.replacingOccurrences(of: literal, with: MainRedactor.placeholder)
+            }
+            return out
+        }
+        func count(_ needle: String, _ text: String) -> Int {
+            var total = 0
+            var from = text.startIndex
+            while let range = text.range(of: needle, options: .literal, range: from..<text.endIndex) {
+                total += 1
+                from = range.upperBound
+            }
+            return total
+        }
+        let long = ["fkml1abc", "fkml2def", "Bearer", "token", "pwd=fkq1"]
+        let short = ["xy9", "ab1", "q7", "Z", "k:"]
+        let blank = ["", "    ", "\t\t\t\t", "  "]
+        let anchors = ["token: ", "Bearer ", "streamKey=", "rtmp://h.example/", "://u:", "@h.example/", "?pwd=",
+                       " ", " end", "\"userZak\":\"", "\"", "    ", "\t\t\t\t", "plain words "]
+        var misses: [String] = []
+        for _ in 0..<3_000 {
+            var secrets: [String] = []
+            for _ in 0..<(1 + random(2)) {
+                var lines = (0..<(1 + random(3))).map { _ -> String in
+                    switch random(4) {
+                    case 0, 1: return long[random(long.count)]
+                    case 2: return short[random(short.count)]
+                    default: return blank[random(blank.count)]
+                    }
+                }
+                lines.insert(long[random(2)], at: random(lines.count + 1))
+                secrets.append(lines.joined(separator: random(5) == 0 ? "\r\n" : "\n"))
+            }
+            var text = ""
+            for _ in 0..<(3 + random(8)) {
+                switch random(4) {
+                case 0, 1: text += secrets[random(secrets.count)]
+                case 2: text += anchors[random(anchors.count)]
+                default: text += "\n"
+                }
+            }
+            let extras = random(2) == 0 ? [] : [long[random(long.count)]]
+            let main = mainFile(text, secrets)
+            let known = LiteralScrubber(secrets + extras, floor: secrets)
+            let head = known.scrub(Redactor.redactLines(text, literals: secrets + extras, floor: secrets)).text
+            let fragments = Set(secrets.flatMap { $0.split(whereSeparator: \.isNewline).map(String.init) })
+                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !MainRedactor.placeholder.contains($0) }
+            for fragment in fragments where count(fragment, head) > count(fragment, main) {
+                misses.append("\(fragment.debugDescription) text \(text.debugDescription) held \(secrets) + \(extras)")
+                break
+            }
+        }
+        expectEqual(misses.count, 0, "less than main, e.g. \(misses.prefix(2))")
     }
 }
 

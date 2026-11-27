@@ -157,6 +157,8 @@ struct LiteralScrubber {
     private let literals: [[Spellings]]
     /// The values as held, in the order given, for the Foundation search.
     let held: [String]
+    /// Whether some value can only be found across a line break.
+    let spansLines: Bool
     /// EXACTLY the list the bundle scrubbed before this layer grew, in its
     /// order. Replaying it keeps the output from ever showing more (Redactor).
     let floor: [String]
@@ -172,8 +174,16 @@ struct LiteralScrubber {
     init(_ values: [String], floor: [String]? = nil) {
         // Foundation's search answers a needle holding U+0000 with a range past
         // the end of the text, which traps: match each side of it instead.
+        // A PIECE of a value is a literal only with enough in it besides
+        // whitespace: four spaces would shred all indentation. (A value as held
+        // is not trimmed here; the floor must match what it always matched.)
+        func pieces(_ parts: [Substring]) -> [String] {
+            parts.map(String.init).filter {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).count >= Self.minimumLength
+            }
+        }
         func clean(_ list: [String]) -> [String] {
-            list.flatMap { $0.split(separator: "\0").map(String.init) }
+            list.flatMap { $0.contains("\0") ? pieces($0.split(separator: "\0")) : [$0] }
                 .filter { $0.count >= Self.minimumLength }
         }
         self.floor = clean(floor ?? values)
@@ -181,11 +191,14 @@ struct LiteralScrubber {
         // Lines are scrubbed one at a time, so each line of a multi-line value
         // is a literal too (not part of the floor). Otherwise a rule that takes
         // part of it leaves a rest the whole-file pass no longer recognises.
+        // A line too short for that is covered where the value is INTACT, which
+        // redactLines looks for before it splits (spansLines).
         values += values.filter { $0.contains(where: \.isNewline) }.flatMap {
-            clean($0.split(whereSeparator: \.isNewline).map(String.init))
+            pieces($0.split(whereSeparator: \.isNewline))
         }
         var seen = Set<[UInt8]>()
         held = values.filter { seen.insert(Array($0.utf8)).inserted }
+        spansLines = held.contains { $0.unicodeScalars.contains("\n") }
         var parsed: [[Spellings]] = []
         var starts = [Bool](repeating: false, count: 256)
         for value in Set(values) {
