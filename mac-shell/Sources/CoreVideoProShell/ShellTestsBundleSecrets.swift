@@ -756,7 +756,7 @@ extension ShellTests {
     /// Where main's replace DOES find a NUL-holding value whole (the text goes
     /// on past it), it must still go whole: its pieces may be too short.
     private static func wholeNulValuesStillMatch() {
-        for held in ["ab  \u{0}", "abcd\u{0}ef", "q7\u{0}z8", "    \u{0}", "fk\u{0}a\nb9"] {
+        for held in ["ab  \u{0}", "abcd\u{0}ef", "q7\u{0}z8", "    \u{0}", "fk\u{0}a\nb9", "ab\n\u{0}cd"] {
             let text = "pw \(held) y"
             let main = MainRedactor.scrub(text, literals: [held])
             expect(!has(main, held), "main removes \(held.debugDescription): \(main.debugDescription)")
