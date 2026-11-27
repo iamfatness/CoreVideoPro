@@ -13,6 +13,7 @@
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
+#include "compositor/OverlayRasterFrontHalf.h"
 #include "modules/OverlayTileRaster.h"
 #include "core/ComApartmentLifetime.h"
 
@@ -439,42 +440,43 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
   return complete;
 }
 
+// Fixed operator wording, allocated once per process and shared by every fact.
+std::shared_ptr<const std::string> CompositorOverlayRaster::internedWarning(const char* text) {
+  return compositor::overlayRasterFront::internedWarning(text);
+}
+
+void CompositorOverlayRaster::setWarning(std::shared_ptr<const std::string> warning) {
+  if (warning) lastWarning_.assign(*warning);  // reuses capacity: no steady-state allocation
+  else lastWarning_.clear();
+  sharedWarning_ = std::move(warning);
+}
+
 ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     ID3D11Device* device, ID3D11DeviceContext*, const CompositorOverlayContent& overlay,
     const compositor::LayerRect& rect, int targetWidth, int targetHeight,
     const std::string& preparationSlot, bool strictResources,
     std::shared_ptr<const graphics::GraphicsPreparedResource> prepared) {
-  // Bound metadata before hashing or copying it into the queue. In particular,
-  // a legacy caller cannot amplify one oversized caption into 32 queued copies.
-  size_t metadataBytes = 0;
-  const auto& a = overlay.appearance;
-  for (const auto* value : {&overlay.title, &overlay.org, &overlay.text, &overlay.speaker,
-      &overlay.imageUri, &overlay.fontFamily, &overlay.keyPosition, &overlay.keyPhase, &overlay.keyer,
-      &overlay.brandColor, &overlay.brandAccentColor, &overlay.brandBackgroundColor,
-      &a.preset, &a.anchor, &a.fontFamily, &a.nameColor, &a.titleColor, &a.backgroundColor, &a.accentColor}) {
-    if (value->size() > 65536 - metadataBytes) {
-      activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
-      lastWarning_ = "Graphics content exceeds preparation metadata budget.";
-      return nullptr;
-    }
-    metadataBytes += value->size();
-  }
-  const double widthPixels = double(rect.width) * targetWidth;
-  const double heightPixels = double(rect.height) * targetHeight;
-  if (!device || !std::isfinite(widthPixels) || !std::isfinite(heightPixels) ||
-      widthPixels < 1 || heightPixels < 1 || widthPixels > 4096 || heightPixels > 4096) {
+  // Rules 1-4 and 7-8 are the shared front half (OverlayRasterFrontHalf.h,
+  // spec 5.1); CoreTextOverlayRaster::rasterOverlayTexture calls the same.
+  namespace front = compositor::overlayRasterFront;
+  // Rule 1: bound metadata before hashing or copying it into the queue.
+  if (!front::metadataWithinBound(overlay)) {
     activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
-    lastWarning_ = "Invalid graphics raster dimensions.";
+    setWarning(internedWarning(front::kMetadataBudgetWarning));
     return nullptr;
   }
-  const int width = int(std::lround(widthPixels)), height = int(std::lround(heightPixels));
-  const Key key{reinterpret_cast<uintptr_t>(device), overlayContentSignature(overlay, width, height) ^
-      (strictResources ? 0xd9e94a8e64b5fc21ULL : 0ULL), overlay.graphicsContentHash, overlay.hasGraphicsContentHash};
-  const bool compatible = prepared && prepared->native && prepared->backend == graphics::GraphicsPreparedResource::Backend::D3D11 &&
-      prepared->deviceIdentity == key.device && prepared->width > 0 && prepared->height > 0 &&
-      prepared->hasContentHash == overlay.hasGraphicsContentHash && prepared->contentHash == overlay.graphicsContentHash &&
-      prepared->width <= 4096 && prepared->height <= 4096 && prepared->signature ==
-          (overlayContentSignature(overlay, prepared->width, prepared->height) ^ (strictResources ? 0xd9e94a8e64b5fc21ULL : 0ULL));
+  // Rule 2: dimensions.
+  int width = 0, height = 0;
+  if (!device || !front::rasterPixelSize(rect, targetWidth, targetHeight, width, height)) {
+    activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
+    setWarning(internedWarning(front::kInvalidDimensionsWarning));
+    return nullptr;
+  }
+  // Rule 3: key. Rule 4: prepared-resource compatibility.
+  const Key key{reinterpret_cast<uintptr_t>(device), front::rasterSignature(overlay, width, height, strictResources),
+      overlay.graphicsContentHash, overlay.hasGraphicsContentHash};
+  const bool compatible = front::preparedIsCompatible(prepared.get(), graphics::GraphicsPreparedResource::Backend::D3D11,
+                                                      key.device, overlay, strictResources);
   activeResource_.reset();
   activeLease_.reset();
   if (compatible && prepared->width == width && prepared->height == height) {
@@ -500,13 +502,19 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   activeDevice_ = key.device; activeSignature_ = key.signature;
   activeContentHash_ = overlay.graphicsContentHash; activeHasContentHash_ = overlay.hasGraphicsContentHash;
   activeWidth_ = width; activeHeight_ = height;
-  lastState_ = failedScale ? "failed" : retainingScale ? "preparing" : !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
-  lastWarning_ = failedScale ? scaleWarning + " Retaining the accepted raster." : retainingScale ? "Graphics scale preparation pending; retaining the accepted raster." :
-      activeLease_ ? activeLease_->warning : "Graphics preparation pending.";
-  if(!activeLease_ && overlay.hasGraphicsContentHash) {
-    const auto capacity=graphics::GraphicsResourceBudget::process().counters();
-    if(capacity.residentResources>=capacity.residentLimit) lastWarning_="Graphics preparation pending at the shared 16-revision capacity limit.";
-  }
+  lastState_ = front::preparationState(failedScale, retainingScale, bool(activeLease_), activeLease_ && activeLease_->asset);
+  // Warnings travel to per-frame facts BY REFERENCE (sharedWarning()): the
+  // prepared result's own string through an aliasing pointer (no allocation),
+  // fixed wording interned once. Only the rare failed-scale message is built.
+  // Same text as before; CoreTextOverlayRaster::rasterOverlayTexture is the twin.
+  if (failedScale) setWarning(std::make_shared<const std::string>(scaleWarning + front::kRetainingSuffix));
+  else if (retainingScale) setWarning(internedWarning(front::kScalePendingWarning));
+  else if (activeLease_) setWarning(activeLease_->warning.empty() ? nullptr
+                                        : std::shared_ptr<const std::string>(activeLease_, &activeLease_->warning));
+  else setWarning(internedWarning(front::kPendingWarning));
+  // Rule 8: capacity wording.
+  if (front::pendingAtResidentLimit(bool(activeLease_), overlay.hasGraphicsContentHash))
+    setWarning(internedWarning(front::kCapacityWarning));
   pendingThisFrame_ = pendingThisFrame_ || (retainingScale && !failedScale) || !activeLease_;
   failedThisFrame_ = failedThisFrame_ || failedScale || (activeLease_ && !activeLease_->asset);
   return activeLease_ && activeLease_->asset ? activeLease_->asset->view.get() : nullptr;
@@ -519,6 +527,19 @@ std::shared_ptr<const graphics::GraphicsRunLayout> CompositorOverlayRaster::acti
 std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaster::preparedResource() {
   if (!activeLease_ || !activeLease_->asset || std::string_view(lastState_) != "ready") return {};
   if (activeResource_) return activeResource_;
+  // Same prepared texture -> same resource object, with no allocation, while
+  // anyone (an instance that adopted it) still holds it. Keyed by the cache
+  // result's address: a live weak entry proves that result is still alive, so
+  // the address cannot have been reused. Plan G2 D7; the Metal twin is
+  // CoreTextOverlayRaster::preparedResource.
+  const void* source = activeLease_.get();
+  for (const auto& entry : resourceCache_) {
+    if (entry.source != source) continue;
+    if (auto cached = entry.resource.lock()) {
+      activeResource_ = std::move(cached);
+      return activeResource_;
+    }
+  }
   auto resource = std::make_shared<graphics::GraphicsPreparedResource>();
   resource->backend = graphics::GraphicsPreparedResource::Backend::D3D11;
   resource->deviceIdentity = activeDevice_; resource->signature = activeSignature_;
@@ -529,6 +550,8 @@ std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaste
     resource->crawl = graphics::GraphicsCrawlPlayback{crawl.speed, crawl.passWidth, crawl.loop};
   }
   activeResource_ = resource;
+  resourceCache_[resourceCacheNext_] = {source, resource};
+  resourceCacheNext_ = (resourceCacheNext_ + 1) % resourceCache_.size();
   return resource;
 }
 

@@ -967,6 +967,7 @@ if(BUILD_TESTING)
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GraphicsRasterParity.cpp tests/GraphicsRasterParityTest.cpp
+    tests/OverlayRasterFrontHalfTest.cpp
     tests/GraphicsMotionTest.cpp
     tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsEditorShapesTest.cpp

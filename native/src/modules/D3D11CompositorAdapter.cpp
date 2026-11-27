@@ -552,8 +552,13 @@ class D3D11Compositor final : public ICompositor {
       overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), candidate.overlay,
           {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_, candidate.layerId, true,
           candidate.graphicsPreparedResource);
+      // The warning travels by reference (sharedReason), as on Metal: copying
+      // it would allocate per graphic per frame on the render thread (G2
+      // review 2). Readers use GraphicsFrameFact::reasonText().
       frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
-          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource(),candidate.overlay.graphicsContentHash,candidate.overlay.hasGraphicsContentHash});
+          overlayRaster_.preparationState(), {}, overlayRaster_.preparedResource(),
+          candidate.overlay.graphicsContentHash, candidate.overlay.hasGraphicsContentHash,
+          overlayRaster_.sharedWarning()});
     }
     overlayRaster_.beginFrame();
     // NDI graphics key: the same resolved layers, graphics instances only, into
