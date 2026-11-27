@@ -53,6 +53,12 @@ struct Area { int x0, y0, x1, y1; };
 Area measuredArea(const ParityImage& image, const ParityRegion& region) {
   Area a{int(std::floor(region.x - region.grow)), int(std::floor(region.y - region.grow)),
          int(std::ceil(region.x + region.width + region.grow)), int(std::ceil(region.y + region.height + region.grow))};
+  if (region.text && region.clipped) {
+    a.x0 = std::max(a.x0, int(std::floor(region.clipX)));
+    a.y0 = std::max(a.y0, int(std::floor(region.clipY)));
+    a.x1 = std::min(a.x1, int(std::ceil(region.clipX + region.clipWidth)));
+    a.y1 = std::min(a.y1, int(std::ceil(region.clipY + region.clipHeight)));
+  }
   a.x0 = std::clamp(a.x0, 0, image.width); a.x1 = std::clamp(a.x1, 0, image.width);
   a.y0 = std::clamp(a.y0, 0, image.height); a.y1 = std::clamp(a.y1, 0, image.height);
   return a;
@@ -222,6 +228,10 @@ std::vector<ParityRegion> regionsFromLayout(const Json& summary) {
       r.linePitch = size * row.getNumber("lineHeight", 1.2);
       r.maxLines = int(row.getNumber("maxLines", 1));
       r.grow = std::ceil(0.35 * size + row.getNumber("effects"));
+      if (row.get("clip")) {
+        r.clipped = true;
+        r.clipX = clip.x; r.clipY = clip.y; r.clipWidth = clip.width; r.clipHeight = clip.height;
+      }
     } else {
       r.grow = 2 + std::ceil(row.getNumber("strokeWidth"));
     }
