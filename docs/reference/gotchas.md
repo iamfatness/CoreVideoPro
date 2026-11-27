@@ -2,6 +2,16 @@
 
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
+- **Graphics text weight is pinned on both rasters; change it on both or neither (G4, 2026-11-27).**
+  With no rendering params set, D2D took gamma and grayscale contrast from the PC's ClearType
+  tuning (`HKCU/Software/Microsoft/Avalon.Graphics/DISPLAYn`), so on-air text weight varied by
+  customer PC. `CompositorOverlayRaster.cpp` now pins grayscale params (gamma 2.2, enhanced contrast 0.5,
+  grayscale enhanced contrast 1.0). `CoreTextOverlayRaster.mm` draws text unsmoothed into an
+  offscreen layer and lifts coverage with `a*(k+1)/(a*k+1)`, k = the same 1.0
+  (`kWindowsTextGrayscaleContrast`). Line breaks and positions already matched; only edge coverage
+  differed (mean edge alpha 177 on Windows vs 120 on Mac). Changing either constant means regenerating
+  `contracts/graphics-raster-reference.json` and the Mac goldens, and rerunning
+  `GraphicsRasterParity.MacMatchesWindowsReference`.
 - **Never join a recording writer without a bound, and never let MF throttle (#1030, 2026-10-23).**
   One ISO whose participant left blocked inside `CMFSinkWriter::ThrottleStream`;
   an unconditional `RecordingTrackWorker::join()` then froze every later

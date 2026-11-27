@@ -229,6 +229,28 @@ void appendGlyphOutlines(CGMutablePathRef path, CTLineRef line, CGFloat x, CGFlo
   }
 }
 
+// Grayscale enhanced contrast of the Windows text raster: the value pinned as
+// kOverlayTextGrayscaleEnhancedContrast in CompositorOverlayRaster.cpp. Keep
+// the two equal; the G4 parity test judges the pair.
+constexpr double kWindowsTextGrayscaleContrast = 1.0;
+
+// Coverage a in [0,1] -> a * (k + 1) / (a * k + 1), the contrast-enhancement
+// form DirectWrite applies to grayscale glyph coverage. Fitted check against
+// the G4 reference (2026-11-27): with k = 1 the text-only fixtures' summed
+// alpha moves from 8-10% under Windows to 2-3.4% under.
+const std::array<uint8_t, 256>& windowsTextCoverageCurve() {
+  static const std::array<uint8_t, 256> curve = [] {
+    std::array<uint8_t, 256> out{};
+    constexpr double k = kWindowsTextGrayscaleContrast;
+    for (int i = 0; i < 256; ++i) {
+      const double a = i / 255.0;
+      out[size_t(i)] = uint8_t(std::lround(255.0 * a * (k + 1) / (a * k + 1)));
+    }
+    return out;
+  }();
+  return curve;
+}
+
 bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::GraphicsPrimitive& p,
                       std::string& warning) {
   const auto resolved = graphics::resolveGraphicsFontFamily(p.font);
@@ -288,25 +310,71 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
       CGContextStrokePath(cg);
     }
   }
-  CGContextSaveGState(cg);
-  CGContextSetAlpha(cg, CGFloat(p.opacity));
-  CGContextClipToRect(cg, CGRectMake(b.x, b.y, b.width, layoutHeight));  // D2D1_DRAW_TEXT_OPTIONS_CLIP
-  CGContextSetTextMatrix(cg, CGAffineTransformMakeScale(1, -1));
-  // Small text: DirectWrite hints and contrast-enhances grayscale glyphs, so a
-  // 4 px social-card line still reads; unhinted Core Text coverage is much
-  // lighter there. Core Graphics font smoothing (stem dilation, which works on
-  // a grayscale alpha target) is the closest native analogue. Applied only
-  // under 16 device pixels per em, where hinting dominates, so larger text
-  // keeps its true weight for the G4 parity measurement (plan default D9).
-  const CGAffineTransform ctm = CGContextGetCTM(cg);
-  const double devicePixelsPerEm = p.fontSize * std::sqrt(std::fabs(ctm.a * ctm.d - ctm.b * ctm.c));
-  const bool smallText = devicePixelsPerEm < 16;
-  CGContextSetAllowsFontSmoothing(cg, smallText);
-  CGContextSetShouldSmoothFonts(cg, smallText);
-  for (size_t n = 0; n < text.lines().size(); ++n) {
-    CGContextSetTextPosition(cg, CGFloat(lineX(text.lines()[n])), CGFloat(baseline(n)));
-    CTLineDraw(text.lines()[n].line, cg);
+  // Text coverage matches the Windows raster (owner ruling 2026-11-27). D2D
+  // draws grayscale glyphs with pinned params (CompositorOverlayRaster.cpp:
+  // gamma 2.2, grayscale enhanced contrast 1.0), which lifts edge coverage
+  // above Core Text's linear coverage. The lines are drawn unsmoothed into an
+  // offscreen bitmap over the text clip, every pixel's coverage goes through
+  // the same contrast curve (kWindowsTextGrayscaleContrast), and the result is
+  // composited at the primitive's opacity. Font smoothing (the old small-text
+  // dilation, plan default D9) is off: the curve replaces it at every size.
+  const CGRect textClip = CGRectMake(b.x, b.y, b.width, layoutHeight);  // D2D1_DRAW_TEXT_OPTIONS_CLIP
+  auto drawLines = [&](CGContextRef target) {
+    CGContextSetTextMatrix(target, CGAffineTransformMakeScale(1, -1));
+    CGContextSetAllowsAntialiasing(target, true);
+    CGContextSetShouldAntialias(target, true);
+    CGContextSetAllowsFontSmoothing(target, false);
+    CGContextSetShouldSmoothFonts(target, false);
+    CGContextSetAllowsFontSubpixelPositioning(target, true);
+    CGContextSetShouldSubpixelPositionFonts(target, true);
+    for (size_t n = 0; n < text.lines().size(); ++n) {
+      CGContextSetTextPosition(target, CGFloat(lineX(text.lines()[n])), CGFloat(baseline(n)));
+      CTLineDraw(text.lines()[n].line, target);
+    }
+  };
+  const size_t targetWidth = CGBitmapContextGetWidth(cg), targetHeight = CGBitmapContextGetHeight(cg);
+  const CGRect device = CGRectIntersection(CGRectIntegral(CGContextConvertRectToDeviceSpace(cg, textClip)),
+                                           CGRectMake(0, 0, CGFloat(targetWidth), CGFloat(targetHeight)));
+  if (CGRectIsNull(device) || CGRectIsEmpty(device)) return true;  // the text clip is off the bitmap
+  const size_t width = size_t(device.size.width), height = size_t(device.size.height);
+  CfRef<CGContextRef> layer(CGBitmapContextCreate(nullptr, width, height, 8, width * 4, space,
+                                                  CGBitmapInfo(kCGImageAlphaPremultipliedFirst) |
+                                                      kCGBitmapByteOrder32Little));
+  if (!layer) {
+    warning = "Graphics text layer allocation failed.";
+    return false;
   }
+  // Same user space as `cg`, shifted so the layer's origin is the device rect.
+  const CGAffineTransform ctm = CGContextGetCTM(cg);
+  CGContextTranslateCTM(layer.get(), -device.origin.x, -device.origin.y);
+  CGContextConcatCTM(layer.get(), ctm);
+  CGContextClipToRect(layer.get(), textClip);
+  drawLines(layer.get());
+  CGContextFlush(layer.get());
+  auto* pixels = static_cast<uint8_t*>(CGBitmapContextGetData(layer.get()));
+  const size_t stride = CGBitmapContextGetBytesPerRow(layer.get());
+  const auto& curve = windowsTextCoverageCurve();
+  for (size_t y = 0; y < height; ++y) {
+    uint8_t* row = pixels + y * stride;
+    for (size_t x = 0; x < width; ++x) {
+      uint8_t* px = row + x * 4;  // B G R A, premultiplied
+      const uint8_t a = px[3];
+      if (a == 0 || a == 255) continue;
+      const uint8_t lifted = curve[a];
+      for (int c = 0; c < 3; ++c) px[c] = uint8_t(std::min<unsigned>(lifted, (unsigned(px[c]) * lifted + a / 2) / a));
+      px[3] = lifted;
+    }
+  }
+  CfRef<CGImageRef> image(CGBitmapContextCreateImage(layer.get()));
+  if (!image) {
+    warning = "Graphics text layer allocation failed.";
+    return false;
+  }
+  CGContextSaveGState(cg);
+  CGContextConcatCTM(cg, CGAffineTransformInvert(ctm));  // device pixels; the primitive clip stays
+  CGContextSetInterpolationQuality(cg, kCGInterpolationNone);
+  CGContextSetAlpha(cg, CGFloat(p.opacity));
+  CGContextDrawImage(cg, device, image.get());
   CGContextRestoreGState(cg);
   return true;
 }

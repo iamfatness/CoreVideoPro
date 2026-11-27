@@ -333,7 +333,17 @@ jobs:
       # them for a font-rendering update, not a regression, so they are advisory
       # here and blocking in scripts/release-macos.sh's full ctest on the owner's Mac.
       - name: Full native tests (Metal configuration, excluding realtime and golden)
+        # The G4 parity test writes a Windows / Mac / diff sheet here.
+        env:
+          COREVIDEO_GRAPHICS_PARITY_ARTIFACTS: ${{ github.workspace }}/artifacts/graphics-parity
         run: ctest --test-dir native/build-metal --output-on-failure -LE "realtime|golden"
+      - name: Upload graphics parity sheet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphics-parity-mac-vs-windows
+          path: artifacts/graphics-parity
+          if-no-files-found: ignore
       # #933: a segfault on the paravirtual runner left no stack. Keep the macOS
       # crash reports for the test binary so the next occurrence is attributable
       # (test code vs AVFoundation/VideoToolbox vs runner) instead of a bare exit 139.

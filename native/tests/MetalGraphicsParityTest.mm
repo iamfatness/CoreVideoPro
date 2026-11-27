@@ -221,6 +221,7 @@ TEST(GraphicsRasterParity, MacMatchesWindowsReference) {
   std::map<std::string, Json> rows;
   for (const auto& row : reference->get("fixtures")->asArray()) rows[row.getString("name")] = row;
   int failed = 0;
+  std::string allFailures;
   for (const auto& fixture : fixtures) {
     const auto found = rows.find(fixture.name);
     EXPECT_TRUE(found != rows.end()) << fixture.name << ": not in the Windows reference";
@@ -242,8 +243,15 @@ TEST(GraphicsRasterParity, MacMatchesWindowsReference) {
     const auto failures = judge(fixture.name, windows, *found->second.get("layout"), mac.image, mac.layout,
                                 mac.textTolerance);
     failed += failures.empty() ? 0 : 1;
+    // The vendored EXPECT_* throws on the first failure, so collect every
+    // fixture's failures and fail once after the loop: one run lists them all.
     std::string cell;
-    for (const auto& f : failures) { EXPECT_TRUE(false) << f; cell += f + "<br>"; }
+    for (const auto& f : failures) {
+      std::fprintf(stderr, "[parity] FAIL %s\n", f.c_str());
+      allFailures += f + "; ";
+      cell += f + "<br>";
+    }
+    if (failures.empty()) std::fprintf(stderr, "[parity] pass %s\n", fixture.name.c_str());
     if (artifacts && !mac.image.bgraPremultiplied.empty()) {
       const std::string base = std::string(artifacts) + "/" + fixture.name;
       writeParityPng(base + "-windows.png", windows, error);
@@ -267,6 +275,7 @@ TEST(GraphicsRasterParity, MacMatchesWindowsReference) {
   }
   if (artifacts) std::ofstream(std::string(artifacts) + "/index.html") << html << "</table>";
   std::fprintf(stderr, "[parity] %d of %zu fixtures outside tolerance\n", failed, fixtures.size());
+  EXPECT_EQ(0, failed) << allFailures;
 }
 
 #endif  // COREVIDEO_WITH_METAL && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
