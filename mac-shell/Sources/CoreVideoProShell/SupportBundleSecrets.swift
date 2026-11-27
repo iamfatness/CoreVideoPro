@@ -177,7 +177,13 @@ struct LiteralScrubber {
                 .filter { $0.count >= Self.minimumLength }
         }
         self.floor = clean(floor ?? values)
-        let values = clean(values) + self.floor
+        var values = clean(values) + self.floor
+        // Lines are scrubbed one at a time, so each line of a multi-line value
+        // is a literal too (not part of the floor). Otherwise a rule that takes
+        // part of it leaves a rest the whole-file pass no longer recognises.
+        values += values.filter { $0.contains(where: \.isNewline) }.flatMap {
+            clean($0.split(whereSeparator: \.isNewline).map(String.init))
+        }
         var seen = Set<[UInt8]>()
         held = values.filter { seen.insert(Array($0.utf8)).inserted }
         var parsed: [[Spellings]] = []

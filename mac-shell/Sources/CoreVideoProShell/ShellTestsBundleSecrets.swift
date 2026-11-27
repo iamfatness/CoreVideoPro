@@ -559,7 +559,32 @@ extension ShellTests {
         let created = Redactor.scrub("tokenBearer abcdefgh", literals: ["token", "Bearer"], floor: ["token"])
         expect(!created.contains("abcdefgh"), "the floor view: \(created)")
         floorIsWiredFromTheModel()
+        multiLineLiteralsThroughAWholeBundle()
         randomDifferentialAgainstMain()
+    }
+
+    /// A literal with a newline: main matched it only in its whole-file pass. If
+    /// the per-line pass takes part of it first, that pass no longer finds it.
+    private static func multiLineLiteralsThroughAWholeBundle() {
+        let cases: [([String], [String], String)] = [
+            (["Bearer", "abc fkml1abc\nfkml2def"], ["Bearer", "abc fkml1abc\nfkml2def"],
+             "Bearer abc fkml1abc\nfkml2def end"),
+            (["fkml1abc\nfkml2def", "fkml1abc"], ["fkml1abc\nfkml2def"], "pass fkml1abc\nfkml2def end"),
+            (["token", "fkml1abc\r\nfkml2def"], ["fkml1abc\r\nfkml2def"], "token: fkml1abc\r\nfkml2def end"),
+        ]
+        for (literals, floor, text) in cases {
+            var input = SupportBundleInput()
+            input.knownSecretLiterals = literals
+            input.floorSecretLiterals = floor
+            input.warnings = [text]
+            input.coreSnapshotJson = (try? JSONSerialization.data(withJSONObject: ["m": text])) ?? Data()
+            let files = writeSecretBundle(input, shellLog: text, coreLog: text)
+            for (name, contents) in files where name != "manifest.txt" {
+                for secret in ["fkml1abc", "fkml2def"] {
+                    expect(!has(contents, secret), "\(secret) in \(name) for \(text.debugDescription)")
+                }
+            }
+        }
     }
 
     /// The app passes main's own list as the floor, and a bundle honours it.
@@ -576,6 +601,12 @@ extension ShellTests {
                    && files["shell-log-tail.txt"]?.contains("abcdefgh") == false,
                    "honoured by the export")
         }
+    }
+
+    /// Code-unit containment. String.contains compares whole characters, so a
+    /// marker followed by a combining mark would read as absent.
+    fileprivate static func has(_ text: String, _ needle: String) -> Bool {
+        text.range(of: needle, options: .literal) != nil
     }
 
     /// Seeded: random lines built from rule anchors, with a fresh marker between
@@ -626,7 +657,7 @@ extension ShellTests {
             let longer = literals + (0..<(1 + random(4))).map { _ in extras[random(extras.count)] }
             for out in [Redactor.scrub(text, literals: literals),
                         Redactor.scrub(text, literals: longer, floor: literals)] {
-                for name in markers where !main.contains(name) && out.contains(name) {
+                for name in markers where !has(main, name) && has(out, name) {
                     lessThanMain.append("\(name) in \(text.debugDescription) with \(longer) floor \(literals)")
                     break
                 }
@@ -701,7 +732,7 @@ extension ShellTests {
             let out = Redactor.scrub(text, literals: secrets)
             let afterSpellings = MainRedactor.scrub(known.scrub(text).text)
             let main = MainRedactor.scrub(text, literals: secrets)
-            for marker in markers where out.contains(marker) && (!afterSpellings.contains(marker) || !main.contains(marker)) {
+            for marker in markers where has(out, marker) && (!has(afterSpellings, marker) || !has(main, marker)) {
                 misses.append(text.debugDescription)
                 break
             }
