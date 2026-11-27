@@ -2976,7 +2976,7 @@ final class AppModel: ObservableObject {
     // Accepts a bare meeting number OR a full Zoom URL
     // (https://…zoom.us/j/<id>?pwd=<passcode>) — the engine wants the bare
     // number, so parse URL forms here (the WinUI shell does the same).
-    static func parseZoomTarget(_ raw: String, fallbackPasscode: String)
+    nonisolated static func parseZoomTarget(_ raw: String, fallbackPasscode: String)
         -> (meetingId: String, passcode: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         guard trimmed.lowercased().contains("zoom.us"),
@@ -6903,13 +6903,20 @@ final class AppModel: ObservableObject {
 
     // ── support bundle input (Diagnostics.swift owns the writing) ────────────
 
+    func liveSecretLiterals() -> [String] {
+        SupportBundleSecrets.literals(SupportBundleSecrets.Held(
+            streamKey: streamKey, srtPassphrase: srtPassphrase,
+            srtStreamId: streamDestinations.srtStreamId, joinPasscode: joinPasscode,
+            meetingTargets: [joinMeetingId] + recentMeetings))
+    }
+
     // Gathers the shell side of a support bundle ON THE MAIN ACTOR and hands it
     // over as plain Data + value types, so the export can run off-main without
     // dragging live model state across the hop.
     //
     // SECRETS: the stream key and the meeting passcode are DELIBERATELY not put
-    // in the payload — only their presence is. They are still passed as
-    // `knownSecretLiterals` so the writer can scrub them out of the LOG TAILS
+    // in the payload — only their presence is. Every held secret
+    // (SupportBundleSecrets) is still passed as `knownSecretLiterals` so the writer can scrub them out of the LOG TAILS
     // by identity and then verify no copy survived anywhere in the bundle.
     func supportBundleInput() -> SupportBundleInput {
         let paths = ShellPaths.resolve()
@@ -7005,7 +7012,7 @@ final class AppModel: ObservableObject {
             (try? JSONSerialization.data(withJSONObject: lastZoomSnapshot)) ?? Data()
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
         input.warnings = warnings
-        input.knownSecretLiterals = ([streamKey, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
+        input.knownSecretLiterals = liveSecretLiterals()
         return input
     }
 }

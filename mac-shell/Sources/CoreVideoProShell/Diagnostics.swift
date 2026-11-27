@@ -104,13 +104,14 @@ enum Redactor {
 
     /// Scrubs one string: known literals first (layer 3), then value patterns.
     static func scrub(_ text: String, literals: [String] = []) -> String {
-        var result = text
-        // Layer 3 — KNOWN LITERALS. The shell holds the operator's live stream
-        // key and meeting passcode in memory; an identity match cannot be fooled
-        // by a shape the pattern rules did not anticipate.
-        for literal in literals where literal.count >= 4 {
-            result = result.replacingOccurrences(of: literal, with: placeholder)
-        }
+        scrub(text, known: LiteralScrubber(literals))
+    }
+
+    private static func scrub(_ text: String, known: LiteralScrubber) -> String {
+        // Layer 3 — KNOWN LITERALS (SupportBundleSecrets): an identity match,
+        // raw or escaped, cannot be fooled by a shape the pattern rules did not
+        // anticipate.
+        var result = known.scrub(text).text
         guard !result.isEmpty else { return result }
         for rule in rules {
             let range = NSRange(result.startIndex..., in: result)
@@ -121,38 +122,52 @@ enum Redactor {
     }
 
     /// Walks a decoded JSON tree, blanking secret-named keys and scrubbing every
-    /// surviving string. The KEY is kept (so a reader can see the field existed)
-    /// — only the value is replaced.
+    /// surviving string, keys included. A secret-NAMED key keeps its name (so a
+    /// reader can see the field existed) — only the value is replaced.
     static func redact(_ value: Any, literals: [String] = []) -> Any {
+        redact(value, known: LiteralScrubber(literals))
+    }
+
+    private static func redact(_ value: Any, known: LiteralScrubber) -> Any {
         if let object = value as? [String: Any] {
             var result: [String: Any] = [:]
-            for (key, child) in object {
+            // Sorted, so two keys that scrub to the same text are numbered the
+            // same way every time instead of one overwriting the other.
+            for (key, child) in object.sorted(by: { $0.key < $1.key }) {
+                let cleanKey = scrub(key, known: known)
+                var name = cleanKey
+                var copy = 2
+                while result[name] != nil {
+                    name = "\(cleanKey) (\(copy))"
+                    copy += 1
+                }
                 if isSecretKey(key) {
                     // Preserve presence/absence: "was a key configured at all"
                     // is the question the operator actually needs answered.
                     if let text = child as? String {
-                        result[key] = text.isEmpty ? "absent" : "present-" + placeholder
+                        result[name] = text.isEmpty ? "absent" : "present-" + placeholder
                     } else {
-                        result[key] = placeholder
+                        result[name] = placeholder
                     }
                     continue
                 }
-                result[key] = redact(child, literals: literals)
+                result[name] = redact(child, known: known)
             }
             return result
         }
         if let array = value as? [Any] {
-            return array.map { redact($0, literals: literals) }
+            return array.map { redact($0, known: known) }
         }
         if let text = value as? String {
-            return scrub(text, literals: literals)
+            return scrub(text, known: known)
         }
         return value
     }
 
     static func redactLines(_ text: String, literals: [String] = []) -> String {
-        text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { scrub(String($0), literals: literals) }
+        let known = LiteralScrubber(literals)
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { scrub(String($0), known: known) }
             .joined(separator: "\n")
     }
 }
@@ -351,7 +366,8 @@ enum SupportBundle {
     /// it). A missing log is never fatal — it becomes a manifest skip note,
     /// exactly like the Windows builder.
     static func write(_ input: SupportBundleInput) throws -> SupportBundleResult {
-        let literals = input.knownSecretLiterals.filter { $0.count >= 4 }
+        let literals = input.knownSecretLiterals.filter { $0.count >= LiteralScrubber.minimumLength }
+        let known = LiteralScrubber(literals)
         let name = "corevideo-support-" + DiagFormat.stamp.string(from: input.createdAt)
         let folder = input.destinationRoot.appendingPathComponent(name, isDirectory: true)
         do {
@@ -431,13 +447,9 @@ enum SupportBundle {
         var verifiedCount = 0
         for file in result.includedFiles {
             let url = folder.appendingPathComponent(file)
-            guard var text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard let original = try? String(contentsOf: url, encoding: .utf8) else { continue }
             verifiedCount += 1
-            var hits = 0
-            for literal in literals where text.contains(literal) {
-                hits += text.components(separatedBy: literal).count - 1
-                text = text.replacingOccurrences(of: literal, with: Redactor.placeholder)
-            }
+            let (text, hits) = known.scrub(original)
             if hits > 0 {
                 result.literalHits += hits
                 try? Data(text.utf8).write(to: url)
@@ -447,8 +459,9 @@ enum SupportBundle {
         }
         result.notes = notes
 
-        // Manifest LAST so it can report the verification outcome.
-        writeText(manifest(input: input, result: result, verified: verifiedCount),
+        // Manifest LAST so it can report the verification outcome. It is written
+        // after that pass and quotes paths and errors, so it is scrubbed here.
+        writeText(known.scrub(manifest(input: input, result: result, verified: verifiedCount)).text,
                   to: "manifest.txt")
 
         result.archive = makeArchive(folder: folder)
@@ -513,9 +526,13 @@ enum SupportBundle {
         lines.append("  its VALUE replaced. (2) VALUE PATTERN: URL userinfo, rtmp+srt URL")
         lines.append("  paths, secret query parameters, Bearer headers, JWT-shaped blobs and")
         lines.append("  opaque >=28 character mixed-case tokens are replaced everywhere,")
-        lines.append("  including raw log lines. (3) KNOWN LITERAL: the shell's live stream")
-        lines.append("  key and meeting passcode are matched by identity. Every written file")
-        lines.append("  is then RE-READ and re-checked against layer 3.")
+        lines.append("  including raw log lines. (3) KNOWN LITERAL: the secrets the shell")
+        lines.append("  holds (stream key, SRT passphrase and Stream ID, meeting passcodes,")
+        lines.append("  Zoom, YouTube and Twitch sign-ins, control API token) are matched by")
+        lines.append("  identity, also when JSON-escaped or URL-encoded; values under 4")
+        lines.append("  characters (Stream ID: under 6) are not. Every file listed under")
+        lines.append("  CONTENTS is then RE-READ and re-checked against layer 3, and this")
+        lines.append("  manifest is filtered by it too.")
         lines.append("  Verification: \(verified) file(s) re-read, "
                      + "\(result.literalHits) known-secret occurrence(s) found.")
         lines.append("  FILE PATHS ARE NOT SECRETS and are included verbatim — they carry")
@@ -637,8 +654,9 @@ enum DiagnosticsSelfCheck {
         var input = SupportBundleInput()
         input.coreSnapshotJson = (try? JSONSerialization.data(withJSONObject: snapshot)) ?? Data()
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
-        input.warnings = ["stream: failed with key \(streamKey)"]
-        input.knownSecretLiterals = [streamKey, passcode]
+        input.warnings = ["stream: failed with key \(streamKey)",
+                          "srt: handshake refused \(passphrase)"]
+        input.knownSecretLiterals = [streamKey, passphrase, passcode]
         input.shellLogPath = shellLog.path
         input.coreLogPath = coreLog.path
         input.crashReportDirectory = temp.path
@@ -709,10 +727,7 @@ enum DiagnosticsSelfCheck {
     ///     COREVIDEO_SHELL_EXPORT_BUNDLE=1 .build/release/CoreVideoProShell
     ///     COREVIDEO_SHELL_EXPORT_BUNDLE=/some/dir  (destination override)
     static func exportHeadlessAndExit(destination: String) -> Never {
-        var input = SupportBundleInput()
-        if destination != "1", !destination.isEmpty {
-            input.destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
-        }
+        let input = headlessInput(destination: destination)
         do {
             let bundle = try SupportBundle.write(input)
             print("support bundle: \(bundle.revealTarget.path)")
@@ -723,6 +738,17 @@ enum DiagnosticsSelfCheck {
             print("support bundle FAILED: \(error.localizedDescription)")
             exit(1)
         }
+    }
+
+    static func headlessInput(destination: String) -> SupportBundleInput {
+        var input = SupportBundleInput()
+        if destination != "1", !destination.isEmpty {
+            input.destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
+        }
+        // No model here, but the log tails can still quote a stored secret.
+        input.knownSecretLiterals = SupportBundleSecrets.literals(
+            SupportBundleSecrets.storedHeld(prefs: ShellPrefs.load()))
+        return input
     }
 
     /// Entry point for the env-var harness run.
