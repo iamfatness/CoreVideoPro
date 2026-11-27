@@ -44,6 +44,7 @@ class FakeEncoder final : public GpuVideoEncoder {
     running_ = false;
   }
   bool healthy() const override { return running_; }
+  int programTickRate(const GpuVideoEncoderConfig&) const override { return 60; }
  private:
   Counts& counts_;
   GpuEncodedChunkSink sink_;
@@ -118,5 +119,64 @@ TEST(SharedGpuVideoEncoder, ASubscriberCanRequestIdrFromAnEncoderCallback) {
   ASSERT_TRUE(client->submit(frame));
   EXPECT_TRUE(requested);
   EXPECT_EQ(counts.keyframeRequests, 1);
+  client->stop();
+}
+
+// The sender converts the shared AAC clock with whatever rate the REAL encoder
+// stamps pictures in; the pool client must not answer with the interface default.
+TEST(SharedGpuVideoEncoder, ClientReportsTheSharedEncodersProgramTickRate) {
+  Counts counts;
+  SharedGpuVideoEncoderPool pool([&] { return std::make_unique<FakeEncoder>(counts); });
+  auto client = pool.createClient();
+  GpuVideoEncoderConfig profile;
+  profile.fps = 30;
+  ASSERT_TRUE(client->start(profile, [](const GpuEncodedChunk&) {}));
+  EXPECT_EQ(client->programTickRate(profile), 60);
+  client->stop();
+}
+
+// Each destination picks its own pictures on its own writer thread. When one of
+// them misses a tick (coalescing, or joining mid-period) it picks the next one;
+// the shared 30 fps encoder must still get ONE picture per 30 fps period.
+TEST(SharedGpuVideoEncoder, OnePicturePerDestinationPeriodAcrossDestinations) {
+  Counts counts;
+  SharedGpuVideoEncoderPool pool([&] { return std::make_unique<FakeEncoder>(counts); });
+  auto first = pool.createClient();
+  auto lagging = pool.createClient();
+  GpuVideoEncoderConfig profile;
+  profile.fps = 30;
+  ASSERT_TRUE(first->start(profile, [](const GpuEncodedChunk&) {}));
+  ASSERT_TRUE(lagging->start(profile, [](const GpuEncodedChunk&) {}));
+  const auto submit = [](GpuVideoEncoder& client, int64_t tick) {
+    GpuVideoEncoderFrame frame;
+    frame.frameNumber = tick - 40;  // renders: skipped slots are not counted
+    frame.programTick = tick;
+    return client.submit(frame);
+  };
+  EXPECT_TRUE(submit(*first, 100));
+  EXPECT_TRUE(submit(*first, 102));
+  EXPECT_TRUE(submit(*lagging, 103)) << "a repeat is accepted, not a failure";
+  EXPECT_EQ(counts.submits, 2) << "ticks 102 and 103 are the same 30 fps period";
+  EXPECT_TRUE(submit(*lagging, 105));
+  EXPECT_EQ(counts.submits, 3);
+  first->stop();
+  lagging->stop();
+}
+
+// An encoder timed by the destination fps (Media Foundation) is not thinned by
+// the pool: only the frame number dedupes, as before.
+TEST(SharedGpuVideoEncoder, ADestinationClockEncoderIsOnlyDedupedByFrameNumber) {
+  Counts counts;
+  SharedGpuVideoEncoderPool pool([&] { return std::make_unique<FakeEncoder>(counts); });
+  auto client = pool.createClient();
+  GpuVideoEncoderConfig profile;
+  profile.fps = 60;  // equals the fake's tick rate
+  ASSERT_TRUE(client->start(profile, [](const GpuEncodedChunk&) {}));
+  for (int64_t tick = 1; tick <= 4; ++tick) {
+    GpuVideoEncoderFrame frame;
+    frame.frameNumber = tick;
+    ASSERT_TRUE(client->submit(frame));
+  }
+  EXPECT_EQ(counts.submits, 4);
   client->stop();
 }

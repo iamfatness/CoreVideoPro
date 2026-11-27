@@ -187,7 +187,9 @@ struct VideoToolboxGpuVideoEncoder::Impl : std::enable_shared_from_this<VideoToo
   // Runs on the serial queue.
   // `running` only gates NEW submits; frames already queued are encoded while
   // stop() drains, so a stop never silently loses an accepted frame.
-  void encodeOne(uint32_t iosurfaceId, int64_t frameNumber, std::shared_ptr<std::atomic<int64_t>> published) {
+  // `frameNumber` identifies the picture in the IOSurface; `tick` times it.
+  void encodeOne(uint32_t iosurfaceId, int64_t frameNumber, int64_t tick,
+                 std::shared_ptr<std::atomic<int64_t>> published) {
     if (session == nullptr) {
       inFlight.fetch_sub(1);
       return;
@@ -247,9 +249,13 @@ struct VideoToolboxGpuVideoEncoder::Impl : std::enable_shared_from_this<VideoToo
                           kCVAttachmentMode_ShouldPropagate);
     CVBufferSetAttachment(pixels, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
                           kCVAttachmentMode_ShouldPropagate);
-    const int fps = std::max(1, config.fps);
-    const CMTime pts = CMTimeMake(frameNumber * 10'000'000LL / fps, 10'000'000);
-    const CMTime duration = CMTimeMake(10'000'000LL / fps, 10'000'000);
+    // PTS on the 60 Hz Program grid, duration at the destination's rate. The
+    // rate controller budgets bits by these timestamps: dividing the tick by a
+    // 30 fps destination stamped pictures 1/15 s apart, so video ran at twice
+    // real time and spent twice the target bitrate (1.0.0 qualification).
+    const ProgramSampleTiming timing = programSampleTiming(tick, kProgramTickRate, config.fps);
+    const CMTime pts = CMTimeMake(timing.pts100ns, 10'000'000);
+    const CMTime duration = CMTimeMake(timing.duration100ns, 10'000'000);
     CFDictionaryRef properties = nullptr;
     const bool forceKeyframe = keyframeRequested.exchange(false);
     if (forceKeyframe) {
@@ -397,9 +403,10 @@ bool VideoToolboxGpuVideoEncoder::submit(const GpuVideoEncoderFrame& frame) {
   std::shared_ptr<Impl> owner = impl_;
   const uint32_t id = frame.iosurfaceId;
   const int64_t number = frame.frameNumber;
+  const int64_t tick = programClockTick(frame);
   auto published = frame.publishedFrameNumber;
   dispatch_async(s.queue, ^{
-    owner->encodeOne(id, number, published);
+    owner->encodeOne(id, number, tick, published);
   });
   return true;
 }

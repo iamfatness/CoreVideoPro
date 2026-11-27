@@ -121,6 +121,30 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
   `speed≈1.0x` with only 19 encoded frames/sec. SRT must not receive this RTMP option.
   **Live RTMP to real YouTube is the final MANUAL acceptance step** (speed≈1.0x,
   `nvidia-smi utilization.encoder` non-trivial, CPU down vs raw) — not this gate.
+- **Program ticks vs destination fps (macOS 1.0.0 release blocker).** The render
+  loop is a fixed 60 Hz whatever the destination's fps is (the shipping RTMP, SRT
+  and HLS rows are 30). `programClockTick(frame)` is the frame's time on that grid:
+  the render SLOT on macOS (`ProgramFrame::programTick`, so a skipped slot stays a
+  timestamp hole), the frame number where no tick is set (Windows).
+  `GpuVideoEncoder::programTickRate` is what the encoder divides it by; the sender
+  uses the same value for the shared-AAC PTS, and when it is faster than the
+  destination it picks pictures from the tick grid (`ProgramCadenceDecimator`,
+  every even tick for 30 on 60), not from the wall-clock pacer. A destination at
+  60 and the raw path keep the wall pacer. VideoToolbox answers 60. Dividing by the
+  destination fps instead stamped 30 fps video at twice real time and, because the
+  rate controller budgets by PTS, spent about twice the target bitrate.
+  **Windows still has this defect at 30 fps (found by reading code, not run on
+  hardware):** `MediaFoundationGpuVideoEncoder` stamps `frameNumber / config.fps`,
+  and its loop consumes every texture the compositor exports (60/s), not only the
+  frames the sender's pacer picks. Its `programTickRate` is the unchanged default
+  (the destination fps), so the sender behaves as before there. A Windows fix needs
+  the encoder to take the selected pictures only and to answer 60.
+- **Timestamp gate:** without `--fps` the gate runs a 30 fps leg and a 60 fps leg.
+  `--sink-protocol hls` adds a local PUT origin. Every received stream is judged by
+  `scripts/qa/stream-timing-judge.mjs` (A/V drift and offset, video cadence,
+  pictures per second of audio, any audio gap). Missing pictures are printed; the
+  average-fps pass is not per-frame delivery acceptance. A congestion run
+  (`--slow-sink`) that discards audio with its video backlog now FAILS on the gap.
 - Tests: `GpuVideoEncoderPolicyTest.cpp` (policy + `chooseStreamEncodePath`),
   `MediaFoundationGpuVideoEncoderTest.cpp` (real-GPU compositor→encoder→ffmpeg round-trip:
   decoded coded-Y-plane luma within 16 of the encoded gray; self-skips without a hardware

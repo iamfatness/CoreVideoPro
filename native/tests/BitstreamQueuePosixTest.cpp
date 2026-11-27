@@ -27,16 +27,19 @@
 #include "modules/BitstreamQueueTestAccess.h"
 #include "modules/GpuVideoEncoder.h"
 #include "modules/Interfaces.h"
+#include "modules/ProgramStreamClock.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -393,6 +396,308 @@ TEST(OutputSenderAdapter, AnEncoderThatFailsToStartPublishesTheFallback) {
       << "reason=" << last.senders.front().encodePath->reason << " status=" << last.senders.front().status
       << " code=" << last.senders.front().lastResultCode;
   EXPECT_EQ(last.senders.front().encodePath->reason, "encoder-start-failed");
+}
+
+// ---------------------------------------------------------------------------
+// A destination slower than the Program clock (the 1.0.0 release blocker:
+// 1080p30, the shipping default, on the 60 Hz Program clock).
+//
+// Fixture invariants:
+//   - the Program clock is 60 Hz; sync() sees every Program frame, with the
+//     production sender clock (WHOLE milliseconds) plus +-1.5 ms of tick jitter;
+//   - the encoder stands in for VideoToolbox: it stamps Program time and says
+//     its tick rate is 60 whatever the destination's fps is;
+//   - stream start is 100 s into the run (frame 6000), so a clock that converts
+//     frame numbers with the DESTINATION fps is wrong by 100 s, not by a rounding;
+//   - audio is 48 kHz in real Program time, stamped by the real ProgramStreamClock.
+// ---------------------------------------------------------------------------
+struct SubmitLog {
+  std::mutex mutex;
+  std::vector<int64_t> frameNumbers;
+  std::vector<int64_t> programTicks;
+};
+
+class ProgramClockFakeEncoder final : public GpuVideoEncoder {
+ public:
+  explicit ProgramClockFakeEncoder(std::shared_ptr<SubmitLog> log) : log_(std::move(log)) {}
+  bool start(const GpuVideoEncoderConfig&, GpuEncodedChunkSink sink) override {
+    sink_ = std::move(sink);
+    return true;
+  }
+  int programTickRate(const GpuVideoEncoderConfig&) const override { return 60; }
+  bool submit(const GpuVideoEncoderFrame& frame) override {
+    {
+      std::lock_guard<std::mutex> lock(log_->mutex);
+      log_->frameNumbers.push_back(frame.frameNumber);
+      log_->programTicks.push_back(programClockTick(frame));
+    }
+    std::vector<uint8_t> au(64, 0x5a);
+    au[0] = au[1] = au[2] = 0;
+    au[3] = 1;
+    au[4] = index_++ % 60 == 0 ? 0x65 : 0x41;
+    GpuEncodedChunk chunk;
+    chunk.data = au.data();
+    chunk.size = au.size();
+    chunk.keyframe = au[4] == 0x65;
+    chunk.frameNumber = frame.frameNumber;
+    const auto timing = programSampleTiming(programClockTick(frame), 60, 30);
+    chunk.pts100ns = chunk.dts100ns = timing.pts100ns;
+    chunk.duration100ns = timing.duration100ns;
+    chunk.timingValid = true;
+    if (sink_) sink_(chunk);
+    return true;
+  }
+  void stop() override { sink_ = nullptr; }
+  bool healthy() const override { return true; }
+
+ private:
+  std::shared_ptr<SubmitLog> log_;
+  int index_ = 0;
+  GpuEncodedChunkSink sink_;
+};
+
+constexpr int64_t kFirstProgramFrame = 6000;
+
+double jitteredWholeMs(int64_t tickFromStart) {
+  static constexpr double kJitterMs[] = {0.0, 1.5, -1.2, 0.4, -1.5, 1.1, -0.3};
+  return std::floor(5000.0 + static_cast<double>(tickFromStart) * 1000.0 / 60.0 +
+                    kJitterMs[tickFromStart % 7]);
+}
+
+ProgramFrame programFrame(int64_t frameNumber) {
+  ProgramFrame frame;
+  frame.frameNumber = frameNumber;
+  frame.width = 320;
+  frame.height = 180;
+  frame.renderPlanId = "cadence";
+  frame.programFullBgra.width = 320;
+  frame.programFullBgra.height = 180;
+  frame.programFullBgra.bgra.assign(320u * 180u * 4u, 0x40);
+  frame.encoderSharedTexture.iosurfaceId = 77u;
+  frame.encoderSharedTexture.width = 320;
+  frame.encoderSharedTexture.height = 180;
+  frame.encoderSharedTexture.frameNumber = frameNumber;
+  return frame;
+}
+
+std::vector<int64_t> pesPts(const std::vector<uint8_t>& ts, int wantedPid) {
+  std::vector<int64_t> pts;
+  for (size_t off = 0; off + 188 <= ts.size(); off += 188) {
+    const uint8_t* p = ts.data() + off;
+    if (p[0] != 0x47) break;
+    if (!(p[1] & 0x40) || (((p[1] & 0x1f) << 8) | p[2]) != wantedPid) continue;
+    size_t i = 4;
+    if (p[3] & 0x20) i += 1 + p[4];
+    if (i + 14 > 188 || p[i] != 0 || p[i + 1] != 0 || p[i + 2] != 1) continue;
+    const uint8_t* t = p + i + 9;
+    pts.push_back((static_cast<int64_t>((t[0] >> 1) & 7) << 30) | (static_cast<int64_t>(t[1]) << 22) |
+                  (static_cast<int64_t>(t[2] >> 1) << 15) | (static_cast<int64_t>(t[3]) << 7) | (t[4] >> 1));
+  }
+  return pts;
+}
+
+std::vector<int64_t> submittedAtDestinationFps(int fps, int programFrames) {
+  Rig rig("cadence-" + std::to_string(fps), "copy-stdin-to @DIR@/stdin.ts", 64, 0);
+  auto log = std::make_shared<SubmitLog>();
+  rig.sender.queue->setGpuVideoEncoderFactoryForTest(
+      [log] { return std::make_unique<ProgramClockFakeEncoder>(log); });
+  rig.settings.fps = fps;
+  for (int64_t i = 0; i < programFrames; ++i) {
+    const ProgramFrame frame = programFrame(kFirstProgramFrame + i);
+    (void)rig.sender.sender->sync({"rtmp"}, &frame, jitteredWholeMs(i), {rig.settings});
+    if (i % 8 == 7) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  std::lock_guard<std::mutex> lock(log->mutex);
+  return log->frameNumbers;
+}
+
+// Every OTHER Program frame, never a 1-3-1-3 beat against a wall-clock pacer.
+TEST(OutputSenderAdapter, AThirtyFpsDestinationEncodesEveryOtherProgramFrame) {
+  const auto submitted = submittedAtDestinationFps(30, 600);
+  ASSERT_GE(submitted.size(), 299u);
+  ASSERT_LE(submitted.size(), 301u) << "10 s of Program at a 30 fps destination";
+  for (size_t i = 1; i < submitted.size(); ++i) {
+    ASSERT_EQ(submitted[i] - submitted[i - 1], 2)
+        << "picture " << i << ": " << submitted[i - 1] << " -> " << submitted[i];
+  }
+}
+
+// Audio sample 0 is this long after Program slot 0: the session anchor must
+// carry it (105'000 x 100 ns = 945 ticks at 90 kHz).
+constexpr int64_t kAudioPhase100ns = 105'000;
+constexpr int64_t kAudioPhase90k = 945;
+
+struct StreamRun {
+  std::vector<int64_t> video;
+  std::vector<int64_t> audio;
+  std::vector<int64_t> submittedFrameNumbers;
+};
+
+using EncoderMaker = std::function<std::unique_ptr<GpuVideoEncoder>(std::shared_ptr<SubmitLog>)>;
+
+// Drives the real sender with `programFrames` rendered frames and real-time
+// Program audio through the real ProgramStreamClock; returns the muxed PTS.
+// `skipAt`/`skipped`: before rendered frame `skipAt`, the Program clock skips
+// that many slots (frame numbers stay contiguous; ticks and time do not).
+StreamRun runProgramStream(const std::string& tag, int fps, int64_t programFrames, int64_t skipAt,
+                           int64_t skipped, EncoderMaker maker = nullptr, bool jitter = true) {
+  Rig rig(tag, "copy-stdin-to @DIR@/stdin.ts", 64, 0);
+  auto log = std::make_shared<SubmitLog>();
+  if (!maker) maker = [](std::shared_ptr<SubmitLog> l) { return std::make_unique<ProgramClockFakeEncoder>(std::move(l)); };
+  rig.sender.queue->setGpuVideoEncoderFactoryForTest([log, maker] { return maker(log); });
+  rig.settings.fps = fps;
+  rig.sender.sender->setSharedAacEnabled(true);
+  const std::vector<float> pcm(800 * 2, 0.0f);
+  ProgramStreamClock clock;
+  constexpr int64_t kTimelineBase100ns = 900'000'000;
+  int64_t samples = 0;
+  int64_t nextPacket = 0;
+  for (int64_t i = 0; i < programFrames; ++i) {
+    const int64_t slot = i + (skipAt >= 0 && i >= skipAt ? skipped : 0);
+    ProgramFrame frame = programFrame(kFirstProgramFrame + i);
+    frame.programTick = kFirstProgramFrame + slot;
+    const int64_t timeline = kTimelineBase100ns + slot * 10'000'000LL / 60;
+    const double elapsed = jitter ? jitteredWholeMs(slot)
+                                  : std::floor(5000.0 + static_cast<double>(slot) * 1000.0 / 60.0);
+    frame.timelineTimestamp100ns = timeline;
+    clock.observeProgramFrame(&frame, true);
+    (void)rig.sender.sender->sync({"rtmp"}, &frame, elapsed, {rig.settings}, &pcm, 2, 48000);
+    // The audio worker runs on wall time: it also covers the skipped slots.
+    while (samples < (slot + 1) * 800) {
+      clock.beginAudioBlock(samples,
+                            kTimelineBase100ns + kAudioPhase100ns + samples * 10'000'000LL / 48'000);
+      samples += 800;
+      for (; nextPacket + 1024 <= samples; nextPacket += 1024) {
+        ProgramAacPacket packet;
+        packet.adts = {0xff, 0xf1, 0x4c, 0x80, 0x02, 0x1f, 0xfc, 0x21, 0x10, 0x04};
+        packet.sampleIndex = nextPacket;
+        clock.stamp(packet);
+        rig.sender.sender->submitEncodedAudio(packet);
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  StreamRun run;
+  {
+    std::lock_guard<std::mutex> lock(log->mutex);
+    run.submittedFrameNumbers = log->frameNumbers;
+  }
+  size_t lastSize = 0;
+  // Wait for the writer to go quiet.
+  for (const auto deadline = Clock::now() + std::chrono::seconds(3); Clock::now() < deadline;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const size_t size = slurp(rig.dir / "stdin.ts").size();
+    if (size > 0 && size == lastSize) break;
+    lastSize = size;
+  }
+  const auto ts = slurp(rig.dir / "stdin.ts");
+  run.video = pesPts(ts, 0x100);
+  run.audio = pesPts(ts, 0x101);
+  return run;
+}
+
+// One clock for both PIDs: ten seconds of a 30 fps stream on the 60 Hz Program
+// carries ten seconds of video and of audio, on the same origin.
+TEST(OutputSenderAdapter, AThirtyFpsStreamKeepsAudioAndVideoOnProgramTime) {
+  const auto run = runProgramStream("av30", 30, 600, -1, 0);
+  const auto& video = run.video;
+  const auto& audio = run.audio;
+  ASSERT_GE(video.size(), 299u);
+  ASSERT_LE(video.size(), 301u);
+  for (size_t i = 1; i < video.size(); ++i) ASSERT_EQ(video[i] - video[i - 1], 3000) << "picture " << i;
+  // TS time 0 is the first video picture = Program frame 6000. Sample 0 is 10.5 ms
+  // later, so audio packet k sits at 945 + k x 1920 ticks.
+  ASSERT_GE(audio.size(), 440u) << "10 s of AAC is 468 packets";
+  for (const int64_t pts : audio) {
+    const int64_t packet = (pts - kAudioPhase90k + 960) / 1920;
+    ASSERT_LE(std::llabs(pts - kAudioPhase90k - packet * 1920), 100) << "audio off the video clock: pts " << pts;
+  }
+  EXPECT_LE(std::llabs(audio.back() - video.back()), 9000)
+      << "after 10 s the streams end within 100 ms: audio " << audio.back() << " video " << video.back();
+}
+
+// The render loop skips Program slots (ticks 300..329: half a second) while the
+// compositor's frame numbers stay contiguous. The stream must carry the hole:
+// the video PTS jump by it and stay on the audio clock afterwards.
+TEST(OutputSenderAdapter, ASkippedProgramSlotIsAVideoGapNeverAnAvOffset) {
+  const auto run = runProgramStream("skip30", 30, 600, 300, 30);
+  ASSERT_GE(run.video.size(), 299u);
+  ASSERT_LE(run.video.size(), 301u) << "600 rendered frames, every other slot";
+  int holes = 0;
+  for (size_t i = 1; i < run.video.size(); ++i) {
+    const int64_t step = run.video[i] - run.video[i - 1];
+    if (step == 3000) continue;
+    ++holes;
+    EXPECT_EQ(step, 48'000) << "32 Program ticks (the 30 skipped + one 30 fps period)";
+  }
+  EXPECT_EQ(holes, 1);
+  EXPECT_EQ(run.video.back(), (600 + 30 - 2) * 1500) << "last picture on its Program slot";
+  EXPECT_LE(std::llabs(run.audio.back() - run.video.back()), 9000)
+      << "audio " << run.audio.back() << " video " << run.video.back();
+}
+
+// Skips on a 60 fps destination keep the same law (the 60-on-60 wall pacer is
+// unchanged; only the timestamps know about the skipped slots). No tick jitter
+// here: that unchanged pacer rejects a tick more than 1 ms early.
+TEST(OutputSenderAdapter, ASkippedProgramSlotAtSixtyFpsStaysOnTheAudioClock) {
+  const auto run = runProgramStream("skip60", 60, 600, 300, 30, nullptr, /*jitter=*/false);
+  ASSERT_GE(run.video.size(), 590u);
+  EXPECT_EQ(run.video.back(), (600 + 30 - 1) * 1500);
+  EXPECT_LE(std::llabs(run.audio.back() - run.video.back()), 9000);
+}
+
+// An encoder that stamps pictures as frameNumber / destination fps (the Media
+// Foundation encoder, unchanged by this fix) keeps the sender's old pacing and
+// its old units: the audio anchor is converted with the SAME rate as the video.
+class DestinationClockFakeEncoder final : public GpuVideoEncoder {
+ public:
+  explicit DestinationClockFakeEncoder(std::shared_ptr<SubmitLog> log) : log_(std::move(log)) {}
+  bool start(const GpuVideoEncoderConfig& config, GpuEncodedChunkSink sink) override {
+    fps_ = config.fps;
+    sink_ = std::move(sink);
+    return true;
+  }
+  bool submit(const GpuVideoEncoderFrame& frame) override {
+    {
+      std::lock_guard<std::mutex> lock(log_->mutex);
+      log_->frameNumbers.push_back(frame.frameNumber);
+    }
+    std::vector<uint8_t> au(64, 0x5a);
+    au[0] = au[1] = au[2] = 0;
+    au[3] = 1;
+    au[4] = 0x65;
+    GpuEncodedChunk chunk;
+    chunk.data = au.data();
+    chunk.size = au.size();
+    chunk.keyframe = true;
+    chunk.frameNumber = frame.frameNumber;
+    chunk.pts100ns = chunk.dts100ns = frame.frameNumber * 10'000'000LL / fps_;
+    chunk.timingValid = true;
+    if (sink_) sink_(chunk);
+    return true;
+  }
+  void stop() override { sink_ = nullptr; }
+  bool healthy() const override { return true; }
+
+ private:
+  std::shared_ptr<SubmitLog> log_;
+  int fps_ = 30;
+  GpuEncodedChunkSink sink_;
+};
+
+TEST(OutputSenderAdapter, AnEncoderOnTheDestinationClockKeepsItsPacingAndUnits) {
+  const auto run = runProgramStream(
+      "destclock", 30, 120, -1, 0,
+      [](std::shared_ptr<SubmitLog> log) { return std::make_unique<DestinationClockFakeEncoder>(std::move(log)); });
+  // The wall pacer admits 30 per second from the jittered 60 Hz tick, whatever
+  // frame numbers that lands on.
+  ASSERT_GE(run.submittedFrameNumbers.size(), 59u);
+  ASSERT_LE(run.submittedFrameNumbers.size(), 61u);
+  ASSERT_FALSE(run.audio.empty());
+  ASSERT_FALSE(run.video.empty());
+  // Audio is anchored at frame 6000 / 30 fps, the units the pictures use.
+  EXPECT_LE(std::llabs(run.audio.front() - run.video.front()), 9000)
+      << "audio " << run.audio.front() << " video " << run.video.front();
 }
 
 }  // namespace

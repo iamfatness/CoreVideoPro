@@ -138,8 +138,13 @@ class MetalCompositor final : public ICompositor {
   // core's graphics-* gate and the graphics-instances capability open.
   bool supportsGraphicsInstances() const override { return true; }
 
+  void setProgramProductionTiming(int64_t slot, int64_t /*anchorNs*/) override { productionSlot_ = slot; }
+
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
+    // The render loop's slot (1-based), so skipped slots stay in the stream
+    // timestamps; strictly increasing for callers that give no new slot.
+    programTick_ = (std::max)(programTick_ + 1, productionSlot_ + 1);
     retainedOverlayRasters_.prune(static_cast<uint64_t>(frameNumber_));
     const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
@@ -148,6 +153,7 @@ class MetalCompositor final : public ICompositor {
     frame.layerCount = deterministicPlan.layers.empty() ? static_cast<int>(frames.size())
                                                         : static_cast<int>(deterministicPlan.layers.size());
     frame.frameNumber = frameNumber_;
+    frame.programTick = programTick_;
     frame.renderPlanId = deterministicPlan.renderPlanId;
     frame.renderer = "metal";
     frame.health = deterministicPlan.warnings.empty() ? "live" : "degraded";
@@ -1962,6 +1968,8 @@ class MetalCompositor final : public ICompositor {
   bool tilesEffectsAvailable_ = true;
   std::string pipelineError_;
   int64_t frameNumber_ = 0;
+  int64_t productionSlot_ = -1;  // render thread
+  int64_t programTick_ = 0;
   uint64_t fullTickCounter_ = 0;
   id<MTLTexture> previewScaleTex_ = nil;
   int previewScaleWidth_ = 0;

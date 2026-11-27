@@ -437,12 +437,23 @@ struct ProgramFrame {
   int64_t deliveredAt100ns = 0;
   int64_t productionSlot = -1;
   int64_t productionAnchorNs = 0;
+  // The Program clock SLOT this frame was composed for, 1-based on the render
+  // loop's fixed 60 Hz grid. Unlike frameNumber (which counts renders) it keeps
+  // the slots a late render loop skipped, so a stream timestamp made from it
+  // stays on the audio clock. Set by the Metal compositor; 0 = not provided
+  // (D3D11, whose Program buffer accounts skipped slots with ProgramSlotClock).
+  int64_t programTick = 0;
   // Retain GPU resources and attribution for this exact buffered frame.
   std::shared_ptr<const void> gpuOwner;
   std::shared_ptr<const CompositorRenderPlan> renderPlanEvidence;
   bool cpuSourceReadyOnly = false;
   std::vector<ProgramSourceAdmission> sourceAdmissions;
 };
+
+// The tick a stream timestamps this frame with (see ProgramFrame::programTick).
+[[nodiscard]] inline int64_t programClockTick(const ProgramFrame& frame) {
+  return frame.programTick > 0 ? frame.programTick : frame.frameNumber;
+}
 
 struct CompositorLayerRect {
   float x = 0.f;
