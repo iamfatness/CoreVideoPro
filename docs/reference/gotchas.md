@@ -16,6 +16,12 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   line's baseline to the nearest device pixel, so the Mac rounds the fill's baseline the same way. Outlines
   and shadows go through a custom text renderer with `IsPixelSnappingDisabled = TRUE` and stay unsnapped
   on both. Without the snap, a 28 px label at box y 82 (baseline 104.4) sat 2 px low on the Mac.
+  Curves too: D2D flattens ellipses and rounded corners to chords (0.25 device px, WPF's hybrid
+  forward-differencing flattener), and chords sit inside the true curve, so Core Graphics curves read
+  heavier on every curved edge. `CoreTextOverlayRaster.mm` draws them from `D2DCurveFlattening.h`, which
+  `D2DCurveFlatteningTest` proves point for point against `ID2D1Geometry::Simplify`. The legacy band is
+  a rounded layer mask AND a rounded fill on Windows (corner coverage squared); the Mac clips and fills
+  the same polygon to match.
 - **Never join a recording writer without a bound, and never let MF throttle (#1030, 2026-10-23).**
   One ISO whose participant left blocked inside `CMFSinkWriter::ThrottleStream`;
   an unconditional `RecordingTrackWorker::join()` then froze every later

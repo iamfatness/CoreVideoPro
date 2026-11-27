@@ -1054,6 +1054,7 @@ if(BUILD_TESTING)
     tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/D3D11GraphicsReferenceTest.cpp
+    tests/D2DCurveFlatteningTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp
     tests/EngineCommandTest.cpp

@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
+#include "compositor/D2DCurveFlattening.h"
 #include "compositor/CoreTextThumbnail.h"
 #include "graphics/GraphicsTextCoreText.h"
 #include "graphics/GraphicsTemplate.h"
@@ -199,11 +200,50 @@ void setStrokeArgb(CGContextRef cg, CGColorSpaceRef space, uint32_t argb) {
   CGContextSetStrokeColorWithColor(cg, color.get());
 }
 
-CGPathRef createRoundedPath(CGRect rect, CGFloat radius) {
+// Curves are drawn as D2D draws them: as the chords it flattens them to
+// (D2DCurveFlattening.h, proven point for point against D2D on Windows). True
+// Core Graphics curves sit outside D2D's chords and read heavier on every
+// curved antialiased edge (G4 parity: ellipse edges up to 71/255, rounded
+// corners up to 96/255). D2D flattens at 0.25 device px; geometry is built in
+// user space, so the tolerance is divided by the CTM's largest scale
+// (D2D1ComputeMaximumScaleFactor).
+namespace d2dcurves = corevideo::compositor::d2dcurves;
+
+double flatteningTolerance(CGContextRef cg) {
+  const CGAffineTransform m = CGContextGetCTM(cg);
+  // Largest singular value of [a b; c d].
+  const double p = (m.a * m.a + m.b * m.b + m.c * m.c + m.d * m.d) / 2;
+  const double q = std::fabs(m.a * m.d - m.b * m.c);
+  const double scale = std::sqrt(p + std::sqrt(std::max(0.0, p * p - q * q)));
+  return scale > 0 ? d2dcurves::kDefaultTolerance / scale : d2dcurves::kDefaultTolerance;
+}
+
+// A closed path through D2D-space points; `flipHeight` > 0 maps D2D's y-down
+// space into a bottom-up context (y' = flipHeight - y) without reordering, so
+// the chords stay the ones D2D draws.
+CGPathRef createPolygonPath(const std::vector<d2dcurves::Point>& points, double flipHeight = 0) {
+  if (points.size() < 3) return nullptr;
+  CGMutablePathRef path = CGPathCreateMutable();
+  const auto y = [&](double v) { return CGFloat(flipHeight > 0 ? flipHeight - v : v); };
+  CGPathMoveToPoint(path, nullptr, CGFloat(points[0].x), y(points[0].y));
+  for (size_t i = 1; i < points.size(); ++i) CGPathAddLineToPoint(path, nullptr, CGFloat(points[i].x), y(points[i].y));
+  CGPathCloseSubpath(path);
+  return path;
+}
+
+CGPathRef createRoundedPath(CGRect rect, CGFloat radius, double tolerance) {
   if (rect.size.width <= 0 || rect.size.height <= 0) return nullptr;
   // Core Graphics asserts on radii over half a side; D2D clamps (spec 5.7).
   radius = std::clamp<CGFloat>(radius, 0, std::min(rect.size.width, rect.size.height) * 0.5);
-  return radius > 0 ? CGPathCreateWithRoundedRect(rect, radius, radius, nullptr) : CGPathCreateWithRect(rect, nullptr);
+  if (radius <= 0) return CGPathCreateWithRect(rect, nullptr);
+  return createPolygonPath(d2dcurves::roundedRect(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height,
+                                                  radius, tolerance));
+}
+
+CGPathRef createEllipsePath(CGRect rect, double tolerance) {
+  if (rect.size.width <= 0 || rect.size.height <= 0) return nullptr;
+  return createPolygonPath(d2dcurves::ellipse(CGRectGetMidX(rect), CGRectGetMidY(rect), rect.size.width / 2,
+                                              rect.size.height / 2, tolerance));
 }
 
 // The positioned outlines of every glyph in `lines`, for outline and shadow
@@ -495,21 +535,26 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
         CGContextFillPath(cg);
       }
     };
+    // Strokes widen the same flattened polygon D2D widens; Core Graphics'
+    // default miter join (limit 10) is D2D's default stroke style.
+    const double tolerance = flatteningTolerance(cg);
     if (p.type == "rect") {
-      CfRef<CGPathRef> shape(createRoundedPath(cgRect(b), p.cornerRadius));
+      CfRef<CGPathRef> shape(createRoundedPath(cgRect(b), p.cornerRadius, tolerance));
       fillShape(shape.get());
       if (stroke) {
         CfRef<CGPathRef> edge(createRoundedPath(
             CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset),
-            std::max(0.0, p.cornerRadius - inset)));
+            std::max(0.0, p.cornerRadius - inset), tolerance));
         if (edge) { CGContextAddPath(cg, edge.get()); CGContextStrokePath(cg); }
       }
     } else if (p.type == "ellipse") {
       if (b.width > 0 && b.height > 0) {
-        CfRef<CGPathRef> shape(CGPathCreateWithEllipseInRect(cgRect(b), nullptr));
+        CfRef<CGPathRef> shape(createEllipsePath(cgRect(b), tolerance));
         fillShape(shape.get());
         if (stroke && b.width > 2 * inset && b.height > 2 * inset) {
-          CGContextStrokeEllipseInRect(cg, CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset));
+          CfRef<CGPathRef> edge(createEllipsePath(
+              CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset), tolerance));
+          if (edge) { CGContextAddPath(cg, edge.get()); CGContextStrokePath(cg); }
         }
       }
     } else if (p.type == "text" && !p.text.empty()) {
@@ -809,15 +854,22 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     if (overlay.appearance.enabled && !overlay.isCaption) {
       const CGRect band = CGRectMake(0, 0, widthPx, heightPx);
       const CGFloat radius = std::clamp<CGFloat>(layout.cornerRadius, 0, std::min(widthPx, heightPx) * 0.5);
-      CfRef<CGPathRef> path(radius > 0 ? CGPathCreateWithRoundedRect(band, radius, radius, nullptr)
-                                       : CGPathCreateWithRect(band, nullptr));
+      // Windows pushes the rounded band as a layer mask AND fills the rounded
+      // band inside it (CompositorOverlayRaster.cpp PushLayer +
+      // FillRoundedRectangle), so a corner pixel's coverage is applied twice.
+      // Clip to the same D2D polygon and fill it, not the rectangle, so the
+      // Mac corner is squared the same way. This context is bottom-up.
+      CfRef<CGPathRef> path(radius > 0
+          ? createPolygonPath(d2dcurves::roundedRect(0, 0, widthPx, heightPx, radius, flatteningTolerance(cg)), heightPx)
+          : CGPathCreateWithRect(band, nullptr));
       if (!path) complete = false;
       else {
         CGContextAddPath(cg, path.get());
         CGContextClip(cg);
         const auto bg = colorFromArgb(layout.backgroundArgb, space.get());
         CGContextSetFillColorWithColor(cg, bg.get());
-        CGContextFillRect(cg, band);
+        CGContextAddPath(cg, path.get());
+        CGContextFillPath(cg);
       }
     }
     if (layout.accentBar.width > 0 && layout.accentBar.height > 0) {
