@@ -291,6 +291,13 @@ if (!existsSync(nativeCore) || !existsSync(liveZoom ? realEngine : fakeEngine)) 
 if (liveZoom && !meetingUrl) throw new Error("--live-zoom requires COREVIDEO_TEST_MEETING_URL");
 if (liveZoom && slowSink) throw new Error("--live-zoom uses the healthy receiver gate, not --slow-sink");
 
+// The SRT listener needs an FFmpeg built with libsrt. Homebrew's is not, so fall
+// back to the sender's bundled build as the receiver.
+const hasSrt = (bin) => /\bsrt\b/.test(spawnSync(bin, ["-hide_banner", "-protocols"],
+  { encoding: "utf8", timeout: 10000 }).stdout ?? "");
+const bundledFfmpeg = senderFfmpegBinDir ? join(senderFfmpegBinDir, `ffmpeg${exeSuffix}`) : "";
+const listenerFfmpeg = sinkProtocol === "srt" && !hasSrt(ffmpeg) && bundledFfmpeg && hasSrt(bundledFfmpeg)
+  ? bundledFfmpeg : ffmpeg;
 const received = join(buildDir, `gpu-encode-received-${Date.now()}.${rtmpSink ? "flv" : "ts"}`);
 // SRT listener sink. -stats gives us the realtime ratio (media-time/wall-time) of
 // what actually arrives; -c copy means no re-encode padding to hide a lag.
@@ -322,7 +329,7 @@ const hlsOrigin = hlsSink ? http.createServer((request, response) => {
   });
 }) : null;
 hlsOrigin?.listen(port, "127.0.0.1");
-const listener = hlsSink ? null : spawn(ffmpeg, listenerArgs, { stdio: ["ignore", "ignore", "pipe"] });
+const listener = hlsSink ? null : spawn(listenerFfmpeg, listenerArgs, { stdio: ["ignore", "ignore", "pipe"] });
 let listenerStderr = "";
 listener?.stderr.on("data", (c) => { listenerStderr += c.toString(); });
 let listenerExited = false;
@@ -986,7 +993,11 @@ if (size < 10000) {
       return (probeOut.stdout ?? "").split("\n").map((line) => parseFloat(line)).filter(Number.isFinite);
     };
     const timing = judgeStreamTiming({ video: packetTimes("v:0"), audio: packetTimes("a:0"), fps: TARGET_FPS,
-      runSeconds: slowSink ? 0 : seconds });
+      runSeconds: slowSink ? 0 : seconds,
+      // MPEG-TS over SRT packs up to ~363 ms of (silent) AAC into one PES and
+      // loses the unfinished one at Stop (measured: 17 frames per PES, with a
+      // constant video/audio mux position over the whole capture).
+      audioTailSeconds: sinkProtocol === "srt" ? 0.4 : 0 });
     const t = timing.report;
     console.log(`av timestamps : drift ${t.driftMs}ms, offset start ${t.startOffsetMs}ms / end ${t.endOffsetMs}ms; ` +
       `video ${t.videoSpanSeconds}s vs audio ${t.audioSpanSeconds}s`);

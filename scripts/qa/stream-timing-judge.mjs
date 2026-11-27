@@ -25,7 +25,7 @@ const median = (values) => {
 const steps = (times) => times.slice(1).map((t, i) => t - times[i]);
 const ms = (seconds) => Math.round(seconds * 10000) / 10;
 
-export function judgeStreamTiming({ video, audio, fps, runSeconds = 0 }) {
+export function judgeStreamTiming({ video, audio, fps, runSeconds = 0, audioTailSeconds = 0 }) {
   const failures = [];
   const report = {};
   if (video.length < 2) failures.push(`only ${video.length} video packets in the received stream`);
@@ -87,16 +87,19 @@ export function judgeStreamTiming({ video, audio, fps, runSeconds = 0 }) {
   // One clock: both tracks start together, end together, and neither runs away.
   const startOffset = video[0] - audio[0];
   const endOffset = video.at(-1) - audio.at(-1);
-  const drift = endOffset - startOffset;
+  // A container that groups audio frames can lose its unfinished group at Stop:
+  // that much, and only in that direction (audio ending first), is not offset.
+  const judgedEndOffset = endOffset > 0 ? Math.max(0, endOffset - audioTailSeconds) : endOffset;
+  const drift = judgedEndOffset - startOffset;
   report.startOffsetMs = ms(startOffset);
   report.endOffsetMs = ms(endOffset);
-  report.driftMs = ms(drift);
+  report.driftMs = ms(endOffset - startOffset);
   report.videoSpanSeconds = Math.round(videoSpan * 1000) / 1000;
   report.audioSpanSeconds = Math.round(audioSpan * 1000) / 1000;
   if (Math.abs(drift) > MAX_AV_DRIFT_SECONDS) {
     failures.push(`A/V timestamps drifted ${ms(drift)}ms over ${report.audioSpanSeconds}s of audio`);
   }
-  for (const [name, offset] of [["start", startOffset], ["end", endOffset]]) {
+  for (const [name, offset] of [["start", startOffset], ["end", judgedEndOffset]]) {
     if (Math.abs(offset) > MAX_AV_EDGE_SECONDS) {
       failures.push(`A/V offset at the ${name} of the capture is ${ms(offset)}ms (limit ${ms(MAX_AV_EDGE_SECONDS)}ms)`);
     }

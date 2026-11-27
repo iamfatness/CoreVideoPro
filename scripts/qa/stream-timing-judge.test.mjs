@@ -97,3 +97,18 @@ test("a stream that stopped early fails even though both tracks agree", () => {
   failed(verdict, /stopped early/);
   assert.deepEqual(judgeStreamTiming({ video: video(30, 27), audio: audio(27), fps: 30, runSeconds: 30 }).failures, []);
 });
+
+// MPEG-TS packs several AAC frames into one PES (17 frames, 363 ms, on silence)
+// and the unfinished one is lost at Stop: audio ends early, nothing drifted.
+test("an unfinished MPEG-TS audio PES at Stop is not drift, only where it is allowed", () => {
+  const truncated = { video: video(30, 20), audio: audio(20 - 0.36), fps: 30 };
+  assert.deepEqual(judgeStreamTiming({ ...truncated, audioTailSeconds: 0.4 }).failures, []);
+  failed(judgeStreamTiming(truncated), /A\/V/);
+});
+
+test("the tail allowance never excuses video ending early, or real drift", () => {
+  failed(judgeStreamTiming({ video: video(30, 19.5), audio: audio(20), fps: 30, audioTailSeconds: 0.4 }), /A\/V/);
+  failed(judgeStreamTiming({ video: video(30, 30).map((t) => t * 1.03), audio: audio(30), fps: 30,
+    audioTailSeconds: 0.4 }), /A\/V timestamps drifted/);
+  failed(judgeStreamTiming({ video: video(30, 20, 0.4), audio: audio(20), fps: 30, audioTailSeconds: 0.4 }), /start/);
+});
