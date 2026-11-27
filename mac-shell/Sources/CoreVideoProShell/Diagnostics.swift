@@ -108,9 +108,10 @@ enum Redactor {
              placeholder, []),
     ]
 
-    /// Scrubs one string: known literals first (layer 3), then value patterns.
-    static func scrub(_ text: String, literals: [String] = []) -> String {
-        scrub(text, known: LiteralScrubber(literals))
+    /// Scrubs one string by known literals (layer 3) and value patterns.
+    /// `floor` (default: `literals`) is replayed on its own; see below.
+    static func scrub(_ text: String, literals: [String] = [], floor: [String]? = nil) -> String {
+        scrub(text, known: LiteralScrubber(literals, floor: floor))
     }
 
     private static func scrub(_ text: String, known: LiteralScrubber) -> String {
@@ -122,18 +123,25 @@ enum Redactor {
         // NO LAYER FEEDS ANOTHER'S BLIND SPOT. A literal replaced first can
         // remove the "://" or "key=" a rule needs (leaving an unheld secret),
         // and a rule run first can cut a literal in half. So the characters
-        // removed are the UNION of three views of the original:
-        //   1. every literal occurrence;
-        //   2. what the rules remove from the untouched text;
-        //   3. what a plain literal replace followed by the rules removes.
+        // removed are the UNION of what is removed from three versions of the
+        // original, each then run through the rules (the third also removes
+        // every literal occurrence itself):
+        //   - FLOOR: the floor list replaced in order. This is exactly what the
+        //     bundle did before this layer grew, so whatever it removed stays
+        //     removed, whatever the other views do. Do not "simplify" it away.
+        //   - UNTOUCHED: a longer literal list cannot take a rule's anchor.
+        //   - EVERY SPELLING REMOVED: a rule that an escaped secret's "/",
+        //     space or quote had stopped can now reach its neighbour.
         let original = Array(text.utf16)
         var dead = [Bool](repeating: false, count: original.count)
-        for span in spans { for index in span { dead[index] = true } }
-        var untouched = Tracked(original)
-        var replaced = Tracked(original)
-        for value in known.held { replaced.replace(value) }
-        guard applyRules(&untouched), applyRules(&replaced) else { return placeholder }
-        for survivors in [untouched.survivors(of: original.count), replaced.survivors(of: original.count)] {
+        var floor = Tracked(original)
+        for value in known.floor { floor.replace(value) }
+        let untouched = Tracked(original)
+        var unspelled = Tracked(original)
+        unspelled.remove(spans)
+        for var view in [floor, untouched, unspelled] {
+            guard applyRules(&view) else { return placeholder }
+            let survivors = view.survivors(of: original.count)
             for index in dead.indices where !survivors[index] { dead[index] = true }
         }
         var removed: [Range<Int>] = []
@@ -219,9 +227,14 @@ enum Redactor {
 
         /// `replacingOccurrences(of:with: placeholder)`, tracked.
         mutating func replace(_ value: String) {
+            remove(LiteralScrubber.occurrences(of: value, in: string as NSString)
+                .map { $0.location..<NSMaxRange($0) })
+        }
+
+        mutating func remove(_ spans: [Range<Int>]) {
             let inserted = Array(Redactor.placeholder.utf16)
             let none = [Int](repeating: -1, count: inserted.count)
-            splice(LiteralScrubber.occurrences(of: value, in: string as NSString).map { ($0, inserted, none) })
+            splice(spans.map { (NSRange(location: $0.lowerBound, length: $0.count), inserted, none) })
         }
     }
 
@@ -263,8 +276,8 @@ enum Redactor {
     /// Walks a decoded JSON tree, blanking secret-named keys and scrubbing every
     /// surviving string, keys included. A secret-NAMED key keeps its name (so a
     /// reader can see the field existed) — only the value is replaced.
-    static func redact(_ value: Any, literals: [String] = []) -> Any {
-        redact(value, known: LiteralScrubber(literals))
+    static func redact(_ value: Any, literals: [String] = [], floor: [String]? = nil) -> Any {
+        redact(value, known: LiteralScrubber(literals, floor: floor))
     }
 
     private static func redact(_ value: Any, known: LiteralScrubber) -> Any {
@@ -305,8 +318,8 @@ enum Redactor {
         return value
     }
 
-    static func redactLines(_ text: String, literals: [String] = []) -> String {
-        let known = LiteralScrubber(literals)
+    static func redactLines(_ text: String, literals: [String] = [], floor: [String]? = nil) -> String {
+        let known = LiteralScrubber(literals, floor: floor)
         return text.split(separator: "\n", omittingEmptySubsequences: false)
             .map { scrub(String($0), known: known) }
             .joined(separator: "\n")
@@ -467,6 +480,9 @@ struct SupportBundleInput {
     /// Live secret VALUES held by the shell. These are never written; they are
     /// used to scrub by identity and then to VERIFY no copy survived.
     var knownSecretLiterals: [String] = []
+    /// The part of them the bundle has always replaced (AppModel sets it); nil
+    /// means all. See Redactor.scrub.
+    var floorSecretLiterals: [String]?
     var shellLogPath = ShellLog.path
     var coreLogPath = CoreLog.path
     var crashReportDirectory = NSHomeDirectory() + "/Library/Logs/DiagnosticReports"
@@ -508,7 +524,8 @@ enum SupportBundle {
     /// exactly like the Windows builder.
     static func write(_ input: SupportBundleInput) throws -> SupportBundleResult {
         let literals = input.knownSecretLiterals.filter { $0.count >= LiteralScrubber.minimumLength }
-        let known = LiteralScrubber(literals)
+        let floor = input.floorSecretLiterals
+        let known = LiteralScrubber(literals, floor: floor)
         let name = "corevideo-support-" + DiagFormat.stamp.string(from: input.createdAt)
         let folder = input.destinationRoot.appendingPathComponent(name, isDirectory: true)
         do {
@@ -535,7 +552,7 @@ enum SupportBundle {
                 notes.append("[skipped] \(file): no \(label) captured this session")
                 return
             }
-            let redacted = Redactor.redact(decoded, literals: literals)
+            let redacted = Redactor.redact(decoded, literals: literals, floor: floor)
             guard let encoded = try? JSONSerialization.data(
                 withJSONObject: redacted,
                 options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed]) else {
@@ -558,7 +575,7 @@ enum SupportBundle {
             writeText("No warnings recorded this session.\n", to: "warnings.txt")
         } else {
             writeText(Redactor.redactLines(input.warnings.joined(separator: "\n"),
-                                           literals: literals) + "\n",
+                                           literals: literals, floor: floor) + "\n",
                       to: "warnings.txt")
         }
 
@@ -570,7 +587,7 @@ enum SupportBundle {
             let header = "# \(path)\n# \(tail.totalBytes) bytes on disk"
                 + (tail.truncated ? " (tail of the last \(input.tailByteLimit) bytes)" : "")
                 + "\n\n"
-            writeText(header + Redactor.redactLines(tail.text, literals: literals), to: file)
+            writeText(header + Redactor.redactLines(tail.text, literals: literals, floor: floor), to: file)
         }
 
         writeLogTail(path: input.shellLogPath, to: "shell-log-tail.txt")
@@ -891,6 +908,8 @@ enum DiagnosticsSelfCheck {
             input.destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
         }
         // No model here, but the log tails can still quote a stored secret.
+        // (This export scrubbed no literal before, so its floor is empty.)
+        input.floorSecretLiterals = []
         input.knownSecretLiterals = SupportBundleSecrets.literals(
             SupportBundleSecrets.storedHeld(prefs: ShellPrefs.load()))
         return input

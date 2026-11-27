@@ -157,6 +157,9 @@ struct LiteralScrubber {
     private let literals: [[Spellings]]
     /// The values as held, in the order given, for the Foundation search.
     let held: [String]
+    /// EXACTLY the list the bundle scrubbed before this layer grew, in its
+    /// order. Replaying it keeps the output from ever showing more (Redactor).
+    let floor: [String]
     /// Per literal, the bytes that can follow a run of backslashes its match
     /// STARTS with: lets a position in a long run be refused without matching.
     private let afterBackslashes: [[Bool]]
@@ -165,12 +168,21 @@ struct LiteralScrubber {
 
     var isEmpty: Bool { literals.isEmpty }
 
-    init(_ values: [String]) {
+    /// `floor` defaults to `values`.
+    init(_ values: [String], floor: [String]? = nil) {
+        // Foundation's search answers a needle holding U+0000 with a range past
+        // the end of the text, which traps: match each side of it instead.
+        func clean(_ list: [String]) -> [String] {
+            list.flatMap { $0.split(separator: "\0").map(String.init) }
+                .filter { $0.count >= Self.minimumLength }
+        }
+        self.floor = clean(floor ?? values)
+        let values = clean(values) + self.floor
         var seen = Set<[UInt8]>()
-        held = values.filter { $0.count >= Self.minimumLength && seen.insert(Array($0.utf8)).inserted }
+        held = values.filter { seen.insert(Array($0.utf8)).inserted }
         var parsed: [[Spellings]] = []
         var starts = [Bool](repeating: false, count: 256)
-        for value in Set(values) where value.count >= Self.minimumLength {
+        for value in Set(values) {
             let characters: [Spellings] = value.map { character in
                 Self.spellings(of: character).map { $0.map(Self.unit) }
             }
@@ -280,7 +292,7 @@ struct LiteralScrubber {
         var from = 0
         while from < text.length {
             let range = text.range(of: value, options: [], range: NSRange(location: from, length: text.length - from))
-            if range.location == NSNotFound || range.length == 0 { break }
+            if range.location == NSNotFound || range.length == 0 || NSMaxRange(range) > text.length { break }
             found.append(range)
             from = NSMaxRange(range)
         }

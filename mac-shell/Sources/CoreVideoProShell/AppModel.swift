@@ -7019,6 +7019,8 @@ final class AppModel: ObservableObject {
         input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
         input.warnings = warnings
         input.knownSecretLiterals = liveSecretLiterals()
+        // The floor: do not add to it, reorder it or trim it (Redactor.scrub).
+        input.floorSecretLiterals = ([streamKey, joinPasscode] + SocialRedaction.secretLiterals()).filter { !$0.isEmpty }
         return input
     }
 }

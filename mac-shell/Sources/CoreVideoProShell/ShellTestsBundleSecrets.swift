@@ -21,6 +21,8 @@ extension ShellTests {
             ("bundle-secrets/long-run", testBundleKeyValueRuleStaysLinear),
             ("bundle-secrets/never-less-than-main", testBundleStillMatchesWhatMainMatched),
             ("bundle-secrets/matcher-gives-up", testBundleDropsTextTheMatcherGivesUpOn),
+            ("bundle-secrets/nul-literal", testBundleSurvivesANulInALiteral),
+            ("bundle-secrets/rules-after-every-spelling", testBundleRulesSeeTextWithEverySpellingRemoved),
         ]
     }
 
@@ -248,6 +250,11 @@ extension ShellTests {
         expectAbsent("rightq", "remainder of an overlapping secret", in: files)
         expect(files["shell-log-tail.txt"]?.contains("a [redacted] b") == true, "one placeholder")
         expect(files["core-log-tail.txt"]?.contains("c [redacted] d") == true, "overlap merged")
+        // The same overlap between two ESCAPED spellings.
+        expectEqual(Redactor.scrub("e fkleft%4DIDright%71 f", literals: [left, right]), "e [redacted] f",
+                    "overlap of encoded spellings")
+        expectEqual(LiteralScrubber([left, right]).scrub("e fkleft%4DIDright%71 f").text, "e [redacted] f",
+                    "and in the final pass")
     }
 
     static func testBundleManifestCarriesNoSecret() {
@@ -542,7 +549,28 @@ extension ShellTests {
                 expect(!out.contains(probe), "main removed \(probe) from \(text): main \(main), now \(out)")
             }
         }
+        // Replacing a floor literal CREATES a match; an extra literal sits on
+        // that match's anchor.
+        let created = Redactor.scrub("tokenBearer abcdefgh", literals: ["token", "Bearer"], floor: ["token"])
+        expect(!created.contains("abcdefgh"), "the floor view: \(created)")
+        floorIsWiredFromTheModel()
         randomDifferentialAgainstMain()
+    }
+
+    /// The app passes main's own list as the floor, and a bundle honours it.
+    private static func floorIsWiredFromTheModel() {
+        MainActor.assumeIsolated {
+            let model = AppModel()
+            model.streamKey = "fkfloorkeyq"
+            model.joinPasscode = "token"
+            model.srtPassphrase = "Bearer"
+            let input = model.supportBundleInput()
+            expectEqual(input.floorSecretLiterals ?? [], ["fkfloorkeyq", "token"], "main's list, in main's order")
+            let files = writeSecretBundle(input, shellLog: "tokenBearer abcdefgh", coreLog: "x")
+            expect(files["shell-log-tail.txt"]?.contains("[redacted]") == true
+                   && files["shell-log-tail.txt"]?.contains("abcdefgh") == false,
+                   "honoured by the export")
+        }
     }
 
     /// Seeded: random lines built from rule anchors, with a fresh marker between
@@ -586,11 +614,17 @@ extension ShellTests {
                     literals.append(String(view))
                 }
             }
+            // Against main with its list, scrubbing with the same list and with
+            // a LONGER one whose extra literals sit on rule anchors.
             let main = MainRedactor.scrub(text, literals: literals)
-            let out = Redactor.scrub(text, literals: literals)
-            for name in markers where !main.contains(name) && out.contains(name) {
-                lessThanMain.append("\(name) in \(text.debugDescription) with \(literals)")
-                break
+            let extras = ["token", "Bearer", "rtmp", "://", "streamKey", "pwd=", "eyJa", "userZak", "/live/stream"]
+            let longer = literals + (0..<(1 + random(4))).map { _ in extras[random(extras.count)] }
+            for out in [Redactor.scrub(text, literals: literals),
+                        Redactor.scrub(text, literals: longer, floor: literals)] {
+                for name in markers where !main.contains(name) && out.contains(name) {
+                    lessThanMain.append("\(name) in \(text.debugDescription) with \(longer) floor \(literals)")
+                    break
+                }
             }
         }
         expectEqual(different.count, 0, "no literal: identical to main, e.g. \(different.prefix(1))")
@@ -611,6 +645,81 @@ extension ShellTests {
                 expect(!out.contains(String(repeating: "b", count: 64)), "\(label): the long token survived")
             }
         }
+    }
+}
+
+extension ShellTests {
+    /// A rule can only match once a held secret's ESCAPED spelling is out of the
+    /// way (its "/", space or quote stops the rule). The neighbour it then
+    /// removes must be removed. A plain replace of the held value cannot do it.
+    static func testBundleRulesSeeTextWithEverySpellingRemoved() {
+        let held = "fkpa/ss word\"q"
+        let spellings = ["fkpa\\/ss word\\\"q", "fkpa%2Fss%20word%22q", "fkpa\\u002fss word\\u0022q",
+                         "fkpa/ss+word%22q"]
+        for spelling in spellings {
+            let text = "pull ftp://fkNeighbourUser:\(spelling)@host.example/x"
+            let out = Redactor.scrub(text, literals: [held])
+            expect(!out.contains("fkNeighbourUser"), "the user beside \(spelling): \(out)")
+        }
+        // Seeded: every spelling of held secrets beside rule anchors and fresh
+        // markers. Whatever a rules-after-every-spelling-removed pass takes (and
+        // whatever main takes) must be gone.
+        let secrets = [held, "fk\u{E9} p&w=d", "fkplainq7788"]
+        var forms: [String] = []
+        for secret in secrets {
+            let json = String(String(decoding: (try? JSONSerialization.data(withJSONObject: [secret])) ?? Data(),
+                                     as: UTF8.self).dropFirst(2).dropLast(2))
+            forms += [secret, json, secret.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "",
+                      secret.utf16.map { String(format: "\\u%04x", $0) }.joined(),
+                      secret.decomposedStringWithCanonicalMapping]
+        }
+        let anchors = ["ftp://", "://", ":", "@host.example/", "rtmp://h.example/", "?pwd=", "&sig=", "streamKey=",
+                       "token: ", "\"userZak\":\"", "\"", "Bearer ", "eyJabcdefgh.", ".", " ", "/", ",", "}",
+                       "Ab1xxxxxxxxxxxxx", "yyyyyyyyyyyyyyyy"]
+        var state: UInt64 = 0x1234_5678_9ABC_DEF1
+        func random(_ bound: Int) -> Int {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Int((state >> 33) % UInt64(bound))
+        }
+        let known = LiteralScrubber(secrets)
+        var misses: [String] = []
+        for round in 0..<6_000 {
+            var text = round % 2 == 0 ? "" : ["ftp://", "rtmp://h.example/", "token=", "Bearer "][random(4)]
+            var markers: [String] = []
+            for index in 0..<(3 + random(7)) {
+                switch random(3) {
+                case 0: text += forms[random(forms.count)]
+                case 1: text += anchors[random(anchors.count)]
+                default: markers.append("Zr\(round)n\(index)mk"); text += markers.last!
+                }
+            }
+            let out = Redactor.scrub(text, literals: secrets)
+            let afterSpellings = MainRedactor.scrub(known.scrub(text).text)
+            let main = MainRedactor.scrub(text, literals: secrets)
+            for marker in markers where out.contains(marker) && (!afterSpellings.contains(marker) || !main.contains(marker)) {
+                misses.append(text.debugDescription)
+                break
+            }
+        }
+        expectEqual(misses.count, 0, "left visible, e.g. \(misses.prefix(2))")
+    }
+}
+
+extension ShellTests {
+    /// A pasted "?pwd=abcd%00" yields a literal with a NUL. Foundation's search
+    /// then answers with a range PAST the end, and the export took the app down.
+    @MainActor static func testBundleSurvivesANulInALiteral() {
+        expectEqual(Redactor.scrub("peer said abcd", literals: ["abcd\0"]), "peer said [redacted]", "text ends mid-match")
+        expectEqual(LiteralScrubber(["abcd\0tailq"]).scrub("x abcd tailq abcd").text,
+                    "x [redacted] [redacted] [redacted]", "each side of the NUL is matched")
+        let model = AppModel()
+        model.joinMeetingId = "https://zoom.us/j/1?pwd=abcd%00"
+        model.warnings = ["peer said abcd"]
+        let files = writeSecretBundle(model.supportBundleInput(), shellLog: "peer said abcd", coreLog: "abcd")
+        expect(files["manifest.txt"] != nil, "the export finished")
+        expectAbsent("abcd", "the passcode beside the NUL", in: ["warnings.txt": files["warnings.txt"] ?? "",
+                                                               "core-log-tail.txt": files["core-log-tail.txt"]?
+                                                                .components(separatedBy: "\n\n").last ?? ""])
     }
 }
 
