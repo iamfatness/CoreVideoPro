@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
@@ -7,14 +8,20 @@
 #include <optional>
 #include <utility>
 
+#include "modules/Interfaces.h"
 #include "modules/ProgramAacEncoder.h"
 
 namespace corevideo::modules {
 
 // The one Program stream clock (#538 Slice 8).
 //
-// Video time is the compositor frame number: the hardware encoder stamps frame
-// N at N * 10'000'000 / fps (MediaFoundationGpuVideoEncoder::processInput).
+// Video time is the Program tick (programClockTick: the render slot on macOS,
+// the compositor frame number on Windows): the hardware encoder stamps tick N at
+// N * 10'000'000 / R, where R is GpuVideoEncoder::programTickRate. R is the
+// 60 Hz Program rate for VideoToolbox, never the destination's fps - a 30 fps
+// destination encodes every other tick. (MediaFoundationGpuVideoEncoder still
+// uses the destination fps as R, which is only right at 60.) Every `fps` below
+// is that R; the video and audio sides must be given the same value.
 // AAC time is the shared encoder's accepted-sample count at 48 kHz. Both
 // counters are exact; what they lacked was a common origin. Before this slice
 // each FFmpeg process started its two inputs at zero and aligned them by which
@@ -57,6 +64,12 @@ class ProgramStreamClock {
       latestFrame_ = frameNumber;
       latestTimeline100ns_ = timeline100ns;
     }
+  }
+
+  // The Program frame handed to the senders this tick (nullptr: none).
+  void observeProgramFrame(const ProgramFrame* frame, bool sessionActive) {
+    observeProgramFrame(frame ? programClockTick(*frame) : 0, frame ? frame->timelineTimestamp100ns : 0,
+                        sessionActive);
   }
 
   // Audio worker, before encoding a PCM block whose first sample is
@@ -124,6 +137,32 @@ class ProgramStreamClock {
   bool anchorLogPending_ = false;
   int64_t anchorFrameTimeline100ns_ = 0;
   int64_t anchorAudioTimeline100ns_ = 0;
+};
+
+// Which Program ticks a destination slower than the Program clock encodes: the
+// first tick seen in each destination frame period of the ABSOLUTE tick grid
+// (every even tick for 30 on 60). Decided from ticks, never from wall time - a
+// wall-clock pacer fed a jittered 60 Hz tick picks frames 1, 3, 1, 3 apart. A
+// skipped or coalesced tick moves the pick to the next one and leaves an honest
+// timestamp hole. The grid is absolute so destinations sharing one encoder pick
+// the same pictures. One owner thread.
+class ProgramCadenceDecimator {
+ public:
+  [[nodiscard]] bool shouldEncode(int64_t tick, int tickRate, int fps) {
+    const int64_t period = tick * (std::max)(1, fps) / (std::max)(1, tickRate);
+    // A tick that went backwards is a restarted clock, not a repeat.
+    if (initialized_ && tick >= lastTick_ && period <= lastPeriod_) return false;
+    initialized_ = true;
+    lastTick_ = tick;
+    lastPeriod_ = period;
+    return true;
+  }
+  void reset() { initialized_ = false; }
+
+ private:
+  bool initialized_ = false;
+  int64_t lastTick_ = 0;
+  int64_t lastPeriod_ = 0;
 };
 
 // Frame numbers count RENDERED frames; the program buffer's delivery grid

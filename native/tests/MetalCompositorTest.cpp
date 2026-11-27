@@ -183,6 +183,31 @@ TEST(MetalCompositor, RendersDeterministicallyAndReportsMetalRenderer) {
   EXPECT_NEAR(right[0], static_cast<int>(failed & 0xff), 2);
 }
 
+// Stream timestamps count Program SLOTS (the 60 Hz grid), not rendered frames:
+// a slot the render loop skips must stay in the timestamps, or the video runs
+// ahead of its sample-counted audio by 16.7 ms per skip for the rest of the
+// stream (macOS has no Program buffer to absorb or account it).
+TEST(MetalCompositor, ProgramTickFollowsTheProductionSlotAcrossSkips) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-tick";
+  const auto renderAt = [&](int64_t slot) {
+    compositor->setProgramProductionTiming(slot, 1);
+    return compositor->render(plan, {});
+  };
+  // Slots start well ahead of the probe render the fixture already made.
+  const auto first = renderAt(100);
+  const auto second = renderAt(101);
+  const auto afterSkip = renderAt(109);  // slots 102..108 were never rendered
+  EXPECT_EQ(second.programTick - first.programTick, 1);
+  EXPECT_EQ(afterSkip.programTick - second.programTick, 8);
+  EXPECT_EQ(afterSkip.frameNumber - second.frameNumber, 1) << "frame numbers count renders";
+  // A render with no new slot (a direct caller) still moves strictly forward.
+  const auto direct = compositor->render(plan, {});
+  EXPECT_EQ(direct.programTick - afterSkip.programTick, 1);
+  EXPECT_EQ(first.programTick, 101) << "the 1-based render slot, never 0 (= not provided)";
+}
+
 TEST(MetalCompositor, SolidFallbackMatchesCpuPreviewColors) {
   MAKE_COMPOSITOR_OR_SKIP(compositor);
   CompositorRenderPlan plan;

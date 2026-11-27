@@ -84,8 +84,7 @@ class CompositeOutputSender final : public IOutputSender {
           [](const std::string& destination) {
             return destination == "rtmp" || destination == "srt" || destination == "hls";
           });
-      streamClock_.observeProgramFrame(frame ? frame->frameNumber : 0,
-                                       frame ? frame->timelineTimestamp100ns : 0, streamSession);
+      streamClock_.observeProgramFrame(frame, streamSession);
     }
     OutputSenderSession combined;
     for (const auto& sender : senders_) {

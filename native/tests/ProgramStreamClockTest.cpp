@@ -299,3 +299,47 @@ TEST(ProgramSlotClock, ARenderStallAfterTheAnchorBecomesAVideoGapNotAnAvOffset) 
   EXPECT_GE(std::llabs(videoPts - audioPts), 6 * slot - 250) << "uncorrected: the measured 100 ms offset";
   EXPECT_LE(std::llabs(corrected - audioPts), 250) << "corrected: same instant, same PTS";
 }
+
+// 30 on 60: every even tick, whatever order the odd ones arrive in; a lost even
+// tick moves the pick to the odd one after it; a repeated frame is not a second
+// picture; a restarted clock is not stuck behind the old one.
+TEST(ProgramCadenceDecimator, PicksOnePictureForEachDestinationPeriodOfTheTickGrid) {
+  ProgramCadenceDecimator cadence;
+  std::vector<int64_t> picked;
+  for (const int64_t tick : {100, 101, 102, 102, 103, 104, 105, 107, 108, 109, 110, 117, 118}) {
+    if (cadence.shouldEncode(tick, 60, 30)) picked.push_back(tick);
+  }
+  EXPECT_EQ(picked, (std::vector<int64_t>{100, 102, 104, 107, 108, 110, 117, 118}));
+  EXPECT_TRUE(cadence.shouldEncode(4, 60, 30)) << "the clock restarted";
+  cadence.reset();
+  EXPECT_TRUE(cadence.shouldEncode(4, 60, 30)) << "a new encoder session takes its first frame";
+}
+
+TEST(ProgramCadenceDecimator, NonIntegerRatiosKeepTheDestinationRate) {
+  for (const int fps : {24, 25, 30, 50, 60}) {
+    ProgramCadenceDecimator cadence;
+    int picked = 0;
+    for (int64_t tick = 6000; tick < 6600; ++tick) picked += cadence.shouldEncode(tick, 60, fps) ? 1 : 0;
+    EXPECT_NEAR(picked, fps * 10, 1) << fps << " fps over 10 s";
+  }
+}
+
+// The anchor is taken in Program TICKS, the unit the pictures are stamped in.
+TEST(ProgramStreamClock, AProgramFrameAnchorsOnItsTickNotItsFrameNumber) {
+  ProgramStreamClock clock;
+  ProgramFrame frame;
+  frame.frameNumber = 500;
+  frame.programTick = 612;  // 112 slots were skipped before the stream started
+  clock.observeProgramFrame(&frame, true);
+  clock.beginAudioBlock(0, 0);
+  ProgramAacPacket packet;
+  clock.stamp(packet);
+  EXPECT_EQ(packet.anchorFrameNumber, 612);
+  // Windows frames carry no tick: the frame number, as before.
+  ProgramStreamClock windows;
+  frame.programTick = 0;
+  windows.observeProgramFrame(&frame, true);
+  windows.beginAudioBlock(0, 0);
+  windows.stamp(packet);
+  EXPECT_EQ(packet.anchorFrameNumber, 500);
+}

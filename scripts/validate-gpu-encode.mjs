@@ -73,8 +73,19 @@
  * branch: if the core logs no overflow line at all, the run tested nothing and
  * FAILS.
  *
+ * TIMESTAMPS (macOS 1.0.0 qualification). Program always renders at 60 Hz, so a
+ * 30 fps destination - the shipping default - encodes every other Program frame.
+ * This gate only ever ran at 60, and so never saw those streams stamped at twice
+ * real time. Without `--fps` it now runs BOTH legs, 30 then 60, and every
+ * received stream is judged by qa/stream-timing-judge.mjs: A/V timestamp drift
+ * and offset, video cadence, pictures per second of audio, and ANY audio gap
+ * fail the run. Missing pictures are counted and printed per run; an average-fps
+ * PASS here is not per-frame delivery acceptance.
+ * `--sink-protocol hls` receives the HLS PUTs on a local HTTP origin.
+ *
  * Usage: node ./scripts/validate-gpu-encode.mjs [--seconds 30] [--port 1935]
- *                                               [--fps 60] [--bitrate 6]
+ *                                               [--fps 30|60] [--bitrate 6]
+ *                                               [--sink-protocol srt|rtmp|hls]
  *                                               [--codec h264|hevc|av1]
  *                                               [--check-bitrate]
  *                                               [--slow-sink [--sink-rate 0.85]]
@@ -83,9 +94,11 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
-import { existsSync, rmSync, statSync, readFileSync } from "node:fs";
+import http from "node:http";
+import { existsSync, rmSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { judgeStreamTiming } from "./qa/stream-timing-judge.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -101,6 +114,21 @@ const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
 const realEngine = join(buildDir, `corevideo-zoom-engine${exeSuffix}`);
 
 const args = process.argv.slice(2);
+// The Program (canvas) rate: the core's render loop is a fixed 60 Hz.
+const PROGRAM_FPS = 60;
+// No --fps: run the shipping default (30 on the 60 Hz canvas) AND 60. The AV1
+// refusal leg and the congestion gates keep their single 60 fps run.
+if (!args.includes("--fps") && !args.includes("--slow-sink") && !args.includes("av1")) {
+  const failedLegs = [];
+  for (const legFps of [30, 60]) {
+    console.log(`\n=== ${legFps}fps destination on the ${PROGRAM_FPS}fps canvas ===`);
+    const leg = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args, "--fps", String(legFps)],
+      { stdio: "inherit" });
+    if (leg.status !== 0) failedLegs.push(legFps);
+  }
+  if (failedLegs.length) console.error(`\nGPU-DIRECT ENCODE GATE FAIL: ${failedLegs.join(" and ")}fps leg(s) failed`);
+  process.exit(failedLegs.length ? 1 : 0);
+}
 const liveZoom = args.includes("--live-zoom");
 const meetingUrl = process.env.COREVIDEO_TEST_MEETING_URL;
 const argValue = (name, fallback) => {
@@ -182,15 +210,18 @@ const sinkLatencyMs = Number(argValue("sink-latency-ms", 120));
 // RTMP. `--sink-protocol srt` still works and still reproduces the negative
 // result above; it is kept deliberately so the finding stays checkable.
 const sinkProtocol = String(argValue("sink-protocol", slowSink ? "rtmp" : "srt")).toLowerCase();
-if (!["srt", "rtmp"].includes(sinkProtocol)) {
-  console.error(`--sink-protocol must be srt or rtmp (got ${sinkProtocol})`);
+if (!["srt", "rtmp", "hls"].includes(sinkProtocol)) {
+  console.error(`--sink-protocol must be srt, rtmp or hls (got ${sinkProtocol})`);
   process.exit(2);
 }
 const rtmpSink = sinkProtocol === "rtmp";
+const hlsSink = sinkProtocol === "hls";
+const hlsUrl = `http://127.0.0.1:${port}/gate/live.m3u8`;
 const rtmpAppUrl = `rtmp://127.0.0.1:${port}/live`;
 const rtmpStreamKey = "gate";
 const rtmpFullUrl = `${rtmpAppUrl}/${rtmpStreamKey}`;
-const destinationId = rtmpSink ? "rtmp" : "srt";
+const destinationId = sinkProtocol;
+const sinkUrl = rtmpSink ? rtmpFullUrl : hlsSink ? hlsUrl : `srt://127.0.0.1:${port}`;
 // With --slow-sink the core does NOT talk to the FFmpeg listener directly: a
 // bandwidth-limited TCP proxy sits between them on `port`, and the real
 // listener binds `port + 1`.
@@ -279,11 +310,23 @@ const listenerDurationSec = slowSink ? Math.ceil(seconds * 2 + 30) : seconds + 8
 listenerArgs.push("-i", rtmpSink ? rtmpListenUrl : listenerUrl,
                   "-t", String(listenerDurationSec),
                   "-c", "copy", "-f", rtmpSink ? "flv" : "mpegts", received);
-const listener = spawn(ffmpeg, listenerArgs, { stdio: ["ignore", "ignore", "pipe"] });
+// HLS has no FFmpeg listener: a local origin keeps every PUT segment (DELETE is
+// acknowledged and ignored) and the segments are joined in sequence order.
+const hlsSegments = new Map();
+const hlsOrigin = hlsSink ? http.createServer((request, response) => {
+  const body = [];
+  request.on("data", (chunk) => body.push(chunk));
+  request.on("end", () => {
+    if (request.method === "PUT" && request.url.endsWith(".ts")) hlsSegments.set(request.url, Buffer.concat(body));
+    response.writeHead(200).end();
+  });
+}) : null;
+hlsOrigin?.listen(port, "127.0.0.1");
+const listener = hlsSink ? null : spawn(ffmpeg, listenerArgs, { stdio: ["ignore", "ignore", "pipe"] });
 let listenerStderr = "";
-listener.stderr.on("data", (c) => { listenerStderr += c.toString(); });
+listener?.stderr.on("data", (c) => { listenerStderr += c.toString(); });
 let listenerExited = false;
-listener.once("exit", () => { listenerExited = true; });
+listener?.once("exit", () => { listenerExited = true; });
 
 // ---------------------------------------------------------------------------
 // THE SLOW SINK: a bandwidth-limited TCP proxy, and the mechanism matters.
@@ -409,7 +452,8 @@ const child = spawn(nativeCore, [], {
     ...(!liveZoom ? { COREVIDEO_FAKE_NO_CHURN: "1" } : {}),
     // Pin the source rate: an unpinned fake engine delivers 30fps, which would
     // starve the 60fps gate and read as a pipeline failure (CLAUDE.md rule).
-    ...(!liveZoom ? { COREVIDEO_FAKE_ENGINE_FPS: String(TARGET_FPS) } : {}),
+    // The sources feed the 60 Hz canvas whatever the destination's rate is.
+    ...(!liveZoom ? { COREVIDEO_FAKE_ENGINE_FPS: String(PROGRAM_FPS) } : {}),
     ...(liveZoom ? { COREVIDEO_ZOOM_JOIN_WAIT_MS: "90000" } : {}),
     ...(forceRaw ? { COREVIDEO_GPU_ENCODE: "0" } : {}),
   },
@@ -524,7 +568,7 @@ function egressFfmpegChildCount() {
     // the whole ffmpeg command line after `--`, so matching anywhere in the
     // line counted the guard as a second child (seen on the first Mac run).
     // The listener carries -listen and is the receiver, so it is excluded.
-    const target = rtmpSink ? rtmpFullUrl : `srt://127.0.0.1:${port}`;
+    const target = sinkUrl;
     // `comm` is the executable path alone (spaces and all: the app bundle is
     // "CoreVideo Pro.app"), joined to `args` by pid, so a path with a space is
     // not split into a wrong argv[0].
@@ -541,7 +585,7 @@ function egressFfmpegChildCount() {
   }
   const out = spawnSync("powershell", ["-NoProfile", "-Command",
     `@(Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe'" | ` +
-    `Where-Object { $_.CommandLine -like '*${rtmpSink ? rtmpFullUrl : `srt://127.0.0.1:${port}`}*' -and ` +
+    `Where-Object { $_.CommandLine -like '*${sinkUrl}*' -and ` +
     `$_.CommandLine -notlike '*-listen*' }).Count`],
     { encoding: "utf8", timeout: 20000 });
   const n = Number((out.stdout ?? "").trim());
@@ -566,7 +610,7 @@ try {
   if (listenerExited) {
     throw new Error(`RTMP listener exited before streaming started (${listenerStderr.trim().split("\n").pop() || "no output"})`);
   }
-  console.log(`listener      : up on ${rtmpSink ? rtmpFullUrl : `srt://127.0.0.1:${port}`}` +
+  console.log(`listener      : up on ${sinkUrl}` +
               `${slowSink ? ` behind a ${(proxyCapacityBytesPerSec * 8 / 1e6).toFixed(2)}Mbps link` : ""}`);
 
   let sourceParticipantId = "101";
@@ -653,7 +697,17 @@ try {
           ? { codec: wireCodec, fps: TARGET_FPS, targetBitrateMbps: bitrate }
           : { codec: wireCodec },
         destinations: [destinationId],
-        destinationSettings: [rtmpSink ? {
+        destinationSettings: [hlsSink ? {
+          id: "hls",
+          label: "validate-gpu-encode",
+          protocol: "hls",
+          url: hlsUrl,
+          fps: TARGET_FPS,
+          targetBitrateMbps: bitrate,
+          encoderMode: "auto",
+          videoCodec: wireCodec,
+          ffmpegBinDirectory: senderFfmpegBinDir,
+        } : rtmpSink ? {
           id: "rtmp",
           label: "validate-gpu-encode",
           protocol: "rtmp",
@@ -684,7 +738,7 @@ try {
       },
     ],
   });
-  console.log(`streaming     : ${rtmpSink ? rtmpFullUrl : `srt://127.0.0.1:${port}`} codec=${codec} ` +
+  console.log(`streaming     : ${sinkUrl} codec=${codec} fps=${TARGET_FPS} ` +
               `for ${seconds}s (${forceRaw ? "COREVIDEO_GPU_ENCODE=0" : "GPU-direct"}` +
               `${slowSink ? `, link narrowed to ${sinkRate}x of ${bitrate}Mbps` : ""})...`);
 
@@ -781,7 +835,8 @@ await sleep(3000);
 // did it for us at exit". Reported, never asserted - the assertion is the
 // post-stop census, which is the one a live show depends on.
 const egressChildrenAfterCoreExit = slowSink ? egressFfmpegChildCount() : -1;
-try { listener.kill(); } catch {}
+try { listener?.kill(); } catch {}
+try { hlsOrigin?.close(); } catch {}
 try { proxyServer?.close(); } catch {}
 await sleep(1500);
 
@@ -845,6 +900,12 @@ if (forceRaw) {
   if (tookGpuDirect) failures.push("COREVIDEO_GPU_ENCODE=0 but the core still took the GPU-direct path");
 } else if (!tookGpuDirect) {
   failures.push(`expected GPU-direct codec=${expectedPathCodec} but the core reported: ${pathLine || "no path line"}`);
+}
+
+if (hlsSink) {
+  const ordered = [...hlsSegments.keys()].sort();
+  console.log(`hls origin    : ${ordered.length} segment(s) received`);
+  writeFileSync(received, Buffer.concat(ordered.map((key) => hlsSegments.get(key))));
 }
 
 // The received stream cannot lie.
@@ -915,6 +976,44 @@ if (size < 10000) {
       }
       if (samples.some((r) => r.exportDivisor !== 1 || r.shedFrames > 0)) {
         failures.push("rate conformance cannot pass by shedding encoder input frames");
+      }
+    }
+    // Timestamps: drift, cadence, audio continuity; missing pictures reported.
+    const packetTimes = (selector) => {
+      const probeOut = spawnSync(ffprobe, ["-v", "error", "-select_streams", selector,
+        "-show_entries", "packet=pts_time", "-of", "csv=p=0", received],
+        { encoding: "utf8", timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+      return (probeOut.stdout ?? "").split("\n").map((line) => parseFloat(line)).filter(Number.isFinite);
+    };
+    const timing = judgeStreamTiming({ video: packetTimes("v:0"), audio: packetTimes("a:0"), fps: TARGET_FPS,
+      runSeconds: slowSink ? 0 : seconds });
+    const t = timing.report;
+    console.log(`av timestamps : drift ${t.driftMs}ms, offset start ${t.startOffsetMs}ms / end ${t.endOffsetMs}ms; ` +
+      `video ${t.videoSpanSeconds}s vs audio ${t.audioSpanSeconds}s`);
+    console.log(`video frames  : ${t.videoPackets} packets, typical step ${t.videoStepMs}ms, ` +
+      `${t.videoGaps} gap(s) > 1.5 frames (${t.missingPictures} missing picture(s)), ` +
+      `largest step ${t.maxVideoStepMs}ms, ${t.shortVideoSteps} short step(s), ` +
+      `${t.picturesPerAudioSecond} pictures/s of audio`);
+    console.log(`audio packets : ${t.audioPackets}, ${t.audioGaps} gap(s), largest step ${t.maxAudioGapMs}ms`);
+    // A congested destination discards its own pictures on purpose, and the raw
+    // fallback has no realtime gate, so neither is held to the picture cadence.
+    // Their timestamps and their audio still have to be right.
+    for (const failure of timing.failures) {
+      if ((slowSink || forceRaw) && /^video cadence/.test(failure)) continue;
+      failures.push(failure);
+    }
+    // The operator's bitrate target, over AUDIO time: video timestamps cannot
+    // flatter it (twice-real-time pts halved the per-media-second figure).
+    if (checkBitrate && t.audioSpanSeconds > 5) {
+      const sizes = spawnSync(ffprobe, ["-v", "error", "-select_streams", "v:0",
+        "-show_entries", "packet=size", "-of", "csv=p=0", received],
+        { encoding: "utf8", timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+      const bytes = (sizes.stdout ?? "").split("\n").map((line) => parseInt(line, 10))
+        .filter(Number.isFinite).reduce((sum, value) => sum + value, 0);
+      const wallMbps = bytes * 8 / t.audioSpanSeconds / 1e6;
+      console.log(`video bitrate : ${wallMbps.toFixed(3)} Mbps per second of audio / target ${bitrate} Mbps`);
+      if (wallMbps > bitrate * 1.10) {
+        failures.push(`video ${wallMbps.toFixed(3)} Mbps per second of audio exceeds target ${bitrate} Mbps +10%`);
       }
     }
     const countOut = spawnSync(ffprobe,
@@ -1162,12 +1261,12 @@ if (slowSink) {
   console.log(`program       : ${meanProgramFps.toFixed(1)}fps mean, ` +
               `${Number.isFinite(worstProgramFps) ? worstProgramFps.toFixed(1) : "n/a"}fps worst interval ` +
               `(render.completedSlots deltas vs wall clock, ${totalSlots} slots / ${totalDt.toFixed(1)}s)`);
-  if (meanProgramFps < TARGET_FPS * 0.97) {
-    failures.push(`Program averaged ${meanProgramFps.toFixed(1)}fps of ${TARGET_FPS} - congestion on one destination ` +
+  if (meanProgramFps < PROGRAM_FPS * 0.97) {
+    failures.push(`Program averaged ${meanProgramFps.toFixed(1)}fps of ${PROGRAM_FPS} - congestion on one destination ` +
                   "must not cost the show its frame rate");
   }
-  if (Number.isFinite(worstProgramFps) && worstProgramFps < TARGET_FPS * 0.90) {
-    failures.push(`Program's worst poll interval delivered ${worstProgramFps.toFixed(1)}fps of ${TARGET_FPS} ` +
+  if (Number.isFinite(worstProgramFps) && worstProgramFps < PROGRAM_FPS * 0.90) {
+    failures.push(`Program's worst poll interval delivered ${worstProgramFps.toFixed(1)}fps of ${PROGRAM_FPS} ` +
                   `(interval ${worstAt}) - a sustained dip, not jitter`);
   }
 
@@ -1184,7 +1283,7 @@ if (slowSink) {
     if (gapMs > worstGapMs) worstGapMs = gapMs;
     if (gapMs <= cadenceBoundMs) continue;
     const dslots = samples[i].completedSlots - samples[i - 1].completedSlots;
-    const expected = (gapMs / 1000) * TARGET_FPS;
+    const expected = (gapMs / 1000) * PROGRAM_FPS;
     const counterAdvancedNormally = expected > 0 && dslots >= expected * 0.9;
     stalls.push({ i, gapMs, dslots, expected, counterAdvancedNormally });
   }

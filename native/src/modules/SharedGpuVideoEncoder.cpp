@@ -1,4 +1,5 @@
 #include "modules/SharedGpuVideoEncoder.h"
+#include "modules/ProgramStreamClock.h"
 #if defined(__APPLE__) && COREVIDEO_HAS_VT_GPU_ENCODER
 #include "modules/VideoToolboxGpuVideoEncoder.h"
 #endif
@@ -68,6 +69,8 @@ struct Session {
   uint64_t nextSinkId = 1;
   bool hasSubmittedFrame = false;
   int64_t lastSubmittedFrame = 0;
+  // One picture per destination period across every subscriber (state mutex).
+  ProgramCadenceDecimator cadence;
 
   // Borrow subscribers without holding the list lock through sender callbacks.
   // A subscriber's retire() fences any callback already in flight.
@@ -161,10 +164,21 @@ class SharedGpuVideoEncoderPool::Client final : public GpuVideoEncoder {
     if (!session_ || !session_->encoder) return false;
     if (session_->hasSubmittedFrame && frame.frameNumber <= session_->lastSubmittedFrame)
       return session_->encoder->healthy();
+    // Destinations pick their pictures on their own writer threads; one that
+    // missed a tick picks the next, which is not a second picture of the period.
+    const int tickRate = session_->encoder->programTickRate(session_->profile);
+    if (tickRate > session_->profile.fps &&
+        !session_->cadence.shouldEncode(programClockTick(frame), tickRate, session_->profile.fps))
+      return session_->encoder->healthy();
     if (!session_->encoder->submit(frame)) return false;
     session_->lastSubmittedFrame = frame.frameNumber;
     session_->hasSubmittedFrame = true;
     return true;
+  }
+
+  int programTickRate(const GpuVideoEncoderConfig& config) const override {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    return session_ && session_->encoder ? session_->encoder->programTickRate(config) : config.fps;
   }
 
   bool requestKeyframe() override {

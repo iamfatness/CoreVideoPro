@@ -735,6 +735,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     if (!wantsRtmp) {
       stopFfmpegProcess();
       videoFramePacer_.reset();
+      programCadence_.reset();
       // THE ONE UNFLOORED ROUTE, AND THE INVARIANT IT RESTS ON (round 2, item 4).
       // Stream off drops the streak AND the floor, which is right: switching a
       // destination off and on again is the operator re-arming it. It is safe
@@ -965,7 +966,14 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     // 4K input pipe (the 2026-07-14 live freeze reproduced at 42 frames/0.84 s).
     activeStage_.store("audio-enqueue", std::memory_order_relaxed);
     writeAudioToFfmpeg();
-    if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
+    // A destination slower than the encoder's Program tick rate takes its
+    // pictures from the tick grid; otherwise (a destination at the Program rate,
+    // the raw path, an encoder timed by the destination fps) the wall pacer.
+    const int tickRate = streamTickRate();
+    const bool due = useGpuDirect_ && tickRate > configuredFps_
+        ? programCadence_.shouldEncode(programClockTick(*frame), tickRate, configuredFps_)
+        : videoFramePacer_.shouldWrite(elapsedMs, configuredFps_);
+    if (!due) {
       sender_.status = hasWrittenVideo_ ? "live" : "starting";
       sender_.warning.clear();
       sender_.runtimeDetail = runtimeDetail_;
@@ -982,7 +990,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     // Buffered frames carry their exact delivery deadline; record where the
     // delivery grid sits relative to frame numbers (#538 slot clock).
     if (frame->deliverySequence > 0)
-      slotClock_.observe(frame->frameNumber, frame->timelineTimestamp100ns, (std::max)(1, configuredFps_));
+      slotClock_.observe(frame->frameNumber, frame->timelineTimestamp100ns, streamTickRate());
     const bool videoWriteOk =
         useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
     if (!videoWriteOk) {
@@ -2141,6 +2149,8 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     cfg.codec = gpuEncodeSentCodec_;
     bitstreamFailure_.reset();
     bitstreamWriterStop_.store(false);
+    // Set before start(): the sink may run before it returns.
+    streamTickRate_.store((std::max)(1, cfg.fps), std::memory_order_release);
     // Every platform (Phase 4 O4c): the encoder callback only ENQUEUES; one
     // writer thread per FFmpeg run drains the queue through the TS envelope.
     // POSIX used to write the pipe from the encoder callback itself, so a
@@ -2156,6 +2166,9 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       gpuEncoderStartFailed_ = true;
       return false;  // startFfmpegProcess refuses, or logs the cpu-fallback line
     }
+    // One rate for the pictures' PTS, the audio PTS and the frame selection.
+    streamTickRate_.store((std::max)(1, gpuEncoder_->programTickRate(cfg)), std::memory_order_release);
+    programCadence_.reset();
     ::corevideo::core::nativeLogf("[gpu-encode] path=gpu-direct codec=%s %dx%d@%d bitrate=%.1fMbps\n",
                                  cfg.codec.c_str(), width, height, cfg.fps, sender_.bitrateMbps);
     return true;
@@ -2582,7 +2595,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
   // shift never decreases, so a stall becomes a video PTS gap. Called on the
   // encoder sink thread with bitstreamQueueMutex_ held.
   void applySlotCorrection(GpuEncodedChunk& chunk) {
-    const int fps = (std::max)(1, configuredFps_);
+    const int fps = streamTickRate();
     const int64_t anchorK = anchorK100ns_.load(std::memory_order_acquire);
     const auto k = slotClock_.kFor(chunk.frameNumber);
     if (anchorK == kNoAnchorK || !k || !chunk.timingValid) return;
@@ -2607,10 +2620,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
   }
 
   void enqueueTransportAudio(const ProgramAacPacket& packet) {
-    if (const auto k = anchorK100ns(packet, (std::max)(1, configuredFps_)))
+    if (const auto k = anchorK100ns(packet, streamTickRate()))
       anchorK100ns_.store(*k, std::memory_order_release);
     int64_t pts100ns = 0;
-    if (!programAudioPts100ns(packet, (std::max)(1, configuredFps_), pts100ns)) {
+    if (!programAudioPts100ns(packet, streamTickRate(), pts100ns)) {
       transportAudioUnanchored_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -2967,6 +2980,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     f.width = frame.encoderSharedTexture.width;
     f.height = frame.encoderSharedTexture.height;
     f.frameNumber = frame.frameNumber;
+    f.programTick = frame.programTick;
     return gpuEncoder_->submit(f);
   }
 
@@ -3689,6 +3703,11 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
   std::atomic<double> muxVideoFps_{0};
   std::atomic<std::int64_t> muxVideoLastWriteMs_{0};
   RtmpVideoFramePacer videoFramePacer_;
+  ProgramCadenceDecimator programCadence_;  // sync() thread
+  // GpuVideoEncoder::programTickRate of the running encoder: read by sync(), the
+  // encoder sink thread and the audio worker.
+  std::atomic<int> streamTickRate_{60};
+  [[nodiscard]] int streamTickRate() const { return streamTickRate_.load(std::memory_order_acquire); }
   std::atomic<bool> hasWrittenVideo_{false};
   std::ofstream sendProof_;
   mutable std::atomic<const char*> activeStage_{"idle"};

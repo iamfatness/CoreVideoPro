@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/AnchoredFrameDeadlineTracker.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -54,6 +56,21 @@ struct GpuVideoEncoderConfig {
       std::max(1LL, static_cast<long long>(std::llround(std::max(1, fps) * bounded)))));
 }
 
+// The Program render loop's fixed slot rate. Program frames arrive at this rate
+// WHATEVER a destination's fps is (GpuVideoEncoderConfig::fps), so a slower
+// destination encodes a subset of them and must not time them with its own fps.
+inline constexpr int kProgramTickRate = static_cast<int>(core::AnchoredFrameDeadlineTracker::kFramesPerSecond);
+
+// One encoded picture's time on the Program clock, in 100 ns units: when it is
+// on the tick grid, and how long it lasts at the destination's rate.
+struct ProgramSampleTiming {
+  int64_t pts100ns = 0;
+  int64_t duration100ns = 0;
+};
+[[nodiscard]] inline ProgramSampleTiming programSampleTiming(int64_t tick, int tickRate, int destinationFps) {
+  return {tick * 10'000'000LL / std::max(1, tickRate), 10'000'000LL / std::max(1, destinationFps)};
+}
+
 // The GPU frame to encode — an OPAQUE platform handle, never a D3D11/Metal type.
 // Mirrors ProgramFrameSharedTexture: exactly one of the two identifiers is set.
 struct GpuVideoEncoderFrame {
@@ -62,10 +79,17 @@ struct GpuVideoEncoderFrame {
   int width = 0;
   int height = 0;
   int64_t frameNumber = 0;
+  // ProgramFrame::programTick (0 = not provided). Timestamps only: the texture
+  // is still identified by frameNumber.
+  int64_t programTick = 0;
   // In-process metadata published under the texture's keyed mutex. Read only
   // after acquiring that texture, so asynchronous export cannot mislabel pixels.
   std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber;
 };
+
+[[nodiscard]] inline int64_t programClockTick(const GpuVideoEncoderFrame& frame) {
+  return frame.programTick > 0 ? frame.programTick : frame.frameNumber;
+}
 
 // One encoded output unit handed to the sink. `data` is owned by the encoder and
 // valid only for the duration of the callback — the sink must copy what it keeps.
@@ -98,6 +122,16 @@ class GpuVideoEncoder {
   // Submit one GPU frame for encoding. Returns false when the encoder is
   // unhealthy (e.g. device loss) so the caller can let its supervisor restart.
   [[nodiscard]] virtual bool submit(const GpuVideoEncoderFrame& frame) = 0;
+
+  // The rate this encoder divides Program ticks by to make a picture's PTS.
+  // The sender converts the shared audio clock with the SAME rate, and when it
+  // is faster than the destination it hands the encoder only the ticks due at
+  // the destination's rate.
+  //
+  // The default is the destination fps: MediaFoundationGpuVideoEncoder stamps
+  // frameNumber / config.fps. That is only right when the destination runs at
+  // the Program rate; it is kept here so this change does not alter Windows.
+  [[nodiscard]] virtual int programTickRate(const GpuVideoEncoderConfig& config) const { return config.fps; }
 
   // Ask for an IDR on the next input picture after a destination loses its
   // decodable GOP. The implementation must only signal its encode thread here.

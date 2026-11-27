@@ -39,6 +39,7 @@ class VideoToolboxGpuVideoEncoder final : public GpuVideoEncoder {
   [[nodiscard]] bool start(const GpuVideoEncoderConfig& config, GpuEncodedChunkSink sink) override;
   [[nodiscard]] bool submit(const GpuVideoEncoderFrame& frame) override;
   [[nodiscard]] bool requestKeyframe() override;
+  [[nodiscard]] int programTickRate(const GpuVideoEncoderConfig&) const override { return kProgramTickRate; }
   void stop() override;
   [[nodiscard]] bool healthy() const override;
   [[nodiscard]] std::string lastFailure() const override;

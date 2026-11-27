@@ -46,6 +46,7 @@ struct Chunk {
   int64_t frameNumber = 0;
   int64_t pts = 0;
   int64_t dts = 0;
+  int64_t duration = 0;
 };
 
 struct Collector {
@@ -55,7 +56,7 @@ struct Collector {
     return [this](const GpuEncodedChunk& c) {
       std::lock_guard<std::mutex> lock(mutex);
       chunks.push_back({std::vector<uint8_t>(c.data, c.data + c.size), c.keyframe, c.frameNumber, c.pts100ns,
-                        c.dts100ns});
+                        c.dts100ns, c.duration100ns});
     };
   }
 };
@@ -371,7 +372,8 @@ TEST(VideoToolboxGpuVideoEncoder, PtsAdvancesOneFramePeriod) {
   ASSERT_TRUE(enc->start(config(320, 180, 30, 2000, "h264"), out.sink())) << enc->lastFailure();
   IOSurfaceRef surface = makeSurface(320, 180);
   fillSolid(surface, 40, 80, 120);
-  for (int i = 1; i <= 8; ++i) submitPaced(*enc, frameFor(surface, i));
+  // A 30 fps destination gets every other tick of the 60 Hz Program clock.
+  for (int i = 1; i <= 8; ++i) submitPaced(*enc, frameFor(surface, 2 * i));
   enc->stop();
   CFRelease(surface);
   ASSERT_GE(out.chunks.size(), 8u);
@@ -390,7 +392,7 @@ TEST(VideoToolboxGpuVideoEncoder, BitrateIsHonoured) {
   uint32_t seed = 12345;
   for (int i = 1; i <= 300; ++i) {
     fillMovingGradient(surface, i, seed);  // a new, structured picture every frame (fixture invariant)
-    submitPaced(*enc, frameFor(surface, i));
+    submitPaced(*enc, frameFor(surface, 2 * i));  // every other 60 Hz Program tick
   }
   enc->stop();
   CFRelease(surface);
@@ -401,6 +403,69 @@ TEST(VideoToolboxGpuVideoEncoder, BitrateIsHonoured) {
   // 10 s at 4 Mbps = 5'000'000 bytes, +-20% (pins Windows defect #601).
   EXPECT_GE(total, 4'000'000u) << "bytes " << total;
   EXPECT_LE(total, 6'000'000u) << "bytes " << total;
+}
+
+// The 1.0.0 release blocker: a 30 fps destination on the 60 Hz Program clock.
+// The sender hands the encoder every OTHER Program frame, so frame numbers
+// advance by 2 per encoded picture. Timestamps must follow the Program clock
+// (one second of Program = one second of video), and the rate controller must
+// hold the target over that same second. Ticks 200..239 never arrive (a Program
+// skip of 2/3 s): the video must carry that hole, not close it.
+TEST(VideoToolboxGpuVideoEncoder, ThirtyOnSixtyKeepsProgramTimeAndTheTargetBitrate) {
+  REQUIRE_VT_HARDWARE("ThirtyOnSixtyKeepsProgramTimeAndTheTargetBitrate");
+  auto enc = encoder();
+  Collector out;
+  ASSERT_TRUE(enc->start(config(1280, 720, 30, 4000, "h264"), out.sink())) << enc->lastFailure();
+  EXPECT_EQ(enc->programTickRate(config(1280, 720, 30, 4000, "h264")), 60)
+      << "the sender converts the audio clock and picks frames with this rate";
+  IOSurfaceRef surface = makeSurface(1280, 720);
+  uint32_t seed = 12345;
+  std::vector<int64_t> sent;
+  for (int64_t tick = 2; tick <= 640; tick += 2) {
+    if (tick >= 200 && tick < 240) continue;
+    sent.push_back(tick);
+    fillMovingGradient(surface, static_cast<int>(sent.size()), seed);
+    submitPaced(*enc, frameFor(surface, tick));
+  }
+  enc->stop();
+  CFRelease(surface);
+  ASSERT_EQ(sent.size(), 300u) << "fixture: 10 s of encoded pictures";
+  ASSERT_EQ(out.chunks.size(), sent.size()) << "skipped " << enc->framesSkipped();
+  for (size_t i = 0; i < sent.size(); ++i) {
+    EXPECT_NEAR(static_cast<double>(out.chunks[i].pts), static_cast<double>(sent[i] * 10'000'000LL / 60), 1.0)
+        << "picture " << i << " is Program tick " << sent[i];
+    EXPECT_EQ(out.chunks[i].duration, 333'333) << "one destination frame period";
+  }
+  // 10 s of pictures at 4 Mbps = 5'000'000 bytes, +-20%. The defect emitted
+  // twice that: each picture claimed two destination periods.
+  size_t total = 0;
+  for (const auto& chunk : out.chunks) total += chunk.bytes.size();
+  EXPECT_GE(total, 4'000'000u) << "bytes " << total;
+  EXPECT_LE(total, 6'200'000u) << "bytes " << total;
+}
+
+// The surface is identified by frameNumber; the picture is TIMED by programTick
+// (which keeps the render slots a late Program loop skipped).
+TEST(VideoToolboxGpuVideoEncoder, TheProgramTickTimesThePictureNotItsFrameNumber) {
+  REQUIRE_VT_HARDWARE("TheProgramTickTimesThePictureNotItsFrameNumber");
+  auto enc = encoder();
+  Collector out;
+  ASSERT_TRUE(enc->start(config(320, 180, 60, 2000, "h264"), out.sink())) << enc->lastFailure();
+  IOSurfaceRef surface = makeSurface(320, 180);
+  fillSolid(surface, 40, 80, 120);
+  for (int i = 1; i <= 8; ++i) {
+    GpuVideoEncoderFrame frame = frameFor(surface, i);
+    frame.programTick = 600 + i + (i > 4 ? 30 : 0);
+    submitPaced(*enc, frame);
+  }
+  enc->stop();
+  CFRelease(surface);
+  ASSERT_EQ(out.chunks.size(), 8u);
+  for (int i = 1; i <= 8; ++i) {
+    EXPECT_EQ(out.chunks[i - 1].frameNumber, i);
+    EXPECT_EQ(out.chunks[i - 1].pts, (600 + i + (i > 4 ? 30 : 0)) * 10'000'000LL / 60);
+    EXPECT_EQ(out.chunks[i - 1].duration, 166'666);
+  }
 }
 
 TEST(VideoToolboxGpuVideoEncoder, ColourIsBt709) {
