@@ -986,13 +986,14 @@ if (size < 10000) {
       }
     }
     // Timestamps: drift, cadence, audio continuity; missing pictures reported.
-    const packetTimes = (selector) => {
+    const packetTimes = (selector, field = "pts_time") => {
       const probeOut = spawnSync(ffprobe, ["-v", "error", "-select_streams", selector,
-        "-show_entries", "packet=pts_time", "-of", "csv=p=0", received],
+        "-show_entries", `packet=${field}`, "-of", "csv=p=0", received],
         { encoding: "utf8", timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
       return (probeOut.stdout ?? "").split("\n").map((line) => parseFloat(line)).filter(Number.isFinite);
     };
-    const timing = judgeStreamTiming({ video: packetTimes("v:0"), audio: packetTimes("a:0"), fps: TARGET_FPS,
+    const timing = judgeStreamTiming({ video: packetTimes("v:0"), videoDecodeTimes: packetTimes("v:0", "dts_time"),
+      audio: packetTimes("a:0"), fps: TARGET_FPS,
       runSeconds: slowSink ? 0 : seconds,
       // MPEG-TS over SRT packs up to ~363 ms of (silent) AAC into one PES and
       // loses the unfinished one at Stop (measured: 17 frames per PES, with a
@@ -1088,6 +1089,17 @@ if (senderFps.length) {
 // the policy's constants move, this block must move with them.
 // ---------------------------------------------------------------------------
 const kThrottleAboveBufferedMs = 250;
+// What the encoder actually emitted, per WALL second, from the sender's own mux
+// input counter. A capture cut at a media-time limit cannot show this: the
+// doubled-clock defect read 6.0Mbps per media second while emitting 12.
+const muxInput = senderSnapshot?.muxInputVideo;
+if (muxInput) {
+  console.log(`encoder output: ${Number(muxInput.mbps).toFixed(3)} Mbps, ${Number(muxInput.fps).toFixed(2)} pictures per wall second ` +
+              `(sender mux input; target ${bitrate} Mbps)`);
+  if (checkBitrate && Number(muxInput.mbps) > bitrate * 1.10) {
+    failures.push(`the encoder emitted ${Number(muxInput.mbps).toFixed(3)} Mbps per wall second, over target ${bitrate} Mbps +10%`);
+  }
+}
 const startedCount = gpuEncodeStartedCount();
 console.log(`encoder builds: ${startedCount} ([gpu-encode] started lines, this run's stderr only)`);
 

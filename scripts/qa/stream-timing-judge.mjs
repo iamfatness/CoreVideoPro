@@ -1,5 +1,6 @@
 // Timestamp verdict for a RECEIVED stream (validate-gpu-encode.mjs). Pure: it
-// takes the packet presentation times in seconds, in file order.
+// takes packet times in seconds, in file order: presentation times, plus the
+// video decode times when the encoder may reorder (B-frames on the raw path).
 //
 // Added after the 1.0.0 qualification: a 30 fps destination on the 60 Hz Program
 // clock stamped its pictures at twice real time, and no average-fps gate could
@@ -25,7 +26,10 @@ const median = (values) => {
 const steps = (times) => times.slice(1).map((t, i) => t - times[i]);
 const ms = (seconds) => Math.round(seconds * 10000) / 10;
 
-export function judgeStreamTiming({ video, audio, fps, runSeconds = 0, audioTailSeconds = 0 }) {
+export function judgeStreamTiming({ video: videoInFileOrder, videoDecodeTimes, audio, fps, runSeconds = 0,
+  audioTailSeconds = 0 }) {
+  // With decode times, file order is decode order: judge pictures as presented.
+  const video = videoDecodeTimes ? [...videoInFileOrder].sort((a, b) => a - b) : videoInFileOrder;
   const failures = [];
   const report = {};
   if (video.length < 2) failures.push(`only ${video.length} video packets in the received stream`);
@@ -40,6 +44,8 @@ export function judgeStreamTiming({ video, audio, fps, runSeconds = 0, audioTail
 
   const backwards = (list) => list.filter((step) => step <= 0).length;
   if (backwards(videoSteps)) failures.push(`video timestamps went backwards or repeated ${backwards(videoSteps)} time(s)`);
+  const decodeBackwards = videoDecodeTimes ? backwards(steps(videoDecodeTimes)) : 0;
+  if (decodeBackwards) failures.push(`video decode times went backwards or repeated ${decodeBackwards} time(s)`);
   if (backwards(audioSteps)) failures.push(`audio timestamps went backwards or repeated ${backwards(audioSteps)} time(s)`);
 
   // Audio continuity: any hole is a failure.

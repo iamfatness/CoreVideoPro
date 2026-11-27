@@ -112,3 +112,31 @@ test("the tail allowance never excuses video ending early, or real drift", () =>
     audioTailSeconds: 0.4 }), /A\/V timestamps drifted/);
   failed(judgeStreamTiming({ video: video(30, 20, 0.4), audio: audio(20), fps: 30, audioTailSeconds: 0.4 }), /start/);
 });
+
+// The raw fallback encodes B-frames: packets arrive in DECODE order, so their
+// presentation times step backwards on a perfectly healthy stream.
+const bFrameOrder = (pts) => {
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length; i += 3) out.push(...[pts[i + 2], pts[i], pts[i + 1]].filter((t) => t !== undefined));
+  return out;
+};
+
+test("B-frame decode order passes when decode times are monotonic", () => {
+  const pictures = video(30, 20, 0);
+  const verdict = judgeStreamTiming({ video: bFrameOrder(pictures), videoDecodeTimes: pictures.map((t) => t - 0.067),
+    audio: audio(20), fps: 30 });
+  assert.deepEqual(verdict.failures, []);
+  assert.equal(verdict.report.videoGaps, 0);
+});
+
+test("with decode times, a repeated picture time or a backwards decode time still fails", () => {
+  const pictures = video(30, 10);
+  const dts = [...pictures];
+  const repeated = [...pictures];
+  repeated[40] = repeated[39];
+  failed(judgeStreamTiming({ video: repeated, videoDecodeTimes: dts, audio: audio(10), fps: 30 }),
+    /video timestamps went backwards or repeated/);
+  [dts[50], dts[51]] = [dts[51], dts[50]];
+  failed(judgeStreamTiming({ video: pictures, videoDecodeTimes: dts, audio: audio(10), fps: 30 }),
+    /video decode times went backwards/);
+});
