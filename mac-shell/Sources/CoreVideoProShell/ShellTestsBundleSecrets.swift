@@ -773,10 +773,53 @@ extension ShellTests {
         }
     }
 
+    /// The floor is main's list UNCHANGED, NULs and all: replaying the pieces
+    /// instead took a rule's anchor, and a whole value that never reached
+    /// Foundation's search lost its looser equivalences. Then seeded, with NULs.
+    private static func nulValuesNeverLessThanMain() {
+        for (held, text) in [("token:  \u{0}:://", "token:  \u{0}:://token:  \u{0}://"),
+                             ("ab\u{0}K", "pw ab\u{0}\u{212A} y")] {
+            let main = MainRedactor.scrub(text, literals: [held])
+            let out = Redactor.scrub(text, literals: [held])
+            for probe in ["token", "://", "ab", "\u{212A}"] where !has(main, probe) {
+                expect(!has(out, probe), "main removed \(probe.debugDescription): \(main.debugDescription), now \(out.debugDescription)")
+            }
+            expectEqual(LiteralScrubber([held]).floor, [held], "the floor is the list as given")
+        }
+        var state: UInt64 = 0x00FF_1234_ABCD_0001
+        func random(_ bound: Int) -> Int {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Int((state >> 33) % UInt64(bound))
+        }
+        let bits = ["token", ": ", "://", "@h/", "key=", " ", "\u{0}", "\u{0}", "ab", "K", "\u{212A}", "pwd=", "Bearer ",
+                    "rtmp://h/", "\"", "."]
+        func joined(_ range: Int) -> String { (0..<(1 + random(range))).map { _ in bits[random(bits.count)] }.joined() }
+        var misses: [String] = []
+        var marker = 0
+        for _ in 0..<4_000 {
+            let held = (0..<(1 + random(2))).map { _ in joined(4) + "\u{0}" + joined(3) }
+            var text = ""
+            var markers: [String] = []
+            for _ in 0..<(2 + random(6)) {
+                text += random(2) == 0 ? held[random(held.count)] : joined(3)
+                if random(2) == 0 { marker += 1; markers.append("Zn\(marker)mk"); text += markers.last! }
+            }
+            // Main's own replace traps when a NUL value ends the text.
+            text += " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+            let main = MainRedactor.scrub(text, literals: held)
+            let out = Redactor.scrub(text, literals: held)
+            if markers.contains(where: { !has(main, $0) && has(out, $0) }) {
+                misses.append("\(text.debugDescription) held \(held)")
+            }
+        }
+        expectEqual(misses.count, 0, "NUL values, less than main, e.g. \(misses.prefix(2))")
+    }
+
     /// A pasted "?pwd=abcd%00" yields a literal with a NUL. Foundation's search
     /// then answers with a range PAST the end, and the export took the app down.
     @MainActor static func testBundleSurvivesANulInALiteral() {
         wholeNulValuesStillMatch()
+        nulValuesNeverLessThanMain()
         expectEqual(Redactor.scrub("peer said abcd", literals: ["abcd\0"]), "peer said [redacted]", "text ends mid-match")
         expectEqual(LiteralScrubber(["abcd\0tailq"]).scrub("x abcd tailq abcd").text,
                     "x [redacted] [redacted] [redacted]", "each side of the NUL is matched")

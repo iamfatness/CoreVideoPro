@@ -172,10 +172,12 @@ struct LiteralScrubber {
 
     /// `floor` defaults to `values`.
     init(_ values: [String], floor: [String]? = nil) {
-        // Foundation's search answers a needle holding U+0000 with a range past
-        // the end of the text, which traps: it only ever gets each side of it.
-        // The WHOLE value goes to the matcher below, which is safe with it (a
-        // side may be too short, and main removed the value where it was whole).
+        // A value holding U+0000: Foundation's search can answer it with a range
+        // past the end of the text, and using that range traps (main's replace
+        // crashed there). It is searched only through `occurrences`, which
+        // checks the bounds. It stays WHOLE, because main removed it where it
+        // was whole and a side of it may be too short; each long enough side is
+        // a literal too.
         let holdingNul = (values + (floor ?? [])).filter {
             $0.unicodeScalars.contains("\0") && $0.count >= Self.minimumLength
         }
@@ -191,8 +193,10 @@ struct LiteralScrubber {
             list.flatMap { $0.contains("\0") ? pieces($0.split(separator: "\0")) : [$0] }
                 .filter { $0.count >= Self.minimumLength }
         }
-        self.floor = clean(floor ?? values)
-        var values = clean(values) + self.floor
+        // The floor is the list AS GIVEN. A side of a value in its place would
+        // not replay main: it can remove an anchor main's rules still saw.
+        self.floor = (floor ?? values).filter { $0.count >= Self.minimumLength }
+        var values = clean(values) + clean(floor ?? values)
         // Lines are scrubbed one at a time, so each line of a multi-line value
         // is a literal too (not part of the floor). Otherwise a rule that takes
         // part of it leaves a rest the whole-file pass no longer recognises.
@@ -202,11 +206,11 @@ struct LiteralScrubber {
             pieces($0.split(whereSeparator: \.isNewline))
         }
         var seen = Set<[UInt8]>()
-        held = values.filter { seen.insert(Array($0.utf8)).inserted }
-        spansLines = (held + holdingNul).contains { $0.unicodeScalars.contains("\n") }
+        held = (values + holdingNul).filter { seen.insert(Array($0.utf8)).inserted }
+        spansLines = held.contains { $0.unicodeScalars.contains("\n") }
         var parsed: [[Spellings]] = []
         var starts = [Bool](repeating: false, count: 256)
-        for value in Set(values + holdingNul) {
+        for value in Set(held) {
             let characters: [Spellings] = value.map { character in
                 Self.spellings(of: character).map { $0.map(Self.unit) }
             }
