@@ -1201,10 +1201,18 @@ function expectedFields(snapshot: ShowSnapshot): Record<string, ControlFieldValu
   return fields;
 }
 
+/** Escape arbitrary text so it can be embedded as a literal in a RegExp source. */
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Every key the projection produced must match a declared template once `{slot}` is expanded. */
 function matchesATemplate(key: string): boolean {
   return OHG_FIELD_TEMPLATES.some((template) => {
-    const pattern = new RegExp(`^${template.replace("{slot}", "\\d+").replace(/\//g, "\\/")}$`);
+    const slotToken = "__OHG_SLOT_TOKEN__";
+    const escapedTemplate = escapeRegExpLiteral(template.replace("{slot}", slotToken));
+    const patternSource = `^${escapedTemplate.replace(slotToken, "\\d+")}$`;
+    const pattern = new RegExp(patternSource);
     return pattern.test(key);
   });
 }
