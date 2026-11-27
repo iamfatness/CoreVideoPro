@@ -144,6 +144,8 @@ class CompositorOverlayRaster {
   Cache::Result prepareRaster(const Request& request);
   ComPtrLite<ID2D1Factory> d2dFactory_;
   ComPtrLite<IDWriteFactory> dwriteFactory_;
+  // Pinned text rendering params (see ensureOverlayRasterFactories).
+  ComPtrLite<IDWriteRenderingParams> textRenderingParams_;
   ComPtrLite<IWICImagingFactory> wicFactory_;
   std::string lastWarning_;
   std::string workerWarning_;

@@ -61,6 +61,12 @@ struct ParityRegion {
   int maxLines = 1;
   uint32_t colorArgb = 0xffffffffu;            // text colour (straight ARGB)
   double grow = 0;                             // px the measured area extends past the box
+  // Text: the primitive's clip, raster px. Both rasters clip each primitive to
+  // it (aliased), so no ink can fall outside it, and a text region's measured
+  // area stops there. Grown past it, a table cell counted the next row's text
+  // and took the neighbouring row's fill as its background.
+  bool clipped = false;
+  double clipX = 0, clipY = 0, clipWidth = 0, clipHeight = 0;
 };
 
 // {width, height, scale, primitives:[{id,type,box:[x,y,w,h],clip:[...],fontSize,lineHeight,maxLines,
@@ -109,6 +115,11 @@ struct ParityFixture {
   int width = 0, height = 0;  // 0: the template's bounds
   bool atlas = false;
   double textTolerance = 1;
+  // An owner-recorded Windows/Mac difference (index "recordedDifference": its
+  // reason). The fixture is still rendered, judged and printed on the sheet,
+  // but its failures do not fail MacMatchesWindowsReference. Tolerances are
+  // unchanged; every other fixture still blocks. Owner ruling 2026-11-27.
+  std::string recordedDifference;
 };
 std::vector<ParityFixture> loadParityIndex(const std::string& indexPath, std::string& error);
 

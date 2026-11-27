@@ -53,6 +53,12 @@ struct Area { int x0, y0, x1, y1; };
 Area measuredArea(const ParityImage& image, const ParityRegion& region) {
   Area a{int(std::floor(region.x - region.grow)), int(std::floor(region.y - region.grow)),
          int(std::ceil(region.x + region.width + region.grow)), int(std::ceil(region.y + region.height + region.grow))};
+  if (region.text && region.clipped) {
+    a.x0 = std::max(a.x0, int(std::floor(region.clipX)));
+    a.y0 = std::max(a.y0, int(std::floor(region.clipY)));
+    a.x1 = std::min(a.x1, int(std::ceil(region.clipX + region.clipWidth)));
+    a.y1 = std::min(a.y1, int(std::ceil(region.clipY + region.clipHeight)));
+  }
   a.x0 = std::clamp(a.x0, 0, image.width); a.x1 = std::clamp(a.x1, 0, image.width);
   a.y0 = std::clamp(a.y0, 0, image.height); a.y1 = std::clamp(a.y1, 0, image.height);
   return a;
@@ -222,6 +228,10 @@ std::vector<ParityRegion> regionsFromLayout(const Json& summary) {
       r.linePitch = size * row.getNumber("lineHeight", 1.2);
       r.maxLines = int(row.getNumber("maxLines", 1));
       r.grow = std::ceil(0.35 * size + row.getNumber("effects"));
+      if (row.get("clip")) {
+        r.clipped = true;
+        r.clipX = clip.x; r.clipY = clip.y; r.clipWidth = clip.width; r.clipHeight = clip.height;
+      }
     } else {
       r.grow = 2 + std::ceil(row.getNumber("strokeWidth"));
     }
@@ -434,6 +444,7 @@ std::vector<ParityFixture> loadParityIndex(const std::string& indexPath, std::st
     f.height = int(row.getNumber("height", 0));
     f.atlas = row.get("atlas") && row.get("atlas")->isBool() && row.get("atlas")->asBool();
     f.textTolerance = row.getNumber("textTolerance", 1);
+    f.recordedDifference = row.getString("recordedDifference");
     out.push_back(std::move(f));
   }
   error.clear();
@@ -449,9 +460,14 @@ Json defaultBrand() {
       {"brand.fontHeading", a.fontFamily}, {"brand.secondary", a.titleColor}, {"brand.background", a.backgroundColor},
       {"brand.foreground", a.nameColor}, {"brand.logo", "logo"}};
 }
+// Arial, not Segoe UI: parity fixtures use fonts both platforms ship so they
+// measure the rasterizers (spec 7.3). With Segoe UI the Mac drew Selawik and
+// the title read 8.6% heavy from the font alone (Selawik through D2D: +12.9%).
+// Segoe UI to Selawik has its own fixture, segoe-substitution. Owner ruling
+// 2026-11-27. The shared GraphicsMotionFixture.h motionBrand() is unchanged.
 Json motionBrand() {
   return Json::Object{{"brand.primary", "#203040"}, {"brand.onPrimary", "#FFFFFF"},
-      {"brand.accent", "#44C1A1"}, {"brand.fontBody", "Segoe UI"}};
+      {"brand.accent", "#44C1A1"}, {"brand.fontBody", "Arial"}};
 }
 }  // namespace
 

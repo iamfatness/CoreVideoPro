@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
+#include "compositor/D2DCurveFlattening.h"
 #include "compositor/CoreTextThumbnail.h"
 #include "graphics/GraphicsTextCoreText.h"
 #include "graphics/GraphicsTemplate.h"
@@ -199,11 +200,140 @@ void setStrokeArgb(CGContextRef cg, CGColorSpaceRef space, uint32_t argb) {
   CGContextSetStrokeColorWithColor(cg, color.get());
 }
 
-CGPathRef createRoundedPath(CGRect rect, CGFloat radius) {
+// Curves are drawn as D2D draws them: as the chords it flattens them to
+// (D2DCurveFlattening.h, proven point for point against D2D on Windows). True
+// Core Graphics curves sit outside D2D's chords and read heavier on every
+// curved antialiased edge (G4 parity: ellipse edges up to 71/255, rounded
+// corners up to 96/255). D2D flattens at 0.25 device px; geometry is built in
+// user space, so the tolerance is divided by the CTM's largest scale
+// (D2D1ComputeMaximumScaleFactor).
+namespace d2dcurves = corevideo::compositor::d2dcurves;
+
+double flatteningTolerance(CGContextRef cg) {
+  const CGAffineTransform m = CGContextGetCTM(cg);
+  // Largest singular value of [a b; c d].
+  const double p = (m.a * m.a + m.b * m.b + m.c * m.c + m.d * m.d) / 2;
+  const double q = std::fabs(m.a * m.d - m.b * m.c);
+  const double scale = std::sqrt(p + std::sqrt(std::max(0.0, p * p - q * q)));
+  return scale > 0 ? d2dcurves::kDefaultTolerance / scale : d2dcurves::kDefaultTolerance;
+}
+
+// A closed path through D2D-space points; `flipHeight` > 0 maps D2D's y-down
+// space into a bottom-up context (y' = flipHeight - y) without reordering, so
+// the chords stay the ones D2D draws.
+CGPathRef createPolygonPath(const std::vector<d2dcurves::Point>& points, double flipHeight = 0) {
+  if (points.size() < 3) return nullptr;
+  CGMutablePathRef path = CGPathCreateMutable();
+  const auto y = [&](double v) { return CGFloat(flipHeight > 0 ? flipHeight - v : v); };
+  CGPathMoveToPoint(path, nullptr, CGFloat(points[0].x), y(points[0].y));
+  for (size_t i = 1; i < points.size(); ++i) CGPathAddLineToPoint(path, nullptr, CGFloat(points[i].x), y(points[i].y));
+  CGPathCloseSubpath(path);
+  return path;
+}
+
+CGPathRef createRoundedPath(CGRect rect, CGFloat radius, double tolerance) {
   if (rect.size.width <= 0 || rect.size.height <= 0) return nullptr;
   // Core Graphics asserts on radii over half a side; D2D clamps (spec 5.7).
   radius = std::clamp<CGFloat>(radius, 0, std::min(rect.size.width, rect.size.height) * 0.5);
-  return radius > 0 ? CGPathCreateWithRoundedRect(rect, radius, radius, nullptr) : CGPathCreateWithRect(rect, nullptr);
+  if (radius <= 0) return CGPathCreateWithRect(rect, nullptr);
+  return createPolygonPath(d2dcurves::roundedRect(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height,
+                                                  radius, tolerance));
+}
+
+// Draws `image` into user-space `dest` as D2D's DrawBitmap with
+// D2D1_BITMAP_INTERPOLATION_MODE_LINEAR does: bilinear on premultiplied
+// pixels, sample positions at device pixel centres mapped into the source
+// (centre-aligned, edges clamped), and a fractional destination edge
+// antialiased by the pixel's area inside the rect. Probed on Windows
+// 2026-11-27: one white pixel upscaled 8x reads 16, 48, ... 239 per column,
+// exactly this kernel. Core Graphics' interpolation qualities are
+// unspecified (Medium read sharper than bilinear, edges up to 66/255 off),
+// so the resample is done here and composited 1:1 in device pixels. The
+// caller's alpha (opacity) and clip apply to the composite.
+bool drawImageBilinear(CGContextRef cg, CGColorSpaceRef space, CGImageRef image, CGRect dest) {
+  const size_t srcW = CGImageGetWidth(image), srcH = CGImageGetHeight(image);
+  if (srcW == 0 || srcH == 0 || dest.size.width <= 0 || dest.size.height <= 0) return true;
+  const CGAffineTransform ctm = CGContextGetCTM(cg);
+  if (ctm.b != 0 || ctm.c != 0) {  // not axis-aligned: no D2D-matching path; draw as before
+    CGContextSetInterpolationQuality(cg, kCGInterpolationMedium);
+    CGContextTranslateCTM(cg, dest.origin.x, dest.origin.y + dest.size.height);
+    CGContextScaleCTM(cg, 1, -1);
+    CGContextDrawImage(cg, CGRectMake(0, 0, dest.size.width, dest.size.height), image);
+    return true;
+  }
+  // Source pixels, premultiplied B G R A; memory row 0 is the image's top row.
+  CfRef<CGContextRef> source(CGBitmapContextCreate(nullptr, srcW, srcH, 8, srcW * 4, space,
+                                                   CGBitmapInfo(kCGImageAlphaPremultipliedFirst) |
+                                                       kCGBitmapByteOrder32Little));
+  if (!source) return false;
+  CGContextSetBlendMode(source.get(), kCGBlendModeCopy);
+  CGContextSetInterpolationQuality(source.get(), kCGInterpolationNone);
+  CGContextDrawImage(source.get(), CGRectMake(0, 0, CGFloat(srcW), CGFloat(srcH)), image);
+  CGContextFlush(source.get());
+  const auto* src = static_cast<const uint8_t*>(CGBitmapContextGetData(source.get()));
+  const size_t srcStride = CGBitmapContextGetBytesPerRow(source.get());
+  // Device positions of the image's top-left and bottom-right corners.
+  const CGPoint p0 = CGPointApplyAffineTransform(dest.origin, ctm);
+  const CGPoint p1 = CGPointApplyAffineTransform(
+      CGPointMake(dest.origin.x + dest.size.width, dest.origin.y + dest.size.height), ctm);
+  const double dx0 = std::min(p0.x, p1.x), dx1 = std::max(p0.x, p1.x);
+  const double dy0 = std::min(p0.y, p1.y), dy1 = std::max(p0.y, p1.y);
+  const double targetW = double(CGBitmapContextGetWidth(cg)), targetH = double(CGBitmapContextGetHeight(cg));
+  const double ix0 = std::max(0.0, std::floor(dx0)), ix1 = std::min(targetW, std::ceil(dx1));
+  const double iy0 = std::max(0.0, std::floor(dy0)), iy1 = std::min(targetH, std::ceil(dy1));
+  if (ix1 <= ix0 || iy1 <= iy0) return true;  // off the bitmap
+  const size_t width = size_t(ix1 - ix0), height = size_t(iy1 - iy0);
+  CfRef<CGContextRef> layer(CGBitmapContextCreate(nullptr, width, height, 8, width * 4, space,
+                                                  CGBitmapInfo(kCGImageAlphaPremultipliedFirst) |
+                                                      kCGBitmapByteOrder32Little));
+  if (!layer) return false;
+  auto* out = static_cast<uint8_t*>(CGBitmapContextGetData(layer.get()));
+  const size_t outStride = CGBitmapContextGetBytesPerRow(layer.get());
+  const auto overlap = [](double a0, double a1, double b0, double b1) {
+    return std::max(0.0, std::min(a1, b1) - std::max(a0, b0));
+  };
+  const auto at = [&](long sx, long sy) {
+    sx = std::clamp<long>(sx, 0, long(srcW) - 1);
+    sy = std::clamp<long>(sy, 0, long(srcH) - 1);
+    return src + size_t(sy) * srcStride + size_t(sx) * 4;
+  };
+  for (size_t row = 0; row < height; ++row) {
+    // Memory row 0 is the layer's top: the highest device y.
+    const double deviceY = iy1 - 1 - double(row);
+    const double coverY = overlap(deviceY, deviceY + 1, dy0, dy1);
+    // Source row coordinate of this pixel's centre (p0 is the image's top edge).
+    const double v = (deviceY + 0.5 - p0.y) / (p1.y - p0.y) * double(srcH) - 0.5;
+    const long v0 = long(std::floor(v));
+    const double fv = v - double(v0);
+    for (size_t col = 0; col < width; ++col) {
+      const double deviceX = ix0 + double(col);
+      const double cover = coverY * overlap(deviceX, deviceX + 1, dx0, dx1);
+      uint8_t* px = out + row * outStride + col * 4;
+      if (cover <= 0) continue;
+      const double u = (deviceX + 0.5 - p0.x) / (p1.x - p0.x) * double(srcW) - 0.5;
+      const long u0 = long(std::floor(u));
+      const double fu = u - double(u0);
+      const uint8_t *a = at(u0, v0), *b = at(u0 + 1, v0), *c = at(u0, v0 + 1), *d = at(u0 + 1, v0 + 1);
+      for (int k = 0; k < 4; ++k) {
+        const double top = a[k] + (b[k] - a[k]) * fu, bottom = c[k] + (d[k] - c[k]) * fu;
+        px[k] = uint8_t(std::clamp((top + (bottom - top) * fv) * cover + 0.5, 0.0, 255.0));
+      }
+    }
+  }
+  CfRef<CGImageRef> resampled(CGBitmapContextCreateImage(layer.get()));
+  if (!resampled) return false;
+  CGContextSaveGState(cg);
+  CGContextConcatCTM(cg, CGAffineTransformInvert(ctm));  // device pixels; clip and alpha stay
+  CGContextSetInterpolationQuality(cg, kCGInterpolationNone);
+  CGContextDrawImage(cg, CGRectMake(CGFloat(ix0), CGFloat(iy0), CGFloat(width), CGFloat(height)), resampled.get());
+  CGContextRestoreGState(cg);
+  return true;
+}
+
+CGPathRef createEllipsePath(CGRect rect, double tolerance) {
+  if (rect.size.width <= 0 || rect.size.height <= 0) return nullptr;
+  return createPolygonPath(d2dcurves::ellipse(CGRectGetMidX(rect), CGRectGetMidY(rect), rect.size.width / 2,
+                                              rect.size.height / 2, tolerance));
 }
 
 // The positioned outlines of every glyph in `lines`, for outline and shadow
@@ -227,6 +357,28 @@ void appendGlyphOutlines(CGMutablePathRef path, CTLineRef line, CGFloat x, CGFlo
       CGPathAddPath(path, &place, glyph.get());
     }
   }
+}
+
+// Grayscale enhanced contrast of the Windows text raster: the value pinned as
+// kOverlayTextGrayscaleEnhancedContrast in CompositorOverlayRaster.cpp. Keep
+// the two equal; the G4 parity test judges the pair.
+constexpr double kWindowsTextGrayscaleContrast = 1.0;
+
+// Coverage a in [0,1] -> a * (k + 1) / (a * k + 1), the contrast-enhancement
+// form DirectWrite applies to grayscale glyph coverage. Fitted check against
+// the G4 reference (2026-11-27): with k = 1 the text-only fixtures' summed
+// alpha moves from 8-10% under Windows to 2-3.4% under.
+const std::array<uint8_t, 256>& windowsTextCoverageCurve() {
+  static const std::array<uint8_t, 256> curve = [] {
+    std::array<uint8_t, 256> out{};
+    constexpr double k = kWindowsTextGrayscaleContrast;
+    for (int i = 0; i < 256; ++i) {
+      const double a = i / 255.0;
+      out[size_t(i)] = uint8_t(std::lround(255.0 * a * (k + 1) / (a * k + 1)));
+    }
+    return out;
+  }();
+  return curve;
 }
 
 bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::GraphicsPrimitive& p,
@@ -288,25 +440,90 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
       CGContextStrokePath(cg);
     }
   }
-  CGContextSaveGState(cg);
-  CGContextSetAlpha(cg, CGFloat(p.opacity));
-  CGContextClipToRect(cg, CGRectMake(b.x, b.y, b.width, layoutHeight));  // D2D1_DRAW_TEXT_OPTIONS_CLIP
-  CGContextSetTextMatrix(cg, CGAffineTransformMakeScale(1, -1));
-  // Small text: DirectWrite hints and contrast-enhances grayscale glyphs, so a
-  // 4 px social-card line still reads; unhinted Core Text coverage is much
-  // lighter there. Core Graphics font smoothing (stem dilation, which works on
-  // a grayscale alpha target) is the closest native analogue. Applied only
-  // under 16 device pixels per em, where hinting dominates, so larger text
-  // keeps its true weight for the G4 parity measurement (plan default D9).
+  // Text coverage matches the Windows raster (owner ruling 2026-11-27). D2D
+  // draws grayscale glyphs with pinned params (CompositorOverlayRaster.cpp:
+  // gamma 2.2, grayscale enhanced contrast 1.0), which lifts edge coverage
+  // above Core Text's linear coverage. The lines are drawn unsmoothed into an
+  // offscreen bitmap over the text clip, every pixel's coverage goes through
+  // the same contrast curve (kWindowsTextGrayscaleContrast), and the result is
+  // composited at the primitive's opacity. Font smoothing (the old small-text
+  // dilation, plan default D9) is off: the curve replaces it at every size.
+  const CGRect textClip = CGRectMake(b.x, b.y, b.width, layoutHeight);  // D2D1_DRAW_TEXT_OPTIONS_CLIP
+  // D2D's DrawTextLayout (no D2D1_DRAW_TEXT_OPTIONS_NO_SNAP) rounds each
+  // line's baseline to the nearest whole device pixel; the outline and shadow
+  // above come from a custom renderer with snapping disabled, so they stay
+  // unsnapped on both rasters. Snap in device space (the CTM carries
+  // placement and scale) and only when the CTM is axis-aligned, as D2D does.
+  const CGAffineTransform userToDevice = CGContextGetCTM(cg);
+  const double deviceHeight = double(CGBitmapContextGetHeight(cg));
+  auto snappedBaseline = [&](double x, double y) {
+    if (userToDevice.b != 0 || userToDevice.c != 0 || userToDevice.d == 0) return y;
+    CGPoint device = CGPointApplyAffineTransform(CGPointMake(CGFloat(x), CGFloat(y)), userToDevice);
+    // Round in top-down rows, as D2D does, whichever way the CTM flips y.
+    device.y = userToDevice.d < 0 ? CGFloat(deviceHeight - std::floor(deviceHeight - device.y + 0.5))
+                                  : CGFloat(std::floor(device.y + 0.5));
+    return double(CGPointApplyAffineTransform(device, CGAffineTransformInvert(userToDevice)).y);
+  };
+  auto drawLines = [&](CGContextRef target) {
+    CGContextSetTextMatrix(target, CGAffineTransformMakeScale(1, -1));
+    CGContextSetAllowsAntialiasing(target, true);
+    CGContextSetShouldAntialias(target, true);
+    CGContextSetAllowsFontSmoothing(target, false);
+    CGContextSetShouldSmoothFonts(target, false);
+    CGContextSetAllowsFontSubpixelPositioning(target, true);
+    CGContextSetShouldSubpixelPositionFonts(target, true);
+    for (size_t n = 0; n < text.lines().size(); ++n) {
+      const double x = lineX(text.lines()[n]);
+      CGContextSetTextPosition(target, CGFloat(x), CGFloat(snappedBaseline(x, baseline(n))));
+      CTLineDraw(text.lines()[n].line, target);
+    }
+  };
+  const size_t targetWidth = CGBitmapContextGetWidth(cg), targetHeight = CGBitmapContextGetHeight(cg);
+  // The layer, the composite and this rect must all use the CTM. Do not use
+  // CGContextConvertRectToDeviceSpace: on a CI run it returned the text clip
+  // flipped vertically against the CTM, which cut text off at the clip edge.
   const CGAffineTransform ctm = CGContextGetCTM(cg);
-  const double devicePixelsPerEm = p.fontSize * std::sqrt(std::fabs(ctm.a * ctm.d - ctm.b * ctm.c));
-  const bool smallText = devicePixelsPerEm < 16;
-  CGContextSetAllowsFontSmoothing(cg, smallText);
-  CGContextSetShouldSmoothFonts(cg, smallText);
-  for (size_t n = 0; n < text.lines().size(); ++n) {
-    CGContextSetTextPosition(cg, CGFloat(lineX(text.lines()[n])), CGFloat(baseline(n)));
-    CTLineDraw(text.lines()[n].line, cg);
+  const CGRect device = CGRectIntersection(CGRectIntegral(CGRectApplyAffineTransform(textClip, ctm)),
+                                           CGRectMake(0, 0, CGFloat(targetWidth), CGFloat(targetHeight)));
+  if (CGRectIsNull(device) || CGRectIsEmpty(device)) return true;  // the text clip is off the bitmap
+  const size_t width = size_t(device.size.width), height = size_t(device.size.height);
+  CfRef<CGContextRef> layer(CGBitmapContextCreate(nullptr, width, height, 8, width * 4, space,
+                                                  CGBitmapInfo(kCGImageAlphaPremultipliedFirst) |
+                                                      kCGBitmapByteOrder32Little));
+  if (!layer) {
+    warning = "Graphics text layer allocation failed.";
+    return false;
   }
+  // Same user space as `cg`, shifted so the layer's origin is the device rect.
+  CGContextTranslateCTM(layer.get(), -device.origin.x, -device.origin.y);
+  CGContextConcatCTM(layer.get(), ctm);
+  CGContextClipToRect(layer.get(), textClip);
+  drawLines(layer.get());
+  CGContextFlush(layer.get());
+  auto* pixels = static_cast<uint8_t*>(CGBitmapContextGetData(layer.get()));
+  const size_t stride = CGBitmapContextGetBytesPerRow(layer.get());
+  const auto& curve = windowsTextCoverageCurve();
+  for (size_t y = 0; y < height; ++y) {
+    uint8_t* row = pixels + y * stride;
+    for (size_t x = 0; x < width; ++x) {
+      uint8_t* px = row + x * 4;  // B G R A, premultiplied
+      const uint8_t a = px[3];
+      if (a == 0 || a == 255) continue;
+      const uint8_t lifted = curve[a];
+      for (int c = 0; c < 3; ++c) px[c] = uint8_t(std::min<unsigned>(lifted, (unsigned(px[c]) * lifted + a / 2) / a));
+      px[3] = lifted;
+    }
+  }
+  CfRef<CGImageRef> image(CGBitmapContextCreateImage(layer.get()));
+  if (!image) {
+    warning = "Graphics text layer allocation failed.";
+    return false;
+  }
+  CGContextSaveGState(cg);
+  CGContextConcatCTM(cg, CGAffineTransformInvert(ctm));  // device pixels; the primitive clip stays
+  CGContextSetInterpolationQuality(cg, kCGInterpolationNone);
+  CGContextSetAlpha(cg, CGFloat(p.opacity));
+  CGContextDrawImage(cg, device, image.get());
   CGContextRestoreGState(cg);
   return true;
 }
@@ -357,11 +574,10 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
           const double y = b.y + (p.imageVerticalAlign == "bottom" ? b.height - h
                                   : p.imageVerticalAlign == "center" ? (b.height - h) / 2 : 0);
           CGContextSetAlpha(cg, CGFloat(p.opacity));
-          CGContextSetInterpolationQuality(cg, kCGInterpolationMedium);
-          // Images are bottom-up in Core Graphics; flip locally in the top-down CTM.
-          CGContextTranslateCTM(cg, CGFloat(x), CGFloat(y + h));
-          CGContextScaleCTM(cg, 1, -1);
-          CGContextDrawImage(cg, CGRectMake(0, 0, w, h), bitmap->second.get());
+          if (!drawImageBilinear(cg, space, bitmap->second.get(), CGRectMake(x, y, w, h))) {
+            complete = false;
+            warning = "Graphics image layer allocation failed.";
+          }
         }
       }
       CGContextRestoreGState(cg);
@@ -408,21 +624,26 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
         CGContextFillPath(cg);
       }
     };
+    // Strokes widen the same flattened polygon D2D widens; Core Graphics'
+    // default miter join (limit 10) is D2D's default stroke style.
+    const double tolerance = flatteningTolerance(cg);
     if (p.type == "rect") {
-      CfRef<CGPathRef> shape(createRoundedPath(cgRect(b), p.cornerRadius));
+      CfRef<CGPathRef> shape(createRoundedPath(cgRect(b), p.cornerRadius, tolerance));
       fillShape(shape.get());
       if (stroke) {
         CfRef<CGPathRef> edge(createRoundedPath(
             CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset),
-            std::max(0.0, p.cornerRadius - inset)));
+            std::max(0.0, p.cornerRadius - inset), tolerance));
         if (edge) { CGContextAddPath(cg, edge.get()); CGContextStrokePath(cg); }
       }
     } else if (p.type == "ellipse") {
       if (b.width > 0 && b.height > 0) {
-        CfRef<CGPathRef> shape(CGPathCreateWithEllipseInRect(cgRect(b), nullptr));
+        CfRef<CGPathRef> shape(createEllipsePath(cgRect(b), tolerance));
         fillShape(shape.get());
         if (stroke && b.width > 2 * inset && b.height > 2 * inset) {
-          CGContextStrokeEllipseInRect(cg, CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset));
+          CfRef<CGPathRef> edge(createEllipsePath(
+              CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset), tolerance));
+          if (edge) { CGContextAddPath(cg, edge.get()); CGContextStrokePath(cg); }
         }
       }
     } else if (p.type == "text" && !p.text.empty()) {
@@ -722,15 +943,22 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     if (overlay.appearance.enabled && !overlay.isCaption) {
       const CGRect band = CGRectMake(0, 0, widthPx, heightPx);
       const CGFloat radius = std::clamp<CGFloat>(layout.cornerRadius, 0, std::min(widthPx, heightPx) * 0.5);
-      CfRef<CGPathRef> path(radius > 0 ? CGPathCreateWithRoundedRect(band, radius, radius, nullptr)
-                                       : CGPathCreateWithRect(band, nullptr));
+      // Windows pushes the rounded band as a layer mask AND fills the rounded
+      // band inside it (CompositorOverlayRaster.cpp PushLayer +
+      // FillRoundedRectangle), so a corner pixel's coverage is applied twice.
+      // Clip to the same D2D polygon and fill it, not the rectangle, so the
+      // Mac corner is squared the same way. This context is bottom-up.
+      CfRef<CGPathRef> path(radius > 0
+          ? createPolygonPath(d2dcurves::roundedRect(0, 0, widthPx, heightPx, radius, flatteningTolerance(cg)), heightPx)
+          : CGPathCreateWithRect(band, nullptr));
       if (!path) complete = false;
       else {
         CGContextAddPath(cg, path.get());
         CGContextClip(cg);
         const auto bg = colorFromArgb(layout.backgroundArgb, space.get());
         CGContextSetFillColorWithColor(cg, bg.get());
-        CGContextFillRect(cg, band);
+        CGContextAddPath(cg, path.get());
+        CGContextFillPath(cg);
       }
     }
     if (layout.accentBar.width > 0 && layout.accentBar.height > 0) {

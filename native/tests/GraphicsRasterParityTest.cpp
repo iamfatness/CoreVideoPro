@@ -94,6 +94,27 @@ TEST(GraphicsRasterParity, AlphaScaledBy0_85FailsSummedAlpha) {
   EXPECT_FALSE(mentions(judgeText(reference, close, {textRegion()}, 1), "summed alpha"));
 }
 
+TEST(GraphicsRasterParity, ATextRegionIsMeasuredOnlyInsideItsClip) {
+  // Ink in the grown band past the clip belongs to a neighbour (a table's next
+  // row): neither raster can draw this primitive there.
+  auto reference = blank(100, 80), candidate = blank(100, 80);
+  glyphs(reference, 0, 0);
+  glyphs(candidate, 0, 0);
+  fill(candidate, 16, 57, 80, 61, 255, 255, 255, 255);
+  auto unclipped = textRegion();
+  EXPECT_TRUE(mentions(judgeText(reference, candidate, {unclipped}, 1), "summed alpha"))
+      << "without a clip the grown band is measured";
+  auto clipped = textRegion();
+  clipped.clipped = true;
+  clipped.clipX = 16; clipped.clipY = 16; clipped.clipWidth = 64; clipped.clipHeight = 40;
+  const auto v = judgeText(reference, candidate, {clipped}, 1);
+  EXPECT_TRUE(v.pass) << (v.failures.empty() ? "" : v.failures.front());
+  // Inside the clip the judge is unchanged: dimmer glyphs still fail.
+  auto dim = blank(100, 80);
+  glyphs(dim, 0, 0, uint8_t(255 * 0.85));
+  EXPECT_TRUE(mentions(judgeText(reference, dim, {clipped}, 1), "summed alpha"));
+}
+
 TEST(GraphicsRasterParity, AOnePixelBaselineMoveFailsTheBaseline) {
   auto reference = blank(100, 80), one = blank(100, 80), two = blank(100, 80);
   glyphs(reference, 0, 0); glyphs(one, 0, 1); glyphs(two, 0, 2);
@@ -139,8 +160,13 @@ TEST(GraphicsRasterParity, IndexIsWellFormed) {
   ASSERT_TRUE(error.empty()) << error;
   ASSERT_FALSE(fixtures.empty());
   std::set<std::string> names, curated;
+  // Recorded differences are a closed, owner-ruled list (2026-11-27): a new
+  // one is a ruling, not an index edit.
+  const std::set<std::string> recordable{"segoe-substitution", "text-emoji"};
   for (const auto& fixture : fixtures) {
     EXPECT_TRUE(names.insert(fixture.name).second) << "duplicate fixture name " << fixture.name;
+    if (!fixture.recordedDifference.empty())
+      EXPECT_TRUE(recordable.count(fixture.name)) << fixture.name << ": not an owner-recorded difference";
     if (fixture.source.rfind("curated:", 0) == 0) curated.insert(fixture.source.substr(8));
     ParityInput input;
     std::string inputError;

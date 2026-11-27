@@ -5,12 +5,14 @@
 // must all be explicit: non-stub, dev adapters, and D3D11.
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 
+#include <dwrite_1.h>
 #include <dxgi.h>
 
 #include <algorithm>
 #include <cmath>
 #include <string_view>
 
+#include "compositor/CompositorFaultInjection.h"
 #include "modules/OverlayTileRaster.h"
 #include "core/ComApartmentLifetime.h"
 
@@ -41,10 +43,16 @@ D2D1_COLOR_F d2dColorFromArgb(uint32_t argb) {
       static_cast<float>((argb >> 24) & 0xff) / 255.f);
 }
 
+// Pinned text coverage (see ensureOverlayRasterFactories). Shared numbers with
+// the Mac coverage curve in CoreTextOverlayRaster.mm.
+constexpr float kOverlayTextGamma = 2.2f;
+constexpr float kOverlayTextEnhancedContrast = 0.5f;
+constexpr float kOverlayTextGrayscaleEnhancedContrast = 1.0f;
+
 }  // namespace
 
 bool CompositorOverlayRaster::ensureOverlayRasterFactories() {
-  if (d2dFactory_ && dwriteFactory_ && wicFactory_) {
+  if (d2dFactory_ && dwriteFactory_ && textRenderingParams_ && wicFactory_) {
     return true;
   }
   if (!d2dFactory_ &&
@@ -58,6 +66,26 @@ bool CompositorOverlayRaster::ensureOverlayRasterFactories() {
           DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
           reinterpret_cast<IUnknown**>(dwriteFactory_.put())))) {
     return false;
+  }
+  // Pin the text rendering params. With none set, D2D uses the PC's ClearType
+  // tuning (HKCU/Software/Microsoft/Avalon.Graphics/DISPLAYn), so the weight
+  // of on-air text varied from one machine to the next. These are the values
+  // CreateRenderingParams() returned on the machine that wrote the Windows
+  // parity reference (contracts/graphics-raster-reference.json), so the look
+  // stays the same. CoreTextOverlayRaster.mm matches this coverage on the Mac.
+  // The target is a premultiplied transparent bitmap, so text is grayscale and
+  // only gamma and the grayscale enhanced contrast affect coverage.
+  if (!textRenderingParams_) {
+    ComPtrLite<IDWriteFactory1> factory1;
+    if (FAILED(dwriteFactory_->QueryInterface(__uuidof(IDWriteFactory1),
+                                              reinterpret_cast<void**>(factory1.put()))) ||
+        FAILED(factory1->CreateCustomRenderingParams(
+            kOverlayTextGamma, kOverlayTextEnhancedContrast, kOverlayTextGrayscaleEnhancedContrast,
+            1.0f, DWRITE_PIXEL_GEOMETRY_RGB, DWRITE_RENDERING_MODE_DEFAULT,
+            // IDWriteRenderingParams1 derives singly from IDWriteRenderingParams.
+            reinterpret_cast<IDWriteRenderingParams1**>(textRenderingParams_.put())))) {
+      return false;
+    }
   }
   // All prepared tiles use a CPU WIC target. The preparation owner has already
   // initialized its COM apartment; optional image decoding uses this factory too.
@@ -178,7 +206,7 @@ CompositorOverlayRaster::CompositorOverlayRaster()
              256ull * 1024 * 1024, 32, [this] {
                // Release apartment-owned factories before the owner's thread-local
                // COM lifetime ends, including tests with no process-wide MTA.
-               wicFactory_ = {}; dwriteFactory_ = {}; d2dFactory_ = {};
+               wicFactory_ = {}; textRenderingParams_ = {}; dwriteFactory_ = {}; d2dFactory_ = {};
              }, 64) {}
 CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 
@@ -456,19 +484,9 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   if (!activeLease_) {
     device->AddRef();
     Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height, strictResources};
-    uint64_t admissionBytes = uint64_t(width) * height * 8;
-    if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition) {
-      const auto& definition = *overlay.graphicsTemplate->definition;
-      const auto& motion = definition.motionSummary();
-      if (motion.layered && !overlay.graphicsTemplate->wholeGraphicMotion) {
-        // Each animated subtree can split its surrounding paint run twice.
-        // The worker charges the actual atlas dimensions after layout.
-        const auto maxRuns = 2 * motion.units + 1;
-        const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (height + 3) - 2);
-        const auto maxWidth = uint64_t(std::min(16384., 1 + std::ceil(height * definition.width() / definition.height())));
-        admissionBytes = std::min<uint64_t>(256ull * 1024 * 1024, maxWidth * maxHeight * 4);
-      }
-    }
+    // Bounds the atlas for layered motion AND crawls (shared with Metal).
+    // The worker charges the actual atlas dimensions after layout.
+    const uint64_t admissionBytes = graphics::overlayAdmissionBytes(overlay.graphicsTemplate.get(), width, height);
     activeLease_ = cache_.findOrRequest(key, std::move(request),
         admissionBytes + (overlay.imageUri.empty() ? 0 : 128ull * 1024 * 1024), preparationSlot);
   }
@@ -521,6 +539,7 @@ std::vector<uint8_t> CompositorOverlayRaster::thumbnailPng(const CompositorOverl
   return result.asset ? result.asset->thumbnail : std::vector<uint8_t>{};
 }
 CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(const Request& request) {
+  compositor::invokeOverlayRasterPrepareHook();  // test seam; a no-op unless a test installs a hook
   thread_local core::ComApartmentLifetime apartment;
   const auto& overlay = request.overlay;
   const int widthPx = request.width, heightPx = request.height;
@@ -587,6 +606,8 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   ComPtrLite<ID2D1RenderTarget> d2dTarget;
   if (FAILED(d2dFactory_->CreateWicBitmapRenderTarget(bitmap.get(), &targetProperties, d2dTarget.put())))
     return {{}, 0, "Graphics raster target creation failed."};
+  d2dTarget->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+  d2dTarget->SetTextRenderingParams(textRenderingParams_.get());
 
   // Geometry + per-line colors come from the shared layout resolver, so this
   // DirectWrite raster and the portable CPU bitmap-font tile

@@ -2,9 +2,9 @@
 // G4 Task 7) and the D3D11 instantiation of the overlay raster contract
 // (spec 7.1; OverlayRasterContractCases.h).
 //
-// WRITTEN ON THE MAC, NEVER COMPILED THERE (no D3D11 headers on macOS). The
-// owner's one Windows session builds it, fixes compile errors, runs it and
-// commits what it writes. Keep it to CompositorOverlayRaster's public surface.
+// Written on the Mac (no D3D11 headers there). First compiled on Windows
+// 2026-11-26 (Release, Windows build 26300): it compiled unchanged. Keep it to
+// CompositorOverlayRaster's public surface.
 //
 // - OverlayRasterContract.*: every contract case except the Metal-only emoji
 //   case. A red case is a real Windows/Mac contract difference: record it, do
@@ -326,19 +326,23 @@ TEST(OverlayRasterContract, CompatibleSameSizeIsAdoptedOnTheFirstCall) {
   overlayContract::contractCompatibleSameSizeIsAdoptedOnTheFirstCall<B>();
 }
 TEST(OverlayRasterContract, ForeignDeviceOrHashIsNeverAdopted) { overlayContract::contractForeignDeviceOrHashIsNeverAdopted<B>(); }
-// NEEDS A TEST SEAM: CompositorOverlayRaster::prepareRaster does not call
-// compositor::invokeOverlayRasterPrepareHook() (CoreTextOverlayRaster.mm does),
-// so this case cannot block the D3D11 worker and may see "ready" early. Add the
-// one-line hook call at the top of prepareRaster in the Windows session
-// (agenda item 2) before trusting a red here.
+// CompositorOverlayRaster::prepareRaster calls
+// compositor::invokeOverlayRasterPrepareHook(), so this case blocks the D3D11
+// worker the same way it blocks the Core Text worker.
 TEST(OverlayRasterContract, ScaleRetentionDrawsTheAcceptedRaster) { overlayContract::contractScaleRetentionDrawsTheAcceptedRaster<B>(); }
+// KNOWN RED ON D3D11 (2026-11-26), a recorded Windows/Mac difference: the
+// corrupt-pixel image (valid header, zeroed IDAT payload) prepares "ready"
+// with no warning on Windows, so neither the failed state nor the decode
+// wording appears. Metal fails it (forced decode, outcomes bug 1). Not fixed
+// here: the parity plan does not edit the Windows raster.
 TEST(OverlayRasterContract, FailedScaleKeepsTheAcceptedRaster) { overlayContract::contractFailedScaleKeepsTheAcceptedRaster<B>(); }
 TEST(OverlayRasterContract, CapacityWordingAtTheResidentLimit) { overlayContract::contractCapacityWordingAtTheResidentLimit<B>(); }
 TEST(OverlayRasterContract, BudgetWaitIsRetryableNotSticky) { overlayContract::contractBudgetWaitIsRetryableNotSticky<B>(); }
 TEST(OverlayRasterContract, AtlasSpaceFailureWording) { overlayContract::contractAtlasSpaceFailureWording<B>(); }
+// KNOWN RED ON D3D11 (2026-11-26): same cause as FailedScaleKeepsTheAcceptedRaster.
 TEST(OverlayRasterContract, ImageDecodeFailureWording) { overlayContract::contractImageDecodeFailureWording<B>(); }
-// EXPECTED RED until CompositorOverlayRaster.cpp admits a crawl at its atlas
-// bound (graphics::overlayAdmissionBytes; Windows-session agenda item 1).
+// CompositorOverlayRaster.cpp admits through graphics::overlayAdmissionBytes,
+// so a crawl at the item limit is admitted at its atlas bound on D3D11 too.
 TEST(OverlayRasterContract, CrawlAtTheItemLimitPreparesOrFailsWithAtlasWording) {
   overlayContract::contractCrawlAtTheItemLimitPreparesOrFailsWithAtlasWording<B>();
 }
