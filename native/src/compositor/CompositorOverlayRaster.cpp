@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <mutex>
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
@@ -439,6 +441,22 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
   return complete;
 }
 
+// Fixed operator wording, allocated once per process and shared by every fact.
+std::shared_ptr<const std::string> CompositorOverlayRaster::internedWarning(const char* text) {
+  static std::mutex mutex;
+  static std::map<std::string_view, std::shared_ptr<const std::string>> interned;
+  std::lock_guard lock(mutex);
+  auto& slot = interned[text];
+  if (!slot) slot = std::make_shared<const std::string>(text);
+  return slot;
+}
+
+void CompositorOverlayRaster::setWarning(std::shared_ptr<const std::string> warning) {
+  if (warning) lastWarning_.assign(*warning);  // reuses capacity: no steady-state allocation
+  else lastWarning_.clear();
+  sharedWarning_ = std::move(warning);
+}
+
 ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     ID3D11Device* device, ID3D11DeviceContext*, const CompositorOverlayContent& overlay,
     const compositor::LayerRect& rect, int targetWidth, int targetHeight,
@@ -454,7 +472,7 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
       &a.preset, &a.anchor, &a.fontFamily, &a.nameColor, &a.titleColor, &a.backgroundColor, &a.accentColor}) {
     if (value->size() > 65536 - metadataBytes) {
       activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
-      lastWarning_ = "Graphics content exceeds preparation metadata budget.";
+      setWarning(internedWarning("Graphics content exceeds preparation metadata budget."));
       return nullptr;
     }
     metadataBytes += value->size();
@@ -464,7 +482,7 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   if (!device || !std::isfinite(widthPixels) || !std::isfinite(heightPixels) ||
       widthPixels < 1 || heightPixels < 1 || widthPixels > 4096 || heightPixels > 4096) {
     activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
-    lastWarning_ = "Invalid graphics raster dimensions.";
+    setWarning(internedWarning("Invalid graphics raster dimensions."));
     return nullptr;
   }
   const int width = int(std::lround(widthPixels)), height = int(std::lround(heightPixels));
@@ -501,11 +519,19 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   activeContentHash_ = overlay.graphicsContentHash; activeHasContentHash_ = overlay.hasGraphicsContentHash;
   activeWidth_ = width; activeHeight_ = height;
   lastState_ = failedScale ? "failed" : retainingScale ? "preparing" : !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
-  lastWarning_ = failedScale ? scaleWarning + " Retaining the accepted raster." : retainingScale ? "Graphics scale preparation pending; retaining the accepted raster." :
-      activeLease_ ? activeLease_->warning : "Graphics preparation pending.";
+  // Warnings travel to per-frame facts BY REFERENCE (sharedWarning()): the
+  // prepared result's own string through an aliasing pointer (no allocation),
+  // fixed wording interned once. Only the rare failed-scale message is built.
+  // Same text as before; CoreTextOverlayRaster::rasterOverlayTexture is the twin.
+  if (failedScale) setWarning(std::make_shared<const std::string>(scaleWarning + " Retaining the accepted raster."));
+  else if (retainingScale) setWarning(internedWarning("Graphics scale preparation pending; retaining the accepted raster."));
+  else if (activeLease_) setWarning(activeLease_->warning.empty() ? nullptr
+                                        : std::shared_ptr<const std::string>(activeLease_, &activeLease_->warning));
+  else setWarning(internedWarning("Graphics preparation pending."));
   if(!activeLease_ && overlay.hasGraphicsContentHash) {
     const auto capacity=graphics::GraphicsResourceBudget::process().counters();
-    if(capacity.residentResources>=capacity.residentLimit) lastWarning_="Graphics preparation pending at the shared 16-revision capacity limit.";
+    if(capacity.residentResources>=capacity.residentLimit)
+      setWarning(internedWarning("Graphics preparation pending at the shared 16-revision capacity limit."));
   }
   pendingThisFrame_ = pendingThisFrame_ || (retainingScale && !failedScale) || !activeLease_;
   failedThisFrame_ = failedThisFrame_ || failedScale || (activeLease_ && !activeLease_->asset);

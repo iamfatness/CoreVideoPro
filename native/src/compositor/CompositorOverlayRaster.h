@@ -26,6 +26,7 @@
 #include <wincodec.h>
 
 #include <cstdint>
+#include <memory>
 #include <map>
 #include <string>
 #include <compare>
@@ -55,8 +56,15 @@ class CompositorOverlayRaster {
   std::shared_ptr<const graphics::GraphicsRunLayout> activeRuns() const;
   std::shared_ptr<const void> lease() const { return activeLease_; }
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource();
-  void refuseGpuLease() { failedThisFrame_ = true; lastWarning_ = "Graphics GPU retirement capacity unavailable."; }
+  void refuseGpuLease() {
+    failedThisFrame_ = true;
+    setWarning(internedWarning("Graphics GPU retirement capacity unavailable."));
+  }
   const std::string& lastWarning() const { return lastWarning_; }
+  // The same text by reference, for per-frame facts (null when empty): copying
+  // it into each fact would allocate on the render thread every frame (Metal
+  // graphics G2 review 2; CoreTextOverlayRaster::sharedWarning is the twin).
+  const std::shared_ptr<const std::string>& sharedWarning() const { return sharedWarning_; }
   // Called by the package/library worker only. Uses the exact native typography,
   // layout and image decoder, never a shell approximation or Program texture.
   std::vector<uint8_t> thumbnailPng(const CompositorOverlayContent& overlay, int width, int height, std::string& warning);
@@ -142,12 +150,16 @@ class CompositorOverlayRaster {
   };
   using Cache = graphics::PreparationCache<Key, Request, OverlayRasterTex>;
   Cache::Result prepareRaster(const Request& request);
+  static std::shared_ptr<const std::string> internedWarning(const char* text);
+  // Keeps lastWarning_ (reused capacity) and sharedWarning_ in step.
+  void setWarning(std::shared_ptr<const std::string> warning);
   ComPtrLite<ID2D1Factory> d2dFactory_;
   ComPtrLite<IDWriteFactory> dwriteFactory_;
   // Pinned text rendering params (see ensureOverlayRasterFactories).
   ComPtrLite<IDWriteRenderingParams> textRenderingParams_;
   ComPtrLite<IWICImagingFactory> wicFactory_;
   std::string lastWarning_;
+  std::shared_ptr<const std::string> sharedWarning_;
   std::string workerWarning_;
   bool pendingThisFrame_ = false, failedThisFrame_ = false;
   const char* lastState_ = "unprepared";

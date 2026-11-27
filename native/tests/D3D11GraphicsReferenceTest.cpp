@@ -347,6 +347,61 @@ TEST(OverlayRasterContract, CrawlAtTheItemLimitPreparesOrFailsWithAtlasWording) 
   overlayContract::contractCrawlAtTheItemLimitPreparesOrFailsWithAtlasWording<B>();
 }
 
+// ── Windows-session agenda (G3-G5 outcomes, item 4) ─────────────────────────
+
+namespace {
+// A legacy lower third in a family DirectWrite cannot find: legacy (non-strict)
+// mode substitutes Segoe UI and warns. The family name is deliberately absurd
+// so no customer PC has it.
+corevideo::modules::CompositorOverlayContent missingFontLowerThird(const std::string& name) {
+  auto overlay = overlayContract::legacyLowerThird(name, "WARNING BY REFERENCE");
+  overlay.appearance.enabled = true;
+  overlay.appearance.fontFamily = "CoreVideo Missing Font 7f3a91";
+  overlay.fontFamily = overlay.appearance.fontFamily;
+  return overlay;
+}
+}  // namespace
+
+// G2 review 2 on D3D11: the adapter's graphicsPreparations loop copied the
+// raster's warning into a fact every Program frame. The raster now hands the
+// same text out by reference: a prepared result's own warning keeps ONE
+// identity across ticks (no per-tick copy), and fixed wording is interned, so
+// two different pending graphics share one string. Fixture invariant: the
+// warning is longer than the small-string buffer, so a copy would allocate.
+TEST(D3D11OverlayRaster, WarningsTravelByReferenceWithoutAPerTickCopy) {
+  auto* device = B::device();
+  if (!device) { std::fprintf(stderr, "[d3d11-raster] unavailable: no graphics device\n"); return; }
+  corevideo::modules::CompositorOverlayRaster raster;
+  const auto overlay = missingFontLowerThird("SHARED WARNING NAME");
+  const auto ready = overlayContract::waitTerminal<B>(raster, device, overlay, 600, 120);
+  ASSERT_EQ(ready.state, "ready") << ready.warning;
+  ASSERT_EQ(ready.warning, "Font unavailable; using Segoe UI.");
+  ASSERT_GT(ready.warning.size(), 15u) << "fixture must exceed the small-string buffer";
+  const auto first = raster.sharedWarning();
+  ASSERT_TRUE(first);
+  bool same = true;
+  for (int tick = 0; tick < 20; ++tick) {
+    B::raster(raster, device, overlay, 600, 120, false, {});
+    same = same && raster.sharedWarning() == first && raster.lastWarning() == *first;
+  }
+  EXPECT_TRUE(same) << "the prepared warning must keep one identity and match lastWarning()";
+  // No warning -> no shared text (facts read an empty reasonText()).
+  const auto clean = overlayContract::legacyLowerThird("CLEAN NAME", "NO WARNING");
+  ASSERT_EQ(overlayContract::waitTerminal<B>(raster, device, clean, 600, 120).state, "ready");
+  EXPECT_FALSE(raster.sharedWarning());
+  EXPECT_TRUE(raster.lastWarning().empty());
+  // Fixed wording is interned: two different cold graphics share one string.
+  const auto coldA = overlayContract::legacyLowerThird("COLD A NEVER SEEN", "PENDING");
+  const auto coldB = overlayContract::legacyLowerThird("COLD B NEVER SEEN", "PENDING");
+  ASSERT_EQ(overlayContract::call<B>(raster, device, coldA, 600, 120).state, "preparing");
+  const auto pendingA = raster.sharedWarning();
+  ASSERT_EQ(overlayContract::call<B>(raster, device, coldB, 600, 120).state, "preparing");
+  ASSERT_TRUE(pendingA);
+  EXPECT_EQ(*pendingA, "Graphics preparation pending.");
+  EXPECT_EQ(raster.sharedWarning(), pendingA);
+}
+
+
 TEST(GraphicsRasterReference, WriteWindowsReference) {
   const char* root = std::getenv("COREVIDEO_WRITE_GRAPHICS_REFERENCE");
   if (!root || !*root) {
