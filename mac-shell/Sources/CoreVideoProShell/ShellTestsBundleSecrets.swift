@@ -253,6 +253,11 @@ extension ShellTests {
         // The same overlap between two ESCAPED spellings.
         expectEqual(Redactor.scrub("e fkleft%4DIDright%71 f", literals: [left, right]), "e [redacted] f",
                     "overlap of encoded spellings")
+        // And between two matches only Foundation's search finds (Kelvin sign).
+        expectEqual(Redactor.scrub("g fkleft\u{212A}rightq h", literals: ["fkleftK", "Krightq"]), "g [redacted] h",
+                    "overlap of singleton matches")
+        expectEqual(LiteralScrubber(["fkleftK", "Krightq"]).scrub("g fkleft\u{212A}rightq h").text,
+                    "g [redacted] h", "and in the final pass")
         expectEqual(LiteralScrubber([left, right]).scrub("e fkleft%4DIDright%71 f").text, "e [redacted] f",
                     "and in the final pass")
     }
