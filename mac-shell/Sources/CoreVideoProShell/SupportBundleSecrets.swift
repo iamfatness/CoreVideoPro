@@ -173,7 +173,12 @@ struct LiteralScrubber {
     /// `floor` defaults to `values`.
     init(_ values: [String], floor: [String]? = nil) {
         // Foundation's search answers a needle holding U+0000 with a range past
-        // the end of the text, which traps: match each side of it instead.
+        // the end of the text, which traps: it only ever gets each side of it.
+        // The WHOLE value goes to the matcher below, which is safe with it (a
+        // side may be too short, and main removed the value where it was whole).
+        let holdingNul = (values + (floor ?? [])).filter {
+            $0.unicodeScalars.contains("\0") && $0.count >= Self.minimumLength
+        }
         // A PIECE of a value is a literal only with enough in it besides
         // whitespace: four spaces would shred all indentation. (A value as held
         // is not trimmed here; the floor must match what it always matched.)
@@ -198,10 +203,10 @@ struct LiteralScrubber {
         }
         var seen = Set<[UInt8]>()
         held = values.filter { seen.insert(Array($0.utf8)).inserted }
-        spansLines = held.contains { $0.unicodeScalars.contains("\n") }
+        spansLines = (held + holdingNul).contains { $0.unicodeScalars.contains("\n") }
         var parsed: [[Spellings]] = []
         var starts = [Bool](repeating: false, count: 256)
-        for value in Set(values) {
+        for value in Set(values + holdingNul) {
             let characters: [Spellings] = value.map { character in
                 Self.spellings(of: character).map { $0.map(Self.unit) }
             }

@@ -753,9 +753,30 @@ extension ShellTests {
 }
 
 extension ShellTests {
+    /// Where main's replace DOES find a NUL-holding value whole (the text goes
+    /// on past it), it must still go whole: its pieces may be too short.
+    private static func wholeNulValuesStillMatch() {
+        for held in ["ab  \u{0}", "abcd\u{0}ef", "q7\u{0}z8", "    \u{0}", "fk\u{0}a\nb9"] {
+            let text = "pw \(held) y"
+            let main = MainRedactor.scrub(text, literals: [held])
+            expect(!has(main, held), "main removes \(held.debugDescription): \(main.debugDescription)")
+            for floor in [[held], []] {
+                let out = Redactor.redactLines(text, literals: [held], floor: floor)
+                // (The line pass keeps a real line break inside a match.)
+                let expected = held.contains("\n") ? "pw [redacted]\n[redacted] y" : "pw [redacted] y"
+                expect(out.utf8.elementsEqual(expected.utf8),
+                       "\(held.debugDescription) floor \(floor.count): \(out.debugDescription)")
+            }
+            expectEqual(LiteralScrubber([held]).scrub(text).text, "pw [redacted] y", "final pass")
+            let indented = "    indented line"
+            expectEqual(Redactor.redactLines(indented, literals: [held], floor: []), indented, "indentation kept")
+        }
+    }
+
     /// A pasted "?pwd=abcd%00" yields a literal with a NUL. Foundation's search
     /// then answers with a range PAST the end, and the export took the app down.
     @MainActor static func testBundleSurvivesANulInALiteral() {
+        wholeNulValuesStillMatch()
         expectEqual(Redactor.scrub("peer said abcd", literals: ["abcd\0"]), "peer said [redacted]", "text ends mid-match")
         expectEqual(LiteralScrubber(["abcd\0tailq"]).scrub("x abcd tailq abcd").text,
                     "x [redacted] [redacted] [redacted]", "each side of the NUL is matched")
