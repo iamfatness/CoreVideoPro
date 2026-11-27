@@ -97,8 +97,12 @@ enum Redactor {
         // Authorization headers.
         Rule("\\bBearer\\s+[A-Za-z0-9\\-_.=+/]+", "Bearer " + placeholder, []),
         // JWT-shaped blobs (Zoom ZAKs and sdkJwts arrive in this shape).
-        Rule("\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}(?:\\.[A-Za-z0-9_-]*)?",
-             placeholder, []),
+        // Linear form of \beyJ…: from the start of a run, commit (atomically)
+        // to its first "eyJ". Later ones end at the same place, so if the first
+        // fails they all would; trying each was quadratic ("eyJ-eyJ-…").
+        Rule("(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?\\b(?=eyJ[A-Za-z0-9_-]{8})))"
+             + "eyJ[A-Za-z0-9_-]{8,}+\\.[A-Za-z0-9_-]{8,}+(?:\\.[A-Za-z0-9_-]*+)?",
+             "$1" + placeholder, []),
         // Catch-all for opaque high-entropy tokens: a >=28 char run of
         // [A-Za-z0-9_-] carrying lower AND upper AND digits. The lookbehind
         // excludes runs preceded by / or . so FILE PATHS are never touched, and
@@ -537,8 +541,9 @@ enum SupportBundle {
         lines.append("  holds (stream key, SRT passphrase and Stream ID, meeting passcodes,")
         lines.append("  Zoom, YouTube and Twitch sign-ins, control API token) are matched by")
         lines.append("  identity, also when JSON-escaped or URL-encoded. Only values held at")
-        lines.append("  export time (and a live stream's) are known: a secret changed, cleared")
-        lines.append("  or signed out earlier is left to layers 1 and 2. Values under 4")
+        lines.append("  export time, and destinations streamed this session, are known: any")
+        lines.append("  other secret changed, cleared or signed out earlier is left to layers")
+        lines.append("  1 and 2. Values under 4")
         lines.append("  characters, and Stream IDs under 6 or a common word, are not matched.")
         lines.append("  Every file listed under")
         lines.append("  CONTENTS is then RE-READ and re-checked against layer 3, and this")

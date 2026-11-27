@@ -10,8 +10,8 @@ enum SupportBundleSecrets {
     /// The secrets that live in operator state (the model, or on a headless
     /// export the Keychain and prefs it is restored from).
     struct Held {
-        /// The editable destinations and, while streaming, the copy frozen at
-        /// Start: that one is on air even after the fields are changed.
+        /// The editable destinations and every copy frozen at a Start this
+        /// session: one of those is, or was, on air after the fields changed.
         var destinations: [(config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)] = []
         var joinPasscode = ""
         /// Meeting fields as typed: a join link carries its passcode in ?pwd=.
@@ -35,13 +35,41 @@ enum SupportBundleSecrets {
     ]
 
     /// Every ?pwd= in a field, whatever the host and whatever surrounds the
-    /// link (a pasted invite). Decoded; the matcher re-finds encoded copies.
-    private static func linkPasscodes(_ text: String) -> [String] {
-        text.components(separatedBy: CharacterSet(charactersIn: "?&")).dropFirst().compactMap { part in
-            guard part.lowercased().hasPrefix("pwd=") else { return nil }
-            let value = part.dropFirst(4).prefix { !$0.isWhitespace && $0 != "#" }
-            return String(value).removingPercentEncoding ?? String(value)
+    /// link (a pasted invite, "&amp;", a wrapped link that encodes the whole URL).
+    /// Decoded; the matcher re-finds encoded copies. Prose around a link can
+    /// stick to the value, so each value is offered in three cuts.
+    private static func linkPasscodes(_ field: String) -> [String] {
+        var texts = [field]
+        if let decoded = field.removingPercentEncoding, decoded != field { texts.append(decoded) }
+        var found: [String] = []
+        for text in texts {
+            let spaced = text.replacingOccurrences(of: "&amp;", with: "&")
+            for part in spaced.components(separatedBy: CharacterSet(charactersIn: "?&")).dropFirst()
+            where part.lowercased().hasPrefix("pwd=") {
+                // As written, up to what ends a query value.
+                let whole = part.dropFirst(4).prefix { !$0.isWhitespace && $0 != "#" }
+                // The characters Zoom's own passcode tokens use, and that
+                // without a sentence's full stop.
+                let token = String(whole.prefix { $0.isLetter || $0.isNumber || "._-%~+=".contains($0) })
+                let bare = token.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                found += [String(whole), token, bare].map { $0.removingPercentEncoding ?? $0 }
+            }
         }
+        return found
+    }
+
+    /// The HLS ingest URL and its path/stem, which can be the credential (the
+    /// core scrubs the same two: HlsOutputPolicy.h). Only a VALID playlist URL:
+    /// a half-typed "https://" as a literal would shred every URL, and switch
+    /// off the pattern rule that removes a user:password.
+    private static func hlsLiterals(_ field: String) -> [String] {
+        let url = field.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard StreamDestinationPolicy.validateHls(url) == nil,
+              let scheme = url.range(of: "://"),
+              let slash = url[scheme.upperBound...].firstIndex(of: "/") else { return [] }
+        let path = String(url[slash...].dropLast(".m3u8".count))
+        // A one-part path ("/live") is an ordinary word, not an origin id.
+        return path.dropFirst().contains("/") ? [url, path] : [url]
     }
 
     /// Held values plus the stored sign-ins and environment secrets. Trimmed,
@@ -51,9 +79,8 @@ enum SupportBundleSecrets {
         var values = [held.joinPasscode]
         values += held.meetingTargets.flatMap(linkPasscodes)
         for destination in held.destinations {
-            // The HLS ingest path can be the credential (the core scrubs it too).
-            values += [destination.secrets.rtmpKey, destination.secrets.srtPassphrase,
-                       destination.config.hlsPlaylistUrl]
+            values += [destination.secrets.rtmpKey, destination.secrets.srtPassphrase]
+            values += hlsLiterals(destination.config.hlsPlaylistUrl)
             let streamId = destination.config.srtStreamId.trimmingCharacters(in: .whitespacesAndNewlines)
             if streamId.count >= minimumStreamIdLength, !ordinaryWords.contains(streamId.lowercased()) {
                 values.append(streamId)

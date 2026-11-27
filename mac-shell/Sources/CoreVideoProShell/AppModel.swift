@@ -698,6 +698,9 @@ final class AppModel: ObservableObject {
             // silently restarted the destination with half-typed settings.
             if streamingDesired {
                 liveStreamDestinations = (streamConfig, streamSecrets)
+                if !streamedDestinations.contains(where: { $0.config == streamConfig && $0.secrets == streamSecrets }) {
+                    streamedDestinations.append((streamConfig, streamSecrets))
+                }
             } else {
                 liveStreamDestinations = nil
             }
@@ -705,6 +708,9 @@ final class AppModel: ObservableObject {
     }
     /// The config + secrets captured when streaming started (nil when off).
     private(set) var liveStreamDestinations: (config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)?
+    /// Every distinct copy frozen this session, in memory only: the logs still
+    /// quote them after Stop, so the support bundle scrubs them (SupportBundleSecrets).
+    private var streamedDestinations: [(config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)] = []
     /// True while destination settings must not change (the editor is locked).
     var streamDestinationsLocked: Bool { streamingDesired || streamingObservedLive }
     @Published var streamStatus = ""       // sender status from outputSenderSession
@@ -6904,8 +6910,7 @@ final class AppModel: ObservableObject {
     // ── support bundle input (Diagnostics.swift owns the writing) ────────────
 
     func liveSecretLiterals() -> [String] {
-        var destinations = [(config: streamDestinations, secrets: streamSecrets)]
-        if let onAir = liveStreamDestinations { destinations.append(onAir) }
+        let destinations = [(config: streamDestinations, secrets: streamSecrets)] + streamedDestinations
         return SupportBundleSecrets.literals(SupportBundleSecrets.Held(
             destinations: destinations, joinPasscode: joinPasscode,
             meetingTargets: [joinMeetingId] + recentMeetings))

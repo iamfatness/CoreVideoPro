@@ -345,8 +345,19 @@ extension ShellTests {
         let secrets = ["fkonairkeyq", "fkonairsrtq", "fkonairstreamid", "fkeditedkeyq"]
         let log = secrets.map { "peer refused <\($0)>" }.joined(separator: "\n")
         let files = writeSecretBundle(model.supportBundleInput(), shellLog: log, coreLog: log)
+        for secret in secrets { expectAbsent(secret, "on air: " + secret, in: files) }
+        // Stop is the usual moment before an export, and a second take must not
+        // forget the first.
         model.streamingDesired = false
-        for secret in secrets { expectAbsent(secret, secret, in: files) }
+        model.streamKey = "fksecondkeyq"
+        model.streamingDesired = true
+        model.streamingDesired = false
+        model.streamKey = ""
+        let later = secrets + ["fksecondkeyq"]
+        let laterLog = later.map { "peer refused <\($0)>" }.joined(separator: "\n")
+        let after = writeSecretBundle(model.supportBundleInput(), shellLog: laterLog, coreLog: laterLog)
+        // (fkeditedkeyq was typed but never streamed, then replaced: not held.)
+        for secret in later where secret != "fkeditedkeyq" { expectAbsent(secret, "after Stop: " + secret, in: after) }
     }
 
     /// Secrets the core reads from the environment it inherits from the shell,
@@ -365,6 +376,40 @@ extension ShellTests {
         for value in environment.values.sorted() + ["fkgovpwdq", "fk-invitepwdq",
                                                     "https://h.example/up/fkhlspathq/live.m3u8"] {
             expect(literals.contains(value), "held: \(value)")
+        }
+        // The core's FFmpeg errors name numbered segments, not the playlist.
+        let segment = "PUT https://h.example/up/fkhlspathq/live_segment_00000000000000000001.ts failed"
+        expect(!Redactor.scrub(segment, literals: literals).contains("fkhlspathq"), "the HLS path in a segment URL")
+        // A half-typed or invalid HLS field is not a literal: it would switch
+        // off the user:password rule and shred ordinary URLs.
+        for field in ["https://", "http", "https://cdn.example", "https://u:p@cdn.example/a/b.m3u8"] {
+            var typing = SupportBundleSecrets.Held()
+            typing.destinations = [(StreamDestinationsConfig(hlsPlaylistUrl: field), StreamDestinationSecrets())]
+            let partial = SupportBundleSecrets.literals(typing, environment: [:])
+            expect(!partial.contains(field), "not held: \(field)")
+            expect(!Redactor.scrub("pull https://user:fkpw99@cdn.example/x", literals: partial).contains("fkpw99"),
+                   "the pattern rules still work with the field at \(field)")
+        }
+        var plain = SupportBundleSecrets.Held()
+        plain.destinations = [(StreamDestinationsConfig(hlsPlaylistUrl: "https://h.example/live.m3u8"),
+                               StreamDestinationSecrets())]
+        expect(!SupportBundleSecrets.literals(plain, environment: [:]).contains("/live"), "a one-part path is a word")
+        // Punctuation around a pasted link, HTML "&amp;", and a wrapped link.
+        for target in ["see <https://zoom.us/j/1?pwd=fkTail.9q>", "(https://zoom.us/j/1?pwd=fkTail.9q).",
+                       "go to https://zoom.us/j/1?pwd=fkTail.9q.", "\"https://zoom.us/j/1?a=1&amp;pwd=fkTail.9q\";x",
+                       "https://wrap.example/?url=https%3A%2F%2Fzoom.us%2Fj%2F1%3Fpwd%3DfkTail.9q&data=1"] {
+            var linked = SupportBundleSecrets.Held()
+            linked.meetingTargets = [target]
+            let found = SupportBundleSecrets.literals(linked, environment: [:])
+            // (The as-written cut may take one neighbouring character with it.)
+            let bare = Redactor.scrub("bare <fkTail.9q> end", literals: found)
+            expect(!bare.contains("fkTail") && bare.hasSuffix(" end"), "\(target) -> \(bare)")
+        }
+        // A secret whose FIRST character is written as an escape.
+        for (literal, written) in [("\u{E9}fkfirstq", "\\u00e9fkfirstq"), ("/fkfirstq", "\\/fkfirstq"),
+                                   ("/fkfirstq", "\\\\\\/fkfirstq"), ("fkfirstq", "\\U0066kfirstq"),
+                                   ("\nfkfirstq", "\\nfkfirstq")] {
+            expectEqual(Redactor.scrub("<\(written)>", literals: [literal]), "<[redacted]>", "leading escape \(written)")
         }
         // NSDictionary descriptions write \U00e9.
         expectEqual(Redactor.scrub("<fk\\U00e9secret>", literals: ["fk\u{E9}secret"]), "<[redacted]>", "\\U escape")
@@ -396,7 +441,18 @@ extension ShellTests {
                      ("[pwd=fkv6]", "[pwd=[redacted]]")]
         for (input, output) in cases { expectEqual(Redactor.scrub(input), output, input) }
         // 24 KB is minutes under the quadratic rule.
+        // The JWT rule, likewise: same matches, one pass per run.
+        let token = "eyJabcdefgh.ijklmnopqr"
+        for (input, output) in [("t \(token) u", "t [redacted] u"), ("t \(token).sig-_9 u", "t [redacted] u"),
+                                ("id-\(token) u", "id-[redacted] u"),
+                                ("eyJ-eyJabcdefgh.ijklmnopqr", "[redacted]"),
+                                ("a/\(token);\(token)", "a/[redacted];[redacted]"),
+                                ("xeyJabcdefgh.ijklmnopqr", "xeyJabcdefgh.ijklmnopqr"),
+                                ("eyJshort.ijklmnopqr", "eyJshort.ijklmnopqr")] {
+            expectEqual(Redactor.scrub(input), output, input)
+        }
         for (label, text) in [("letters", String(repeating: "a", count: 24_000)),
+                              ("jwt starts", String(repeating: "eyJ-", count: 32_000)),
                               ("hex", String(repeating: "0f3a", count: 6_000))] {
             let start = Date()
             _ = Redactor.scrub(text)
