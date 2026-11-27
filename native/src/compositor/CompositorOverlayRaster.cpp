@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
@@ -48,6 +49,190 @@ D2D1_COLOR_F d2dColorFromArgb(uint32_t argb) {
 constexpr float kOverlayTextGamma = 2.2f;
 constexpr float kOverlayTextEnhancedContrast = 0.5f;
 constexpr float kOverlayTextGrayscaleEnhancedContrast = 1.0f;
+
+// WIC's PNG decoder never reports a broken pixel stream. For a bad zlib
+// header, a malformed deflate block, a truncated stream or a wrong Adler-32 it
+// returns S_OK from CopyPixels (so CreateBitmapFromWicBitmap succeeds too) with
+// zeroed pixels; a short stream yields a partial picture (measured on Windows
+// build 26300). A broken asset would prepare "ready" and air a blank. So the
+// raster verifies the PNG pixel stream itself before decoding it: the IDAT
+// data must inflate completely, match its Adler-32, and carry every byte that
+// IHDR implies. Non-PNG bytes are left to WIC. The cost is one inflate on the
+// preparation worker (about 26 ms for a 1440p screenshot), never the render thread.
+class PngPixelStream {
+ public:
+  static bool decodes(const std::vector<uint8_t>& b) {
+    constexpr uint8_t signature[] = {137, 80, 78, 71, 13, 10, 26, 10};
+    if (b.size() < 33 || !std::equal(std::begin(signature), std::end(signature), b.begin())) return true;
+    const auto be32 = [&](size_t at) {
+      return uint32_t(b[at]) << 24 | uint32_t(b[at + 1]) << 16 | uint32_t(b[at + 2]) << 8 | uint32_t(b[at + 3]);
+    };
+    const uint64_t width = be32(16), height = be32(20);
+    const unsigned depth = b[24], colorType = b[25], interlace = b[28];
+    const unsigned channels = colorType == 0 || colorType == 3 ? 1 : colorType == 2 ? 3 : colorType == 4 ? 2 : colorType == 6 ? 4 : 0;
+    if (!channels || !depth) return true;  // not a header this check understands; WIC decides
+    const auto rowBytes = [&](uint64_t pixels) { return (pixels * channels * depth + 7) / 8; };
+    uint64_t expected = 0;
+    if (!interlace) expected = height * (1 + rowBytes(width));
+    else {
+      constexpr int pass[7][4] = {{0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4}, {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2}};
+      for (const auto& p : pass) {
+        const uint64_t w = width > uint64_t(p[0]) ? (width - p[0] + p[2] - 1) / p[2] : 0;
+        const uint64_t h = height > uint64_t(p[1]) ? (height - p[1] + p[3] - 1) / p[3] : 0;
+        if (w && h) expected += h * (1 + rowBytes(w));
+      }
+    }
+    PngPixelStream check;
+    for (size_t at = 8; at + 12 <= b.size();) {
+      const size_t length = be32(at);
+      if (length > b.size() - at - 12) break;
+      if (std::equal(b.begin() + std::ptrdiff_t(at + 4), b.begin() + std::ptrdiff_t(at + 8), "IDAT")) check.spans_.push_back({b.data() + at + 8, length});
+      if (std::equal(b.begin() + std::ptrdiff_t(at + 4), b.begin() + std::ptrdiff_t(at + 8), "IEND")) break;
+      at += 12 + length;
+    }
+    // Bounds the work a hostile stream can demand; twice the image is far past
+    // anything an encoder writes.
+    check.limit_ = expected * 2 + 65536;
+    return !check.spans_.empty() && check.inflate() && check.produced_ >= expected;
+  }
+
+ private:
+  struct Huffman { uint16_t count[16]; uint16_t symbol[288]; };
+  std::vector<std::pair<const uint8_t*, size_t>> spans_;
+  size_t span_ = 0, at_ = 0;
+  uint32_t bitBuffer_ = 0;
+  int bitCount_ = 0;
+  bool failed_ = false;
+  uint64_t produced_ = 0, limit_ = 0;
+  uint32_t adlerA_ = 1, adlerB_ = 0, adlerPending_ = 0;
+  std::vector<uint8_t> window_ = std::vector<uint8_t>(32768);
+
+  uint32_t byte() {
+    while (span_ < spans_.size() && at_ == spans_[span_].second) { ++span_; at_ = 0; }
+    if (span_ == spans_.size()) { failed_ = true; return 0; }
+    return spans_[span_].first[at_++];
+  }
+  uint32_t bits(int need) {
+    while (bitCount_ < need && !failed_) { bitBuffer_ |= byte() << bitCount_; bitCount_ += 8; }
+    if (failed_) return 0;
+    const uint32_t value = bitBuffer_ & ((1u << need) - 1);
+    bitBuffer_ >>= need; bitCount_ -= need;
+    return value;
+  }
+  void emit(uint8_t value) {
+    window_[produced_ & 32767] = value;
+    if (++produced_ > limit_) failed_ = true;
+    adlerA_ += value; adlerB_ += adlerA_;
+    if (++adlerPending_ == 5552) { adlerA_ %= 65521; adlerB_ %= 65521; adlerPending_ = 0; }
+  }
+  static bool build(Huffman& h, const uint8_t* lengths, int n) {
+    std::fill(std::begin(h.count), std::end(h.count), uint16_t(0));
+    for (int i = 0; i < n; ++i) ++h.count[lengths[i]];
+    int left = 1;
+    for (int len = 1; len < 16; ++len) { left = left * 2 - h.count[len]; if (left < 0) return false; }
+    uint16_t offsets[16] = {};
+    for (int len = 1; len < 15; ++len) offsets[len + 1] = uint16_t(offsets[len] + h.count[len]);
+    for (int i = 0; i < n; ++i) if (lengths[i]) h.symbol[offsets[lengths[i]]++] = uint16_t(i);
+    return true;
+  }
+  int decode(const Huffman& h) {
+    int code = 0, first = 0, index = 0;
+    for (int len = 1; len < 16; ++len) {
+      code |= int(bits(1));
+      if (failed_) return -1;
+      const int count = h.count[len];
+      if (code - count < first) return h.symbol[index + (code - first)];
+      index += count; first = (first + count) << 1; code <<= 1;
+    }
+    failed_ = true;
+    return -1;
+  }
+  bool codes(const Huffman& lengthCode, const Huffman& distanceCode) {
+    static constexpr uint16_t lengthBase[29] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+    static constexpr uint8_t lengthExtra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+    static constexpr uint16_t distanceBase[30] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+    static constexpr uint8_t distanceExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+    while (!failed_) {
+      int symbol = decode(lengthCode);
+      if (symbol < 0) return false;
+      if (symbol < 256) { emit(uint8_t(symbol)); continue; }
+      if (symbol == 256) return true;
+      symbol -= 257;
+      if (symbol >= 29) return false;
+      const uint32_t length = lengthBase[symbol] + bits(lengthExtra[symbol]);
+      const int distanceSymbol = decode(distanceCode);
+      if (distanceSymbol < 0 || distanceSymbol >= 30) return false;
+      const uint32_t distance = distanceBase[distanceSymbol] + bits(distanceExtra[distanceSymbol]);
+      if (failed_ || distance > produced_) return false;
+      for (uint32_t i = 0; i < length && !failed_; ++i) emit(window_[(produced_ - distance) & 32767]);
+    }
+    return false;
+  }
+  bool inflate() {
+    const uint32_t cmf = byte(), flg = byte();
+    if (failed_ || (cmf & 15) != 8 || (cmf >> 4) > 7 || (cmf * 256 + flg) % 31 || (flg & 0x20)) return false;
+    Huffman lengthCode, distanceCode;
+    for (bool last = false; !last;) {
+      last = bits(1) != 0;
+      const uint32_t type = bits(2);
+      if (failed_) return false;
+      if (type == 0) {
+        bitBuffer_ = 0; bitCount_ = 0;
+        uint32_t length = byte();  // the four bytes are read in order: | does not sequence its operands
+        length |= byte() << 8;
+        uint32_t complement = byte();
+        complement |= byte() << 8;
+        if (failed_ || length != (~complement & 0xffff)) return false;
+        for (uint32_t i = 0; i < length && !failed_; ++i) emit(uint8_t(byte()));
+        if (failed_) return false;
+        continue;
+      }
+      uint8_t lengths[320] = {};
+      int lengthCount = 288, distanceCount = 30;
+      if (type == 1) {
+        for (int i = 0; i < 144; ++i) lengths[i] = 8;
+        for (int i = 144; i < 256; ++i) lengths[i] = 9;
+        for (int i = 256; i < 280; ++i) lengths[i] = 7;
+        for (int i = 280; i < 288; ++i) lengths[i] = 8;
+        for (int i = 288; i < 318; ++i) lengths[i] = 5;
+      } else if (type == 2) {
+        lengthCount = int(bits(5)) + 257; distanceCount = int(bits(5)) + 1;
+        const int codeCount = int(bits(4)) + 4;
+        if (failed_ || lengthCount > 286 || distanceCount > 30) return false;
+        static constexpr uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+        uint8_t codeLengths[19] = {};
+        for (int i = 0; i < codeCount; ++i) codeLengths[order[i]] = uint8_t(bits(3));
+        Huffman codeCode;
+        if (failed_ || !build(codeCode, codeLengths, 19)) return false;
+        for (int i = 0; i < lengthCount + distanceCount;) {
+          int symbol = decode(codeCode);
+          if (symbol < 0) return false;
+          if (symbol < 16) { lengths[i++] = uint8_t(symbol); continue; }
+          uint8_t repeated = 0;
+          int times = 0;
+          if (symbol == 16) { if (!i) return false; repeated = lengths[i - 1]; times = 3 + int(bits(2)); }
+          else if (symbol == 17) times = 3 + int(bits(3));
+          else times = 11 + int(bits(7));
+          if (failed_ || i + times > lengthCount + distanceCount) return false;
+          while (times--) lengths[i++] = repeated;
+        }
+        if (!lengths[256]) return false;
+        std::copy_backward(lengths + lengthCount, lengths + lengthCount + distanceCount, lengths + 288 + distanceCount);
+        std::fill(lengths + lengthCount, lengths + 288, uint8_t(0));
+      } else {
+        return false;
+      }
+      if (!build(lengthCode, lengths, 288) || !build(distanceCode, lengths + 288, 30) || !codes(lengthCode, distanceCode)) return false;
+    }
+    bitBuffer_ = 0; bitCount_ = 0;
+    uint32_t stored = 0;
+    for (int i = 0; i < 4; ++i) stored = stored << 8 | byte();
+    adlerA_ %= 65521; adlerB_ %= 65521;
+    return !failed_ && stored == (adlerB_ << 16 | adlerA_);
+  }
+};
+
+bool pngPixelStreamDecodes(const std::vector<uint8_t>& bytes) { return PngPixelStream::decodes(bytes); }
 
 }  // namespace
 
@@ -124,9 +309,10 @@ CompositorOverlayRaster::ImageInput CompositorOverlayRaster::openOverlayImage(co
 }
 
 ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
-    ID2D1RenderTarget* target, IWICBitmapFrameDecode* frame, bool referenceDpi) {
+    ID2D1RenderTarget* target, const ImageInput& image, bool referenceDpi) {
   ComPtrLite<ID2D1Bitmap> bitmap;
-  if (!target || !frame) return bitmap;
+  IWICBitmapFrameDecode* frame = image.frame.get();
+  if (!target || !frame || !image.pixelsDecode) return bitmap;
   ComPtrLite<IWICFormatConverter> converter;
   if (FAILED(wicFactory_->CreateFormatConverter(converter.put()))) {
     return bitmap;
@@ -157,7 +343,7 @@ CompositorOverlayRaster::ImageInput CompositorOverlayRaster::openPackagedImage(c
   if (FAILED(frame->GetSize(&width, &height)) || width != UINT(asset.width) || height != UINT(asset.height)) return {};
   // Decoder, format-conversion and D2D destination allowance. It is charged
   // before decoding any full-resolution pixels, and shared across workers.
-  return {std::move(frame), uint64_t(width) * height * 12};
+  return {std::move(frame), uint64_t(width) * height * 12, pngPixelStreamDecodes(*asset.encoded)};
 }
 
 bool CompositorOverlayRaster::drawOverlayTextLine(
@@ -343,7 +529,7 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
         if (bitmap == bitmaps.end()) {
           const auto source = images.find(p.image->id);
           if (source != images.end()) {
-            auto decoded = decodeOverlayImage(target, source->second.frame.get(), true);
+            auto decoded = decodeOverlayImage(target, source->second, true);
             if (decoded) bitmap = bitmaps.emplace(p.image->id, std::move(decoded)).first;
           }
         }
@@ -669,7 +855,7 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   // Real WIC decode aspect-fitted inside the layout's image slot (the CPU
   // tile draws its deterministic checker in the same slot).
   if (layout.hasImage) {
-    auto image=decodeOverlayImage(d2dTarget.get(), imageInput.frame.get());
+    auto image=decodeOverlayImage(d2dTarget.get(), imageInput);
     if (!image) { workerWarning_ += " Logo unavailable; image omitted."; resourcesComplete = false; }
     if (image) {
       const auto imageSize = image->GetSize();

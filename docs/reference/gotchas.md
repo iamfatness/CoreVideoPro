@@ -22,6 +22,15 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   `D2DCurveFlatteningTest` proves point for point against `ID2D1Geometry::Simplify`. The legacy band is
   a rounded layer mask AND a rounded fill on Windows (corner coverage squared); the Mac clips and fills
   the same polygon to match.
+- **WIC never reports a corrupt PNG pixel stream (2026-11-27).** For a bad zlib header,
+  a malformed deflate block, a truncated IDAT or a wrong Adler-32, the PNG decoder's
+  `CopyPixels`, and therefore `CreateBitmapFromWicBitmap`, return `S_OK` with zeroed pixels.
+  A short stream returns a partial picture. This was measured on Windows build 26300.
+  So no HRESULT check can catch it, and the D3D11 graphics raster used to prepare such an
+  asset as `ready` and air a blank. `CompositorOverlayRaster.cpp` `pngPixelStreamDecodes` now inflates
+  the IDAT data on the preparation worker before decoding, and fails the asset with
+  `Graphics image could not be decoded: <id>`, the Mac wording. JPEG and file-URI
+  images are still trusted to WIC.
 - **Never join a recording writer without a bound, and never let MF throttle (#1030, 2026-10-23).**
   One ISO whose participant left blocked inside `CMFSinkWriter::ThrottleStream`;
   an unconditional `RecordingTrackWorker::join()` then froze every later

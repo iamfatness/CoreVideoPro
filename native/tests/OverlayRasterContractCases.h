@@ -149,7 +149,9 @@ inline std::string simpleManifest(const std::string& id, int width, int height, 
 // header). ImageIO does NOT refuse this at CGImageSourceCreateImageAtIndex: it
 // returns a CGImage whose data provider yields no bytes and which draws
 // nothing (measured on macOS 27.2), so the raster must force the decode to see
-// the failure, as WIC's CreateBitmapFromWicBitmap does on Windows. Removing
+// the failure. WIC never reports it: CopyPixels and CreateBitmapFromWicBitmap
+// return S_OK with zeroed pixels (measured on Windows build 26300), so the D3D11
+// raster verifies the PNG pixel stream itself before decoding. Removing
 // the IDAT chunk instead is NOT this case: ImageIO then drops the pixel size
 // from the header properties and the asset fails the header check.
 // sha256 is kept equal to the intact bytes, so the template's declared digest

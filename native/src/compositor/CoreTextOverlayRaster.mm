@@ -163,8 +163,10 @@ ImageInput openPackagedImage(const graphics::GraphicsAsset& asset) {
 // stream (a bad zlib/IDAT payload) CGImageSourceCreateImageAtIndex still
 // returns an image, which then draws nothing, so a broken asset would prepare
 // "ready" and air a blank. Copying the provider's bytes forces the decode and
-// surfaces the failure on the worker, as WIC's CreateBitmapFromWicBitmap does
-// on Windows. The copy is the decoded allowance the budget already charges.
+// surfaces the failure on the worker. (WIC does not report it at all: Windows
+// verifies the PNG pixel stream itself, CompositorOverlayRaster.cpp
+// pngPixelStreamDecodes.) The copy is the decoded allowance the budget already
+// charges.
 CfRef<CGImageRef> decodeImageNow(CGImageSourceRef source) {
   if (!source) return {};
   CfRef<CGImageRef> lazy(CGImageSourceCreateImageAtIndex(source, 0, nullptr));
