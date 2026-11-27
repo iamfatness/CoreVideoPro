@@ -2976,7 +2976,7 @@ final class AppModel: ObservableObject {
     // Accepts a bare meeting number OR a full Zoom URL
     // (https://…zoom.us/j/<id>?pwd=<passcode>) — the engine wants the bare
     // number, so parse URL forms here (the WinUI shell does the same).
-    nonisolated static func parseZoomTarget(_ raw: String, fallbackPasscode: String)
+    static func parseZoomTarget(_ raw: String, fallbackPasscode: String)
         -> (meetingId: String, passcode: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         guard trimmed.lowercased().contains("zoom.us"),
@@ -6904,9 +6904,10 @@ final class AppModel: ObservableObject {
     // ── support bundle input (Diagnostics.swift owns the writing) ────────────
 
     func liveSecretLiterals() -> [String] {
-        SupportBundleSecrets.literals(SupportBundleSecrets.Held(
-            streamKey: streamKey, srtPassphrase: srtPassphrase,
-            srtStreamId: streamDestinations.srtStreamId, joinPasscode: joinPasscode,
+        var destinations = [(config: streamDestinations, secrets: streamSecrets)]
+        if let onAir = liveStreamDestinations { destinations.append(onAir) }
+        return SupportBundleSecrets.literals(SupportBundleSecrets.Held(
+            destinations: destinations, joinPasscode: joinPasscode,
             meetingTargets: [joinMeetingId] + recentMeetings))
     }
 

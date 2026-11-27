@@ -61,9 +61,13 @@ enum Redactor {
     private struct Rule {
         let regex: NSRegularExpression
         let template: String
+        /// The shape-only guess, which is not applied to dictionary KEYS.
+        var guessesOpaqueRuns = false
 
         init(_ pattern: String, _ template: String,
-             _ options: NSRegularExpression.Options = [.caseInsensitive]) {
+             _ options: NSRegularExpression.Options = [.caseInsensitive],
+             guessesOpaqueRuns: Bool = false) {
+            self.guessesOpaqueRuns = guessesOpaqueRuns
             // A malformed literal here is a programming error; crashing at first
             // use beats silently shipping an unfiltered bundle.
             // swiftlint:disable:next force_try
@@ -86,7 +90,9 @@ enum Redactor {
         Rule("\"([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt))\"\\s*:\\s*\"[^\"]*\"",
              "\"$1\":\"" + placeholder + "\""),
         // someKey=value / someKey: value in log lines.
-        Rule("([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt)\\s*[:=]\\s*)[^&\\s\"',;}\\]]+",
+        // The lookbehind starts a match only at the start of a run: without it
+        // every position rescans the rest, and one long line hangs the export.
+        Rule("(?<![A-Za-z0-9_-])([A-Za-z0-9_-]*(?:key|token|passphrase|password|passcode|secret|pwd|zak|jwt)\\s*[:=]\\s*)[^&\\s\"',;}\\]]+",
              "$1" + placeholder),
         // Authorization headers.
         Rule("\\bBearer\\s+[A-Za-z0-9\\-_.=+/]+", "Bearer " + placeholder, []),
@@ -99,7 +105,7 @@ enum Redactor {
         // the mixed-case requirement spares UUIDs, lowercase ids and
         // SCREAMING_SNAKE env-var names.
         Rule("(?<![A-Za-z0-9_\\-/.])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{28,}",
-             placeholder, []),
+             placeholder, [], guessesOpaqueRuns: true),
     ]
 
     /// Scrubs one string: known literals first (layer 3), then value patterns.
@@ -107,13 +113,13 @@ enum Redactor {
         scrub(text, known: LiteralScrubber(literals))
     }
 
-    private static func scrub(_ text: String, known: LiteralScrubber) -> String {
+    private static func scrub(_ text: String, known: LiteralScrubber, isKey: Bool = false) -> String {
         // Layer 3 — KNOWN LITERALS (SupportBundleSecrets): an identity match,
         // raw or escaped, cannot be fooled by a shape the pattern rules did not
         // anticipate.
         var result = known.scrub(text).text
         guard !result.isEmpty else { return result }
-        for rule in rules {
+        for rule in rules where !(isKey && rule.guessesOpaqueRuns) {
             let range = NSRange(result.startIndex..., in: result)
             result = rule.regex.stringByReplacingMatches(
                 in: result, options: [], range: range, withTemplate: rule.template)
@@ -134,7 +140,8 @@ enum Redactor {
             // Sorted, so two keys that scrub to the same text are numbered the
             // same way every time instead of one overwriting the other.
             for (key, child) in object.sorted(by: { $0.key < $1.key }) {
-                let cleanKey = scrub(key, known: known)
+                // A long mixed-case key is a diagnostic's name, not a token.
+                let cleanKey = scrub(key, known: known, isKey: true)
                 var name = cleanKey
                 var copy = 2
                 while result[name] != nil {
@@ -529,8 +536,11 @@ enum SupportBundle {
         lines.append("  including raw log lines. (3) KNOWN LITERAL: the secrets the shell")
         lines.append("  holds (stream key, SRT passphrase and Stream ID, meeting passcodes,")
         lines.append("  Zoom, YouTube and Twitch sign-ins, control API token) are matched by")
-        lines.append("  identity, also when JSON-escaped or URL-encoded; values under 4")
-        lines.append("  characters (Stream ID: under 6) are not. Every file listed under")
+        lines.append("  identity, also when JSON-escaped or URL-encoded. Only values held at")
+        lines.append("  export time (and a live stream's) are known: a secret changed, cleared")
+        lines.append("  or signed out earlier is left to layers 1 and 2. Values under 4")
+        lines.append("  characters, and Stream IDs under 6 or a common word, are not matched.")
+        lines.append("  Every file listed under")
         lines.append("  CONTENTS is then RE-READ and re-checked against layer 3, and this")
         lines.append("  manifest is filtered by it too.")
         lines.append("  Verification: \(verified) file(s) re-read, "

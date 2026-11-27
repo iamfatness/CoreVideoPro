@@ -10,41 +10,70 @@ enum SupportBundleSecrets {
     /// The secrets that live in operator state (the model, or on a headless
     /// export the Keychain and prefs it is restored from).
     struct Held {
-        var streamKey = ""
-        var srtPassphrase = ""
-        var srtStreamId = ""
+        /// The editable destinations and, while streaming, the copy frozen at
+        /// Start: that one is on air even after the fields are changed.
+        var destinations: [(config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)] = []
         var joinPasscode = ""
-        /// Meeting fields as typed: a Zoom join link carries its passcode in ?pwd=.
+        /// Meeting fields as typed: a join link carries its passcode in ?pwd=.
         var meetingTargets: [String] = []
     }
 
     /// The core's own floor (FfmpegSenderDiagnostics isPlausibleSecret). A Stream
     /// ID is often a plain word; a shorter one would shred ordinary text.
     static let minimumStreamIdLength = 6
+    /// Nor is a Stream ID that is one of the bundle's own words.
+    private static let ordinaryWords: Set<String> = [
+        "camera", "default", "output", "program", "publish", "record", "recording",
+        "request", "session", "stream", "streaming", "studio",
+    ]
+    /// Secrets the media core reads from the environment it inherits from the
+    /// shell (ZoomEngineRuntime.cpp), plus the control API token.
+    private static let environmentNames = [
+        "COREVIDEO_CONTROL_TOKEN", "COREVIDEO_ZOOM_APP_PRIVILEGE_TOKEN",
+        "COREVIDEO_ZOOM_MEETING_PASSCODE", "COREVIDEO_ZOOM_ON_BEHALF_TOKEN",
+        "COREVIDEO_ZOOM_SDK_JWT", "COREVIDEO_ZOOM_USER_ZAK",
+    ]
 
-    /// Held values plus the stored sign-ins and the control API token. Trimmed,
+    /// Every ?pwd= in a field, whatever the host and whatever surrounds the
+    /// link (a pasted invite). Decoded; the matcher re-finds encoded copies.
+    private static func linkPasscodes(_ text: String) -> [String] {
+        text.components(separatedBy: CharacterSet(charactersIn: "?&")).dropFirst().compactMap { part in
+            guard part.lowercased().hasPrefix("pwd=") else { return nil }
+            let value = part.dropFirst(4).prefix { !$0.isWhitespace && $0 != "#" }
+            return String(value).removingPercentEncoding ?? String(value)
+        }
+    }
+
+    /// Held values plus the stored sign-ins and environment secrets. Trimmed,
     /// because the core is sent (and logs) the trimmed value.
     static func literals(_ held: Held,
                          environment: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
-        var values = [held.streamKey, held.srtPassphrase, held.joinPasscode]
-        values += held.meetingTargets.map { AppModel.parseZoomTarget($0, fallbackPasscode: "").passcode }
-        let streamId = held.srtStreamId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if streamId.count >= minimumStreamIdLength { values.append(streamId) }
+        var values = [held.joinPasscode]
+        values += held.meetingTargets.flatMap(linkPasscodes)
+        for destination in held.destinations {
+            // The HLS ingest path can be the credential (the core scrubs it too).
+            values += [destination.secrets.rtmpKey, destination.secrets.srtPassphrase,
+                       destination.config.hlsPlaylistUrl]
+            let streamId = destination.config.srtStreamId.trimmingCharacters(in: .whitespacesAndNewlines)
+            if streamId.count >= minimumStreamIdLength, !ordinaryWords.contains(streamId.lowercased()) {
+                values.append(streamId)
+            }
+        }
         values += SocialRedaction.secretLiterals()
         if let data = ZoomOAuth.keychain.read(),
            let tokens = try? JSONDecoder().decode(ZoomOAuth.Tokens.self, from: data) {
             values += [tokens.accessToken, tokens.refreshToken]
         }
-        values.append(environment["COREVIDEO_CONTROL_TOKEN"] ?? "")
+        values += environmentNames.compactMap { environment[$0] }
         return values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     }
 
     /// What a headless export (no model) scrubs: the same values, read from where
     /// the model restores them.
     static func storedHeld(prefs: ShellPrefs) -> Held {
-        Held(streamKey: StreamKeychain.load(),
-             srtPassphrase: StreamKeychain.load(account: StreamKeychain.srtPassphraseAccount),
-             srtStreamId: prefs.streamDestinations?.srtStreamId ?? "",
+        Held(destinations: [(prefs.streamDestinations ?? StreamDestinationsConfig(), StreamDestinationSecrets(
+                 rtmpKey: StreamKeychain.load(),
+                 srtPassphrase: StreamKeychain.load(account: StreamKeychain.srtPassphraseAccount)))],
              meetingTargets: [prefs.joinMeetingId] + prefs.recentMeetings)
     }
 }
@@ -58,6 +87,11 @@ enum SupportBundleSecrets {
 ///     (\" \\ \/ \n \uXXXX).
 /// So it does not matter which characters a given encoder chose to escape.
 ///
+/// A character may also be in any canonically equivalent scalar spelling (NFC,
+/// NFD, partly composed, marks reordered), chosen per character and combined
+/// with the above. Only the LITERAL is expanded; the scanned text is never
+/// normalized, so nothing but a match is altered.
+///
 /// A hand-written matcher, not a regex: it tracks the set of positions reached
 /// instead of backtracking, so its cost is linear in the text.
 struct LiteralScrubber {
@@ -65,6 +99,11 @@ struct LiteralScrubber {
     private static let maxBackslashes = 8
     private static let maxStates = 32
 
+    /// Beyond this many combining marks on one character, only the held, NFC and
+    /// NFD spellings are matched (the orderings grow factorially).
+    private static let maxReorderedMarks = 4
+
+    /// One scalar of one spelling.
     private struct Unit {
         var raw: [UInt8]
         var utf16: [UInt16]
@@ -72,38 +111,105 @@ struct LiteralScrubber {
         var escape: UInt8?
     }
 
-    private let literals: [[Unit]]
+    /// One character (grapheme cluster) of a literal: its equivalent spellings.
+    private typealias Spellings = [[Unit]]
+
+    private let literals: [[Spellings]]
+    /// Per literal, the bytes that can follow a run of backslashes its match
+    /// STARTS with: lets a position in a long run be refused without matching.
+    private let afterBackslashes: [[Bool]]
     /// Bytes a match can start with: the cheap test every position takes first.
     private let starts: [Bool]
 
     var isEmpty: Bool { literals.isEmpty }
 
     init(_ values: [String]) {
-        var parsed: [[Unit]] = []
+        var parsed: [[Spellings]] = []
         var starts = [Bool](repeating: false, count: 256)
         for value in Set(values) where value.count >= Self.minimumLength {
-            let units = value.unicodeScalars.map { scalar -> Unit in
-                let text = String(scalar)
-                let escape: UInt8?
-                switch scalar {
-                case "\"", "/", "'": escape = UInt8(ascii: scalar)
-                case "\n": escape = UInt8(ascii: "n")
-                case "\r": escape = UInt8(ascii: "r")
-                case "\t": escape = UInt8(ascii: "t")
-                case "\u{8}": escape = UInt8(ascii: "b")
-                case "\u{C}": escape = UInt8(ascii: "f")
-                default: escape = nil
-                }
-                return Unit(raw: Array(text.utf8), utf16: Array(text.utf16), escape: escape)
+            let characters: [Spellings] = value.map { character in
+                Self.spellings(of: character).map { $0.map(Self.unit) }
             }
-            starts[Int(units[0].raw[0])] = true
-            if units[0].raw == [0x20] { starts[Int(UInt8(ascii: "+"))] = true }
+            for spelling in characters[0] {
+                starts[Int(spelling[0].raw[0])] = true
+                if spelling[0].raw == [0x20] { starts[Int(UInt8(ascii: "+"))] = true }
+            }
             starts[Int(UInt8(ascii: "%"))] = true
             starts[Int(UInt8(ascii: "\\"))] = true
-            parsed.append(units)
+            parsed.append(characters)
         }
         literals = parsed
+        afterBackslashes = parsed.map { literal in
+            var allowed = [Bool](repeating: false, count: 256)
+            allowed[Int(UInt8(ascii: "u"))] = true
+            allowed[Int(UInt8(ascii: "U"))] = true
+            // A run longer than the cap: only a literal that begins with a backslash.
+            for spelling in literal[0] {
+                if let escape = spelling[0].escape { allowed[Int(escape)] = true }
+                if spelling[0].raw == [UInt8(ascii: "\\")] { allowed = [Bool](repeating: true, count: 256) }
+            }
+            return allowed
+        }
         self.starts = starts
+    }
+
+    private static func unit(_ scalar: Unicode.Scalar) -> Unit {
+        let text = String(scalar)
+        let escape: UInt8?
+        switch scalar {
+        case "\"", "/", "'": escape = UInt8(ascii: scalar)
+        case "\n": escape = UInt8(ascii: "n")
+        case "\r": escape = UInt8(ascii: "r")
+        case "\t": escape = UInt8(ascii: "t")
+        case "\u{8}": escape = UInt8(ascii: "b")
+        case "\u{C}": escape = UInt8(ascii: "f")
+        default: escape = nil
+        }
+        return Unit(raw: Array(text.utf8), utf16: Array(text.utf16), escape: escape)
+    }
+
+    /// The scalar sequences canonically equivalent to `character`: as held, NFC,
+    /// NFD, and every ordering of its marks composed up to each point. (Singleton
+    /// code points such as U+212B are matched when held, but are not invented:
+    /// no normalization form produces one.)
+    private static func spellings(of character: Character) -> [[Unicode.Scalar]] {
+        let text = String(character)
+        func scalars(_ s: String) -> [Unicode.Scalar] { Array(s.unicodeScalars) }
+        func string(_ s: ArraySlice<Unicode.Scalar>) -> String {
+            var out = String.UnicodeScalarView()
+            out.append(contentsOf: s)
+            return String(out)
+        }
+        let decomposed = scalars(text.decomposedStringWithCanonicalMapping)
+        var found = [scalars(text)]
+        func offer(_ candidate: [Unicode.Scalar]) {
+            // Swift's String equality IS canonical equivalence.
+            if !found.contains(candidate), string(candidate[...]) == text { found.append(candidate) }
+        }
+        offer(scalars(text.precomposedStringWithCanonicalMapping))
+        offer(decomposed)
+        if decomposed.count > 1 {
+            var orders = [decomposed]
+            if decomposed.count - 1 <= maxReorderedMarks {
+                orders = permutations(Array(decomposed.dropFirst())).map { [decomposed[0]] + $0 }
+            }
+            for order in orders {
+                offer(order)
+                for length in 2...order.count {
+                    offer(scalars(string(order[..<length]).precomposedStringWithCanonicalMapping) + order[length...])
+                }
+            }
+        }
+        return found
+    }
+
+    private static func permutations(_ items: [Unicode.Scalar]) -> [[Unicode.Scalar]] {
+        if items.count < 2 { return [items] }
+        return items.indices.flatMap { index -> [[Unicode.Scalar]] in
+            var rest = items
+            let head = rest.remove(at: index)
+            return permutations(rest).map { [head] + $0 }
+        }
     }
 
     /// `text` with every occurrence replaced. Occurrences are all found in the
@@ -116,7 +222,9 @@ struct LiteralScrubber {
         bytes.withUnsafeBufferPointer { buffer in
             for start in 0..<buffer.count where starts[Int(buffer[start])] {
                 var end = 0
-                for literal in literals {
+                let follower = buffer[start] == UInt8(ascii: "\\") ? byteAfterBackslashes(buffer, start) : nil
+                for (index, literal) in literals.enumerated() {
+                    if let follower, !afterBackslashes[index][Int(follower)] { continue }
                     if let candidate = matchEnd(literal, buffer, start) { end = max(end, candidate) }
                 }
                 guard end > start else { continue }
@@ -140,19 +248,45 @@ struct LiteralScrubber {
         return (String(decoding: out, as: UTF8.self), found.count)
     }
 
+    /// The byte after the (capped) run of backslashes at `start`; 0 at the end.
+    private func byteAfterBackslashes(_ text: UnsafeBufferPointer<UInt8>, _ start: Int) -> UInt8 {
+        var position = start + 1
+        while position - start < Self.maxBackslashes, position < text.count, text[position] == text[start] { position += 1 }
+        return position < text.count ? text[position] : 0
+    }
+
     /// The furthest end of `literal` starting at `start`, or nil.
-    private func matchEnd(_ literal: [Unit], _ text: UnsafeBufferPointer<UInt8>, _ start: Int) -> Int? {
+    private func matchEnd(_ literal: [Spellings], _ text: UnsafeBufferPointer<UInt8>, _ start: Int) -> Int? {
         var first: [Int] = []
         advance(literal[0], text, start, &first)
         if first.isEmpty { return nil }
         var states = first
-        for unit in literal.dropFirst() {
+        for character in literal.dropFirst() {
             var next: [Int] = []
-            for state in states { advance(unit, text, state, &next) }
+            for state in states { advance(character, text, state, &next) }
             if next.isEmpty { return nil }
             states = next
         }
         return states.max()
+    }
+
+    /// Appends every position just past any spelling of `character` at `at`.
+    private func advance(_ character: Spellings, _ text: UnsafeBufferPointer<UInt8>, _ at: Int, _ out: inout [Int]) {
+        // Nearly every character: one spelling of one scalar.
+        if character.count == 1, character[0].count == 1 {
+            advance(character[0][0], text, at, &out)
+            return
+        }
+        for spelling in character {
+            var states = [at]
+            for unit in spelling {
+                var next: [Int] = []
+                for state in states { advance(unit, text, state, &next) }
+                states = next
+                if states.isEmpty { break }
+            }
+            for state in states where out.count < Self.maxStates && !out.contains(state) { out.append(state) }
+        }
     }
 
     /// Appends every position just past one spelling of `unit` at `at`.
@@ -193,7 +327,7 @@ struct LiteralScrubber {
             // A literal backslash, doubled once per level of escaping.
             if unit.raw == [lead], run > 1 { (2...run).forEach { add(at + $0) } }
             if let escape = unit.escape, after < text.count, text[after] == escape { add(after + 1) }
-            if after < text.count, text[after] == UInt8(ascii: "u"),
+            if after < text.count, text[after] | 0x20 == UInt8(ascii: "u"),
                let end = unicodeEscapeEnd(unit.utf16, text, at) { add(end) }
         }
     }
@@ -207,7 +341,8 @@ struct LiteralScrubber {
                 run += 1
                 position += 1
             }
-            guard run > 0, position < text.count, text[position] == UInt8(ascii: "u"),
+            // \uXXXX, or \UXXXX as an NSDictionary description writes it.
+            guard run > 0, position < text.count, text[position] | 0x20 == UInt8(ascii: "u"),
                   hex(text, position + 1, 4) == UInt32(unit) else { return nil }
             position += 5
         }

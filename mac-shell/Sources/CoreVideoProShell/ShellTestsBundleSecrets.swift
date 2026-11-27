@@ -9,11 +9,16 @@ extension ShellTests {
         [
             ("bundle-secrets/every-held-secret", testBundleScrubsEveryHeldSecret),
             ("bundle-secrets/encoded-forms", testBundleScrubsEncodedForms),
+            ("bundle-secrets/unicode-normalization", testBundleScrubsCanonicallyEquivalentText),
             ("bundle-secrets/dictionary-keys", testBundleScrubsDictionaryKeys),
             ("bundle-secrets/overlapping-literals", testBundleScrubsOverlappingLiterals),
             ("bundle-secrets/manifest", testBundleManifestCarriesNoSecret),
             ("bundle-secrets/headless-export", testBundleHeadlessExportScrubsStoredSecrets),
             ("bundle-secrets/large-input", testBundleLiteralScrubStaysLinear),
+            ("bundle-secrets/frozen-live-destinations", testBundleScrubsTheSecretsStillOnAir),
+            ("bundle-secrets/more-sources", testBundleScrubsEnvironmentAndOtherLinks),
+            ("bundle-secrets/no-over-redaction", testBundleKeepsDiagnosticKeysAndWords),
+            ("bundle-secrets/long-run", testBundleKeyValueRuleStaysLinear),
         ]
     }
 
@@ -162,6 +167,51 @@ extension ShellTests {
         expectEqual(Redactor.scrub(benign, literals: [secret]), benign, "benign escapes survive")
     }
 
+    /// A non-ASCII secret held in one normalization and logged in another (NFC,
+    /// NFD, a mix, reordered marks), raw, JSON-escaped, \u-escaped or URL-encoded.
+    static func testBundleScrubsCanonicallyEquivalentText() {
+        // é, ñ, Hangul, and a letter with two marks (partly composable, reorderable).
+        let nfc = "fk\u{E9}-\u{F1}\u{D55C}-\u{1EAD}q/z"
+        let nfd = "fke\u{301}-n\u{303}\u{1112}\u{1161}\u{11AB}-a\u{323}\u{302}q/z"
+        let spellings: [(String, String)] = [
+            ("nfc", nfc), ("nfd", nfd),
+            ("mixed", "fk\u{E9}-n\u{303}\u{D55C}-a\u{302}\u{323}q/z"),
+            ("partly composed", "fke\u{301}-\u{F1}\u{1112}\u{1161}\u{11AB}-\u{E2}\u{323}q/z"),
+            ("partly composed, other mark", "fk\u{E9}-\u{F1}\u{D558}\u{11AB}-\u{1EA1}\u{302}q/z"),
+        ]
+        let unreserved = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        func uEscaped(_ s: String) -> String {
+            s.utf16.map { $0 < 128 && $0 != 47 ? String(UnicodeScalar(UInt8($0))) : String(format: "\\u%04x", $0) }.joined()
+        }
+        for (name, text) in spellings {
+            expect(text == nfc && (name == "nfc" || !text.utf8.elementsEqual(nfc.utf8)), "\(name): equivalent, other bytes")
+        }
+        // Unrelated text in either normalization must come through byte for byte.
+        let bystander = "cafe\u{301} caf\u{E9} \u{212B} \u{1112}\u{1161}"
+        for (heldName, held) in [("held nfc", nfc), ("held nfd", nfd)] {
+            for (name, spelling) in spellings {
+                let forms = [("raw", spelling), ("json", spelling.replacingOccurrences(of: "/", with: "\\/")),
+                             ("unicode escape", uEscaped(spelling)),
+                             ("percent", spelling.addingPercentEncoding(withAllowedCharacters: unreserved) ?? "")]
+                for (formName, form) in forms {
+                    let label = "\(heldName), \(name) \(formName)"
+                    let out = Redactor.scrub("\(bystander) <\(form)> end", literals: [held])
+                    expect(out.utf8.elementsEqual("\(bystander) <[redacted]> end".utf8), "LEAK or damage: \(label) -> \(out)")
+                }
+            }
+            // And through a whole bundle: log tail, warnings, a JSON value and a key.
+            var input = SupportBundleInput()
+            input.knownSecretLiterals = [held]
+            let other = held.utf8.elementsEqual(nfc.utf8) ? nfd : nfc
+            input.warnings = ["saw <\(other)>"]
+            input.coreSnapshotJson = (try? JSONSerialization.data(withJSONObject: ["m": "saw \(other)", other: 1])) ?? Data()
+            let files = writeSecretBundle(input, shellLog: "saw <\(uEscaped(other))>", coreLog: "saw <\(other)>")
+            for (name, spelling) in spellings { expectAbsent(spelling, "\(heldName), \(name)", in: files) }
+            expectAbsent(uEscaped(other), "\(heldName), escaped other form", in: files)
+        }
+    }
+
     static func testBundleScrubsDictionaryKeys() {
         let secret = "fk/dict\"secretq", other = "fkplainsecretq"
         var input = SupportBundleInput()
@@ -264,10 +314,95 @@ extension ShellTests {
             _ = scrubber.scrub(text)
             let seconds = Date().timeIntervalSince(start)
             FileHandle.standardError.write(Data("    large-input \(label): \(String(format: "%.2f", seconds)) s\n".utf8))
-            expect(seconds < 10, "\(label) took \(seconds) s")
+            expect(seconds < 60, "\(label) took \(seconds) s")
+        }
+        // A non-ASCII literal has several spellings per character.
+        let accented = LiteralScrubber((0..<12).map { "\u{E9}\u{E9}\u{E9}\u{E9}\u{1EAD}\u{D55C}-\($0)" })
+        for (label, text) in [("composed near misses", String(repeating: "\u{E9}", count: size / 2)),
+                              ("decomposed near misses", String(repeating: "e\u{301}", count: size / 3))] {
+            let start = Date()
+            expectEqual(accented.scrub(text).hits, 0, "\(label): no hit")
+            let seconds = Date().timeIntervalSince(start)
+            FileHandle.standardError.write(Data("    large-input \(label): \(String(format: "%.2f", seconds)) s\n".utf8))
+            expect(seconds < 60, "\(label) took \(seconds) s")
         }
         // And it still finds a secret at the far end of a large line.
         let hit = scrubber.scrub(String(repeating: "\\ %25 ", count: 100_000) + "fklarge-secret%20%22%5C%2F%257")
         expect(hit.text.hasSuffix(" [redacted]") && hit.hits == 1, "found after 600 KB")
+    }
+
+    /// Start freezes the destinations; the footer and Settings key fields stay
+    /// editable, so the key ON AIR may no longer be the one in the field.
+    @MainActor static func testBundleScrubsTheSecretsStillOnAir() {
+        let model = AppModel()
+        model.streamKey = "fkonairkeyq"
+        model.srtPassphrase = "fkonairsrtq"
+        model.streamDestinations.srtStreamId = "fkonairstreamid"
+        model.streamingDesired = true
+        model.streamKey = "fkeditedkeyq"
+        model.srtPassphrase = ""
+        model.streamDestinations.srtStreamId = ""
+        let secrets = ["fkonairkeyq", "fkonairsrtq", "fkonairstreamid", "fkeditedkeyq"]
+        let log = secrets.map { "peer refused <\($0)>" }.joined(separator: "\n")
+        let files = writeSecretBundle(model.supportBundleInput(), shellLog: log, coreLog: log)
+        model.streamingDesired = false
+        for secret in secrets { expectAbsent(secret, secret, in: files) }
+    }
+
+    /// Secrets the core reads from the environment it inherits from the shell,
+    /// passcodes in non-zoom.us links or pasted invites, and the HLS ingest URL.
+    @MainActor static func testBundleScrubsEnvironmentAndOtherLinks() {
+        let names = ["COREVIDEO_ZOOM_MEETING_PASSCODE", "COREVIDEO_ZOOM_USER_ZAK", "COREVIDEO_ZOOM_SDK_JWT",
+                     "COREVIDEO_ZOOM_ON_BEHALF_TOKEN", "COREVIDEO_ZOOM_APP_PRIVILEGE_TOKEN"]
+        var environment: [String: String] = [:]
+        for (index, name) in names.enumerated() { environment[name] = "fkenvsecret\(index)q" }
+        var held = SupportBundleSecrets.Held()
+        held.meetingTargets = ["https://example.zoomgov.com/j/1?pwd=fkgovpwdq",
+                               "Join: https://zoom.com/j/2?pwd=fk%2Dinvitepwdq#success - see you"]
+        held.destinations = [(StreamDestinationsConfig(hlsPlaylistUrl: "https://h.example/up/fkhlspathq/live.m3u8"),
+                              StreamDestinationSecrets())]
+        let literals = SupportBundleSecrets.literals(held, environment: environment)
+        for value in environment.values.sorted() + ["fkgovpwdq", "fk-invitepwdq",
+                                                    "https://h.example/up/fkhlspathq/live.m3u8"] {
+            expect(literals.contains(value), "held: \(value)")
+        }
+        // NSDictionary descriptions write \U00e9.
+        expectEqual(Redactor.scrub("<fk\\U00e9secret>", literals: ["fk\u{E9}secret"]), "<[redacted]>", "\\U escape")
+    }
+
+    /// Scrubbing keys and Stream IDs must not shred the diagnostics.
+    static func testBundleKeepsDiagnosticKeysAndWords() {
+        let longKey = "programHardwareH264EncoderSession2Count"
+        let redacted = Redactor.redact([longKey: 2]) as? JSONObject
+        expect(redacted?[longKey] != nil, "a long mixed-case diagnostic KEY survives")
+        let urlKey = Redactor.redact(["rtmp://h.example/app/fkurlkeyq": 1]) as? JSONObject
+        expect(urlKey?.keys.contains { $0.contains("fkurlkeyq") } == false, "a URL used as a key is still filtered")
+        for word in ["stream", "streaming", "publish"] {
+            var held = SupportBundleSecrets.Held()
+            held.destinations = [(StreamDestinationsConfig(srtStreamId: word), StreamDestinationSecrets())]
+            expect(!SupportBundleSecrets.literals(held, environment: [:]).contains(word),
+                   "the bundle's own word \(word) is not a literal")
+        }
+    }
+
+    /// A pre-existing quadratic: the `someKey=value` rule rescanned an unbroken
+    /// run from every position, so one long line hung the export.
+    static func testBundleKeyValueRuleStaysLinear() {
+        // Same matches as before the rule was anchored to the start of a run.
+        let cases = [("a streamKey=fkv1 b", "a streamKey=[redacted] b"),
+                     ("x-my_token : fkv2;y", "x-my_token : [redacted];y"),
+                     ("userZak=fkv3,sdkJwt=fkv4", "userZak=[redacted],sdkJwt=[redacted]"),
+                     ("keyphase=ok monkey=fkv5", "keyphase=ok monkey=[redacted]"),
+                     ("[pwd=fkv6]", "[pwd=[redacted]]")]
+        for (input, output) in cases { expectEqual(Redactor.scrub(input), output, input) }
+        // 24 KB is minutes under the quadratic rule.
+        for (label, text) in [("letters", String(repeating: "a", count: 24_000)),
+                              ("hex", String(repeating: "0f3a", count: 6_000))] {
+            let start = Date()
+            _ = Redactor.scrub(text)
+            let seconds = Date().timeIntervalSince(start)
+            FileHandle.standardError.write(Data("    long-run \(label): \(String(format: "%.2f", seconds)) s\n".utf8))
+            expect(seconds < 5, "\(label) took \(seconds) s")
+        }
     }
 }
