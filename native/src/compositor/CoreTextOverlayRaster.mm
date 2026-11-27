@@ -240,6 +240,96 @@ CGPathRef createRoundedPath(CGRect rect, CGFloat radius, double tolerance) {
                                                   radius, tolerance));
 }
 
+// Draws `image` into user-space `dest` as D2D's DrawBitmap with
+// D2D1_BITMAP_INTERPOLATION_MODE_LINEAR does: bilinear on premultiplied
+// pixels, sample positions at device pixel centres mapped into the source
+// (centre-aligned, edges clamped), and a fractional destination edge
+// antialiased by the pixel's area inside the rect. Probed on Windows
+// 2026-11-27: one white pixel upscaled 8x reads 16, 48, ... 239 per column,
+// exactly this kernel. Core Graphics' interpolation qualities are
+// unspecified (Medium read sharper than bilinear, edges up to 66/255 off),
+// so the resample is done here and composited 1:1 in device pixels. The
+// caller's alpha (opacity) and clip apply to the composite.
+bool drawImageBilinear(CGContextRef cg, CGColorSpaceRef space, CGImageRef image, CGRect dest) {
+  const size_t srcW = CGImageGetWidth(image), srcH = CGImageGetHeight(image);
+  if (srcW == 0 || srcH == 0 || dest.size.width <= 0 || dest.size.height <= 0) return true;
+  const CGAffineTransform ctm = CGContextGetCTM(cg);
+  if (ctm.b != 0 || ctm.c != 0) {  // not axis-aligned: no D2D-matching path; draw as before
+    CGContextSetInterpolationQuality(cg, kCGInterpolationMedium);
+    CGContextTranslateCTM(cg, dest.origin.x, dest.origin.y + dest.size.height);
+    CGContextScaleCTM(cg, 1, -1);
+    CGContextDrawImage(cg, CGRectMake(0, 0, dest.size.width, dest.size.height), image);
+    return true;
+  }
+  // Source pixels, premultiplied B G R A; memory row 0 is the image's top row.
+  CfRef<CGContextRef> source(CGBitmapContextCreate(nullptr, srcW, srcH, 8, srcW * 4, space,
+                                                   CGBitmapInfo(kCGImageAlphaPremultipliedFirst) |
+                                                       kCGBitmapByteOrder32Little));
+  if (!source) return false;
+  CGContextSetBlendMode(source.get(), kCGBlendModeCopy);
+  CGContextSetInterpolationQuality(source.get(), kCGInterpolationNone);
+  CGContextDrawImage(source.get(), CGRectMake(0, 0, CGFloat(srcW), CGFloat(srcH)), image);
+  CGContextFlush(source.get());
+  const auto* src = static_cast<const uint8_t*>(CGBitmapContextGetData(source.get()));
+  const size_t srcStride = CGBitmapContextGetBytesPerRow(source.get());
+  // Device positions of the image's top-left and bottom-right corners.
+  const CGPoint p0 = CGPointApplyAffineTransform(dest.origin, ctm);
+  const CGPoint p1 = CGPointApplyAffineTransform(
+      CGPointMake(dest.origin.x + dest.size.width, dest.origin.y + dest.size.height), ctm);
+  const double dx0 = std::min(p0.x, p1.x), dx1 = std::max(p0.x, p1.x);
+  const double dy0 = std::min(p0.y, p1.y), dy1 = std::max(p0.y, p1.y);
+  const double targetW = double(CGBitmapContextGetWidth(cg)), targetH = double(CGBitmapContextGetHeight(cg));
+  const double ix0 = std::max(0.0, std::floor(dx0)), ix1 = std::min(targetW, std::ceil(dx1));
+  const double iy0 = std::max(0.0, std::floor(dy0)), iy1 = std::min(targetH, std::ceil(dy1));
+  if (ix1 <= ix0 || iy1 <= iy0) return true;  // off the bitmap
+  const size_t width = size_t(ix1 - ix0), height = size_t(iy1 - iy0);
+  CfRef<CGContextRef> layer(CGBitmapContextCreate(nullptr, width, height, 8, width * 4, space,
+                                                  CGBitmapInfo(kCGImageAlphaPremultipliedFirst) |
+                                                      kCGBitmapByteOrder32Little));
+  if (!layer) return false;
+  auto* out = static_cast<uint8_t*>(CGBitmapContextGetData(layer.get()));
+  const size_t outStride = CGBitmapContextGetBytesPerRow(layer.get());
+  const auto overlap = [](double a0, double a1, double b0, double b1) {
+    return std::max(0.0, std::min(a1, b1) - std::max(a0, b0));
+  };
+  const auto at = [&](long sx, long sy) {
+    sx = std::clamp<long>(sx, 0, long(srcW) - 1);
+    sy = std::clamp<long>(sy, 0, long(srcH) - 1);
+    return src + size_t(sy) * srcStride + size_t(sx) * 4;
+  };
+  for (size_t row = 0; row < height; ++row) {
+    // Memory row 0 is the layer's top: the highest device y.
+    const double deviceY = iy1 - 1 - double(row);
+    const double coverY = overlap(deviceY, deviceY + 1, dy0, dy1);
+    // Source row coordinate of this pixel's centre (p0 is the image's top edge).
+    const double v = (deviceY + 0.5 - p0.y) / (p1.y - p0.y) * double(srcH) - 0.5;
+    const long v0 = long(std::floor(v));
+    const double fv = v - double(v0);
+    for (size_t col = 0; col < width; ++col) {
+      const double deviceX = ix0 + double(col);
+      const double cover = coverY * overlap(deviceX, deviceX + 1, dx0, dx1);
+      uint8_t* px = out + row * outStride + col * 4;
+      if (cover <= 0) continue;
+      const double u = (deviceX + 0.5 - p0.x) / (p1.x - p0.x) * double(srcW) - 0.5;
+      const long u0 = long(std::floor(u));
+      const double fu = u - double(u0);
+      const uint8_t *a = at(u0, v0), *b = at(u0 + 1, v0), *c = at(u0, v0 + 1), *d = at(u0 + 1, v0 + 1);
+      for (int k = 0; k < 4; ++k) {
+        const double top = a[k] + (b[k] - a[k]) * fu, bottom = c[k] + (d[k] - c[k]) * fu;
+        px[k] = uint8_t(std::clamp((top + (bottom - top) * fv) * cover + 0.5, 0.0, 255.0));
+      }
+    }
+  }
+  CfRef<CGImageRef> resampled(CGBitmapContextCreateImage(layer.get()));
+  if (!resampled) return false;
+  CGContextSaveGState(cg);
+  CGContextConcatCTM(cg, CGAffineTransformInvert(ctm));  // device pixels; clip and alpha stay
+  CGContextSetInterpolationQuality(cg, kCGInterpolationNone);
+  CGContextDrawImage(cg, CGRectMake(CGFloat(ix0), CGFloat(iy0), CGFloat(width), CGFloat(height)), resampled.get());
+  CGContextRestoreGState(cg);
+  return true;
+}
+
 CGPathRef createEllipsePath(CGRect rect, double tolerance) {
   if (rect.size.width <= 0 || rect.size.height <= 0) return nullptr;
   return createPolygonPath(d2dcurves::ellipse(CGRectGetMidX(rect), CGRectGetMidY(rect), rect.size.width / 2,
@@ -484,11 +574,10 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
           const double y = b.y + (p.imageVerticalAlign == "bottom" ? b.height - h
                                   : p.imageVerticalAlign == "center" ? (b.height - h) / 2 : 0);
           CGContextSetAlpha(cg, CGFloat(p.opacity));
-          CGContextSetInterpolationQuality(cg, kCGInterpolationMedium);
-          // Images are bottom-up in Core Graphics; flip locally in the top-down CTM.
-          CGContextTranslateCTM(cg, CGFloat(x), CGFloat(y + h));
-          CGContextScaleCTM(cg, 1, -1);
-          CGContextDrawImage(cg, CGRectMake(0, 0, w, h), bitmap->second.get());
+          if (!drawImageBilinear(cg, space, bitmap->second.get(), CGRectMake(x, y, w, h))) {
+            complete = false;
+            warning = "Graphics image layer allocation failed.";
+          }
         }
       }
       CGContextRestoreGState(cg);
