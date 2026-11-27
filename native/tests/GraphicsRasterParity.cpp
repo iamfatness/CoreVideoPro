@@ -459,9 +459,14 @@ Json defaultBrand() {
       {"brand.fontHeading", a.fontFamily}, {"brand.secondary", a.titleColor}, {"brand.background", a.backgroundColor},
       {"brand.foreground", a.nameColor}, {"brand.logo", "logo"}};
 }
+// Arial, not Segoe UI: parity fixtures use fonts both platforms ship so they
+// measure the rasterizers (spec 7.3). With Segoe UI the Mac drew Selawik and
+// the title read 8.6% heavy from the font alone (Selawik through D2D: +12.9%).
+// Segoe UI to Selawik has its own fixture, segoe-substitution. Owner ruling
+// 2026-11-27. The shared GraphicsMotionFixture.h motionBrand() is unchanged.
 Json motionBrand() {
   return Json::Object{{"brand.primary", "#203040"}, {"brand.onPrimary", "#FFFFFF"},
-      {"brand.accent", "#44C1A1"}, {"brand.fontBody", "Segoe UI"}};
+      {"brand.accent", "#44C1A1"}, {"brand.fontBody", "Arial"}};
 }
 }  // namespace
 
