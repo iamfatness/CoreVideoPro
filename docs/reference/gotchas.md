@@ -12,6 +12,10 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   differed (mean edge alpha 177 on Windows vs 120 on Mac). Changing either constant means regenerating
   `contracts/graphics-raster-reference.json` and the Mac goldens, and rerunning
   `GraphicsRasterParity.MacMatchesWindowsReference`.
+  Baselines are snapped too: D2D's `DrawTextLayout` (no `D2D1_DRAW_TEXT_OPTIONS_NO_SNAP`) rounds each
+  line's baseline to the nearest device pixel, so the Mac rounds the fill's baseline the same way. Outlines
+  and shadows go through a custom text renderer with `IsPixelSnappingDisabled = TRUE` and stay unsnapped
+  on both. Without the snap, a 28 px label at box y 82 (baseline 104.4) sat 2 px low on the Mac.
 - **Never join a recording writer without a bound, and never let MF throttle (#1030, 2026-10-23).**
   One ISO whose participant left blocked inside `CMFSinkWriter::ThrottleStream`;
   an unconditional `RecordingTrackWorker::join()` then froze every later

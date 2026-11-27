@@ -319,6 +319,21 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
   // composited at the primitive's opacity. Font smoothing (the old small-text
   // dilation, plan default D9) is off: the curve replaces it at every size.
   const CGRect textClip = CGRectMake(b.x, b.y, b.width, layoutHeight);  // D2D1_DRAW_TEXT_OPTIONS_CLIP
+  // D2D's DrawTextLayout (no D2D1_DRAW_TEXT_OPTIONS_NO_SNAP) rounds each
+  // line's baseline to the nearest whole device pixel; the outline and shadow
+  // above come from a custom renderer with snapping disabled, so they stay
+  // unsnapped on both rasters. Snap in device space (the CTM carries
+  // placement and scale) and only when the CTM is axis-aligned, as D2D does.
+  const CGAffineTransform userToDevice = CGContextGetCTM(cg);
+  const double deviceHeight = double(CGBitmapContextGetHeight(cg));
+  auto snappedBaseline = [&](double x, double y) {
+    if (userToDevice.b != 0 || userToDevice.c != 0 || userToDevice.d == 0) return y;
+    CGPoint device = CGPointApplyAffineTransform(CGPointMake(CGFloat(x), CGFloat(y)), userToDevice);
+    // Round in top-down rows, as D2D does, whichever way the CTM flips y.
+    device.y = userToDevice.d < 0 ? CGFloat(deviceHeight - std::floor(deviceHeight - device.y + 0.5))
+                                  : CGFloat(std::floor(device.y + 0.5));
+    return double(CGPointApplyAffineTransform(device, CGAffineTransformInvert(userToDevice)).y);
+  };
   auto drawLines = [&](CGContextRef target) {
     CGContextSetTextMatrix(target, CGAffineTransformMakeScale(1, -1));
     CGContextSetAllowsAntialiasing(target, true);
@@ -328,7 +343,8 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
     CGContextSetAllowsFontSubpixelPositioning(target, true);
     CGContextSetShouldSubpixelPositionFonts(target, true);
     for (size_t n = 0; n < text.lines().size(); ++n) {
-      CGContextSetTextPosition(target, CGFloat(lineX(text.lines()[n])), CGFloat(baseline(n)));
+      const double x = lineX(text.lines()[n]);
+      CGContextSetTextPosition(target, CGFloat(x), CGFloat(snappedBaseline(x, baseline(n))));
       CTLineDraw(text.lines()[n].line, target);
     }
   };
