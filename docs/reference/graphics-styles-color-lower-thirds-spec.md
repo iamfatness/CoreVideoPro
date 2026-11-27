@@ -268,9 +268,9 @@ Ordered by how many looks each unlocks:
 - **P1-P4 are the minimum for packs that do not look flat.**
 - P5-P7 add motion polish.
 - P9 is the most expensive. It runs on the compositor's GPU path, it is a frame-budget risk at 1080p60,
-  and mimoLive warns about the same cost. Ship the Worship and Corporate packs with a frosted
-  *approximation* (a semi-opaque gradient plate plus a soft edge), and make true backdrop blur a
-  separate, optional step.
+  and mimoLive warns about the same cost. **Owner ruling (2026-11-27): true backdrop blur is required.**
+  No frosted approximation ships. Glass looks wait for P9 on both Windows and Mac, and P9 must hold the
+  outputs release gate (zero dropped frames at 1080p60) with two pack graphics plus a crawl on air.
 
 Each primitive carries:
 - a parity fixture in `native/tests/fixtures/graphics-parity/`;
@@ -310,7 +310,7 @@ Timings are practitioner conventions.
 |---|---|---|---|---|
 | **News: Signal** | stacked name bar over secondary title bar; hard accent strip at left; red LIVE/BREAKING tab; subtle top-down gradient and a 1 px highlight line; a shine sweep crosses every 8 s | Inter / Barlow Semi Condensed: name 600, title 400, tag 700 caps tracked +6% | strip wipes up (200 ms) → plate reveals left-to-right (400 ms, expo-out) → text 100 ms later per line; out 70% of in | ticker / crawl skin, clock bug |
 | **Sports: Kinetic** | 12° skewed plates in team colour; dark number/stat block; diagonal speed-line texture at 15% | Barlow Condensed / Oswald, Bold Italic caps, tight tracking | plates slam in from the side (250 ms, back-out overshoot), staggered 60 ms; text snaps | score bug (team A/B, score, clock, period), stat lower third |
-| **Worship: Grace** | no hard box: soft dark gradient rising from the bottom, thin gold rule, optional frosted plate (approximation) | Cormorant Garamond for scripture / headings, Montserrat Light for names | 800 ms dissolve, sine in-out; gentle 6 px rise; text follows 150 ms | **Scripture** (verse + reference, 2-tier, up to 4 lines), **Lyrics** (lower-centre, no plate, shadow only) |
+| **Worship: Grace** | no hard box: soft dark gradient rising from the bottom, thin gold rule, optional glass plate (true backdrop blur, P9) | Cormorant Garamond for scripture / headings, Montserrat Light for names | 800 ms dissolve, sine in-out; gentle 6 px rise; text follows 150 ms | **Scripture** (verse + reference, 2-tier, up to 4 lines), **Lyrics** (lower-centre, no plate, shadow only) |
 | **Corporate: Clarity** | rounded 8 px plate, brand-primary accent strip, optional logo on the left, soft shadow | Inter / Montserrat 600 / 400 | slide + fade 450 ms, quint-out; text stagger 80 ms | webinar title card, speaker with company |
 | **Esports: Neon** | angular HUD frame (polygon with cut corners) on near-black; accent glow; scanline texture | Rajdhani / Chakra Petch caps | 250 ms, stepped "glitch" in (3 opacity steps), pulse loop on the accent | player card, caster duo |
 | **Talk: Studio** | two-tone pill (name pill + role pill), handle line with social icon | DM Sans / Poppins | spring pop 400 ms (back-out), pills stagger 90 ms | guest + handle, "Up next" |
@@ -358,18 +358,18 @@ Each slice states its platforms. **W** = Windows, **M** = Mac, **C** = shared co
 | 5 | P2 gradients (angle, multi-stop, radial) plus gradient editor in ColorField | C + W + M | 0, 2 | M |
 | 6 | P3 polygon/skew, plus P4 shape shadow/glow | C + W + M | 0 | M |
 | 7 | P8 bundled fonts on Windows; pack format plus installer plus pack lint | C + W | 4 | M |
-| 8 | Packs wave 1: **News, Sports, Worship** (templates, palettes, fixtures, goldens) | data (both) | 4-7 | M |
-| 9 | Builder reshaped around packs (live palette thumbnails, variants, safe area) | W | 8 | M |
-| 10 | Metal private preview (`lowerThirdPreview`) | M | — | M |
-| 11 | Mac Builder (SwiftUI) on the same pack/palette model | M | 2, 8, 10 | L |
-| 12 | P5-P7 motion polish (reveal, stagger, loops); packs adopt them | C + W + M | 8 | M |
-| 13 | Packs wave 2: Corporate, Esports, Talk, Minimal; Import-from-logo palette | data + W/M | 12 | M |
-| 14 | P9 true backdrop blur (optional; frame-budget gated at 1080p60) | W + M compositor | 12 | L |
+| 8 | P5-P7 motion polish (reveal, stagger, loops) | C + W + M | 0 | M |
+| 9 | P9 true backdrop blur (required; must pass the 1080p60 outputs gate) | W + M compositor | 0 | L |
+| 10 | Packs wave 1: **all seven** (News, Sports, Worship, Corporate, Esports, Talk, Minimal): templates, palettes, fixtures, goldens | data (both) | 4-9 | L |
+| 11 | Builder reshaped around packs (live palette thumbnails, variants, safe area) | W | 10 | M |
+| 12 | Metal private preview (`lowerThirdPreview`) | M | — | M |
+| 13 | Mac Builder (SwiftUI) on the same pack/palette model | M | 2, 10, 12 | L |
+| 14 | Import-from-logo palette; pack import/export (`.cvpack`) | W + M | 10 | M |
 
 Owner-visible milestones:
 - **After slice 3:** one picker everywhere, colours set once.
-- **After slice 9:** News/Sports/Worship on Windows.
-- **After slice 11:** the same on Mac.
+- **After slice 11:** all seven packs on Windows.
+- **After slice 13:** the same on Mac.
 
 ## 9. Acceptance (owner-performed, per the usability gate)
 
@@ -383,17 +383,16 @@ Owner-visible milestones:
 5. Every output has zero dropped frames with two pack graphics plus a crawl on air at 1080p60 (outputs
    release gate). Not tested on a loaded machine only.
 
-## 10. Open owner decisions
+## 10. Owner decisions (ruled 2026-11-27)
 
-1. **Palette scope:** per show (recommended; matches "designs live in the show file") or app-wide with
-   per-show override?
-2. **Launch pack set:** confirm wave 1 = News, Sports, Worship. Should wave 1 also include Corporate (the
-   webinar majority)?
-3. **Backdrop blur (P9):** is approximated "frosted" acceptable for launch, with true blur as a later
-   optional step?
-4. **Live re-theme:** should a palette change auto-update graphics on air (faster, riskier), or keep the
-   explicit "Update on air" (recommended, matches private-Cue contract)?
-5. **Pack distribution:** built-in only, or downloadable/importable `.cvpack` (enables a marketplace later)?
+1. **Palette scope:** per show, seeded from an app-wide default palette for new shows.
+2. **Launch pack set:** all seven packs ship in wave 1 (News, Sports, Worship, Corporate, Esports, Talk,
+   Minimal). Wave 1 therefore depends on motion polish (P5-P7) and backdrop blur (P9).
+3. **Backdrop blur (P9):** true GPU backdrop blur is required on Windows and Mac. No frosted
+   approximation ships.
+4. **Live re-theme:** a palette change updates Cue and Preview immediately. Program changes only on an
+   explicit "Update on air", which matches the private-Cue contract.
+5. **Pack distribution:** built-in packs first. Pack import/export (`.cvpack`) comes in slice 14.
 
 ## Appendix A: sources
 
