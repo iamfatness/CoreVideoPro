@@ -19,6 +19,7 @@ extension ShellTests {
             ("bundle-secrets/more-sources", testBundleScrubsEnvironmentAndOtherLinks),
             ("bundle-secrets/no-over-redaction", testBundleKeepsDiagnosticKeysAndWords),
             ("bundle-secrets/long-run", testBundleKeyValueRuleStaysLinear),
+            ("bundle-secrets/never-less-than-main", testBundleStillMatchesWhatMainMatched),
         ]
     }
 
@@ -417,11 +418,25 @@ extension ShellTests {
 
     /// Scrubbing keys and Stream IDs must not shred the diagnostics.
     static func testBundleKeepsDiagnosticKeysAndWords() {
-        let longKey = "programHardwareH264EncoderSession2Count"
-        let redacted = Redactor.redact([longKey: 2]) as? JSONObject
-        expect(redacted?[longKey] != nil, "a long mixed-case diagnostic KEY survives")
-        let urlKey = Redactor.redact(["rtmp://h.example/app/fkurlkeyq": 1]) as? JSONObject
-        expect(urlKey?.keys.contains { $0.contains("fkurlkeyq") } == false, "a URL used as a key is still filtered")
+        // The longest key names the core and shell really publish.
+        let keys = ["recordingStartupDroppedAudioPackets", "recordingStartupDroppedVideoFrames",
+                    "resourceBudgetAtStatePublication", "recordingAudioPrerollSampleCount",
+                    "zoomEngineForbiddenAcquisitions", "recordingVideoPrerollFrameCount",
+                    "encoderQueueDroppedAudioPackets", "completionMaximumObservedAgeNs",
+                    "senderAcquisitionTimeVerified", "destinationCompletionVerified",
+                    "programPixelSignature", "renderPlanSignature", "keyframeIntervalSeconds"]
+        let redacted = Redactor.redact(Dictionary(uniqueKeysWithValues: keys.map { ($0, 2) })) as? JSONObject
+        expectEqual(Set((redacted ?? [:]).keys), Set(keys), "diagnostic KEY names survive")
+        // A secret nobody told the shell about, used as a key: the shape rule
+        // applies to keys exactly as it does to values.
+        let opaque = "FkUnheldOpaque0123456789abcdefGHIJ"
+        var input = SupportBundleInput()
+        input.coreSnapshotJson = (try? JSONSerialization.data(withJSONObject: [
+            "bySession": [opaque: 1, "nested": [opaque: ["a": 2]]],
+            "byUrl": ["rtmp://h.example/app/fkurlkeyq": 1]] as JSONObject)) ?? Data()
+        let files = writeSecretBundle(input, shellLog: "x", coreLog: "x")
+        expectAbsent(opaque, "unheld opaque token used as a key", in: files)
+        expectAbsent("fkurlkeyq", "a URL used as a key", in: files)
         for word in ["stream", "streaming", "publish"] {
             var held = SupportBundleSecrets.Held()
             held.destinations = [(StreamDestinationsConfig(srtStreamId: word), StreamDestinationSecrets())]
@@ -459,6 +474,22 @@ extension ShellTests {
             let seconds = Date().timeIntervalSince(start)
             FileHandle.standardError.write(Data("    long-run \(label): \(String(format: "%.2f", seconds)) s\n".utf8))
             expect(seconds < 5, "\(label) took \(seconds) s")
+        }
+    }
+
+    /// Main replaced literals with Foundation's search, which also equates a
+    /// singleton code point in the TEXT (Kelvin sign for K, U+0958) with the
+    /// plain spelling of the secret. That must still match.
+    static func testBundleStillMatchesWhatMainMatched() {
+        for (held, written) in [("fkKelvinq", "fk\u{212A}elvinq"), ("fk\u{915}\u{93C}secret", "fk\u{958}secret"),
+                                ("fk;semiq", "fk\u{37E}semiq")] {
+            let out = Redactor.scrub("saw <\(written)> end", literals: [held])
+            expect(out.utf8.elementsEqual("saw <[redacted]> end".utf8), "as main did: \(held) -> \(out)")
+            var input = SupportBundleInput()
+            input.knownSecretLiterals = [held]
+            let files = writeSecretBundle(input, shellLog: "saw <\(written)>", coreLog: "x",
+                                          crashNames: [])
+            expect(files["shell-log-tail.txt"]?.contains("saw <[redacted]>") == true, "in a bundle: \(held)")
         }
     }
 }

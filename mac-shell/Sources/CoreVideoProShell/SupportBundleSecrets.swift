@@ -142,6 +142,8 @@ struct LiteralScrubber {
     private typealias Spellings = [[Unit]]
 
     private let literals: [[Spellings]]
+    /// The values as held, longest first, for the Foundation search below.
+    private let held: [String]
     /// Per literal, the bytes that can follow a run of backslashes its match
     /// STARTS with: lets a position in a long run be refused without matching.
     private let afterBackslashes: [[Bool]]
@@ -151,6 +153,7 @@ struct LiteralScrubber {
     var isEmpty: Bool { literals.isEmpty }
 
     init(_ values: [String]) {
+        held = Set(values).filter { $0.count >= Self.minimumLength }.sorted { $0.utf8.count > $1.utf8.count }
         var parsed: [[Spellings]] = []
         var starts = [Bool](repeating: false, count: 256)
         for value in Set(values) where value.count >= Self.minimumLength {
@@ -244,6 +247,18 @@ struct LiteralScrubber {
     /// overlapping) another never leaves the other's remainder behind.
     func scrub(_ text: String) -> (text: String, hits: Int) {
         if literals.isEmpty || text.isEmpty { return (text, 0) }
+        var (result, hits) = scrubSpellings(text)
+        // Foundation's search equates more than the spellings above (a singleton
+        // code point in the text, such as the Kelvin sign for "K"). Run it too,
+        // so this layer never matches less than a plain replace would.
+        for value in held where result.range(of: value) != nil {
+            hits += result.components(separatedBy: value).count - 1
+            result = result.replacingOccurrences(of: value, with: Redactor.placeholder)
+        }
+        return (result, hits)
+    }
+
+    private func scrubSpellings(_ text: String) -> (text: String, hits: Int) {
         let bytes = Array(text.utf8)
         var found: [Range<Int>] = []
         bytes.withUnsafeBufferPointer { buffer in

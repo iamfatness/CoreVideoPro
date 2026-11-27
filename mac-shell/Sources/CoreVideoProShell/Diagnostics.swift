@@ -61,13 +61,9 @@ enum Redactor {
     private struct Rule {
         let regex: NSRegularExpression
         let template: String
-        /// The shape-only guess, which is not applied to dictionary KEYS.
-        var guessesOpaqueRuns = false
 
         init(_ pattern: String, _ template: String,
-             _ options: NSRegularExpression.Options = [.caseInsensitive],
-             guessesOpaqueRuns: Bool = false) {
-            self.guessesOpaqueRuns = guessesOpaqueRuns
+             _ options: NSRegularExpression.Options = [.caseInsensitive]) {
             // A malformed literal here is a programming error; crashing at first
             // use beats silently shipping an unfiltered bundle.
             // swiftlint:disable:next force_try
@@ -109,7 +105,7 @@ enum Redactor {
         // the mixed-case requirement spares UUIDs, lowercase ids and
         // SCREAMING_SNAKE env-var names.
         Rule("(?<![A-Za-z0-9_\\-/.])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{28,}",
-             placeholder, [], guessesOpaqueRuns: true),
+             placeholder, []),
     ]
 
     /// Scrubs one string: known literals first (layer 3), then value patterns.
@@ -117,13 +113,13 @@ enum Redactor {
         scrub(text, known: LiteralScrubber(literals))
     }
 
-    private static func scrub(_ text: String, known: LiteralScrubber, isKey: Bool = false) -> String {
+    private static func scrub(_ text: String, known: LiteralScrubber) -> String {
         // Layer 3 — KNOWN LITERALS (SupportBundleSecrets): an identity match,
         // raw or escaped, cannot be fooled by a shape the pattern rules did not
         // anticipate.
         var result = known.scrub(text).text
         guard !result.isEmpty else { return result }
-        for rule in rules where !(isKey && rule.guessesOpaqueRuns) {
+        for rule in rules {
             let range = NSRange(result.startIndex..., in: result)
             result = rule.regex.stringByReplacingMatches(
                 in: result, options: [], range: range, withTemplate: rule.template)
@@ -144,8 +140,9 @@ enum Redactor {
             // Sorted, so two keys that scrub to the same text are numbered the
             // same way every time instead of one overwriting the other.
             for (key, child) in object.sorted(by: { $0.key < $1.key }) {
-                // A long mixed-case key is a diagnostic's name, not a token.
-                let cleanKey = scrub(key, known: known, isKey: true)
+                // A key is filtered exactly as a value is: an id used as a key
+                // can quote a secret nobody told the shell about.
+                let cleanKey = scrub(key, known: known)
                 var name = cleanKey
                 var copy = 2
                 while result[name] != nil {
