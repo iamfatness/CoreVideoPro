@@ -32,6 +32,12 @@ bool sameDefinition(const std::shared_ptr<const GraphicsTemplate>& a,const std::
   for(const auto& entry:a->assets()) {const auto found=b->assets().find(entry.first);if(found==b->assets().end() || found->second->sha256!=entry.second->sha256) return false;}
   return true;
 }
+// `speed` appears only when it is not 1, so every pre-speed observation is unchanged.
+template <class Revision> Json animationsState(const Revision& revision) {
+  Json::Object out{{"in", revision.entrance.json()}, {"out", revision.exit.json()}, {"layers", revision.layerMotion}};
+  if (revision.speed != 1) out["speed"] = revision.speed;
+  return out;
+}
 Json styleState(const compositor::LowerThirdAppearance& a) {
   return Json::Object{{"version", 1}, {"preset", a.preset}, {"anchor", a.anchor}, {"fontFamily", a.fontFamily},
       {"nameColor", a.nameColor}, {"titleColor", a.titleColor}, {"backgroundColor", a.backgroundColor},
@@ -160,10 +166,15 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
 }
 
 bool GraphicsInstances::readAnimations(const Json& animations, Revision& revision) {
-  if (!animations.isObject() || animations.asObject().size() > 3) return false;
+  if (!animations.isObject() || animations.asObject().size() > 4) return false;
   for (const auto& [key, value] : animations.asObject()) {
     if (key == "in") { if (!GraphicsTransition::read(value, revision.entrance)) return false; }
     else if (key == "out") { if (!GraphicsTransition::read(value, revision.exit)) return false; }
+    else if (key == "speed") {
+      if (!value.isNumber() || !std::isfinite(value.asNumber()) ||
+          value.asNumber() < kGraphicsMotionSpeedMin || value.asNumber() > kGraphicsMotionSpeedMax) return false;
+      revision.speed = value.asNumber();
+    }
     else if (key == "layers") {
       const auto& mode = value.asString();
       if (mode != "own" && mode != "whole") return false;
@@ -368,7 +379,7 @@ bool GraphicsInstances::apply(const Json& command) {
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
       {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode", "expectedAutomationRevision", "expectedActivationRevision"}},
       {"graphics-authority-set", {"family", "authority"}},
-      {"graphics-template-install", {"manifest", "packageRoot", "packRoot"}}, {"graphics-template-list", {"includeThumbnails"}},
+      {"graphics-template-install", {"manifest", "packageRoot", "packRoot"}}, {"graphics-template-list", {"includeThumbnails", "palette"}},
       {"graphics-template-remove", {"templateId", "templateVersion"}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
@@ -423,7 +434,9 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   pendingFingerprint_ = fingerprint;
   if (type == "graphics-template-list") {
-    if(const auto* demand=body->get("includeThumbnails");demand && demand->asBool() && !templates_.requestThumbnails()) return finish(requestId,false,"template-library-busy");
+    // palette (slice 11): library thumbnails render in the show palette the Builder shows.
+    const auto* palette=body->get("palette");
+    if(const auto* demand=body->get("includeThumbnails");demand && demand->asBool() && !templates_.requestThumbnails(palette?*palette:Json{})) return finish(requestId,false,"template-library-busy");
     return finish(requestId, true, "template-catalog-observed");
   }
   if (type == "graphics-template-install" && body->get("packRoot")) {
@@ -672,7 +685,7 @@ bool GraphicsInstances::apply(const Json& command) {
     const bool sameBinding = revision.binding.has_value() == old.binding.has_value() &&
         (!revision.binding || GraphicsSourceCatalog::same(*revision.binding, *old.binding));
     if (revision.imageReference.stringify()==old.imageReference.stringify() && revision.name == old.name && revision.title == old.title && revision.sourceId == old.sourceId && sameStyle && sameBinding &&
-        sameDefinition(revision.definition,old.definition) && revision.placement == old.placement && revision.entrance == old.entrance && revision.exit == old.exit && revision.layerMotion == old.layerMotion && revision.templateFields.stringify() == old.templateFields.stringify()) {
+        sameDefinition(revision.definition,old.definition) && revision.placement == old.placement && revision.entrance == old.entrance && revision.exit == old.exit && revision.layerMotion == old.layerMotion && revision.speed == old.speed && revision.templateFields.stringify() == old.templateFields.stringify()) {
       if (target == "program" && instance.program && instance.program != instance.draft) {
         instance.updatePending = true;
         if (instance.readyRevision == instance.draft->number) {
@@ -1108,7 +1121,7 @@ void GraphicsInstances::setProgramRevision(Instance& instance, const std::shared
   if (nextLayered) {
     const auto& summary = revision->definition->motionSummary();
     instance.layered.configure(motionTotal(summary, revision->entrance, true),
-        motionTotal(summary, revision->exit, false));
+        motionTotal(summary, revision->exit, false), revision->speed);
   }
 }
 
@@ -1167,7 +1180,7 @@ void GraphicsInstances::startEntrance(Instance& instance, double now) {
     instance.layered.show(now);
     instance.visibility = instance.layered.visibility(now);
   } else {
-    instance.timeline.show(instance.program->entrance, now);
+    instance.timeline.show(instance.program->entrance.scaled(instance.program->speed), now);
     instance.visibility = instance.timeline.phase(now);
   }
 }
@@ -1183,8 +1196,8 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   if(family=="lower-third" || family=="bug") managedFamilies_.insert(family);
   instance.programResource = fromCue ? instance.cueResource : instance.draftResource;
   instance.crawlBoundaryMs.reset();
-  const double entranceMs = layered(*revision) ? motionTotal(revision->definition->motionSummary(), revision->entrance, true) :
-      (revision->entrance.type != "none" ? revision->entrance.durationMs : 0);
+  const double entranceMs = (layered(*revision) ? motionTotal(revision->definition->motionSummary(), revision->entrance, true) :
+      (revision->entrance.type != "none" ? revision->entrance.durationMs : 0)) / revision->speed;
   if (starting && entranceMs > 0) instance.awaitingEntrance = true;
   if (instance.awaitingEntrance) instance.visibility = "awaiting-composition";
   else startEntrance(instance, monotonicMs_());
@@ -1198,7 +1211,7 @@ void GraphicsInstances::startHide(Instance& instance) {
   instance.awaitingEntrance = false;
   const auto now = monotonicMs_();
   if (layered(*instance.program)) instance.layered.hide(now);
-  else instance.timeline.hide(instance.program->exit, now);
+  else instance.timeline.hide(instance.program->exit.scaled(instance.program->speed), now);
 }
 
 std::string GraphicsInstances::unavailableLayoutCue(const std::string& owner,
@@ -1358,7 +1371,8 @@ void GraphicsInstances::publish() {
       {"cueStyle", instance.cue ? styleState(instance.cue->appearance) : Json{}},
       {"cuePalette", instance.cue ? instance.cue->palette : Json{}},
       {"cueBinding", instance.cue && instance.cue->binding ? contracts::toJson(*instance.cue->binding) : Json{}},
-      {"cueAnimations", instance.cue ? Json{Json::Object{{"in", instance.cue->entrance.json()}, {"out", instance.cue->exit.json()}}} : Json{}},
+      {"cueAnimations", instance.cue ? Json{instance.cue->speed != 1 ? Json::Object{{"in", instance.cue->entrance.json()}, {"out", instance.cue->exit.json()}, {"speed", instance.cue->speed}} :
+          Json::Object{{"in", instance.cue->entrance.json()}, {"out", instance.cue->exit.json()}}} : Json{}},
       {"cueResource", resourceState(instance.cueResource)},
       {"preparation", instance.preparation}, {"cued", instance.cued}, {"rideTake", instance.rideTake}, {"showPending", instance.showPending},
       {"preparedResource", resourceState(instance.draftResource)}, {"programResource", resourceState(instance.programResource)},
@@ -1375,8 +1389,8 @@ void GraphicsInstances::publish() {
       {"placement",instance.draft->placement ? instance.draft->placement->json() : Json{}},
       {"programPlacement",instance.program && instance.program->placement ? instance.program->placement->json() : Json{}},
       {"cuePlacement",instance.cue && instance.cue->placement ? instance.cue->placement->json() : Json{}},
-      {"animations", Json::Object{{"in", instance.draft->entrance.json()}, {"out", instance.draft->exit.json()}, {"layers", instance.draft->layerMotion}}},
-      {"programAnimations", instance.program ? Json{Json::Object{{"in", instance.program->entrance.json()}, {"out", instance.program->exit.json()}, {"layers", instance.program->layerMotion}}} : Json{}},
+      {"animations", animationsState(*instance.draft)},
+      {"programAnimations", instance.program ? animationsState(*instance.program) : Json{}},
       {"programSourceId", instance.program ? instance.program->sourceId : ""},
       {"programFields", instance.program ? (instance.program->definition ? instance.program->templateFields : Json{Json::Object{{"name", instance.program->name}, {"title", instance.program->title}}}) : Json{}},
       {"programStyle", instance.program ? styleState(instance.program->appearance) : Json{}},
@@ -1392,6 +1406,7 @@ void GraphicsInstances::publish() {
           {"refused", double(budget.refused)}, {"cpuLimit", double(budget.cpuLimit)},
           {"gpuLimit", double(budget.gpuLimit)}, {"preparationLimit", double(budget.preparationLimit)}}},
       {"templates", templatesPublication_->catalog}, {"templateInstalls", templatesPublication_->installs},
+      {"templatePacks", templatesPublication_->packs}, {"templateThumbnailPalette", templatesPublication_->thumbnailPalette},
       {"encodedTemplateAssetBytes", double(templatesPublication_->encodedAssetBytes)}, {"encodedTemplateAssetLimit", 128 * 1024 * 1024},
       {"sources", sources_->rows()}, {"sourceBindingStatus", sources_->status()}, {"lastResult", lastResult_}};
 }

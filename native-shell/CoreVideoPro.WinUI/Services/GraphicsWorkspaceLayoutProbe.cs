@@ -60,18 +60,18 @@ internal static class GraphicsWorkspaceLayoutProbe
                 var preview = previewCanvas.PreviewViewport;
                 Require(preview.Width >= minimum && Math.Abs(preview.Width / preview.Height - 16d / 9) < .01,
                     $"Builder preview at {suffix} is only {preview.Width:0}x{preview.Height:0}.");
-                var save = Button(builderCanvas, "Add to playlist");
+                var save = Button(builderCanvas, "Save to show");
                 var savePosition = save.TransformToVisual(builderCanvas).TransformPoint(new(0, 0));
                 Require(save.ActualHeight > 0 && savePosition.Y >= 0 &&
                     savePosition.Y + save.ActualHeight <= builderCanvas.ActualHeight + 1,
-                    $"Builder Add to playlist is outside the visible controls at {suffix}.");
+                    $"Builder Save to show is outside the visible controls at {suffix}.");
                 checks.Add($"Builder preview at {suffix} fits at {preview.Width:0}x{preview.Height:0}.");
                 await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-{suffix}.png"));
                 var pagePosition = save.TransformToVisual(page).TransformPoint(new(0, 0));
                 Require(pagePosition.X >= 0 && pagePosition.Y >= 0 &&
                     pagePosition.X + save.ActualWidth <= page.ActualWidth + 1 &&
                     pagePosition.Y + save.ActualHeight <= page.ActualHeight + 1,
-                    $"Builder Add to playlist at {suffix} ends at {pagePosition.Y + save.ActualHeight:0}px outside the {page.ActualHeight:0}px captured page.");
+                    $"Builder Save to show at {suffix} ends at {pagePosition.Y + save.ActualHeight:0}px outside the {page.ActualHeight:0}px captured page.");
             }
             page.ClearValue(FrameworkElement.WidthProperty);
             page.ClearValue(FrameworkElement.HeightProperty);
@@ -121,9 +121,13 @@ internal static class GraphicsWorkspaceLayoutProbe
             // This opt-in probe still never attaches to the running application.
             if(Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_PROBE_CATALOG") is {Length:>0} catalogPath)
                 catalog=System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsState>(await File.ReadAllTextAsync(catalogPath),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!.Templates.ToArray();
-            studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
+            // Graphics styles slice 11: two built-in News pack looks join the fixture so the style strip and the pack knobs are measured.
+            if(Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_PROBE_CATALOG") is not {Length:>0}) catalog=[..catalog, ..PackFixture()];
+            studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog,
+                TemplatePacks=[new() {Id="news-signal",Name="News: Signal",Genre="news",Version="1.0.0",State="ready",Templates=PackFixture().Select(t=>t.TemplateId).ToArray()}]});
             await Task.Delay(150);page.UpdateLayout();
             await CheckPopulatedBuilderAsync(page, studio, template, checks, directory);
+            if(catalog.Any(t=>t.Pack is not null)) await CheckPackBuilderAsync(page, studio, checks, directory);
             var workspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
             await Eventually(()=>Descendants(workspace).OfType<Image>().Count(i=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(i).StartsWith("Show template reference: ",StringComparison.Ordinal) && i.Source is Microsoft.UI.Xaml.Media.Imaging.BitmapImage {PixelWidth:320})==4);
             foreach(var name in GraphicsShowStarters.All.Select(s=>s.Name)) {
@@ -327,7 +331,7 @@ internal static class GraphicsWorkspaceLayoutProbe
                     Require(input.ActualHeight > 0 && point.Y >= 0 && point.Y + input.ActualHeight <= form.ViewportHeight + 1,
                         $"Builder {input.Header} is not fully accessible after scrolling at {suffix}.");
                 }
-                var save = Button(builder, "Add to playlist");
+                var save = Button(builder, "Save to show");
                 var at = save.TransformToVisual(page).TransformPoint(new(0, 0));
                 Require(save.IsEnabled && at.X >= 0 && at.X + save.ActualWidth <= page.ActualWidth + 1 &&
                     at.Y >= 0 && at.Y + save.ActualHeight <= page.ActualHeight + 1,
@@ -341,6 +345,90 @@ internal static class GraphicsWorkspaceLayoutProbe
         finally
         {
             form?.ChangeView(null, 0, null, true);
+            page.Width = width; page.Height = height;
+            studio.GraphicsDesignAdvanced = advanced;
+        }
+    }
+
+    /// <summary>Two looks shaped like the shipped News pack (slice 10/11): built-in, tagged with their pack.</summary>
+    private static NativeGraphicsTemplate[] PackFixture()
+    {
+        static NativeGraphicsTemplateField Text(string id, string value) => new() { Id = id, Type = "string", MaxLength = 256, Default = System.Text.Json.JsonSerializer.SerializeToElement(value) };
+        var layers = System.Text.Json.JsonSerializer.SerializeToElement(new object[] {
+            new { id = "plate", type = "rect", fill = new { token = "brand.primary" } }, new { id = "title-bar", type = "rect", fill = new { token = "brand.secondary" } },
+            new { id = "strip", type = "rect", fill = new { token = "brand.accent" } }, new { id = "name-text", type = "text", color = new { token = "brand.onPrimary" } },
+            new { id = "title-text", type = "text", color = new { token = "brand.onSecondary" } } });
+        var pack = new NativeGraphicsTemplatePack { Id = "news-signal", Name = "News: Signal", Genre = "news" };
+        var twoLine = new NativeGraphicsTemplate { TemplateId = "news-signal-lower-third-2-line", TemplateVersion = 1, Name = "News two-line", Family = "lower-third", Runtime = "declarative",
+            Pack = pack, BuiltIn = true, Layers = layers, Bounds = System.Text.Json.JsonSerializer.SerializeToElement(new { width = 1080, height = 150 }),
+            DefaultPlacement = new() { Anchor = "lower-left", X = 96, Y = -64, Scale = 1 },
+            Animations = new() { In = new() { Type = "fade", DurationMs = 200, Easing = "ease-out" }, Out = new() { Type = "fade", DurationMs = 140, Easing = "ease-in" } },
+            Fields = [Text("name", "Ada Otieno"), Text("title", "Chief Political Correspondent")] };
+        return [twoLine, twoLine with { TemplateId = "news-signal-name-tag", Name = "News name + tag", Fields = [..twoLine.Fields, Text("tag", "LIVE")] }];
+    }
+
+    /// <summary>Graphics styles slice 11: a pack look in the Builder. The style strip selects News and shows its cards, the inspector
+    /// carries the pack knobs (colours by role, Position + Safe area + Size, optional elements, Add speaker), the preview header
+    /// carries Play in / Play out / Loop, and the preview keeps its minimum size with Save to show / Save &amp; Cue on the page.</summary>
+    private static async Task CheckPackBuilderAsync(OverlaysPage page, StudioViewModel studio, List<string> checks, string directory)
+    {
+        var advanced = studio.GraphicsDesignAdvanced;
+        var width = page.Width; var height = page.Height;
+        studio.GraphicsDesignAdvanced = false;
+        var builder = Descendants(page).OfType<GraphicsBuilderControl>().Single();
+        var look = studio.GraphicsWorkspace.State!.Templates.Single(t => t.TemplateId == "news-signal-lower-third-2-line");
+        studio.GraphicsWorkspace.Browse(look);
+        try {
+            await Eventually(() => Descendants(builder).OfType<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>().Any(b => b.Tag as string == "news-signal" && b.IsChecked == true),
+                "The style strip did not select News for a News pack look.");
+            Require(Descendants(builder).OfType<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>().Any(b => b.Tag as string == GraphicsBuilder.ClassicStyleId),
+                "The style strip has no Classic entry for the non-pack looks.");
+            await Eventually(() => Descendants(builder).OfType<GraphicsTemplateCard>().Count() == 2, () =>
+                $"The News style shows {Descendants(builder).OfType<GraphicsTemplateCard>().Count()} cards, expected its 2 lower-third looks.");
+            var previewCanvas = Descendants(builder).OfType<GraphicsAuthoringCanvas>().Single();
+            var form = Descendants(builder).OfType<ScrollViewer>().Single(scroll =>
+                scroll.Content is StackPanel && Descendants(scroll).OfType<TextBox>().Any(box => box.Header?.ToString() == "Names list (optional)"));
+            foreach (var (w, h, suffix, minimum) in new[] { (1320d, 640d, "1360x768", 630d), (1560d, 772d, "1600x900", 840d), (1840d, 820d, "1080p", 950d) })
+            {
+                page.Width = w; page.Height = h; page.UpdateLayout(); await Task.Delay(80); page.UpdateLayout();
+                form.ChangeView(null, 0, null, true);
+                var preview = previewCanvas.PreviewViewport;
+                Require(preview.Width >= minimum && Math.Abs(preview.Width / preview.Height - 16d / 9) < .01,
+                    $"Pack builder preview at {suffix} is only {preview.Width:0}x{preview.Height:0} (minimum {minimum:0}).");
+                foreach (var name in new[] { "Save to show", "Save and Cue", "Play in", "Play out" })
+                {
+                    var button = Button(builder, name);
+                    var at = button.TransformToVisual(page).TransformPoint(new(0, 0));
+                    Require(button.ActualHeight > 0 && button.ActualWidth > 0 && at.X >= 0 && at.Y >= 0 && at.X + button.ActualWidth <= page.ActualWidth + 1 && at.Y + button.ActualHeight <= page.ActualHeight + 1,
+                        $"Pack builder {name} is clipped at {suffix}.");
+                }
+                var loop = Descendants(builder).OfType<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>().Single(b => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b) == "Loop preview");
+                var loopAt = loop.TransformToVisual(page).TransformPoint(new(0, 0));
+                Require(loop.ActualHeight > 0 && loopAt.X + loop.ActualWidth <= page.ActualWidth + 1, $"Pack builder Loop is clipped at {suffix}.");
+                var colourFields = Descendants(form).OfType<CvColorField>().ToArray();
+                Require(colourFields.Length == 5, $"The pack look shows {colourFields.Length} colour roles, expected its 5 (plate, second plate, accent, name text, title text).");
+                foreach (var field in colourFields)
+                {
+                    var left = field.TransformToVisual(form).TransformPoint(new(0, 0));
+                    Require(field.ActualWidth > 0 && left.X >= 0 && left.X + field.ActualWidth <= form.ViewportWidth + 1, $"Colour role {field.Header} is clipped at {suffix}.");
+                }
+                foreach (var label in new[] { "Left", "Centre", "Right", "S", "M", "L" })
+                    Require(Descendants(form).OfType<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>().Any(b => b.Content?.ToString() == label && b.ActualHeight > 0 && b.ActualWidth >= 24),
+                        $"Pack knob {label} is missing or squeezed at {suffix}.");
+                Require(Descendants(form).OfType<CheckBox>().Any(c => c.Content?.ToString() == "Safe area 90 %" && c.IsChecked == true && c.ActualHeight > 0), $"Safe area is not on at {suffix}.");
+                Require(Descendants(form).OfType<CheckBox>().Any(c => c.Content?.ToString() == "Second line" && c.IsChecked == true) &&
+                    Descendants(form).OfType<CheckBox>().Any(c => c.Content?.ToString() == "Tag" && c.IsChecked == false && c.IsEnabled), $"Optional elements do not reflect the two-line look at {suffix}.");
+                Require(Descendants(form).OfType<ComboBox>().Single(c => c.Header?.ToString() == "Motion").SelectedItem as string == "Pack default", $"A pack look does not default to Pack default motion at {suffix}.");
+                Require(Descendants(form).OfType<Button>().Any(b => b.Content?.ToString() == "+ Add speaker"), "Add speaker is missing from the names list.");
+                static bool Shown(DependencyObject? element) { for (; element is not null; element = VisualTreeHelper.GetParent(element)) if (element is UIElement { Visibility: Visibility.Collapsed }) return false; return true; }
+                Require(Descendants(form).OfType<ComboBox>().Where(c => c.Header?.ToString() == "Position").All(c => !Shown(c)), $"The nine-anchor Position list shows for a pack look at {suffix}.");
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-pack-{suffix}.png"));
+                form.ChangeView(null, form.ScrollableHeight, null, true); await Task.Delay(60); page.UpdateLayout();
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-pack-bottom-{suffix}.png"));
+                checks.Add($"Pack builder at {suffix}: News style selected with 2 cards, preview {preview.Width:0}x{preview.Height:0}, 5 colour roles, Position/Size/Safe area, optional elements, Play in/out/Loop and Save to show / Save & Cue on the page.");
+            }
+            Require(studio.GraphicsWorkspace.State?.Instances.Count == 0, "The pack builder created native instances.");
+        } finally {
             page.Width = width; page.Height = height;
             studio.GraphicsDesignAdvanced = advanced;
         }

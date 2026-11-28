@@ -316,13 +316,14 @@ GraphicsMotionState previewMotion(const std::string& mode, double elapsedMs, dou
   if (elapsedMs < outMs) return state(Phase::Out, elapsedMs);
   return state(elapsedMs < outMs + 500 ? Phase::Hidden : Phase::Settled);
 }
-void GraphicsLayerClock::configure(double inMs, double outMs) {
+void GraphicsLayerClock::configure(double inMs, double outMs, double speed) {
   inMs_ = inMs;
   outMs_ = outMs;
+  speed_ = std::isfinite(speed) && speed > 0 ? speed : 1;
 }
 
 double GraphicsLayerClock::position(double nowMs) const {
-  return std::clamp(anchorPos_ + direction_ * (nowMs - anchorMs_), 0.,
+  return std::clamp(anchorPos_ + direction_ * speed_ * (nowMs - anchorMs_), 0.,
       mode_ == Mode::In ? inMs_ : outMs_);
 }
 

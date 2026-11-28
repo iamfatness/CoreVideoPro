@@ -23,6 +23,41 @@ public sealed record NativeGraphicsState
     public IReadOnlyList<NativeGraphicsTemplateInstall> TemplateInstalls { get; init; } = [];
     public long EncodedTemplateAssetBytes { get; init; }
     public long EncodedTemplateAssetLimit { get; init; }
+    /// <summary>Built-in style packs the core loaded (graphics styles slice 11), ready or invalid.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<NativeGraphicsPackStatus>? TemplatePacks { get; init; }
+    /// <summary>The palette the declarative library thumbnails are rendering under (slice 11).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NativeGraphicsThumbnailPalette? TemplateThumbnailPalette { get; init; }
+}
+
+/// <summary>One built-in style pack as the core loaded it. <see cref="State"/> is "ready" or "invalid"
+/// (then <see cref="Detail"/> names the first lint problem and no template of it is in the catalog).</summary>
+public sealed record NativeGraphicsPackStatus
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Genre { get; init; } = "";
+    public string Version { get; init; } = "";
+    public string State { get; init; } = "";
+    public string Detail { get; init; } = "";
+    public IReadOnlyList<string> Templates { get; init; } = [];
+}
+
+/// <summary>Which pack a built-in catalog template belongs to.</summary>
+public sealed record NativeGraphicsTemplatePack
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Genre { get; init; } = "";
+}
+
+/// <summary>The palette (token -> #RRGGBBAA) the core renders library thumbnails in, and its revision.
+/// A declarative thumbnail is current only when its <see cref="NativeGraphicsThumbnail.PaletteRevision"/> equals it.</summary>
+public sealed record NativeGraphicsThumbnailPalette
+{
+    public long Revision { get; init; }
+    public IReadOnlyDictionary<string, string>? Palette { get; init; }
 }
 
 public sealed record NativeGraphicsTemplateInstall
@@ -52,6 +87,11 @@ public sealed record NativeGraphicsTemplate
     public JsonElement? Layers { get; init; }
     public IReadOnlyList<string> BrandTokens { get; init; } = [];
     public NativeGraphicsAnimations Animations { get; init; } = new();
+    /// <summary>Set on a built-in style pack template (slice 11).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NativeGraphicsTemplatePack? Pack { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool BuiltIn { get; init; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? ExtensionData { get; init; }
 }
 public sealed record NativeGraphicsThumbnail
@@ -63,6 +103,9 @@ public sealed record NativeGraphicsThumbnail
     public int Width { get; init; }
     public int Height { get; init; }
     public string PngBase64 { get; init; }="";
+    /// <summary>The thumbnail palette revision this declarative render used; null for compatibility presets.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? PaletteRevision { get; init; }
 }
 
 public sealed record NativeGraphicsTemplateField
@@ -185,6 +228,10 @@ public sealed record NativeGraphicsAnimations
     public string Layers { get; init; } = "own";
     public NativeGraphicsTransition In { get; init; } = new();
     public NativeGraphicsTransition Out { get; init; } = new();
+    /// <summary>Plays in, out and layer motion this many times as fast (core `animations.speed`, 0.25-4,
+    /// graphics styles slice 11). Null = as authored; the core reports it only when it is not 1.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Speed { get; init; }
 }
 
 public sealed record NativeGraphicsTransition

@@ -3,6 +3,7 @@
 #include "modules/Interfaces.h"
 #include "rpc/Json.h"
 #include "compositor/ColorGradeParams.h"
+#include "graphics/GraphicsTimeline.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -48,6 +49,12 @@ class GradePreviewController {
       if (const auto* graphics = preview->get("graphics")) {
         if (const auto* play = graphics->get("play"); play && !play->isNull())
           demand.playMode = play->getString("mode");
+        // animations.speed (graphics styles slice 11): the private Play in/out
+        // runs at the same speed as Program. Range-checked by the draft reader.
+        if (const auto* animations = graphics->get("animations"); animations && animations->isObject())
+          if (const auto* speed = animations->get("speed"); speed && speed->isNumber() && std::isfinite(speed->asNumber()) &&
+              speed->asNumber() >= graphics::kGraphicsMotionSpeedMin && speed->asNumber() <= graphics::kGraphicsMotionSpeedMax)
+            demand.playSpeed = speed->asNumber();
       }
       if (!draftInput) {
       if (!style->isNull()) {overlay.appearance=compositor::LowerThirdAppearance::parse(*style);if (!overlay.appearance.valid()) return false;}
@@ -137,7 +144,7 @@ class GradePreviewController {
     for (const auto& [id, entry] : active_) {
       auto& demand = request.gradePreviews.emplace_back(entry.demand);
       if (!demand.playMode.empty())
-        demand.playElapsedMs = std::chrono::duration<double, std::milli>(now - entry.playStarted).count();
+        demand.playElapsedMs = std::chrono::duration<double, std::milli>(now - entry.playStarted).count() * demand.playSpeed;
     }
     for (const auto& frame : frames) {
       if (std::any_of(request.gradePreviews.begin(), request.gradePreviews.end(),

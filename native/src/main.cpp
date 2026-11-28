@@ -1,4 +1,5 @@
 #include "core/MediaCore.h"
+#include "graphics/GraphicsPack.h"
 #include "core/ComApartmentLifetime.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/DeliveryTrace.h"
@@ -36,6 +37,9 @@ int main(int argc, char** argv) {
   // body runs inline on this thread, unchanged.
   corevideo::core::runWithMainRunLoop([] {
     corevideo::core::MediaCore mediaCore(corevideo::modules::createLiveServerModules());
+    // Built-in style packs (graphics styles slice 11): linted and published on
+    // the template worker, never blocking startup.
+    mediaCore.loadBuiltInGraphicsPacks(corevideo::graphics::graphicsPacksDirectory());
     corevideo::rpc::JsonRpcServer server(mediaCore);
     server.run(std::cin, std::cout);
     return 0;

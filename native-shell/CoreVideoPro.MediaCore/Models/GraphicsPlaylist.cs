@@ -39,6 +39,10 @@ public sealed record GraphicsPlaylistRow
     /// <summary>In/out motion sent with the instance (titler spec Phase 1 "in/out transitions").
     /// Null = the playout default (fade 250/200 ms). Values follow the core's whitelist.</summary>
     public NativeGraphicsAnimations? Motion { get; init; }
+    /// <summary>Builder motion speed (graphics styles slice 11): the row's motion, or a style pack's own
+    /// motion when <see cref="Motion"/> is null, plays this many times as fast. Null = as authored.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? MotionSpeed { get; init; }
     /// <summary>Names list (titler spec Phase 1 "multi-entry, spreadsheet-style variants"): fixed
     /// name/title pairs typed or imported from CSV. A row with variants expands to one entry per
     /// variant (like a Guest row expands per source); a bare hotkey steps to the next one.</summary>
@@ -61,7 +65,9 @@ public sealed record GraphicsPlaylistRow
     public static bool ValidTransition(NativeGraphicsTransition t) =>
         t.Type is "none" or "fade" or "slide" && t.Direction is "left" or "right" or "up" or "down" &&
         t.Easing is "linear" or "ease-in" or "ease-out" or "ease-in-out" && double.IsFinite(t.DurationMs) && t.DurationMs is >= 0 and <= 3000;
-    public static bool ValidMotion(NativeGraphicsAnimations? motion) => motion is null || (ValidTransition(motion.In) && ValidTransition(motion.Out));
+    public static bool ValidMotion(NativeGraphicsAnimations? motion) => motion is null || (ValidTransition(motion.In) && ValidTransition(motion.Out) && ValidSpeed(motion.Speed));
+    /// <summary>The core's `animations.speed` range.</summary>
+    public static bool ValidSpeed(double? speed) => speed is null || (double.IsFinite(speed.Value) && speed.Value is >= 0.25 and <= 4);
 
     public static bool ValidId(string value) => value.Length <= 48 && ValidVariableId(value);
     public static bool ValidVariableId(string value) => value.Length is > 0 and <= 64 && value[0] is >= 'a' and <= 'z' &&
@@ -74,7 +80,7 @@ public sealed record GraphicsPlaylistRow
         (DataBinding is null || DataBinding.Valid() && Kind == Title && !HasVariants) &&
         SourceMappings is { Count: <= 30 } && SourceMappings.All(mapping => ValidVariableId(mapping.Key) && mapping.Value is not null && ValidVariableId(mapping.Value)) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
-        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&
+        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidSpeed(MotionSpeed) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&
         (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64)) &&
         GraphicsPalette.ValidOverrides(BrandOverrides);
 }

@@ -60,7 +60,9 @@ public sealed partial class GraphicsBuilderControl : UserControl
     private readonly Button _importCsv = StudioBrushes.GhostButton("Import CSV…");
     private readonly TextBlock _namesNote = Note("");
     private readonly StackPanel _namesBlock = new() { Spacing = 6 };
-    private readonly Button _save = StudioBrushes.AccentButton("Add to playlist");
+    private readonly Button _save = StudioBrushes.AccentButton("Save to show");
+    private readonly Grid _placementRow = new() { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) };
+    private readonly StackPanel _placementNote = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
     private readonly Button _discard = StudioBrushes.GhostButton("Start over");
     private readonly Button _operate = StudioBrushes.GhostButton("Open in Operate →");
     private readonly TextBlock _status = Note("");
@@ -100,7 +102,9 @@ public sealed partial class GraphicsBuilderControl : UserControl
         _shelf.Children.Add(Step("1", "WHAT ARE YOU MAKING"));
         foreach (var kind in GraphicsBuilder.Kinds) _kinds.Children.Add(KindTile(kind));
         _shelf.Children.Add(_kinds);
-        _shelf.Children.Add(Step("2", "PICK A LOOK"));
+        _shelf.Children.Add(Step("2", "PICK A STYLE"));
+        // Graphics styles slice 11: the style strip (installed packs + Classic) above that style's live cards.
+        _shelf.Children.Add(_styles);
         _shelf.Children.Add(_looks); _shelf.Children.Add(_looksNote);
         var shelfScroll = new ScrollViewer { Content = _shelf, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Grid.SetRow(shelfScroll, 1); _root.Children.Add(shelfScroll);
@@ -109,7 +113,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         _center.RowDefinitions.Add(new() { Height = GridLength.Auto });
         _center.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         _center.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        _center.Children.Add(Step("3", "PREVIEW"));
+        _center.Children.Add(PreviewHeader());
         var frame = new Border { Background = StudioBrushes.Field, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(6), Child = _canvas };
         Grid.SetRow(frame, 1); _center.Children.Add(frame);
         Grid.SetRow(_previewLine, 2); _center.Children.Add(_previewLine);
@@ -117,7 +121,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
 
         // 4 + 5: fill in and save
         _form.Children.Add(Step("4", "FILL IT IN"));
-        _form.Children.Add(_fields); _form.Children.Add(_colors);
+        _form.Children.Add(_fields); _form.Children.Add(_elements); _form.Children.Add(_colors);
         var clockRow = new Grid { ColumnSpacing = 8 }; clockRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); clockRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         clockRow.Children.Add(_clockMode); Grid.SetColumn(_clockMinutes, 1); clockRow.Children.Add(_clockMinutes);
         var clockRow2 = new Grid { ColumnSpacing = 8 }; clockRow2.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); clockRow2.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
@@ -129,22 +133,29 @@ public sealed partial class GraphicsBuilderControl : UserControl
         var sizes = new Grid { ColumnSpacing = 8 }; sizes.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); sizes.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         sizes.Children.Add(_nameSize); Grid.SetColumn(_titleSize, 1); sizes.Children.Add(_titleSize); _typeBlock.Children.Add(sizes);
         _form.Children.Add(_typeBlock);
-        var placementRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
-        placementRow.Children.Add(_anchor); Grid.SetColumn(_scale, 1); placementRow.Children.Add(_scale); _form.Children.Add(placementRow);
-        var placementNote = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; placementNote.Children.Add(_resetPlacement); placementNote.Children.Add(Note("Drag the preview to nudge.")); _form.Children.Add(placementNote);
+        _placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); _placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
+        _placementRow.Children.Add(_anchor); Grid.SetColumn(_scale, 1); _placementRow.Children.Add(_scale); _form.Children.Add(_placementRow);
+        _placementNote.Children.Add(_resetPlacement); _placementNote.Children.Add(Note("Drag the preview to nudge.")); _form.Children.Add(_placementNote);
+        // A style pack look: Position Left/Centre/Right, Safe area and Size instead of the nine anchors (spec 5).
+        _form.Children.Add(BuildPackPlacement());
         ToolTipService.SetToolTip(_anchor, "Which corner or edge the graphic hangs from. Drag the preview to fine-tune.");
         var motionRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
         motionRow.Children.Add(_motion); Grid.SetColumn(_speed, 1); motionRow.Children.Add(_speed); _form.Children.Add(motionRow);
         ToolTipService.SetToolTip(_motion, "How the graphic comes in and goes out on air. Shown on Program when you Show it; the preview here is still.");
         _form.Children.Add(Step("5", "SAVE TO PLAYLIST"));
         _form.Children.Add(_name); _form.Children.Add(_follow);
-        _namesBlock.Children.Add(_names); var namesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; namesRow.Children.Add(_importCsv); _namesBlock.Children.Add(namesRow); _namesBlock.Children.Add(_namesNote);
+        _namesBlock.Children.Add(_names); var namesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; namesRow.Children.Add(_addSpeaker); namesRow.Children.Add(_importCsv); _namesBlock.Children.Add(namesRow); _namesBlock.Children.Add(_speakers); _namesBlock.Children.Add(_namesNote);
         ToolTipService.SetToolTip(_names, "A names list makes this one row play several people in turn: each line is one lower third; the hotkey steps to the next line. Leave empty for a single graphic.");
         _form.Children.Add(_namesBlock);
         var timing = new Grid { ColumnSpacing = 8 }; timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         timing.Children.Add(_hotkey); Grid.SetColumn(_playOut, 1); timing.Children.Add(_playOut); _form.Children.Add(timing);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(_save); actions.Children.Add(_discard);
+        // Save to show | Save & Cue side by side (spec 5), Start over under them so the row fits the 300 px inspector.
+        var actions = new Grid { ColumnSpacing = 8, RowSpacing = 6 };
+        actions.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); actions.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        actions.RowDefinitions.Add(new() { Height = GridLength.Auto }); actions.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        _save.HorizontalAlignment = _saveCue.HorizontalAlignment = HorizontalAlignment.Stretch;
+        actions.Children.Add(_save); Grid.SetColumn(_saveCue, 1); actions.Children.Add(_saveCue);
+        Grid.SetRow(_discard, 1); _discard.HorizontalAlignment = HorizontalAlignment.Left; actions.Children.Add(_discard);
         _form.Children.Add(_status); _operate.Visibility = Visibility.Collapsed; _form.Children.Add(_operate);
         var formScroll = new ScrollViewer { Content = _form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         var inspector = new Grid { RowSpacing = 8 };
@@ -155,6 +166,8 @@ public sealed partial class GraphicsBuilderControl : UserControl
         Grid.SetRow(inspector, 1); Grid.SetColumn(inspector, 2); _root.Children.Add(inspector);
 
         _save.Click += async (_, _) => await SaveAsync();
+        _saveCue.Click += async (_, _) => await SaveAsync(cue: true);
+        WirePackControls();
         _discard.Click += (_, _) => StartNew();
         _operate.Click += (_, _) => { if (_attached is { } s) s.GraphicsMode = StudioViewModel.GraphicsModePlayout; };
         _follow.Toggled += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
@@ -167,7 +180,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         _anchor.SelectionChanged += (_, _) => { if (!_loading && _anchor.SelectedIndex >= 0 && _session?.Draft is not null && EffectivePlacement() is { } p) { _session.SetPlacement(p with { Anchor = GraphicsBuilder.AnchorChoices[_anchor.SelectedIndex].Id }); _dirty = true; RefreshSaveButton(); } };
         _scale.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is not null && EffectivePlacement() is { } p) { _session.SetPlacement(p with { Scale = Math.Round(_scale.Value / 100, 2) }); _dirty = true; RefreshSaveButton(); } };
         _resetPlacement.Click += (_, _) => { if (_session?.Draft is not null) { _session.SetPlacement(_session.Template?.DefaultPlacement); _dirty = true; RefreshPlacementControls(); RefreshSaveButton(); } };
-        _motion.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _speed.IsEnabled = SelectedMotionPreset != "cut"; RefreshSaveButton(); } };
+        _motion.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _speed.IsEnabled = SelectedMotionPreset != "cut" || _packMotion; RefreshSaveButton(); } };
         _speed.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _name.TextChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _sponsorPick.Click += async (_, _) => await PickSponsorAsync();
@@ -215,7 +228,8 @@ public sealed partial class GraphicsBuilderControl : UserControl
         if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return; }
         if (!_suspended && _attached?.IsOverlaysTab == true) {
             // The core renders the private draft onto preview:lower-third; the lease pulls that surface into the canvas.
-            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview(null, _session.Palette)), continuous: _canvas.IsDragging);
+            // Play in / Play out / loop (slice 11) ride the same private preview lease as the Designer's.
+            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview(_session.PreviewPlay, _session.Palette)), continuous: _canvas.IsDragging || _session.PreviewPlay is not null);
             _previewOwner ??= _attached.CreateAppearancePreview(_editor);
         } else { _previewOwner?.Dispose(); _previewOwner = null; }
     }
@@ -229,13 +243,17 @@ public sealed partial class GraphicsBuilderControl : UserControl
         else if (e.PropertyName == nameof(StudioViewModel.GraphicsDesignNotice) && _attached is { GraphicsDesignNotice.Length: > 0 } n) { _designStatus.Text = n.GraphicsDesignNotice; n.GraphicsDesignNotice = ""; RefreshDesigns(); }
         else if (e.PropertyName is nameof(StudioViewModel.ActiveTab) or nameof(StudioViewModel.IsOverlaysTab)) UpdatePreviewLease();
     }
-    private void OnSessionChanged(object? sender, EventArgs e) { RefreshAll(); RequestThumbnails(); UpdatePreviewLease(); }
-    private void OnPreviewChanged(object? sender, EventArgs e) { RefreshForm(); UpdatePreviewLease(); }
+    private void OnSessionChanged(object? sender, EventArgs e) { SnapToSafeArea(); RefreshAll(); RequestThumbnails(); UpdatePreviewLease(); }
+    // A palette change raises PreviewChanged: the cards re-render in the new palette (slice 11).
+    private void OnPreviewChanged(object? sender, EventArgs e) { RefreshForm(); RefreshLooks(); RequestThumbnails(); UpdatePreviewLease(); RefreshTransport(); }
     private void OnLibraryChanged(object? sender, EventArgs e) { RefreshYours(); RefreshDesigns(); }
     private void RequestThumbnails()
     {
-        if (_suspended || _session is not { Busy: false, State.CoreEpoch: { Length: > 0 } epoch } || _thumbnailEpoch == epoch) return;
-        _thumbnailEpoch = epoch; _ = _session.RefreshCatalogAsync();
+        // Keyed on the core epoch and the show palette: the cards are drawn in the palette, never static art.
+        var palette = CurrentPalette();
+        var key = (_session?.State?.CoreEpoch ?? "") + "|" + (palette is null ? "" : string.Join(",", palette.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Key + "=" + p.Value)));
+        if (_suspended || _session is not { Busy: false, State.CoreEpoch.Length: > 0 } || _thumbnailEpoch == key) return;
+        _thumbnailEpoch = key; _ = ListCatalogAsync(_session, palette);
     }
 
     // ---- flows -----------------------------------------------------------------------------
@@ -249,8 +267,9 @@ public sealed partial class GraphicsBuilderControl : UserControl
         _loading = true;
         try { _name.Text = ""; _names.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); SetClock(null); }
         finally { _loading = false; }
-        var templates = GraphicsBuilder.TemplatesFor(Kind, _session?.State);
-        if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
+        // Slice 11: a new graphic starts on the first installed pack's look (else the first classic look).
+        if (GraphicsBuilder.DefaultLookFor(Kind, _session?.State) is { } look && _session is { Busy: false }) { _session.Browse(look); _styleId = GraphicsBuilder.StyleOf(look); }
+        SyncMotionItems(); _loading = true; try { SetMotion(null); } finally { _loading = false; }
         _formSignature = ""; RefreshAll();
     }
 
@@ -269,7 +288,9 @@ public sealed partial class GraphicsBuilderControl : UserControl
         if (kind.Id != GraphicsBuilder.SponsorKindId && _session.State?.Templates.FirstOrDefault(t => t.TemplateId == row.TemplateId && t.TemplateVersion == row.TemplateVersion) is { } template && !_session.Busy) {
             _session.Browse(template);
             if (_session.Draft is { } draft) _session.Edit(draft with { Fields = GraphicsBuilder.FieldsElement(row), Style = row.Style, BrandOverrides = row.BrandOverrides, Image = row.Image, Placement = row.Placement ?? template.DefaultPlacement });
+            _styleId = GraphicsBuilder.StyleOf(template);
         }
+        SyncMotionItems(); _loading = true; try { SetMotion(row.Motion, row.MotionSpeed); } finally { _loading = false; }
         if (_attached is { } studio && studio.GraphicsDesignRowId == rowId) studio.GraphicsDesignRowId = "";
         _formSignature = ""; _looksSignature = ""; RefreshAll();
     }
@@ -279,15 +300,23 @@ public sealed partial class GraphicsBuilderControl : UserControl
         if (_kindId == kind.Id) return;
         _kindId = kind.Id; _editingRowId = ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
         _loading = true; try { _follow.IsOn = kind.Family == "lower-third"; _names.Text = ""; _playOut.SelectedIndex = kind.Family == "lower-third" ? 1 : 0; } finally { _loading = false; }
-        var templates = GraphicsBuilder.TemplatesFor(kind, _session?.State);
-        if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
+        // Stay in the chosen style when it has this kind; otherwise its default look.
+        var pack = GraphicsBuilder.PacksFor(kind, _session?.State).FirstOrDefault(p => p.Id == _styleId);
+        var look = pack is not null ? GraphicsBuilder.FirstLookOf(pack, kind) : GraphicsBuilder.DefaultLookFor(kind, _session?.State);
+        if (look is not null && _session is { Busy: false }) { _session.Browse(look); _styleId = GraphicsBuilder.StyleOf(look); }
+        SyncMotionItems(); _loading = true; try { SetMotion(null); } finally { _loading = false; }
         _formSignature = ""; _looksSignature = ""; RefreshAll();
     }
 
     private void ChooseLook(NativeGraphicsTemplate template)
     {
         if (_session is not { Busy: false }) return;
-        _session.Browse(template); _dirty = true; _formSignature = ""; RefreshAll();
+        var typed = _session.Draft?.Fields;
+        _session.Browse(template); _styleId = GraphicsBuilder.StyleOf(template);
+        // Moving between looks keeps the name and title already typed (spec 5: one set of fields, many styles).
+        if (typed is { ValueKind: JsonValueKind.Object } values && _session.Draft is { } browsed && _session.Template is { } now)
+            _session.Edit(browsed with { Fields = GraphicsBuilder.CarryFields(values, now, browsed.Fields) });
+        SyncMotionItems(); _dirty = true; _formSignature = ""; RefreshAll();
     }
 
     private async Task PickSponsorAsync()
@@ -303,7 +332,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         } catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = "Could not open the image picker: " + ex.Message; }
     }
 
-    private async Task SaveAsync()
+    private async Task SaveAsync(bool cue = false)
     {
         if (_saving || _attached is not { } studio || _library is null) return;
         _saving = true; RefreshSaveButton();
@@ -321,12 +350,18 @@ public sealed partial class GraphicsBuilderControl : UserControl
             } else {
                 if (_session?.Draft is not { } draft || _session.Template is not { } template) { _status.Text = "Pick a look first."; return; }
                 var variants = Kind.Family == "lower-third" ? GraphicsBuilder.ParseNamesList(_names.Text, existing?.Variants, NamesVariableIds()) : [];
-                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion, variants, Kind.Family == "clock" ? SelectedClock : null);
+                // Safe area on: the saved placement is inside graphics-safe whatever the drag did (spec 5).
+                if (template.Pack is not null && _safeArea.IsChecked == true && GraphicsBuilder.SnapsToSafeArea(template) && draft.Placement is { IsValid: true } placed) {
+                    var (w, h) = GraphicsBuilder.BoundsOf(template);
+                    draft = draft with { Placement = GraphicsBuilder.ClampToSafeArea(placed, w, h) };
+                }
+                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion, variants, Kind.Family == "clock" ? SelectedClock : null, SelectedSpeed);
                 ok = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row));
             }
             if (!ok) { _status.Text = _library.Status; return; }
             _editingRowId = row.Id; _dirty = false;
             _status.Text = $"Saved. \"{row.Name}\" is in the playlist{(row.Hotkey.Length > 0 ? " on " + row.Hotkey : "")}. Show it from Operate when you want it on air.";
+            if (cue) _status.Text = await CueSavedRowAsync(studio, row);
             _operate.Visibility = Visibility.Visible;
             RefreshYours(); RefreshSaveButton();
         } finally { _saving = false; RefreshSaveButton(); }
@@ -347,9 +382,20 @@ public sealed partial class GraphicsBuilderControl : UserControl
     private void RefreshLooks()
     {
         var kind = Kind; var state = _session?.State;
-        var templates = GraphicsBuilder.TemplatesFor(kind, state);
+        // Slice 11: the strip lists installed packs (+ Classic); the cards are the chosen style's looks.
+        var packs = GraphicsBuilder.PacksFor(kind, state);
+        var classic = GraphicsBuilder.ClassicTemplatesFor(kind, state);
+        // A look chosen anywhere else (a row reopened, Your designs, the probe) brings its style with it.
+        var lookKey = _session?.Template is { } shown ? shown.TemplateId + ":" + shown.TemplateVersion : "";
+        if (lookKey != _styleTemplateKey) { _styleTemplateKey = lookKey; if (_session?.Template is { } t) _styleId = GraphicsBuilder.StyleOf(t); }
+        if (packs.All(p => p.Id != _styleId) && (_styleId != GraphicsBuilder.ClassicStyleId || classic.Count == 0))
+            _styleId = GraphicsBuilder.StyleOf(_session?.Template) is var own && (packs.Any(p => p.Id == own) || own == GraphicsBuilder.ClassicStyleId && classic.Count > 0) ? own
+                : packs.Count > 0 ? packs[0].Id : GraphicsBuilder.ClassicStyleId;
+        RefreshStyles(kind, packs, classic.Count > 0);
+        var templates = packs.FirstOrDefault(p => p.Id == _styleId)?.Templates ?? classic;
         var current = _session?.Draft; var selected = current is null ? "" : current.TemplateId + ":" + current.TemplateVersion;
-        var signature = kind.Id + "|" + selected + "|" + _sponsorPath + "|" + string.Join(",", templates.Select(t => t.TemplateId + ":" + t.TemplateVersion + ":" + t.Thumbnail?.State));
+        var palette = CurrentPalette();
+        var signature = kind.Id + "|" + _styleId + "|" + selected + "|" + _sponsorPath + "|" + string.Join(",", templates.Select(t => t.TemplateId + ":" + t.TemplateVersion + ":" + t.Thumbnail?.State + ":" + GraphicsBuilder.ThumbnailCurrent(t, state, palette) + ":" + (t.Thumbnail?.PngBase64.Length ?? 0)));
         if (signature == _looksSignature) return; _looksSignature = signature;
         _looks.Children.Clear();
         if (kind.Id == GraphicsBuilder.SponsorKindId) {
@@ -360,14 +406,17 @@ public sealed partial class GraphicsBuilderControl : UserControl
         }
         foreach (var template in templates) {
             var isSelected = template.TemplateId + ":" + template.TemplateVersion == selected;
-            var card = new Button { Content = new GraphicsTemplateCard(template, compact: false), Padding = new Thickness(6), CornerRadius = new CornerRadius(8),
+            var card = new Button { Content = new GraphicsTemplateCard(template, compact: false, GraphicsBuilder.ThumbnailCurrent(template, state, palette)), Padding = new Thickness(6), CornerRadius = new CornerRadius(8),
                 Background = isSelected ? StudioBrushes.SurfaceRaised : StudioBrushes.Panel, BorderBrush = isSelected ? StudioBrushes.Accent : StudioBrushes.Border, BorderThickness = new Thickness(isSelected ? 2 : 1),
                 HorizontalContentAlignment = HorizontalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch };
             card.Click += (_, _) => ChooseLook(template);
             _looks.Children.Add(card);
         }
         _looksNote.Text = templates.Count == 0 ? (state is null ? "Waiting for native graphics." : $"No {kind.Label.ToLowerInvariant()} looks are installed. Import a package in Cues & automation.")
-            : "Looks come from the installed templates. Your colors apply to any of them.";
+            : _styleId == GraphicsBuilder.ClassicStyleId ? "Looks come from the installed templates. Your colors apply to any of them."
+            : "Every card is drawn by the core in your show palette. Change a colour and they redraw.";
+        if (state?.TemplatePacks?.Where(p => p.State == "invalid").ToArray() is { Length: > 0 } invalid)
+            _looksNote.Text += " Not loaded: " + string.Join("; ", invalid.Select(p => $"{(p.Name.Length > 0 ? p.Name : p.Id)} ({p.Detail})")) + ".";
     }
 
     private void RefreshForm()
@@ -377,7 +426,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         _follow.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
         _namesBlock.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed; RefreshNamesNote();
         _clockBlock.Visibility = kind.Family == "clock" ? Visibility.Visible : Visibility.Collapsed;
-        RefreshPlacementControls(); RefreshTypographyControls();
+        RefreshPlacementControls(); RefreshTypographyControls(); SyncMotionItems(); RefreshPackControls();
         _typeBlock.Visibility = kind.Id == GraphicsBuilder.SponsorKindId ? Visibility.Collapsed : Visibility.Visible;
         if (signature == _formSignature) { RefreshColorSwatches(); return; }
         _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _colorRefresh.Clear(); _loading = true;
@@ -405,8 +454,12 @@ public sealed partial class GraphicsBuilderControl : UserControl
             var swatches = new Grid { ColumnSpacing = 8, RowSpacing = 6 };
             swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             swatches.RowDefinitions.Add(new() { Height = GridLength.Auto }); swatches.RowDefinitions.Add(new() { Height = GridLength.Auto });
-            var cells = new[] { Swatch("Accent", GraphicsPalette.Accent, s => s.AccentColor, (s, c) => s with { AccentColor = c }), Swatch("Background", GraphicsPalette.Primary, s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }),
+            // A style pack look shows the colour roles it actually draws with (spec 5 "colours by role"); others the four classic roles.
+            var cells = template.Pack is not null && GraphicsBuilder.ColourRoles(template) is { Count: > 0 } roles
+                ? roles.Select(r => Swatch(r.Label, r.Token, s => s.AccentColor, (s, _) => s)).ToArray()
+                : new[] { Swatch("Accent", GraphicsPalette.Accent, s => s.AccentColor, (s, c) => s with { AccentColor = c }), Swatch("Background", GraphicsPalette.Primary, s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }),
                 Swatch("Name", GraphicsPalette.OnPrimary, s => s.NameColor, (s, c) => s with { NameColor = c }), Swatch("Second line", GraphicsPalette.OnPrimaryMuted, s => s.TitleColor, (s, c) => s with { TitleColor = c }) };
+            for (var i = swatches.RowDefinitions.Count; i < (cells.Length + 1) / 2; i++) swatches.RowDefinitions.Add(new() { Height = GridLength.Auto });
             for (var i = 0; i < cells.Length; i++) { cells[i].HorizontalAlignment = HorizontalAlignment.Stretch; Grid.SetColumn(cells[i], i % 2); Grid.SetRow(cells[i], i / 2); swatches.Children.Add(cells[i]); }
             _colors.Children.Add(swatches);
             // Declarative looks follow the show palette; a swatch here is a per-graphic override (graphics styles slice 1).
@@ -564,8 +617,10 @@ public sealed partial class GraphicsBuilderControl : UserControl
     private void RefreshSaveButton()
     {
         var editing = _editingRowId.Length > 0;
-        _save.Content = _saving ? "Saving…" : editing ? "Save changes" : "Add to playlist";
+        _save.Content = _saving ? "Saving…" : editing ? "Save changes" : "Save to show";
         _save.IsEnabled = !_saving && (_dirty || !editing) && (Kind.Id == GraphicsBuilder.SponsorKindId ? _sponsorPath.Length > 0 || editing : _session?.Draft is not null);
+        // Save & Cue stays available on an unchanged saved row: it then only cues it on Preview.
+        _saveCue.IsEnabled = !_saving && (Kind.Id == GraphicsBuilder.SponsorKindId ? _sponsorPath.Length > 0 || editing : _session?.Draft is not null);
         _discard.Content = editing ? "New graphic" : "Start over";
         _previewLine.Text = _session?.PreviewValidation is { Length: > 0 } problem ? problem : _session?.Status is { Length: > 0 } s && s.StartsWith("Waiting", StringComparison.Ordinal) ? s : "Private preview. Nothing here is on air until you Show it from Operate.";
     }
@@ -664,14 +719,28 @@ public sealed partial class GraphicsBuilderControl : UserControl
         } finally { _loading = wasLoading; }
     }
 
-    private string SelectedMotionPreset => GraphicsBuilder.MotionPresets[Math.Max(0, _motion.SelectedIndex)].Id;
-    private NativeGraphicsAnimations? SelectedMotion => GraphicsBuilder.MotionFor(SelectedMotionPreset, GraphicsBuilder.MotionSpeeds[Math.Max(0, _speed.SelectedIndex)].Ms);
-    private void SetMotion(NativeGraphicsAnimations? motion)
+    /// <summary>A pack look lists "Pack default" first (its own authored motion) and speeds as multipliers (slice 11).</summary>
+    private string SelectedMotionPreset => _packMotion
+        ? (_motion.SelectedIndex <= 0 ? PackMotionId : GraphicsBuilder.MotionPresets[Math.Min(_motion.SelectedIndex - 1, GraphicsBuilder.MotionPresets.Count - 1)].Id)
+        : GraphicsBuilder.MotionPresets[Math.Max(0, _motion.SelectedIndex)].Id;
+    private NativeGraphicsAnimations? SelectedMotion => _packMotion
+        ? SelectedMotionPreset switch { PackMotionId => null, "default" => PackFade, var id => GraphicsBuilder.MotionFor(id, 300) }
+        : GraphicsBuilder.MotionFor(SelectedMotionPreset, GraphicsBuilder.MotionSpeeds[Math.Max(0, _speed.SelectedIndex)].Ms);
+    private double? SelectedSpeed => _packMotion ? GraphicsBuilder.SpeedChoices[Math.Clamp(_speed.SelectedIndex, 0, GraphicsBuilder.SpeedChoices.Count - 1)].Speed : null;
+    private void SetMotion(NativeGraphicsAnimations? motion, double? speed = null)
     {
-        var (preset, ms) = GraphicsBuilder.MotionPresetOf(motion);
-        _motion.SelectedIndex = Math.Max(0, GraphicsBuilder.MotionPresets.ToList().FindIndex(m => m.Id == preset));
-        var speed = GraphicsBuilder.MotionSpeeds.ToList().FindIndex(m => m.Ms == ms); _speed.SelectedIndex = speed >= 0 ? speed : 1;
-        _speed.IsEnabled = preset != "cut";
+        if (_packMotion) {
+            var preset = motion is null ? PackMotionId : GraphicsBuilder.MotionPresetOf(motion).PresetId;
+            _motion.SelectedIndex = preset == PackMotionId ? 0 : 1 + Math.Max(0, GraphicsBuilder.MotionPresets.ToList().FindIndex(m => m.Id == preset));
+            var index = GraphicsBuilder.SpeedChoices.ToList().FindIndex(c => Math.Abs(c.Speed - (speed ?? 1)) < .001);
+            _speed.SelectedIndex = index >= 0 ? index : 2;
+            _speed.IsEnabled = preset != "cut";
+            return;
+        }
+        var (presetId, ms) = GraphicsBuilder.MotionPresetOf(motion);
+        _motion.SelectedIndex = Math.Max(0, GraphicsBuilder.MotionPresets.ToList().FindIndex(m => m.Id == presetId));
+        var at = GraphicsBuilder.MotionSpeeds.ToList().FindIndex(m => m.Ms == ms); _speed.SelectedIndex = at >= 0 ? at : 1;
+        _speed.IsEnabled = presetId != "cut";
     }
 
     // ---- your designs (Graphics Designer slice 1) -------------------------------------------
@@ -790,10 +859,10 @@ public sealed partial class GraphicsBuilderControl : UserControl
     // ---- bits ------------------------------------------------------------------------------
     private Button KindTile(GraphicsBuilderKind kind)
     {
-        var body = new StackPanel { Spacing = 2 };
-        body.Children.Add(new TextBlock { Text = kind.Label, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text });
-        body.Children.Add(new TextBlock { Text = kind.Blurb, FontSize = 11, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
-        var tile = new Button { Content = body, Tag = kind, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(12, 8, 12, 8), CornerRadius = new CornerRadius(8), Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1) };
+        // Slice 11: one line per kind (the blurb is the tooltip) so the style strip under it is in view at 1360×768.
+        var body = new TextBlock { Text = kind.Label, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text };
+        var tile = new Button { Content = body, Tag = kind, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(12, 6, 12, 6), CornerRadius = new CornerRadius(8), Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1) };
+        ToolTipService.SetToolTip(tile, kind.Blurb); AutomationProperties.SetHelpText(tile, kind.Blurb);
         tile.Click += (_, _) => ChooseKind(kind);
         return tile;
     }

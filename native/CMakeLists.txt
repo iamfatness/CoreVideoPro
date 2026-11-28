@@ -984,7 +984,7 @@ if(BUILD_TESTING)
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GraphicsStylePrimitivesTest.cpp
-    tests/GraphicsPackTest.cpp tests/GraphicsPackFontsD3D11Test.cpp
+    tests/GraphicsPackTest.cpp tests/GraphicsPackFontsD3D11Test.cpp tests/GraphicsBuiltInPacksTest.cpp
     tests/GraphicsRasterParity.cpp tests/GraphicsRasterParityTest.cpp
     tests/OverlayRasterFrontHalfTest.cpp
     tests/GraphicsMotionTest.cpp
@@ -1294,7 +1294,7 @@ if(BUILD_TESTING)
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GraphicsStylePrimitivesTest.cpp
-    tests/GraphicsPackTest.cpp
+    tests/GraphicsPackTest.cpp tests/GraphicsBuiltInPacksTest.cpp
     tests/GraphicsMotionTest.cpp
     tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsEditorShapesTest.cpp

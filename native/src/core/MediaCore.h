@@ -115,6 +115,9 @@ class MediaCore {
  public:
   using SnapshotDeferrer = std::function<rpc::Json(std::unique_ptr<CoreStateCapture>, SnapshotProjection)>;
   void setSnapshotDeferrer(SnapshotDeferrer deferrer) { snapshotDeferrer_ = std::move(deferrer); }
+  // Production startup only (main.cpp): the built-in style packs under
+  // graphicsPacksDirectory() join the graphics catalog (slice 11).
+  bool loadBuiltInGraphicsPacks(const std::string& dir) { return graphicsInstances_.loadBuiltInPacks(dir); }
   explicit MediaCore(modules::ModuleSet modules = modules::createDefaultModules());
   // Clears the compositor's vcam sink before members are destroyed (see the
   // definition — the publisher outlives nothing without it).

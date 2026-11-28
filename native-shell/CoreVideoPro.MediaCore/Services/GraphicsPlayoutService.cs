@@ -40,7 +40,8 @@ public sealed partial class GraphicsPlayoutService
     public const string InstancePrefix = "playlist-";
     public const string ClientId = "graphics-playout";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private static readonly NativeGraphicsAnimations Motion = new() {
+    /// <summary>The playout default motion for a row that picked none (and is not a design or pack look).</summary>
+    public static readonly NativeGraphicsAnimations Motion = new() {
         In = new() { Type = "fade", DurationMs = 250, Easing = "ease-out" }, Out = new() { Type = "fade", DurationMs = 200, Easing = "ease-in" } };
     private readonly GraphicsWorkspaceLibrary _library;
     private readonly Func<string, string, CancellationToken, Task<NativeGraphicsOperationResult>> _invoke;
@@ -360,8 +361,9 @@ public sealed partial class GraphicsPlayoutService
             return Refuse($"{row.Name}: the selected source changed during preparation.");
         var fields = JsonSerializer.SerializeToElement(values, Json);
         var id = InstanceIdFor(entry);
-        var motion = row.Motion is { } rowMotion ? rowMotion with { Layers = "whole" } :
-            GraphicsDesignIds.IsDesignTemplateId(templateId) ? installed.Animations with { Layers = "own" } : Motion;
+        // A design or a built-in style pack template (slice 11) plays its own authored motion unless the row picked one;
+        // the Builder's private preview plays the same (GraphicsBuilder.EffectiveMotion).
+        var motion = GraphicsBuilder.EffectiveMotion(installed, row.Motion, row.MotionSpeed, Motion);
         var placement = row.Placement ?? installed.DefaultPlacement;
         var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, placement, Image: row.Image) { BrandOverrides = row.BrandOverrides };
         // Row override -> show palette (graphics styles slice 1). Compatibility looks keep their appearance.

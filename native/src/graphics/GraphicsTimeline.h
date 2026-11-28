@@ -36,7 +36,16 @@ struct GraphicsTransition {
   rpc::Json json() const {
     return rpc::Json::Object{{"type", type}, {"direction", direction}, {"durationMs", durationMs}, {"easing", easing}};
   }
+  // The same transition played `speed` times as fast (Builder motion speed,
+  // graphics styles slice 11). speed is already validated to [0.25, 4].
+  GraphicsTransition scaled(double speed) const {
+    auto out = *this;
+    if (speed > 0 && speed != 1) out.durationMs = durationMs / speed;
+    return out;
+  }
 };
+// Motion speed bounds for `animations.speed` (1 = as authored).
+inline constexpr double kGraphicsMotionSpeedMin = 0.25, kGraphicsMotionSpeedMax = 4;
 
 class GraphicsTimeline {
  public:

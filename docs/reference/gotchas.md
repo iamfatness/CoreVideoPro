@@ -2,6 +2,14 @@
 
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
+- **A new `NativeGraphicsState` / `NativeGraphicsTemplate` property is a cross-shell vector change
+  unless it is omitted when empty (styles slice 11, 2026-11-28).** `GraphicsShellVectorTests`
+  serializes observed state into `contracts/graphics-shell/*-transcripts.vectors.json`, which the Mac
+  shell replays. A plain `= []` list or a nullable without `JsonIgnore` adds `"x": []` / `"x": null`
+  to every transcript and fails Data/Clock/LayoutTranscripts. Declare additive core fields as nullable
+  with `[JsonIgnore(Condition = WhenWritingNull)]` (or `WhenWritingDefault` for a bool), read them
+  with `?.`/`?? []`, and regenerate vectors only for a real rule change.
+
 - **Atlas run geometry has one implementation: `graphics::placeRun` (styles slice 8, 2026-11-28).**
   The D3D11 and Metal overlay loops used to duplicate motion, crawl and mask math. Both now call
   `placeRun` and `revealEdgeConstants` and only map the result to API state. Put new per-run motion

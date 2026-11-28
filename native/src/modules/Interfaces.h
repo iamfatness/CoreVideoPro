@@ -1303,7 +1303,9 @@ struct GradePreviewDemand {
   std::optional<CompositorOverlayContent> lowerThirdPreview;
   std::string lowerThirdPreviewSignature;
   std::string playMode;
+  // Template-time elapsed: wall time since Play times playSpeed (animations.speed).
   double playElapsedMs = 0;
+  double playSpeed = 1;
 };
 struct GradePreviewSurface {
   GradePreviewDemand demand;

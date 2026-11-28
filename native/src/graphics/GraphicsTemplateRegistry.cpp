@@ -1,7 +1,9 @@
 #include "graphics/GraphicsTemplateRegistry.h"
 #include "graphics/GraphicsPack.h"
 #include "graphics/GraphicsThumbnail.h"
+#include <algorithm>
 #include <atomic>
+#include <filesystem>
 
 namespace corevideo::graphics {
 using rpc::Json;
@@ -22,11 +24,33 @@ GraphicsTemplateRegistry::~GraphicsTemplateRegistry() {
 std::shared_ptr<const GraphicsTemplateRegistry::Publication> GraphicsTemplateRegistry::poll() const {
   return std::atomic_load(&publication_);
 }
-bool GraphicsTemplateRegistry::requestThumbnails() {
+bool GraphicsTemplateRegistry::requestThumbnails(const Json& palette) {
   std::unique_lock lock(mutex_,std::try_to_lock);if(!lock.owns_lock() || stopping_) return false;
-  if(thumbnailsRequested_) return true;
+  // An empty map is the reference appearance, the same as no palette.
+  const Json next = palette.isObject() && !palette.asObject().empty() ? palette : Json{};
+  const bool recolour = next.stringify() != thumbnailPalette_.stringify();
+  if (recolour) {
+    thumbnailPalette_ = next; ++thumbnailPaletteRevision_;
+    // Only declarative looks draw with the palette; compatibility presets keep theirs.
+    for (auto it = thumbnails_.begin(); it != thumbnails_.end();)
+      it = definitions_.count(it->first) ? thumbnails_.erase(it) : std::next(it);
+  }
+  if(thumbnailsRequested_ && !recolour) return true;
   thumbnailsRequested_=thumbnailsPending_=true;
+  if (recolour) publishLocked();
   if(!worker_.joinable()) worker_=std::thread([this]{run();});wake_.notify_one();return true;
+}
+bool GraphicsTemplateRegistry::loadBuiltInPacks(const std::string& dir) {
+  if (dir.empty() || dir.size() > 2048 || dir.find('\0') != std::string::npos) return false;
+  std::lock_guard lock(mutex_);
+  if (stopping_) return false;
+  auto job = std::make_shared<Job>();
+  job->state = "queued"; job->builtInPacks = dir;
+  // Not an operator install: never in history_/templateInstalls, never refused as busy.
+  jobs_.push_back(job);
+  if (!worker_.joinable()) worker_ = std::thread([this] { run(); });
+  wake_.notify_one();
+  return true;
 }
 bool GraphicsTemplateRegistry::builtIn(const std::string& templateId, int templateVersion) {
   if (templateVersion == 1 && (templateId == "compact-solid" || templateId == "minimal-accent" || templateId == "broadcast")) return true;
@@ -41,6 +65,7 @@ std::string GraphicsTemplateRegistry::remove(const std::string& templateId, int 
   const auto key = std::make_pair(templateId, templateVersion);
   const auto found = definitions_.find(key);
   if (found == definitions_.end()) return "template-not-found";
+  if (packKey(key)) return "template-built-in";
   // Same accounting as install. Verified encoded assets stay in the
   // content-addressed pool so a re-import by hash still resolves.
   documentBytes_ -= found->second->document().stringify().size();
@@ -90,6 +115,8 @@ void GraphicsTemplateRegistry::publishLocked() {
     row["definition"] = definition->document();
     row["thumbnail"]=thumbnail(key);
     const auto origin = origins_.find(key); if (origin != origins_.end()) row["packageRoot"] = origin->second;
+    // Built-in style pack templates (slice 11) say which pack they belong to.
+    if (const auto pack = packKeys_.find(key); pack != packKeys_.end()) { row["pack"] = pack->second; row["builtIn"] = true; }
     std::string hash; static constexpr char hex[] = "0123456789abcdef";
     for (auto byte : definition->hash()) { hash += hex[byte >> 4]; hash += hex[byte & 15]; }
     row["manifestHash"] = std::move(hash); catalog.emplace_back(std::move(row));
@@ -102,6 +129,8 @@ void GraphicsTemplateRegistry::publishLocked() {
     installs.emplace_back(std::move(row));
   }
   publication->definitions = definitions_; publication->catalog = std::move(catalog); publication->installs = std::move(installs);
+  publication->packs = packs_;
+  publication->thumbnailPalette = Json::Object{{"revision", double(thumbnailPaletteRevision_)}, {"palette", thumbnailPalette_}};
   publication->encodedAssetBytes = assetBytes_; publication->documentBytes = documentBytes_;
   std::atomic_store(&publication_, std::shared_ptr<const Publication>(std::move(publication)));
 }
@@ -154,22 +183,29 @@ void GraphicsTemplateRegistry::run() {
   for (;;) {
     std::shared_ptr<Job> job;
     std::map<std::pair<std::string,int>,std::shared_ptr<const GraphicsTemplate>> thumbnailWork;
+    Json thumbnailPalette; uint64_t thumbnailRevision = 0;
     {
       std::unique_lock lock(mutex_); wake_.wait(lock, [&] { return stopping_ || !jobs_.empty() || thumbnailsPending_; });
       if (stopping_) return;
       if(thumbnailsPending_) {
         thumbnailsPending_=false;
+        thumbnailPalette=thumbnailPalette_; thumbnailRevision=thumbnailPaletteRevision_;
         for(const auto& preset:{"compact-solid","minimal-accent","broadcast"}) if(!thumbnails_.contains({preset,1})) thumbnailWork[{preset,1}]={};
         for(const auto& item:definitions_) if(!thumbnails_.contains(item.first)) thumbnailWork.emplace(item);
       } else {job = jobs_.front(); jobs_.pop_front(); job->state = "validating"; publishLocked();}
     }
     if(!job) {
       for(const auto& [key,definition]:thumbnailWork) {
-        auto result=renderGraphicsThumbnail(key.first,definition);
-        std::lock_guard lock(mutex_);if(stopping_) return;thumbnails_[key]=std::move(result);publishLocked();
+        auto result=renderGraphicsThumbnail(key.first,definition,definition?thumbnailPalette:Json{});
+        if(definition && result.isObject()) {auto row=result.asObject();row["paletteRevision"]=double(thumbnailRevision);result=std::move(row);}
+        std::lock_guard lock(mutex_);if(stopping_) return;
+        // A newer palette arrived mid-pass: drop this render; the pending pass redraws in it.
+        if(definition && thumbnailRevision!=thumbnailPaletteRevision_) break;
+        thumbnails_[key]=std::move(result);publishLocked();
       }
       continue;
     }
+    if (!job->builtInPacks.empty()) { loadPacks(job->builtInPacks); continue; }
     std::string error, detail;
     std::vector<std::string> manifests;
     std::string packageRoot = job->packageRoot;
@@ -206,7 +242,8 @@ void GraphicsTemplateRegistry::run() {
         else if (found != definitions_.end()) { if (found->second->hash() != definition->hash()) error = "template-version-immutable"; }
         else { ++added; addedDocumentBytes += definition->document().stringify().size(); }
       }
-      if (error.empty() && added && (definitions_.size() + added > 16 || documentBytes_ + addedDocumentBytes > 256 * 1024))
+      // Built-in pack templates (slice 11) never spend the imported library's slots.
+      if (error.empty() && added && (definitions_.size() - packKeys_.size() + added > 16 || documentBytes_ + addedDocumentBytes > 256 * 1024))
         error = "template-library-capacity";
       if (error.empty() && !definitions.empty()) {
         for (const auto& definition : definitions) {
@@ -225,6 +262,69 @@ void GraphicsTemplateRegistry::run() {
       job->detail = job->state == "failed" ? detail : std::string();
       publishLocked();
     }
+  }
+}
+void GraphicsTemplateRegistry::loadPacks(const std::string& dir) {
+  namespace fs = std::filesystem;
+  const auto fromUtf8 = [](const std::string& utf8) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size())); };
+  const auto toUtf8 = [](const fs::path& path) { const auto value = path.u8string(); return std::string(reinterpret_cast<const char*>(value.data()), value.size()); };
+  std::vector<std::string> folders;
+  std::error_code ec;
+  for (fs::directory_iterator it(fromUtf8(dir), ec), end; !ec && it != end; it.increment(ec))
+    if (it->is_directory(ec) && fs::exists(it->path() / "pack.json", ec)) folders.push_back(toUtf8(it->path()));
+  std::sort(folders.begin(), folders.end());
+  for (const auto& folder : folders) {
+    GraphicsPackManifest pack;
+    std::vector<std::string> manifests;
+    std::string error, detail;
+    // The same lint and loader an operator pack install runs (off every lock).
+    if (!graphicsPackInstallManifests(folder, manifests, detail) || !readGraphicsPackManifest(folder, pack, detail)) error = "graphics-pack-invalid";
+    std::vector<std::shared_ptr<const GraphicsTemplate>> definitions;
+    std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> newAssets;
+    uint64_t addedBytes = 0;
+    for (const auto& manifest : manifests) {
+      if (!error.empty()) break;
+      // prepare() reads and may trim the asset pool, which is otherwise only
+      // touched on this worker, so no lock is needed; same as run().
+      auto definition = prepare(manifest, pack.root, newAssets, addedBytes, error);
+      if (!definition) { detail = "template " + std::to_string(definitions.size() + 1) + ": " + error; definitions.clear(); break; }
+      definitions.push_back(std::move(definition));
+    }
+    std::lock_guard lock(mutex_);
+    if (stopping_) return;
+    for (const auto& definition : definitions) {
+      if (!error.empty()) break;
+      const auto key = std::make_pair(definition->id(), definition->version());
+      const auto found = definitions_.find(key);
+      if (key.first == "compact-solid" || key.first == "minimal-accent" || key.first == "broadcast" || builtIn(key.first, key.second)) error = "template-id-reserved";
+      else if (found != definitions_.end() && found->second->hash() != definition->hash()) error = "template-version-immutable";
+      if (!error.empty()) detail = key.first + ": " + error;
+    }
+    Json::Array ids;
+    const Json packRef = Json::Object{{"id", pack.id}, {"name", pack.name}, {"genre", pack.genre}};
+    if (error.empty()) {
+      for (const auto& definition : definitions) {
+        const auto key = std::make_pair(definition->id(), definition->version());
+        // An identical operator import of the same version becomes the built-in one.
+        if (const auto found = definitions_.find(key); found != definitions_.end() && !packKey(key))
+          documentBytes_ -= found->second->document().stringify().size();
+        definitions_[key] = definition;
+        origins_[key] = pack.root;
+        packKeys_[key] = packRef;
+        ids.emplace_back(key.first);
+        if (thumbnailsRequested_) { thumbnails_.erase(key); thumbnailsPending_ = true; }
+      }
+      for (auto& asset : newAssets) assetPool_.emplace(std::move(asset));
+      assetBytes_ += addedBytes;
+    }
+    const auto id = pack.id.empty() ? toUtf8(fromUtf8(folder).filename()) : pack.id;
+    Json::Object status{{"id", id}, {"name", pack.name}, {"genre", pack.genre}, {"version", pack.version},
+        {"state", error.empty() ? "ready" : "invalid"}, {"templates", std::move(ids)}};
+    if (!error.empty()) status["detail"] = detail.empty() ? error : detail;
+    packs_.erase(std::remove_if(packs_.begin(), packs_.end(), [&](const Json& row) { return row.getString("id") == id; }), packs_.end());
+    packs_.emplace_back(std::move(status));
+    publishLocked();
+    if (thumbnailsPending_) wake_.notify_one();
   }
 }
 } // namespace corevideo::graphics

@@ -20,7 +20,7 @@ struct ThumbnailInput {
   int width = 0, height = 0;
 };
 
-ThumbnailInput thumbnailInput(const std::string& id, const std::shared_ptr<const GraphicsTemplate>& definition) {
+ThumbnailInput thumbnailInput(const std::string& id, const std::shared_ptr<const GraphicsTemplate>& definition, const rpc::Json& palette) {
   ThumbnailInput out;
   auto& overlay = out.overlay;
   overlay.text="Example guest";overlay.title="Producer";overlay.keyPhase="on-air";overlay.keyProgress=1;
@@ -33,7 +33,7 @@ ThumbnailInput thumbnailInput(const std::string& id, const std::shared_ptr<const
     if(const auto found=fields.find("name");found!=fields.end() && found->second.isString() && found->second.asString().empty()) fields["name"]="Example guest";
     input->fields=std::move(fields);
     const auto& a=overlay.appearance;
-    input->brand=graphicsBrand(a,a.backgroundColor,definition->assets().count("logo")!=0);
+    input->brand=graphicsBrand(a,a.backgroundColor,definition->assets().count("logo")!=0,palette);
     overlay.graphicsTemplate=std::move(input);width=definition->width();height=definition->height();
   }
   const double scale=std::min(320./width,180./height);
@@ -49,18 +49,18 @@ rpc::Json thumbnailResult(const std::vector<uint8_t>& png, const std::string& wa
 }  // namespace
 #endif
 
-rpc::Json renderGraphicsThumbnail(const std::string& id,std::shared_ptr<const GraphicsTemplate> definition) {
+rpc::Json renderGraphicsThumbnail(const std::string& id,std::shared_ptr<const GraphicsTemplate> definition,const rpc::Json& palette) {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
-  const auto input=thumbnailInput(id,definition);
+  const auto input=thumbnailInput(id,definition,palette);
   modules::CompositorOverlayRaster raster;
   std::string warning;auto png=raster.thumbnailPng(input.overlay,input.width,input.height,warning);
   return thumbnailResult(png,warning,input.width,input.height,"d3d11-native");
 #elif !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL
-  const auto input=thumbnailInput(id,definition);
+  const auto input=thumbnailInput(id,definition,palette);
   std::string warning;auto png=modules::coreTextThumbnailPng(input.overlay,input.width,input.height,warning);
   return thumbnailResult(png,warning,input.width,input.height,"metal-native");
 #else
-  (void)id;(void)definition;
+  (void)id;(void)definition;(void)palette;
   return rpc::Json::Object{{"state","unsupported"},{"reason","Native library thumbnails are not available on this backend."}};
 #endif
 }

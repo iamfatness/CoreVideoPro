@@ -193,7 +193,7 @@ public sealed class GraphicsDesignWorkflow
         var hotkey = existing is not null ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
         // Text typed on the Operate row survives the re-pin (re-review I1); see GraphicsRowFields.KeepTyped.
         var row = GraphicsRowFields.KeepTyped(GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
-            existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock), existing);
+            existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock, existing?.MotionSpeed), existing);
         if (GraphicsDataTable.Binding(design.Definition) is not { } binding) return row;
         if (existing?.DataBinding is not { } pinned || pinned.SourceId != binding.SourceId)
             return row with { DataBinding = binding };

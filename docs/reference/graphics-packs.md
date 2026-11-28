@@ -58,12 +58,19 @@ queued job: the worker runs the full lint, then validates every listed template 
 package root, and publishes all of them or none. Failure reasons: `graphics-pack-invalid` (lint; the
 install row's `detail` names the first problem) or the loader/registry reason of the first failing
 template (`detail`: `template N: ...`). Install rows of pack jobs carry `packRoot`. Library limits are
-unchanged: 16 imported versions, 256 KiB of documents (a full launch set of seven packs will not fit;
-slice 10/11 must decide how built-in packs enter the catalog).
+unchanged: 16 imported versions, 256 KiB of documents.
 
-Built-in packs are **not** auto-installed into the catalog at startup (that would change every
-catalog and spend library slots). Their fonts are available at once; their templates install
-through the command. The shell gateway (`GraphicsCommandGateway`) does not expose `packRoot` yet.
+**Built-in packs enter the catalog as built-ins (slice 11).** The production core calls
+`MediaCore::loadBuiltInGraphicsPacks(graphicsPacksDirectory())` once at startup
+(`GraphicsTemplateRegistry::loadBuiltInPacks`): one worker job, never blocking startup, lints every
+pack folder and publishes each passing pack's templates with `pack: {id, name, genre}` and
+`builtIn: true`. They do not count toward the 16 versions or 256 KiB, cannot be removed
+(`template-built-in`) and never appear in `templateInstalls`. A pack that fails the lint or the
+loader publishes nothing and is listed in the graphics snapshot's `templatePacks` as `invalid` with
+its first problem; the others load. An identical operator import of the same version becomes the
+built-in one. Tests and other `MediaCore` hosts load no packs unless they call it, so their catalogs
+stay the curated set. The Builder (`graphics-playout.md`, "Style packs in the Builder") is the
+shell surface; the gateway still does not expose `packRoot`.
 
 ## Fonts (P8)
 
