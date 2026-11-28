@@ -51,6 +51,35 @@ TEST(ProgramMonitorDispatch, DisableFenceRejectsInFlightOldCopyAndAllowsNextLife
   EXPECT_TRUE(joined.ready); EXPECT_FALSE(joined.superseded);
 }
 
+// perf/designer-live-preview: a result still waiting on an asynchronous stage
+// re-runs the same request without another submission, stops once settled,
+// and a newer submission replaces the retried one. Bounded by MaxRetries.
+TEST(MonitorRenderWorker, RetrySoonReRunsTheSameRequestUntilItSettles) {
+  std::atomic<int> renders{0}, lastSequence{0};
+  std::atomic<int> settleAfter{3};
+  MonitorRenderWorker worker([&](const MonitorRenderRequest& request) {
+    MonitorRenderResult result; lastSequence = int(request.sequence);
+    result.retrySoon = ++renders <= settleAfter.load();
+    return result;
+  });
+  MonitorRenderRequest request; request.sequence = 7; worker.submit(request);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (renders.load() < 4 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(renders.load(), 4);
+  EXPECT_EQ(lastSequence.load(), 7);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_EQ(renders.load(), 4) << "a settled result is not re-run";
+  EXPECT_EQ(worker.diagnostics().submitted, 1u);
+  settleAfter = 1 << 30; // never settles: polling is bounded
+  request.sequence = 8; worker.submit(request);
+  const auto bounded = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (renders.load() < 4 + 1 + MonitorRenderWorker::MaxRetries && std::chrono::steady_clock::now() < bounded)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(renders.load(), 4 + 1 + MonitorRenderWorker::MaxRetries);
+  EXPECT_EQ(lastSequence.load(), 8);
+}
+
 TEST(MonitorRenderWorker, StartupImportPreparationWaitsForInitializationWithoutChangingSubmit) {
   std::promise<void> release, entered;
   auto gate = release.get_future().share(); auto started = entered.get_future();

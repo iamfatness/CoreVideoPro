@@ -140,8 +140,12 @@ unverified. A specification or synthetic pass does not close #835.
 
 The Basic editor sends an instance/source/revision demand through the small
 `set-grade-preview` RPC acknowledgement. It does not request a production sync
-snapshot. Edits coalesce on a 100 ms control timer; a 500 ms heartbeat renews a
-three-second native lease. Up to three editors share one replaceable pending job.
+snapshot. Edits go through a latest-value mailbox (`GradePreviewCoordinator`): one
+command in flight, at most one send per 16 ms display frame, newer edits replace
+the pending draft so only the newest is sent, and there is no wait for a native
+frame; a 500 ms heartbeat renews a three-second native lease (the timer sleeps in
+between). Observations are accepted forward-only. Authored Designer drafts add a
+core-side hold, described in `graphics-playout.md` ("Live canvas cadence"). Up to three editors share one replaceable pending job.
 Closing or shell shutdown releases demand; a lost close expires the lease.
 
 D3D11 allocates a separate monitor device lazily on its worker, on Program's

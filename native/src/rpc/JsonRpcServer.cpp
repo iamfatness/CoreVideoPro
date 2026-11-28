@@ -942,6 +942,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         std::unique_lock<std::mutex> lock(coreMutex, std::try_to_lock);
         if (lock.owns_lock()) {
           core::ScopedLockHoldTimer timer("rpc.resource-drain", core::LockHoldGuardrail::kDefaultBudgetUs);
+          // A waiting Designer draft is admitted here, never on the render
+          // thread: its preparation is the same bounded work a set-grade-preview
+          // command does under this lock (measured ~0.1 ms).
+          mediaCore_.promoteGradePreviews();
           resources = mediaCore_.drainResourceEvents();
           grades = mediaCore_.captureGradePreviewEvents();
         }

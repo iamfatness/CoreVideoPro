@@ -969,6 +969,7 @@ class D3D11Compositor final : public ICompositor {
           std::string reason; auto resolved=graphics::resolveGraphicsTemplateInput(privateOverlay.graphicsTemplate,reason);
           if(!resolved) {
             observation.status=reason=="validating-private-template" ? "preparing" : "unavailable";
+            if (observation.status == "preparing") result.retrySoon = true;
             observation.reason=reason; result.gradePreviews.push_back(std::move(observation)); continue;
           }
           privateOverlay.graphicsTemplate=std::move(resolved);
@@ -1039,6 +1040,7 @@ class D3D11Compositor final : public ICompositor {
           observation.texture.format=image.format; observation.texture.frameNumber=image.frameNumber;
         } else { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
         while (appearanceHistory_.size()>32) appearanceHistory_.erase(appearanceHistory_.begin());
+        if (observation.status == "preparing") result.retrySoon = true;
         result.gradePreviews.push_back(std::move(observation)); continue;
       }
       const auto source = std::find_if(request.frames.begin(), request.frames.end(),

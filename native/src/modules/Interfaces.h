@@ -1415,6 +1415,11 @@ struct MonitorRenderResult {
   std::vector<ParticipantSharedTexture> sources;
   std::vector<GradePreviewSurface> gradePreviews;
   double workMs = 0;
+  // An authored preview in this result is still preparing on an asynchronous
+  // owner (private template compile, overlay raster, decoupled export). The
+  // worker re-runs the same request shortly instead of waiting for the next
+  // submission (perf/designer-live-preview). Bounded by the worker.
+  bool retrySoon = false;
   uint64_t readyInputs = 0, heldInputs = 0, unavailableInputs = 0;
   uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
   std::vector<MonitorInputObservation> inputs;

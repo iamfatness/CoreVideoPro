@@ -33,6 +33,8 @@ public sealed class GraphicsAuthoringCanvas : UserControl
     /// <summary>The Designer turns this on; Ctrl held while dragging suspends snapping.</summary>
     public bool SnapToGuides {get;set;}
     internal bool IsDragging => _before is not null;
+    /// <summary>A pointer drag ended (released or cancelled); IsDragging is already false.</summary>
+    internal event EventHandler? DragEnded;
     internal Size PreviewViewport => new(_viewport.ActualWidth, _viewport.ActualHeight);
     private Point _start;private NativeGraphicsPlacement? _before;
     private NativeGraphicsNodeGeometry? _nodeBefore;private Rect? _optimistic;
@@ -163,8 +165,8 @@ public sealed class GraphicsAuthoringCanvas : UserControl
         }
         Draw();e.Handled=true;
     }
-    private void Released(object sender,PointerRoutedEventArgs e) {if(_before is null) return;_before=null;_nodeBefore=null;ShowSnap([]);_session?.EndGesture();_guides.ReleasePointerCapture(e.Pointer);e.Handled=true;}
-    private void Cancel() {if(_before is null) return;_before=null;_nodeBefore=null;ShowSnap([]);_optimistic=null;_session?.CancelGesture();Draw();}
+    private void Released(object sender,PointerRoutedEventArgs e) {if(_before is null) return;_before=null;_nodeBefore=null;ShowSnap([]);_session?.EndGesture();_guides.ReleasePointerCapture(e.Pointer);e.Handled=true;DragEnded?.Invoke(this,EventArgs.Empty);}
+    private void Cancel() {if(_before is null) return;_before=null;_nodeBefore=null;ShowSnap([]);_optimistic=null;_session?.CancelGesture();Draw();DragEnded?.Invoke(this,EventArgs.Empty);}
     private void Key(object sender,KeyRoutedEventArgs e)
     {
         if(_session?.Draft is null || _session.Busy || _session.CompareOriginal || _session.PreviewSample!="current") return;
