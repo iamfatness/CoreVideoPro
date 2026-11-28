@@ -322,7 +322,7 @@ def sports():
         snap(caps('subtitle-text', 400, 154, 1120, 42, fld('subtitle'), 32, tok('onSecondary'), 600, align='center'), 310)], BOTTOM)
     bug = template(p, 'bug', 'Sports Kinetic corner bug', 'bug', 240, 80, [field('channel', 'LIVE', True, 32)], [
         rect('plate', 0, 0, 240, 80, tok('teamA'), skewX=12),
-        caps('channel-text', 20, 8, 200, 64, fld('channel'), 54, tok('onPrimary'), align='center')], UPPER_RIGHT)
+        caps('channel-text', 50, 8, 140, 64, fld('channel'), 54, tok('onPrimary'), align='center')], UPPER_RIGHT)
     score = template(p, 'score-bug', 'Sports Kinetic score bug', 'bug', 620, 72,
                      [field('team-a', 'CITY', True, 8), field('score-a', '2', max_length=4), field('team-b', 'ROVERS', True, 8),
                       field('score-b', '1', max_length=4), field('clock', '67:12', max_length=12), field('period', '2ND', max_length=8)], [
@@ -492,8 +492,10 @@ def corporate():
                         field('presenter', 'Ada Otieno, Head of Engineering', max_length=256), field('date', 'Thursday 4 December, 16:00 GMT', max_length=96)], [
         rect('plate', 0, 0, 1400, 420, tok('primary'), cornerRadius=8, shadow=soft),
         rect('band', 0, 0, 1400, 420, {'type': 'linear', 'angle': 135, 'stops': [tok('accent'), tok('primary'), tok('primary')]}, cornerRadius=8, opacity=0.25),
-        rect('kicker-plate', 80, 64, 180, 40, tok('accent'), cornerRadius=20),
-        text('kicker-text', 80, 68, 180, 32, fld('kicker'), F, 20, 600, tok('onAccent'), align='center', textTransform='uppercase', letterSpacing=0.1),
+        # The pill keeps a margin round the text box: a text region is judged
+        # with its box grown by 0.35 x the size, which must stay on the pill.
+        rect('kicker-plate', 80, 56, 180, 52, tok('accent'), cornerRadius=26),
+        text('kicker-text', 96, 66, 148, 32, fld('kicker'), F, 20, 600, tok('onAccent'), align='center', textTransform='uppercase', letterSpacing=0.1),
         follow(text('heading-text', 80, 128, 1240, 160, fld('heading'), F, 60, 600, tok('onPrimary'), maxLines=2,
                     overflow='wrap-then-ellipsis', lineHeight=1.15), 150),
         follow(text('presenter-text', 80, 304, 1240, 44, fld('presenter'), F, 30, 500, tok('onPrimary')), 230),

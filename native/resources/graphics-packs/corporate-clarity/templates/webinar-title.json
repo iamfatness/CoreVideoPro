@@ -102,20 +102,20 @@
    "id": "kicker-plate",
    "type": "rect",
    "x": 128,
-   "y": 112,
+   "y": 104,
    "width": 180,
-   "height": 40,
+   "height": 52,
    "fill": {
     "token": "brand.accent"
    },
-   "cornerRadius": 20
+   "cornerRadius": 26
   },
   {
    "id": "kicker-text",
    "type": "text",
-   "x": 128,
-   "y": 116,
-   "width": 180,
+   "x": 144,
+   "y": 114,
+   "width": 148,
    "height": 32,
    "text": {
     "field": "kicker"
