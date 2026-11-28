@@ -203,6 +203,11 @@ class MediaCore {
   [[nodiscard]] rpc::Json querySourceGrade(const std::string& sourceId) const;
   bool configureSourcePreviewDemand(const rpc::Json& command);
   bool configureGradePreview(const rpc::Json& command, bool* overloaded = nullptr);
+  // Publishes an in-flight Designer revision that settled on the worker
+  // (GradePreviewController::observe), then admits the waiting draft
+  // (promote). Called under coreMutex off the render thread by the RPC
+  // resource pump; returns how many drafts were admitted.
+  size_t promoteGradePreviews();
   [[nodiscard]] std::vector<rpc::Json> drainMultiviewSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainPreviewSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);

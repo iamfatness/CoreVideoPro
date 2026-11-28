@@ -197,9 +197,16 @@ TEST(GradePreviewControl, PlayingDemandUsesTheTickClockAndThirtyHertzCadence) {
   ASSERT_TRUE(control.configure(canvas(2, play), {}, true, t0 + 1100ms, prepare));
   control.tick({}, compositor, 31, t0 + 1200ms);
   EXPECT_EQ(100., compositor.request.gradePreviews[0].playElapsedMs);
-  ASSERT_TRUE(control.configure(canvas(3, J{}), {}, true, t0 + 1200ms, prepare));
+  // A still canvas (no play) returns to the idle cadence once its revision has
+  // settled. Revision 3 arrives after revision 2's in-flight bound, so it is
+  // admitted at once; its ready frame settles it on the first tick.
+  ASSERT_TRUE(control.configure(canvas(3, J{}), {}, true, t0 + 1700ms, prepare));
+  compositor.result = std::make_shared<modules::MonitorRenderResult>();
+  modules::GradePreviewSurface still; still.demand = {"designer", "preview:lower-third", 3, {}};
+  still.status = "ready"; still.texture.sharedHandleHex = "0x10"; still.texture.width = 1920; still.texture.height = 1080;
+  compositor.result->gradePreviews.push_back(still);
   for (int i = 1; i <= 9; ++i) {
-    control.tick({}, compositor, 31 + i, t0 + 1200ms + 34ms * i);
+    control.tick({}, compositor, 31 + i, t0 + 1700ms + 34ms * i);
     control.drain();
   }
   EXPECT_EQ(34, compositor.submissions);
@@ -268,9 +275,18 @@ TEST(GradePreviewControl, DraftPreparationRefusalPreservesTheAcceptedPreview) {
     modules::CompositorOverlayContent overlay; overlay.text = "Accepted title"; return overlay;
   };
   ASSERT_TRUE(control.configure(request, {}, true, now, prepare));
+  // Revision 1 is in flight: revision 2 waits unprepared, then is refused when
+  // admitted past the in-flight bound. Its own revision reports unavailable.
   request["revision"] = 2;
-  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_TRUE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 1);
+  EXPECT_EQ(0u, control.promote(now + core::GradePreviewController::InFlightBound,
+      [&](const J& draft, bool&) { return prepare(draft); }));
   EXPECT_EQ(preparations, 2);
+  EXPECT_FALSE(control.waiting());
+  auto refused = control.drain(); ASSERT_EQ(refused.size(), 1u);
+  EXPECT_EQ(refused[0].getNumber("revision"), 2); EXPECT_EQ(refused[0].getString("status"), "unavailable");
+  EXPECT_EQ(refused[0].getString("reason"), "graphics-draft-refused");
   control.tick({}, compositor, 1, now);
   ASSERT_EQ(compositor.request.gradePreviews.size(), 1u);
   const auto& accepted = compositor.request.gradePreviews.front();
@@ -309,4 +325,127 @@ TEST(GradePreviewControl, TextureObjectsCarryAnIOSurfaceIdOnlyWhenOneIsSet) {
   EXPECT_EQ(events[0].get("texture")->getNumber("iosurfaceId"), 4242.0);
   EXPECT_EQ(events[0].get("scopes")->get("texture")->getNumber("iosurfaceId"), 4343.0);
   EXPECT_EQ(events[0].get("scopes")->getNumber("sampleWidth"), 256.0) << "a Mac scope surface is a measurement";
+}
+
+// perf/designer-live-preview step 2: the authored canvas keeps one revision in
+// the render pipeline and a single latest-value waiting slot.
+namespace {
+using J = rpc::Json;
+J authored(int revision, double x = 0) {
+  return J::Object{{"instanceId","designer"},{"sourceId","preview:lower-third"},{"revision",revision},
+      {"lowerThirdPreview",J::Object{{"appearance",J{}},{"graphics",J::Object{{"templateId","centered-title"},{"x",x}}}}}};
+}
+std::shared_ptr<modules::MonitorRenderResult> readyResult(int revision) {
+  auto result = std::make_shared<modules::MonitorRenderResult>();
+  modules::GradePreviewSurface surface; surface.demand = {"designer", "preview:lower-third", revision, {}};
+  surface.status = "ready"; surface.texture.sharedHandleHex = "0x10"; surface.texture.width = 1920; surface.texture.height = 1080;
+  result->gradePreviews.push_back(surface); result->workMs = 2.5;
+  return result;
+}
+}
+
+TEST(GradePreviewControl, NewestDraftWaitsWhileOneIsInFlightAndNoStaleRevisionIsAdmitted) {
+  using namespace std::chrono_literals;
+  core::GradePreviewController control; PreviewCompositor compositor;
+  const auto t0 = core::GradePreviewController::Clock::time_point{} + 1s;
+  std::vector<double> prepared;
+  const auto prepare = [&](const J& draft) -> std::optional<modules::CompositorOverlayContent> {
+    prepared.push_back(draft.getNumber("x")); return modules::CompositorOverlayContent{};
+  };
+  const core::GradePreviewController::PrepareDraft admit = [&](const J& draft, bool&) { return prepare(draft); };
+  ASSERT_TRUE(control.configure(authored(1, 1), {}, true, t0, prepare));
+  for (int revision = 2; revision <= 4; ++revision)
+    ASSERT_TRUE(control.configure(authored(revision, revision), {}, true, t0 + 5ms * revision, prepare));
+  EXPECT_EQ(prepared, std::vector<double>{1});           // waiting drafts are not prepared
+  EXPECT_TRUE(control.configure(authored(3, 3), {}, true, t0 + 25ms, prepare)); // older than waiting: ignored
+  EXPECT_FALSE(control.configure(authored(4, 99), {}, true, t0 + 25ms, prepare)); // same revision, new content
+  EXPECT_TRUE(control.renew(authored(4, 4), t0 + 25ms));  // the waiting revision's lease renews
+  EXPECT_EQ(0u, control.promote(t0 + 30ms, admit));       // revision 1 has not settled
+  EXPECT_EQ(2u, control.stats().coalesced);
+  compositor.result = readyResult(1);
+  control.tick({}, compositor, 1, t0 + 40ms);             // revision 1 settles
+  EXPECT_EQ(1u, control.promote(t0 + 41ms, admit));
+  EXPECT_EQ(prepared, (std::vector<double>{1, 4}));      // 2 and 3 were never prepared
+  control.tick({}, compositor, 2, t0 + 42ms);
+  ASSERT_EQ(compositor.request.gradePreviews.size(), 1u);
+  EXPECT_EQ(compositor.request.gradePreviews[0].revision, 4);
+  EXPECT_FALSE(control.waiting());
+  const auto stats = control.stats();
+  EXPECT_EQ(stats.admitted, 2u); EXPECT_EQ(stats.ready, 1u); EXPECT_EQ(stats.supersededBeforeReady, 0u);
+  EXPECT_NEAR(stats.admitToReadyP50Ms, 40.0, 0.001);
+}
+
+TEST(GradePreviewControl, InFlightRevisionIsPolledEveryTickAndASettledCanvasIdles) {
+  using namespace std::chrono_literals;
+  core::GradePreviewController control; PreviewCompositor compositor;
+  const auto t0 = core::GradePreviewController::Clock::time_point{} + 1s;
+  const auto prepare = [](const J&) { return std::optional<modules::CompositorOverlayContent>{modules::CompositorOverlayContent{}}; };
+  ASSERT_TRUE(control.configure(authored(1), {}, true, t0, prepare));
+  for (int i = 1; i <= 5; ++i) control.tick({}, compositor, i, t0 + 16ms * i);
+  EXPECT_EQ(compositor.submissions, 5);                  // every render tick while in flight
+  auto events = control.drain(); ASSERT_EQ(events.size(), 5u);
+  EXPECT_EQ(events.back().getString("status"), "preparing");
+  ASSERT_NE(events.back().get("timing"), nullptr);
+  compositor.result = readyResult(1);
+  control.tick({}, compositor, 6, t0 + 96ms);
+  events = control.drain(); ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].getString("status"), "ready");
+  EXPECT_NEAR(events[0].get("timing")->getNumber("admittedToReadyMs"), 96.0, 0.001);
+  EXPECT_EQ(events[0].get("timing")->getNumber("workerMs"), 2.5);
+  for (int i = 1; i <= 5; ++i) control.tick({}, compositor, 6 + i, t0 + 96ms + 16ms * i);
+  EXPECT_EQ(compositor.submissions, 6);                  // settled: back to the 100 ms cadence
+  control.tick({}, compositor, 12, t0 + 196ms);
+  EXPECT_EQ(compositor.submissions, 7);
+  // A revision that never settles is polled fast only for the in-flight bound.
+  ASSERT_TRUE(control.configure(authored(2), {}, true, t0 + 200ms, prepare));
+  compositor.result.reset();
+  const int before = compositor.submissions;
+  for (int i = 1; i <= 10; ++i)
+    control.tick({}, compositor, 20 + i, t0 + 200ms + core::GradePreviewController::InFlightBound + 16ms * i);
+  EXPECT_LE(compositor.submissions - before, 2);
+}
+
+TEST(GradePreviewControl, ObserveSettlesBetweenTicksSoTheWaitingDraftIsAdmitted) {
+  using namespace std::chrono_literals;
+  core::GradePreviewController control; PreviewCompositor compositor;
+  const auto t0 = core::GradePreviewController::Clock::time_point{} + 1s;
+  const auto prepare = [](const J&) { return std::optional<modules::CompositorOverlayContent>{modules::CompositorOverlayContent{}}; };
+  const core::GradePreviewController::PrepareDraft admit = [&](const J& draft, bool&) { return prepare(draft); };
+  ASSERT_TRUE(control.configure(authored(1), {}, true, t0, prepare));
+  ASSERT_TRUE(control.configure(authored(2), {}, true, t0 + 2ms, prepare));
+  EXPECT_EQ(0u, control.observe(compositor, t0 + 4ms));    // no worker result yet
+  compositor.result = readyResult(2);                       // a different revision does not settle 1
+  EXPECT_EQ(0u, control.observe(compositor, t0 + 5ms));
+  compositor.result = readyResult(1);
+  EXPECT_EQ(1u, control.observe(compositor, t0 + 6ms));
+  auto events = control.drain(); ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].getNumber("revision"), 1); EXPECT_EQ(events[0].getString("status"), "ready");
+  EXPECT_EQ(0u, control.observe(compositor, t0 + 7ms));    // settled once
+  EXPECT_EQ(1u, control.promote(t0 + 7ms, admit));
+  EXPECT_EQ(compositor.submissions, 0);                     // observe never submits work
+}
+
+TEST(GradePreviewControl, BusyCompilerKeepsTheNewestDraftWaiting) {
+  using namespace std::chrono_literals;
+  core::GradePreviewController control; PreviewCompositor compositor;
+  const auto t0 = core::GradePreviewController::Clock::time_point{} + 1s;
+  const auto prepare = [](const J&) { return std::optional<modules::CompositorOverlayContent>{modules::CompositorOverlayContent{}}; };
+  ASSERT_TRUE(control.configure(authored(1), {}, true, t0, prepare));
+  ASSERT_TRUE(control.configure(authored(2), {}, true, t0 + 1ms, prepare));
+  compositor.result = readyResult(1);
+  control.tick({}, compositor, 1, t0 + 2ms);
+  control.drain();
+  int attempts = 0;
+  const core::GradePreviewController::PrepareDraft busy = [&](const J&, bool& isBusy) -> std::optional<modules::CompositorOverlayContent> {
+    ++attempts; isBusy = true; return std::nullopt;
+  };
+  EXPECT_EQ(0u, control.promote(t0 + 3ms, busy));
+  EXPECT_TRUE(control.waiting());
+  EXPECT_TRUE(control.drain().empty());                  // busy is not a refusal
+  const core::GradePreviewController::PrepareDraft ready = [&](const J& draft, bool&) { ++attempts; return prepare(draft); };
+  EXPECT_EQ(1u, control.promote(t0 + 11ms, ready));
+  EXPECT_EQ(attempts, 2);
+  control.tick({}, compositor, 2, t0 + 12ms);
+  ASSERT_EQ(compositor.request.gradePreviews.size(), 1u);
+  EXPECT_EQ(compositor.request.gradePreviews[0].revision, 2);
 }

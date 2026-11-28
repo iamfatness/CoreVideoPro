@@ -1267,6 +1267,14 @@ bool MediaCore::configureSourcePreviewDemand(const rpc::Json& command) {
   return true;
 }
 
+size_t MediaCore::promoteGradePreviews() {
+  const auto now = GradePreviewController::Clock::now();
+  gradePreviews_.observe(*modules_.compositor, now);
+  if (!gradePreviews_.waiting()) return 0;
+  return gradePreviews_.promote(now,
+      [this](const rpc::Json& draft, bool& busy) { return graphicsInstances_.authoringPreview(draft, &busy); });
+}
+
 bool MediaCore::configureGradePreview(const rpc::Json& command, bool* overloaded) {
   if (overloaded) *overloaded = false;
   if (command.get("renewOnly") && command.get("renewOnly")->asBool()) return gradePreviews_.renew(command);

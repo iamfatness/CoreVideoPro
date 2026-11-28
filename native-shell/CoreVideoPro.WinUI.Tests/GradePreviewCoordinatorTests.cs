@@ -76,43 +76,16 @@ public sealed class GradePreviewCoordinatorTests
         bridge.Emit(new() { InstanceId = editor.InstanceId, SourceId = editor.SourceId, Status = "unavailable", Reason = "late" });
         Assert.Equal(status, editor.PreviewStatus);
     }
-    [Fact]
-    public void GraphicsDragCoalescesPointerEditsUntilNativeCanPublish()
-    {
-        var bridge = new Transport();
-        var editor = new ColorGradeEditorViewModel("preview:lower-third", "Graphics", new() { Lut = "none" });
-        var empty = System.Text.Json.JsonSerializer.SerializeToElement(new { });
-        var draft = new NativeGraphicsPreview("broadcast", 1, empty, empty, new());
-        editor.SetLowerThirdPreview(new(null, Graphics: draft));
-        var clock = new PreviewClock();
-        using var coordinator = new GradePreviewCoordinator(bridge, editor, action => action(), clock);
-        clock.Step(0);
-        var first = Assert.Single(bridge.Commands).Revision;
-        editor.SetLowerThirdPreview(new(null, Graphics: draft with { Placement = new() { X = 12 } }), continuous: true);
-        editor.SetLowerThirdPreview(new(null, Graphics: draft with { Placement = new() { X = 24 } }), continuous: true);
-        clock.Step(100);
-        Assert.Single(bridge.Commands);
+    // The pointer-drag behaviour (newest edit wins, one send per display frame, no wait for a native
+    // frame) is covered by GradePreviewMailboxTests.
 
-        bridge.Emit(new() { InstanceId = editor.InstanceId, SourceId = editor.SourceId, Revision = first,
-            Status = "ready", Texture = new() { SharedHandleHex = "0x1234", Width = 1920, Height = 1080 } });
-        clock.Step(100);
-        Assert.Equal(editor.Revision, bridge.Commands.Last().Revision);
-        Assert.Equal(2, bridge.Commands.Count);
-        Assert.True(editor.HasPreview);
-
-        editor.SetLowerThirdPreview(new(null, Graphics: draft with { Placement = new() { X = 48 } }), continuous: true);
-        clock.Step(100);
-        Assert.Equal(2, bridge.Commands.Count);
-        clock.Step(400);
-        Assert.Equal(editor.Revision, bridge.Commands.Last().Revision);
-        Assert.Equal(3, bridge.Commands.Count);
-    }
-
+    /// <summary>Manual clock: the coordinator's one-shot timer fires on <see cref="Step"/> once due.</summary>
     private sealed class PreviewClock : TimeProvider, ITimer
     {
         private TimerCallback? _tick;
         private object? _state;
         private long _milliseconds;
+        private long? _due;
 
         public override long TimestampFrequency => 1000;
         public override long GetTimestamp() => _milliseconds;
@@ -120,15 +93,24 @@ public sealed class GradePreviewCoordinatorTests
         {
             _tick = callback;
             _state = state;
+            Change(dueTime, period);
             return this;
         }
         public void Step(int milliseconds)
         {
             _milliseconds += milliseconds;
-            _tick?.Invoke(_state);
+            for (var guard = 0; guard < 100 && _tick is not null && _due is { } due && due <= _milliseconds; ++guard)
+            {
+                _due = null;
+                _tick.Invoke(_state);
+            }
         }
-        public bool Change(TimeSpan dueTime, TimeSpan period) => throw new NotSupportedException();
-        public void Dispose() => _tick = null;
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            _due = dueTime == Timeout.InfiniteTimeSpan ? null : _milliseconds + (long)Math.Ceiling(dueTime.TotalMilliseconds);
+            return true;
+        }
+        public void Dispose() { _tick = null; _due = null; }
         public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
     }
 }

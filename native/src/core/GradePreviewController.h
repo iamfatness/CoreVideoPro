@@ -5,6 +5,7 @@
 #include "compositor/ColorGradeParams.h"
 #include "graphics/GraphicsTimeline.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -22,11 +23,88 @@ class GradePreviewController {
   static constexpr auto Lease = std::chrono::seconds(3);
   static constexpr auto Interval = std::chrono::milliseconds(100);
   static constexpr auto PlayInterval = std::chrono::milliseconds(33);
+  // Live authored canvas (perf/designer-live-preview step 2). One draft
+  // revision is in the render pipeline at a time: newer drafts that arrive
+  // while it is in flight wait in a single latest-value slot (`next`), never a
+  // queue, and the newest is admitted as soon as the in-flight one settles. A
+  // revision that has not settled within InFlightBound is replaced anyway, so a
+  // lost result cannot pin the canvas. While a revision is in flight the
+  // controller submits on every render tick (bounded by the render budget);
+  // a settled canvas falls back to Interval, so a parked Designer costs nothing.
+  static constexpr auto InFlightBound = std::chrono::milliseconds(500);
+  using PrepareDraft = std::function<std::optional<modules::CompositorOverlayContent>(const rpc::Json&, bool& busy)>;
+  // Designer preview timing (perf/designer-live-preview). Always on and fixed
+  // size: counters plus a ring of admitted-to-ready latencies, reduced to
+  // percentiles only when a snapshot asks. Nothing allocates per tick.
+  static constexpr size_t LatencySamples = 64;
+  struct Stats {
+    uint64_t admitted = 0, ready = 0, supersededBeforeReady = 0, coalesced = 0;
+    double admitToReadyP50Ms = 0, admitToReadyP95Ms = 0, admitToReadyMaxMs = 0, lastPrepareMs = 0;
+    size_t samples = 0;
+  };
+  Stats stats() const {
+    Stats result;
+    result.admitted = admitted_; result.ready = readyRevisions_;
+    result.supersededBeforeReady = supersededBeforeReady_; result.coalesced = coalesced_;
+    result.lastPrepareMs = lastPrepareMs_; result.samples = latencyCount_;
+    const size_t n = (std::min)(latencyCount_, LatencySamples);
+    if (n == 0) return result;
+    std::array<double, LatencySamples> sorted{};
+    std::copy(latencies_.begin(), latencies_.begin() + static_cast<std::ptrdiff_t>(n), sorted.begin());
+    std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n));
+    const auto at = [&](double q) { return sorted[(std::min)(n - 1, size_t(q * double(n - 1) + 0.5))]; };
+    result.admitToReadyP50Ms = at(0.5); result.admitToReadyP95Ms = at(0.95); result.admitToReadyMaxMs = sorted[n - 1];
+    return result;
+  }
   bool renew(const rpc::Json& command, Clock::time_point now = Clock::now()) {
     const auto found = active_.find(command.getString("instanceId"));
+    const auto revision = command.getNumber("revision", -1);
     if (found == active_.end() || found->second.demand.sourceId != command.getString("sourceId") ||
-        command.getNumber("revision", -1) != found->second.demand.revision || now-found->second.renewed >= Lease) return false;
+        (revision != found->second.demand.revision && (!found->second.next || revision != found->second.next->demand.revision)) ||
+        now-found->second.renewed >= Lease) return false;
     found->second.renewed = now; return true;
+  }
+
+  // Admits each waiting draft whose in-flight revision has settled (or
+  // exceeded InFlightBound). Runs off the render thread: the RPC resource pump
+  // calls it under its opportunistic core lock, and configure() admits an
+  // incoming draft directly when nothing is in flight. A busy private compiler
+  // leaves the draft waiting for the next call; a refused draft reports its own
+  // revision unavailable (the accepted preview stays) and is dropped.
+  size_t promote(Clock::time_point now, const PrepareDraft& prepareDraft) {
+    size_t promoted = 0;
+    for (auto& [id, entry] : active_) {
+      if (!entry.next || (!entry.settled && now - entry.admitted < InFlightBound)) continue;
+      bool busy = false;
+      const auto started = Clock::now();
+      auto overlay = prepareDraft ? prepareDraft(entry.next->draft, busy) : std::nullopt;
+      const double prepareMs = lastPrepareMs_ = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+      if (!overlay) {
+        if (busy) continue;
+        emit({entry.next->demand, 0, 0, 0, {}, "unavailable", "graphics-draft-refused"});
+        entry.next.reset();
+        continue;
+      }
+      if (!entry.settled) ++supersededBeforeReady_;
+      auto demand = std::move(entry.next->demand);
+      demand.lowerThirdPreview = std::move(*overlay);
+      entry.demand = std::move(demand);
+      entry.playStarted = now;
+      entry.next.reset();
+      admit(entry, now, prepareMs);
+      ++promoted;
+    }
+    return promoted;
+  }
+  // An authored revision is travelling the pipeline (compile, raster, render,
+  // export): poll it every render tick, for at most InFlightBound.
+  bool inFlight(Clock::time_point now) const {
+    return std::any_of(active_.begin(), active_.end(), [&](const auto& entry) {
+      return entry.second.authored && !entry.second.settled && now - entry.second.admitted < InFlightBound;
+    });
+  }
+  bool waiting() const {
+    return std::any_of(active_.begin(), active_.end(), [](const auto& entry) { return entry.second.next.has_value(); });
   }
 
   bool configure(const rpc::Json& command, modules::CompositorColorGrade grade,
@@ -110,21 +188,47 @@ class GradePreviewController {
         found->second.renewed = now;
         return true;
       }
+      if (auto& next = found->second.next) {
+        // The waiting draft follows the same rules: older is ignored, equal is
+        // a lease refresh and may not change content.
+        if (demand.revision < next->demand.revision) return true;
+        if (demand.revision == next->demand.revision) {
+          if (demand.lowerThirdPreviewSignature != next->demand.lowerThirdPreviewSignature) return false;
+          found->second.renewed = now;
+          return true;
+        }
+      }
+      // An authored revision is in flight: hold this newer draft in the single
+      // waiting slot (replacing an older waiting draft) instead of preparing it
+      // now. promote() admits it when the in-flight revision settles.
+      if (draftInput && found->second.authored && !found->second.settled && now - found->second.admitted < InFlightBound) {
+        if (found->second.next) ++coalesced_;
+        found->second.next = Waiting{std::move(demand), *draftInput};
+        found->second.renewed = now;
+        return true;
+      }
     }
     // Preparation can start a worker and replace its wanted revision. Validate
     // the entire control envelope before those effects; unchanged lease renewals
     // above retain their accepted draft without touching its compiler.
+    double prepareMs = 0;
     if (draftInput) {
+      const auto started = Clock::now();
       auto graphicsDraft = prepareDraft(*draftInput);
+      prepareMs = lastPrepareMs_ = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
       if (!graphicsDraft) return false;
       demand.lowerThirdPreview = std::move(*graphicsDraft);
     }
-    if (found == active_.end()) active_.emplace(id, Entry{std::move(demand), now, now});
+    if (found == active_.end()) found = active_.emplace(id, Entry{std::move(demand), now, now}).first;
     else {
+      if (!found->second.settled) ++supersededBeforeReady_;
+      if (found->second.next) { ++coalesced_; found->second.next.reset(); } // this draft is newer
       found->second.demand = std::move(demand);
       found->second.playStarted = now;
       found->second.renewed = now;
     }
+    found->second.authored = draftInput != nullptr;
+    admit(found->second, now, prepareMs);
     return true;
   }
 
@@ -133,7 +237,7 @@ class GradePreviewController {
     const bool playing = std::any_of(active_.begin(), active_.end(), [](const auto& entry) {
       return !entry.second.demand.playMode.empty();
     });
-    if (now - lastTick_ < (playing ? PlayInterval : Interval)) return;
+    if (!inFlight(now) && now - lastTick_ < (playing ? PlayInterval : Interval)) return;
     lastTick_ = now;
     for (auto it = active_.begin(); it != active_.end();) {
       if (now - it->second.renewed >= Lease) it = active_.erase(it); else ++it;
@@ -162,8 +266,10 @@ class GradePreviewController {
               surface.demand.sourceId == entry.demand.sourceId && surface.demand.revision == entry.demand.revision; })
           : std::vector<modules::GradePreviewSurface>::const_iterator{};
       if (!result || match == result->gradePreviews.end()) {
-        emit({entry.demand, 0, 0, 0, {}, health.failed ? "unavailable" : "preparing",
-              health.failed ? health.failureReason : "awaiting-native-grade"});
+        const modules::GradePreviewSurface pending{entry.demand, 0, 0, 0, {}, health.failed ? "unavailable" : "preparing",
+              health.failed ? health.failureReason : "awaiting-native-grade"};
+        settle(entry, pending, now);
+        emit(pending, timingJson(entry, result ? result->workMs : 0));
         continue;
       }
       auto surface = *match;
@@ -188,18 +294,59 @@ class GradePreviewController {
           surface.status = "stale"; surface.reason = "source-not-advancing";
         }
       }
-      emit(surface);
+      settle(entry, surface, now);
+      emit(surface, timingJson(entry, result->workMs));
     }
+  }
+  // Off the render thread (the RPC resource pump, every ~8 ms): an authored
+  // revision that settled on the worker since the last tick is published now
+  // rather than a tick later, so its waiting successor can be admitted in the
+  // same pass. Only settling surfaces are emitted here; tick() still owns the
+  // periodic status, staleness and lease work.
+  size_t observe(const modules::ICompositor& compositor, Clock::time_point now) {
+    if (!inFlight(now)) return 0;
+    const auto result = compositor.latestGradePreviews();
+    if (!result) return 0;
+    size_t settled = 0;
+    for (auto& [id, entry] : active_) {
+      if (!entry.authored || entry.settled) continue;
+      const auto match = std::find_if(result->gradePreviews.begin(), result->gradePreviews.end(), [&](const auto& surface) {
+        return surface.demand.instanceId == id && surface.demand.sourceId == entry.demand.sourceId &&
+            surface.demand.revision == entry.demand.revision;
+      });
+      if (match == result->gradePreviews.end() ||
+          (!(match->status == "ready" && match->texture.width > 0) && match->status != "unavailable")) continue;
+      auto surface = *match;
+      if (surface.status == "ready" && surface.demand.playMode.empty()) entry.demand.playMode.clear();
+      settle(entry, surface, now);
+      emit(surface, timingJson(entry, result->workMs));
+      ++settled;
+    }
+    return settled;
   }
   std::vector<rpc::Json> drain() { auto result = std::move(events_); events_.clear(); eventBytes_ = 0; return result; }
   size_t pendingEventBytes() const { return eventBytes_; }
   uint64_t eventsRefused() const { return eventsRefused_; }
   rpc::Json diagnostics(const modules::ICompositor& compositor) const {
-    return diagnosticsFor(compositor, active_.size(), eventBytes_, eventsRefused_);
+    return diagnosticsFor(compositor, active_.size(), eventBytes_, eventsRefused_, stats());
   }
+  // `authoring` (Designer timing) is the controller's stats plus the private
+  // template compiler's last compile time, captured under coreMutex.
+  // (An overload, not a `= {}` default: GCC and Clang refuse a default
+  // argument of a nested type with member initializers inside its class.)
   static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes = 0, uint64_t eventsRefused = 0) {
+    return diagnosticsFor(compositor, editors, eventBytes, eventsRefused, Stats{}, 0);
+  }
+  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes, uint64_t eventsRefused,
+                                  const Stats& stats, double lastCompileMs = 0) {
     const auto worker = compositor.gradePreviewDiagnostics();
-    return rpc::Json::Object{{"observationVersion", "grade-preview-v1"},
+    rpc::Json authoring = rpc::Json::Object{{"inFlightCadence", "render-tick"},
+      {"inFlightBoundMs", double(std::chrono::milliseconds(InFlightBound).count())}, {"revisionsAdmitted", double(stats.admitted)}, {"revisionsReady", double(stats.ready)},
+      {"revisionsSupersededBeforeReady", double(stats.supersededBeforeReady)}, {"revisionsCoalesced", double(stats.coalesced)},
+      {"latencySamples", double((std::min)(stats.samples, LatencySamples))},
+      {"admittedToReadyP50Ms", stats.admitToReadyP50Ms}, {"admittedToReadyP95Ms", stats.admitToReadyP95Ms},
+      {"admittedToReadyMaxMs", stats.admitToReadyMaxMs}, {"lastPrepareMs", stats.lastPrepareMs}, {"lastCompileMs", lastCompileMs}};
+    return rpc::Json::Object{{"observationVersion", "grade-preview-v1"}, {"authoring", std::move(authoring)},
       {"supported", compositor.supportsGradePreview()}, {"activeEditors", double(editors)},
       {"editorCapacity", double(Capacity)}, {"leaseMs", 3000}, {"requestedIntervalMs", 100}, {"playIntervalMs", 33},
       {"eventCapacity", double(EventCapacity)}, {"eventByteCapacity", double(EventByteBudget)},
@@ -212,6 +359,8 @@ class GradePreviewController {
   }
   size_t size() const { return active_.size(); }
  private:
+  // A validated control envelope whose draft has not been prepared yet.
+  struct Waiting { modules::GradePreviewDemand demand; rpc::Json draft; };
   struct Entry {
     modules::GradePreviewDemand demand;
     Clock::time_point renewed, playStarted{}, advanced{};
@@ -222,8 +371,37 @@ class GradePreviewController {
     uint64_t scopeEpoch = 0;
     int64_t scopeFrame = 0, scopeExport = -1, scopeCompletionObservedAtMs = 0;
     Clock::time_point scopeAdvanced{};
+    // Designer timing: when the current revision entered the pipeline, what its
+    // draft preparation cost on the command thread, and whether it has settled
+    // (first ready texture or unavailable verdict for this exact revision).
+    Clock::time_point admitted{};
+    double prepareMs = 0, admittedToReadyMs = 0;
+    bool settled = false;
+    bool authored = false;           // the current revision came from a graphics draft
+    std::optional<Waiting> next;     // newest draft held while `demand` is in flight
   };
-  bool emit(const modules::GradePreviewSurface& surface) {
+  void admit(Entry& entry, Clock::time_point now, double prepareMs) {
+    entry.admitted = now; entry.prepareMs = prepareMs; entry.admittedToReadyMs = 0; entry.settled = false;
+    ++admitted_;
+  }
+  void settle(Entry& entry, const modules::GradePreviewSurface& surface, Clock::time_point now) {
+    if (entry.settled || surface.demand.revision != entry.demand.revision) return;
+    const bool ready = surface.status == "ready" && surface.texture.width > 0;
+    if (!ready && surface.status != "unavailable") return;
+    entry.settled = true;
+    if (!ready) return;
+    entry.admittedToReadyMs = std::chrono::duration<double, std::milli>(now - entry.admitted).count();
+    latencies_[latencyCount_++ % LatencySamples] = entry.admittedToReadyMs;
+    ++readyRevisions_;
+  }
+  // Per-revision timing rides each authored-canvas observation (three fixed
+  // numeric keys, inside emit's byte bound). Source grade events are unchanged.
+  static rpc::Json timingJson(const Entry& entry, double workerMs) {
+    if (!entry.demand.lowerThirdPreview) return {};
+    return rpc::Json::Object{{"prepareMs", entry.prepareMs}, {"admittedToReadyMs", entry.admittedToReadyMs},
+        {"workerMs", workerMs}};
+  }
+  bool emit(const modules::GradePreviewSurface& surface, rpc::Json timing = {}) {
     // Fixed schema: 16 KiB covers map nodes/keys and fixed diagnostic strings;
     // eight bytes per varying character bounds allocation and JSON escaping.
     size_t bound = 16384;
@@ -243,7 +421,7 @@ class GradePreviewController {
     const auto now = Clock::now();
     const auto age = found!=active_.end() && found->second.observed ? double(std::chrono::duration_cast<std::chrono::milliseconds>(now-found->second.advanced).count()) : 0;
     const auto scopeAge = found!=active_.end() && found->second.scopeObserved ? double(std::chrono::duration_cast<std::chrono::milliseconds>(now-found->second.scopeAdvanced).count()) : 0;
-    events_.emplace_back(rpc::Json::Object{
+    rpc::Json::Object event{
       {"type", "grade-preview"}, {"instanceId", surface.demand.instanceId},
       {"sourceId", surface.demand.sourceId}, {"revision", double(surface.demand.revision)},
       {"sourceEpoch", double(surface.sourceEpoch)}, {"sourceFrameId", double(surface.sourceFrameId)},
@@ -260,7 +438,9 @@ class GradePreviewController {
         {"sampleWidth", st.width>0?256:0}, {"sampleHeight", st.width>0?144:0}, {"sampleCount", st.width>0?scope.roi.sampleCount():0}, {"colorSpace", "rec709-sdr-assumed"},
         {"units", "encoded 0-1; waveform 0-100%; Cb/Cr"},
         {"texture", textureJson(st)}}},
-      {"texture", textureJson(t)}});
+      {"texture", textureJson(t)}};
+    if (!timing.isNull()) event.emplace("timing", std::move(timing));
+    events_.emplace_back(std::move(event));
     eventBytes_ += bound;
     return true;
   }
@@ -278,5 +458,9 @@ class GradePreviewController {
   uint64_t eventsRefused_ = 0;
   Clock::time_point lastTick_{};
   bool submitted_ = false;
+  uint64_t admitted_ = 0, readyRevisions_ = 0, supersededBeforeReady_ = 0, coalesced_ = 0;
+  double lastPrepareMs_ = 0;
+  std::array<double, LatencySamples> latencies_{};
+  size_t latencyCount_ = 0;
 };
 }

@@ -27,6 +27,8 @@ class MonitorRenderWorker {
     std::optional<ProgramDisplayObservation> programDisplay;
   };
   using Maintenance = std::function<MaintenanceResult()>;
+  static constexpr auto RetryInterval = std::chrono::milliseconds(2);
+  static constexpr int MaxRetries = 120;  // ~240 ms of polling per job, then the next submission decides
   explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {}, Maintenance maintenance = {}, bool prepareInputs = true,
                                DeadlineRole deadlineRole = DeadlineRole::None)
       : thread_([this, render = std::move(render), initialize = std::move(initialize), maintenance = std::move(maintenance), prepareInputs, deadlineRole]() mutable {
@@ -156,16 +158,26 @@ class MonitorRenderWorker {
     MonitorInputCache inputs;
     MonitorCaptureCadence captureCadence;
     bool retirementPending = false;
+    // A result that asked to be retried (retrySoon: an authored preview waiting
+    // on an asynchronous compile, raster or export) re-runs the same request
+    // every RetryInterval until it settles or a newer job replaces it, at most
+    // MaxRetries times. Without this, each asynchronous hop cost one producer
+    // submission (a render tick). Workers that never set retrySoon are unchanged.
+    std::shared_ptr<const MonitorRenderRequest> retry;
+    int retries = 0;
     for (;;) {
       std::shared_ptr<const MonitorRenderRequest> job;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (retirementPending)
-          changed_.wait_for(lock, std::chrono::milliseconds(1), [this] { return stopping_ || pending_; });
+        if (retirementPending || retry)
+          changed_.wait_for(lock, retirementPending ? std::chrono::milliseconds(1) : RetryInterval,
+                            [this] { return stopping_ || pending_; });
         else changed_.wait(lock, [this] { return stopping_ || pending_; });
         if (stopping_) return;
         job.swap(pending_);
       }
+      if (job) { retry.reset(); retries = 0; }
+      else if (retry) job = std::move(retry);
       if (!job) { retirementPending = maintain(maintenance); continue; }
       const auto start = std::chrono::steady_clock::now();
       try {
@@ -186,6 +198,8 @@ class MonitorRenderWorker {
         result->inputs = std::move(observation.inputs);
         result->sequence = job->sequence;
         result->workMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        if (result->retrySoon && retries < MaxRetries) { retry = job; ++retries; }
+        else { retry.reset(); retries = 0; }
         std::shared_ptr<const MonitorRenderResult> immutable;
         {
           std::lock_guard<std::mutex> lock(mutex_);

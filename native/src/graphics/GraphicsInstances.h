@@ -46,6 +46,8 @@ class GraphicsInstances {
   bool commitLayoutTake(const std::string& owner, const std::vector<LayoutCue>& cues, bool playOutOthers);
   // Private monitor input, not an instance mutation, cue or Program revision.
   std::optional<modules::CompositorOverlayContent> authoringPreview(const rpc::Json& draft, bool* busy = nullptr);
+  // Compile time of the last adopted private authoring revision (Designer timing).
+  double authoringCompileMs() const { return authoringCompileMs_; }
 
  private:
   struct Revision {
@@ -130,6 +132,7 @@ class GraphicsInstances {
   GraphicsTemplateRegistry templates_;
   std::shared_ptr<GraphicsTemplateDraft> authoringCompiler_;
   std::shared_ptr<const void> authoringPublication_;
+  double authoringCompileMs_ = 0;
   std::string authoringKey_;
   rpc::Json authoringInput_,authoringState_;
   std::shared_ptr<const GraphicsTemplateRegistry::Publication> templatesPublication_;

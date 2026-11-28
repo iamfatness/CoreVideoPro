@@ -634,6 +634,54 @@ and Program keep their accepted revisions. Moves and edge resizes
 drawn while they hold; **hold Ctrl to place freely**. Resizes that keep the
 aspect ratio (image layers, or Shift held), scaling the whole graphic, and
 keyboard nudges do not snap.
+
+**Live canvas cadence (perf/designer-live-preview).** The canvas is the core's
+own render of the draft (same renderer and prepare path as air), so it must
+follow the pointer without a second renderer in the shell. The path is a
+latest-value mailbox end to end; nothing queues stale revisions:
+
+- Shell: `GradePreviewCoordinator` sends an edit as soon as no command is in
+  flight and 16 ms have passed since the last send; newer edits replace the
+  pending draft. No wait for a native frame. An unchanged draft renews its
+  lease every 500 ms and the timer sleeps in between.
+  `ColorGradeEditorViewModel.ObserveNativePreview` accepts forward progress only.
+- Core: `GradePreviewController` keeps one authored revision in the render
+  pipeline (private template compile, overlay raster, render, decoupled export).
+  Newer drafts wait unprepared in one slot (`next`, newest wins). The RPC
+  resource pump (every ~8 ms, under its opportunistic core lock, never the
+  render thread) publishes a revision that settled on the worker (`observe`)
+  and admits the waiting draft (`promote`); a set-grade-preview that finds
+  nothing in flight admits directly. A revision not settled within 500 ms is
+  replaced anyway. While a revision is in flight the controller submits every
+  render tick; a settled canvas idles at 100 ms (33 ms while playing).
+- Worker: a grade-preview result that is still `preparing` sets `retrySoon`,
+  and `MonitorRenderWorker` re-runs the same request every 2 ms (at most 120
+  times) instead of waiting a render tick per asynchronous hop.
+- Designer chrome: mid-drag, `RefreshAll` only refreshes the selected layer's
+  inspector numbers; rows, motion bars and the motion panel (keyed on the
+  document hash, which every move changes) rebuild once when the drag ends.
+
+Measure it with the headless probe `CoreVideoPro.WinUI.exe
+--verify-designer-preview <corevideo-native.exe> <report.json>`: it owns its own
+core, opens two corporate-clarity lower thirds (plain and glass) in the real
+workspace session and drives a 120 Hz, 2 s `SetLayerNumbers` drag through the
+real editor and coordinator. "Frame" = the shell received a ready native texture;
+on-screen presentation (one vsync later at most) is not measured. The core also
+reports `gradePreview.authoring` in the snapshot (admitted / ready / coalesced
+revisions, admitted-to-ready p50/p95/max, last prepare and compile ms) and a
+`timing` object on each authored observation. Numbers on the owner's box,
+2026-11-28, Release core:
+
+| | frames/s during drag | edit to frame p50 / p95 | core admitted to ready p50 |
+|---|---|---|---|
+| Before, plain | 2.0 | 397 / 630 ms | 385 ms |
+| Before, glass | 2.0 | 398 / 607 ms | 371 ms |
+| After, plain | 44.5-46.5 | 34-35 / 49-51 ms | 18 ms |
+| After, glass | 59-60 | 26-27 / 35-37 ms | 17 ms |
+
+Draft preparation on the command path is ~0.1 ms and the worker's render pass
+~0.2 ms; what remains is the asynchronous compile and raster of the whole
+graphic per revision (per-layer caching and delta edits are the next steps).
 **Sample text** buttons under the canvas change only the preview: **Typical**
 (your draft's values; drags work on this one), **Longest name** (the first
 text variable filled to its limit, to check the layout; the other variables keep

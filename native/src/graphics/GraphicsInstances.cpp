@@ -1276,6 +1276,7 @@ bool GraphicsInstances::updateAuthoring() {
   auto publication=authoringCompiler_->poll();
   if(!publication || publication->key!=authoringKey_ || publication==authoringPublication_) return false;
   authoringPublication_=publication;
+  authoringCompileMs_=publication->compileMs;
   authoringState_=Json::Object{{"key",publication->key},{"input",authoringInput_},{"state",publication->definition ? "validated" : "invalid"},{"reason",publication->error},{"layout",publication->layout}};
   return true;
 }

@@ -690,6 +690,8 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   gradeEditorCount_ = core.gradePreviews_.size();
   gradeEventBytes_ = core.gradePreviews_.pendingEventBytes();
   gradeEventsRefused_ = core.gradePreviews_.eventsRefused();
+  gradeStats_ = core.gradePreviews_.stats();
+  gradeCompileMs_ = core.graphicsInstances_.authoringCompileMs();
   sourceGradeStatuses_ = core.sourceGrades_.statuses();
   previewComposite_ = core.hasPreviewScene();
   previewPlanLayerCount_ = core.audioWorkerActive_ ? core.lastPreviewPlanLayerCount_ :
@@ -962,7 +964,7 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
       {"sampledAtNs", static_cast<double>(observation.memorySampledAtNs)}});
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
-  state.emplace("gradePreview", GradePreviewController::diagnosticsFor(*modules_.compositor, gradeEditorCount_, gradeEventBytes_, gradeEventsRefused_));
+  state.emplace("gradePreview", GradePreviewController::diagnosticsFor(*modules_.compositor, gradeEditorCount_, gradeEventBytes_, gradeEventsRefused_, gradeStats_, gradeCompileMs_));
   {
     // G0: one row per accepted per-source grade, published unconditionally (an empty
     // array when none). Captured under coreMutex above; at most 256 small rows.

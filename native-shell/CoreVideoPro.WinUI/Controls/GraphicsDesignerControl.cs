@@ -138,7 +138,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         if (Studio is null || !IsLoaded || ReferenceEquals(_attached, Studio)) return;
         Detach();
         _attached = Studio; _session = Studio.GraphicsWorkspace;
-        _canvas.Session = _session; _variables.Library = Studio.GraphicsLibrary; _variables.Session = _session;
+        _canvas.Session = _session; _canvas.DragEnded += OnCanvasDragEnded; _variables.Library = Studio.GraphicsLibrary; _variables.Session = _session;
         _session.Changed += OnSessionChanged; _session.PreviewChanged += OnPreviewChanged; _session.EditRefused += OnEditRefused;
         _attached.PropertyChanged += OnStudioProperty; _attached.GraphicsDesignOpened += OnDesignOpened;
         _attached.GraphicsLibrary.Changed += OnLibraryChanged;
@@ -154,6 +154,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         _motionSignature = _motionPanelSignature = "";
         if (_attached is not null) { _attached.PropertyChanged -= OnStudioProperty; _attached.GraphicsDesignOpened -= OnDesignOpened; _attached.GraphicsLibrary.Changed -= OnLibraryChanged; }
         if (_editor is not null) _editor.PropertyChanged -= OnEditorProperty;
+        _canvas.DragEnded -= OnCanvasDragEnded;
         _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _canvas.Session = null; _variables.Session = null; _variables.Library = null;
         _session = null; _attached = null; _editor = null; _rowsSignature = _inspectorSignature = "";
     }
@@ -194,6 +195,8 @@ public sealed partial class GraphicsDesignerControl : UserControl
     // Changed accompanies every draft edit; PreviewChanged alone (clock text, a removed cue) only needs the lease,
     // so one edit refreshes once.
     private void OnSessionChanged(object? sender, EventArgs e) { RefreshAll(); UpdatePreviewLease(); }
+    // The drag deferred the rows and motion rebuilds (RefreshAll); catch them up once.
+    private void OnCanvasDragEnded(object? sender, EventArgs e) => RefreshAll();
     // Every refused edit (the Designer's own, or a canvas drag on a locked layer) lands in the status line.
     private void OnEditRefused(object? sender, string message) { if (Visible) Say(message); }
     private void OnPreviewChanged(object? sender, EventArgs e) { if (_session?.Draft is null) RefreshAll(); RefreshMotionPlayback(); UpdatePreviewLease(); }
@@ -222,6 +225,15 @@ public sealed partial class GraphicsDesignerControl : UserControl
         // Hidden (the builder or Cues & automation is the visible surface): no Rows/Inspect work per session
         // change; IsGraphicsDesignerVisible turning on refreshes everything.
         if (!Visible) return;
+        // A canvas drag edits one layer's geometry per pointer move. Its rows, motion bars and motion panel
+        // are keyed on the document hash, which every move changes, so a full refresh would rebuild them at
+        // pointer rate. Mid-drag, only the selected layer's inspector numbers follow (from the rows of the
+        // last full refresh: a drag never adds, removes or renames a layer); the drag's end refreshes all.
+        if (_canvas.IsDragging) {
+            _loading = true;
+            try { RefreshInspector(_rows); } finally { _loading = false; }
+            return;
+        }
         _loading = true;
         try {
             var rows = CurrentRows();
