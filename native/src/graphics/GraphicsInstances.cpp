@@ -879,6 +879,10 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
       const auto& clock = preview ? instance.cueCrawlClock : instance.crawlClock;
       content.overlay.graphicsCrawlDistance = clock.sample(now, playback.speed, playback.passWidth, playback.loop).distance;
     }
+    if (preview && layered(*revision) && revision->definition->motionSummary().loops) {
+      // A cued graphic sits settled on Preview; its loops (P7) keep running.
+      content.overlay.graphicsMotion = GraphicsMotionState{GraphicsMotionPhase::Settled, 0, revision->entrance, revision->exit, now};
+    }
     if (!preview) {
       content.graphicsAwaitingEntrance = instance.awaitingEntrance;
       if (layered(*revision)) {

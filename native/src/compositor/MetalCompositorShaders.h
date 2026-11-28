@@ -39,6 +39,7 @@ struct LayerConstants {
   float4 tileBorder;
   float4 tileGlow;
   float4 tileFalloff;
+  float4 revealEdge; // overlay only (P5 feather): xy normal, z normal.lead, w 1/width (px)
 };
 float4 decorateTile(float4 sampleColor, float2 pixel, constant LayerConstants& c) {
 #ifdef COREVIDEO_DISABLE_TILES_EFFECT
@@ -194,7 +195,10 @@ fragment float4 compositorOverlay(VSOut in [[stage_in]],
                                   constant LayerConstants& c [[buffer(0)]],
                                   texture2d<float> layerTexture [[texture(0)]],
                                   sampler layerSampler [[sampler(0)]]) {
-  return layerTexture.sample(layerSampler, c.uvOffset + in.uv * c.uvScale) * c.color.a;
+  float4 sampled = layerTexture.sample(layerSampler, c.uvOffset + in.uv * c.uvScale);
+  // P5 reveal feather, the same expression as kCompositorOverlayPixelShader.
+  float edge = c.revealEdge.w > 0.0 ? saturate((c.revealEdge.z - dot(c.revealEdge.xy, in.pos.xy)) * c.revealEdge.w) : 1.0;
+  return sampled * (c.color.a * edge);
 }
 
 // I420 variant: three single-channel planes, parameterized YCbCr->RGB (BT.709

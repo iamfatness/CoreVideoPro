@@ -1,11 +1,30 @@
 #include "graphics/GraphicsMotion.h"
+#include "graphics/GraphicsCrawl.h"
 #include "graphics/GraphicsTemplate.h"
 
+#include <cmath>
+
 namespace corevideo::graphics {
+namespace {
+constexpr double kPi = 3.14159265358979323846;
+// The parent transform applied to a child's reveal edge (axis-aligned scale
+// and offset); a collapsed axis has no ramp left.
+std::optional<GraphicsRevealEdge> transformEdge(const GraphicsAffine& transform, const GraphicsRevealEdge& edge) {
+  const double scale = edge.vertical ? transform.sy : transform.sx;
+  if (!(scale > 0)) return std::nullopt;
+  auto result = edge;
+  result.lead = scale * edge.lead + (edge.vertical ? transform.ty : transform.tx);
+  result.width = scale * edge.width;
+  return result;
+}
+}  // namespace
+
 double motionEase(const std::string& easing, double t) {
   if (easing == "ease-in") return t * t;
   if (easing == "ease-out") return t * (2 - t);
   if (easing == "ease-in-out") return t * t * (3 - 2 * t);
+  if (easing == "expo-out") return t >= 1 ? 1. : 1 - std::pow(2., -10 * t);
+  if (easing == "quint-out") { const double u = 1 - t; return 1 - u * u * u * u * u; }
   return t;
 }
 
@@ -60,6 +79,27 @@ GraphicsMotionSample sampleUnit(const GraphicsLayerMotion& motion, const Graphic
       if (!up) wipe.y += box.height - wipe.height;
     }
     sample.clip = mask ? intersect(*mask, wipe) : wipe;
+  } else if (motion.type == "reveal") {
+    // A wipe whose leading edge is a feather ramp: the lead travels the box
+    // plus the feather, so the whole box is fully covered exactly at q = 1.
+    const bool vertical = !(left || right);
+    const double extent = vertical ? box.height : box.width;
+    const double travel = q * (extent + motion.feather);
+    const double shown = std::min(extent, travel);
+    const bool fromStart = left || up;
+    GraphicsBox reveal = box;
+    GraphicsRevealEdge edge{vertical, fromStart ? 1. : -1., 0, motion.feather};
+    if (vertical) {
+      reveal.height = shown;
+      if (!fromStart) reveal.y += box.height - shown;
+      edge.lead = fromStart ? box.y + travel : box.y + box.height - travel;
+    } else {
+      reveal.width = shown;
+      if (!fromStart) reveal.x += box.width - shown;
+      edge.lead = fromStart ? box.x + travel : box.x + box.width - travel;
+    }
+    sample.clip = mask ? intersect(*mask, reveal) : reveal;
+    if (motion.feather > 0 && q < 1) sample.edge = edge;
   } else if (motion.type == "grow") {
     if (left || right) {
       transform.sx = q;
@@ -80,6 +120,35 @@ GraphicsMotionSample sampleUnit(const GraphicsLayerMotion& motion, const Graphic
   return sample;
 }
 
+GraphicsMotionSample sampleLoop(const GraphicsLayerLoop& loop, const GraphicsBox& box,
+    const std::optional<GraphicsBox>& mask, double loopMs) {
+  GraphicsMotionSample sample;
+  if (!(loop.periodMs > 0)) return sample;
+  const double at = std::fmod(std::max(0., loopMs), loop.periodMs);
+  const bool left = loop.direction == "left", right = loop.direction == "right", up = loop.direction == "up";
+  if (loop.type == "sweep") {
+    sample.clip = mask;
+    const double u = loop.durationMs > 0 ? at / loop.durationMs : 1.;
+    if (u >= 1) { sample.opacity = 0; return sample; }
+    const double e = u * u * (3 - 2 * u);  // ease-in-out
+    const auto area = mask.value_or(box);
+    if (left || right) {
+      const double before = area.x - (box.x + box.width), after = area.x + area.width - box.x;
+      sample.transform.tx = left ? before + (after - before) * e : after + (before - after) * e;
+    } else {
+      const double before = area.y - (box.y + box.height), after = area.y + area.height - box.y;
+      sample.transform.ty = up ? before + (after - before) * e : after + (before - after) * e;
+    }
+  } else if (loop.type == "pulse") {
+    sample.opacity = 1 - .6 * (1 - std::cos(2 * kPi * at / loop.periodMs)) / 2;
+  } else if (loop.type == "drift") {
+    const double offset = loop.distance * std::sin(2 * kPi * at / loop.periodMs);
+    if (left || right) sample.transform.tx = left ? -offset : offset;
+    else sample.transform.ty = up ? -offset : offset;
+  }
+  return sample;
+}
+
 GraphicsLayerMotion graphicMotion(const GraphicsTransition& transition, double width, double height) {
   GraphicsLayerMotion motion;
   if (transition.type == "none") return motion;
@@ -93,37 +162,45 @@ GraphicsLayerMotion graphicMotion(const GraphicsTransition& transition, double w
 
 GraphicsMotionSample sampleRun(const GraphicsDrawing& drawing, int unit, const GraphicsMotionState& state) {
   GraphicsMotionSample result;
-  if (state.phase == GraphicsMotionPhase::Settled) return result;
   if (state.phase == GraphicsMotionPhase::Hidden) {
     result.opacity = 0;
     return result;
   }
+  // Settled draws every layer in place; only loops still move it.
+  const bool moving = state.phase != GraphicsMotionPhase::Settled;
   const bool entering = state.phase == GraphicsMotionPhase::In;
   const auto& graphic = entering ? state.graphicIn : state.graphicOut;
   const GraphicsBox whole{0, 0, drawing.width, drawing.height};
-  const auto apply = [&](const GraphicsLayerMotion& motion, const GraphicsBox& box,
-                         const std::optional<GraphicsBox>& mask) {
-    const auto sample = sampleUnit(motion, box, mask, state.phase, state.elapsedMs);
+  const auto combine = [&](const GraphicsMotionSample& sample) {
     if (sample.clip) {
       const auto clip = result.transform.apply(*sample.clip);
       result.clip = result.clip ? intersect(*result.clip, clip) : clip;
     }
+    if (sample.edge) result.edge = transformEdge(result.transform, *sample.edge);
     result.transform = result.transform.then(sample.transform);
     result.opacity *= sample.opacity;
   };
+  const auto apply = [&](const GraphicsLayerMotion& motion, const GraphicsBox& box,
+                         const std::optional<GraphicsBox>& mask) {
+    combine(sampleUnit(motion, box, mask, state.phase, state.elapsedMs));
+  };
   const auto follow = [&] { apply(graphicMotion(graphic, whole.width, whole.height), whole, {}); };
   if (unit < 0) {
-    follow();
+    if (moving) follow();
     return result;
   }
   std::array<const GraphicsMotionUnit*, 16> chain{};
   size_t count = 0;
-  for (int index = unit; index >= 0; index = drawing.units[index].parent) chain[count++] = &drawing.units[index];
+  for (int index = unit; index >= 0 && count < chain.size(); index = drawing.units[index].parent)
+    chain[count++] = &drawing.units[index];
   while (count > 0) {
     const auto& layer = *chain[--count];
-    const auto& own = entering ? layer.in : layer.out;
-    if (own) apply(*own, layer.box, layer.mask);
-    else if (layer.root) follow();
+    if (moving) {
+      const auto& own = entering ? layer.in : layer.out;
+      if (own) apply(*own, layer.box, layer.mask);
+      else if (layer.root) follow();
+    }
+    if (layer.loop) combine(sampleLoop(*layer.loop, layer.box, layer.mask, state.loopMs));
   }
   return result;
 }
@@ -177,11 +254,55 @@ bool packAtlas(const std::vector<GraphicsRun>& runs, double scale,
   return true;
 }
 
+bool placeRun(const GraphicsRunLayout& layout, size_t index, const GraphicsMotionState& state,
+    std::optional<double> crawlDistance, GraphicsRunPlacement& out) {
+  if (!layout.drawing || index >= layout.runs.size() || index >= layout.slices.size()) return false;
+  const auto& run = layout.runs[index];
+  const auto& slice = layout.slices[index];
+  if (slice.width <= 0 || slice.height <= 0 || run.first >= layout.drawing->primitives.size()) return false;
+  const auto sample = sampleRun(*layout.drawing, run.unit, state);
+  if (sample.opacity <= 0) return false;
+  auto source = run.source;
+  auto mask = sample.clip;
+  const auto& item = layout.drawing->primitives[run.first];
+  if (item.crawlStart && layout.drawing->crawl) {
+    const auto& crawl = *layout.drawing->crawl;
+    if (crawlDistance && *crawlDistance >= crawl.passWidth) return false;
+    source.x = crawl.window.x + (crawlDistance ? crawlItemX(crawl.window.width, *item.crawlStart,
+        source.width, *crawlDistance, crawl.rightward) : *item.crawlStart);
+    const auto window = sample.transform.apply(crawl.clip);
+    if (intersect(sample.transform.apply(source), window).width <= 0) return false;
+    mask = mask ? intersect(*mask, window) : window;
+  }
+  out.destination = sample.transform.apply(source);
+  if (out.destination.width <= 0 || out.destination.height <= 0) return false;
+  out.mask = mask;
+  out.opacity = sample.opacity;
+  out.edge = sample.edge && sample.edge->width > 0 ? sample.edge : std::nullopt;
+  return true;
+}
+
+void revealEdgeConstants(const std::optional<GraphicsRevealEdge>& edge, double layoutWidth, double layoutHeight,
+    double rectX, double rectY, double rectWidth, double rectHeight, int targetWidth, int targetHeight, float out[4]) {
+  out[0] = out[1] = out[2] = out[3] = 0.f;
+  if (!edge || !(layoutWidth > 0) || !(layoutHeight > 0)) return;
+  const double scale = edge->vertical ? rectHeight * targetHeight / layoutHeight : rectWidth * targetWidth / layoutWidth;
+  const double origin = edge->vertical ? rectY * targetHeight : rectX * targetWidth;
+  const double width = edge->width * scale;
+  if (!(width > 0) || !std::isfinite(width)) return;
+  const double lead = origin + edge->lead * scale;
+  out[0] = edge->vertical ? 0.f : float(edge->sign);
+  out[1] = edge->vertical ? float(edge->sign) : 0.f;
+  out[2] = float(edge->sign * lead);
+  out[3] = float(1 / width);
+}
+
 GraphicsMotionState previewMotion(const std::string& mode, double elapsedMs, double inMs, double outMs,
     const GraphicsTransition& graphicIn, const GraphicsTransition& graphicOut) {
   using Phase = GraphicsMotionPhase;
+  const double loopMs = elapsedMs;
   const auto state = [&](Phase phase, double elapsed = 0) {
-    return GraphicsMotionState{phase, elapsed, graphicIn, graphicOut};
+    return GraphicsMotionState{phase, elapsed, graphicIn, graphicOut, loopMs};
   };
   if (mode == "in") return elapsedMs < inMs ? state(Phase::In, elapsedMs) : state(Phase::Settled);
   if (mode == "cycle" || mode == "loop") {
@@ -227,7 +348,7 @@ bool GraphicsLayerClock::settle(double nowMs) {
 
 void GraphicsLayerClock::show(double nowMs) {
   settle(nowMs);
-  if (mode_ == Mode::Hidden) anchor(Mode::In, 1, nowMs, 0);
+  if (mode_ == Mode::Hidden) { anchor(Mode::In, 1, nowMs, 0); loopAnchorMs_ = nowMs; }
   else if (mode_ == Mode::In && direction_ < 0) anchor(mode_, 1, nowMs, position(nowMs));
   else if (mode_ == Mode::Out && direction_ > 0) anchor(mode_, -1, nowMs, position(nowMs));
   settle(nowMs);
@@ -247,10 +368,11 @@ GraphicsMotionState GraphicsLayerClock::state(double nowMs) const {
   auto current = *this;
   current.settle(nowMs);
   using Phase = GraphicsMotionPhase;
+  const double loopMs = std::max(0., nowMs - loopAnchorMs_);
   switch (current.mode_) {
-    case Mode::In: return {Phase::In, position(nowMs), {}, {}};
-    case Mode::Out: return {Phase::Out, position(nowMs), {}, {}};
-    case Mode::OnAir: return {};
+    case Mode::In: return {Phase::In, position(nowMs), {}, {}, loopMs};
+    case Mode::Out: return {Phase::Out, position(nowMs), {}, {}, loopMs};
+    case Mode::OnAir: return {Phase::Settled, 0, {}, {}, loopMs};
     case Mode::Hidden: return {Phase::Hidden, 0, {}, {}};
   }
   return {};

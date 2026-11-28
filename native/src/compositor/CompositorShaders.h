@@ -231,6 +231,8 @@ cbuffer LayerConstants : register(b0) {
   float temperature;
   float2 uvScale;
   float2 uvOffset;
+  float4 layerReserved[9]; // yuvTransform .. tileFalloff: unused here
+  float4 revealEdge;       // P5 feather: xy normal, z normal.lead, w 1/width (px)
 };
 
 Texture2D layerTexture : register(t0);
@@ -238,7 +240,8 @@ SamplerState layerSampler : register(s0);
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float4 sampled = layerTexture.Sample(layerSampler, uvOffset + uv * uvScale);
-  return sampled * color.a;
+  float edge = revealEdge.w > 0.0 ? saturate((revealEdge.z - dot(revealEdge.xy, pos.xy)) * revealEdge.w) : 1.0;
+  return sampled * (color.a * edge);
 }
 )";
 

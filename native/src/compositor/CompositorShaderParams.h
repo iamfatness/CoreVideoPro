@@ -43,10 +43,14 @@ struct LayerShaderConstants {
   float tileBorder[4];
   float tileGlow[4]; // RGB, intensity
   float tileFalloff[4]; // extent px, softness * 2
-
+  // Overlay shader only (P5 reveal feather): xy = edge normal, z = normal .
+  // lead, w = 1 / feather width, all in target pixels. Coverage is
+  // saturate((z - dot(xy, pixel)) * w); w = 0 disables it. See
+  // graphics::revealEdgeConstants.
+  float revealEdge[4];
 };
 
-static_assert(sizeof(LayerShaderConstants) == 192,
+static_assert(sizeof(LayerShaderConstants) == 208,
               "LayerShaderConstants layout is the GPU wire format shared by the "
               "HLSL cbuffer and the MSL constant struct — do not add padding");
 

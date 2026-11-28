@@ -1314,7 +1314,8 @@ class MetalCompositor final : public ICompositor {
                          float uvScaleX,
                          float uvScaleY,
                          float uvOffsetX,
-                         float uvOffsetY) {
+                         float uvOffsetY,
+                         const float* revealEdge = nullptr) {
     LayerShaderConstants constants{};
     constants.color[0] = static_cast<float>((colorArgb >> 16) & 0xff) / 255.f;
     constants.color[1] = static_cast<float>((colorArgb >> 8) & 0xff) / 255.f;
@@ -1345,6 +1346,7 @@ class MetalCompositor final : public ICompositor {
     }
     applyYuvParams(&constants, yuvShaderParamsForFrame(layer.frame));
     if (tilesEffectsAvailable_) applyTilesDecoration(constants, layer.plan, targetWidth_, targetHeight_);
+    if (revealEdge) std::memcpy(constants.revealEdge, revealEdge, sizeof(constants.revealEdge));
     [encoder setFragmentBytes:&constants length:sizeof(constants) atIndex:0];
   }
 
@@ -1829,41 +1831,30 @@ class MetalCompositor final : public ICompositor {
                                    float(box.width / layout.width) * animated.width,
                                    float(box.height / layout.height) * animated.height};
     };
+    // Run geometry (motion, P5 reveal edge, P7 loops, crawl) is the shared
+    // graphics::placeRun, the same call the D3D11 loop makes.
+    graphics::GraphicsRunPlacement placement;
     for (size_t i = 0; i < layout.runs.size() && i < layout.slices.size(); ++i) {
-      const auto& run = layout.runs[i];
+      if (!graphics::placeRun(layout, i, state, overlay.graphicsCrawlDistance, placement)) continue;
       const auto& slice = layout.slices[i];
-      if (slice.width <= 0 || slice.height <= 0) continue;
-      const auto sample = graphics::sampleRun(*layout.drawing, run.unit, state);
-      if (sample.opacity <= 0) continue;
-      auto source = run.source;
-      auto mask = sample.clip;
-      const auto& item = layout.drawing->primitives[run.first];
-      if (item.crawlStart && layout.drawing->crawl) {
-        const auto& crawl = *layout.drawing->crawl;
-        const auto distance = overlay.graphicsCrawlDistance;
-        if (distance && *distance >= crawl.passWidth) continue;
-        source.x = crawl.window.x + (distance ? graphics::crawlItemX(crawl.window.width, *item.crawlStart,
-                                                                     source.width, *distance, crawl.rightward)
-                                              : *item.crawlStart);
-        const auto window = sample.transform.apply(crawl.clip);
-        if (graphics::intersect(sample.transform.apply(source), window).width <= 0) continue;
-        mask = mask ? graphics::intersect(*mask, window) : window;
-      }
-      const auto destination = toRect(sample.transform.apply(source));
+      const auto destination = toRect(placement.destination);
       if (destination.width <= 0 || destination.height <= 0) continue;
       auto scissor = clip;
-      if (mask) {
-        const auto bounds = toRect(*mask);
+      if (placement.mask) {
+        const auto bounds = toRect(*placement.mask);
         const float x = std::max(clip.x, bounds.x), y = std::max(clip.y, bounds.y);
         scissor = {x, y, std::min(clip.x + clip.width, bounds.x + bounds.width) - x,
                    std::min(clip.y + clip.height, bounds.y + bounds.height) - y};
       }
       if (scissor.width <= 0 || scissor.height <= 0) continue;
+      float revealEdge[4];
+      graphics::revealEdgeConstants(placement.edge, layout.width, layout.height, animated.x, animated.y,
+                                    animated.width, animated.height, int(targetWidth_), int(targetHeight_), revealEdge);
       setScissorFromRect(encoder, scissor);
       setViewportFromRect(encoder, destination);
-      setLayerConstants(encoder, layer, renderPlan, 0xffffffffu, alpha * float(sample.opacity),
+      setLayerConstants(encoder, layer, renderPlan, 0xffffffffu, alpha * float(placement.opacity),
                         float(slice.width) / layout.atlasWidth, float(slice.height) / layout.atlasHeight,
-                        float(slice.x) / layout.atlasWidth, float(slice.y) / layout.atlasHeight);
+                        float(slice.x) / layout.atlasWidth, float(slice.y) / layout.atlasHeight, revealEdge);
       [encoder setRenderPipelineState:overlayPipeline_];
       [encoder setFragmentTexture:atlas atIndex:0];
       [encoder setFragmentSamplerState:sampler_ atIndex:0];

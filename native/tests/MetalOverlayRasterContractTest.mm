@@ -74,6 +74,9 @@ TEST(OverlayRasterContract, ImageDecodeFailureWording) { overlayContract::contra
 TEST(OverlayRasterContract, CrawlAtTheItemLimitPreparesOrFailsWithAtlasWording) {
   overlayContract::contractCrawlAtTheItemLimitPreparesOrFailsWithAtlasWording<B>();
 }
+TEST(OverlayRasterContract, StaggeredWordsPrepareWithinTheirAdmission) {
+  overlayContract::contractStaggeredWordsPrepareWithinTheirAdmission<B>();
+}
 TEST(OverlayRasterContract, StrictSubstitutedTextWithEmojiAndCjkPrepares) {
   overlayContract::contractStrictSubstitutedTextWithEmojiAndCjkPrepares<B>();
 }

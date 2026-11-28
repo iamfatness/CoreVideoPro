@@ -1619,7 +1619,8 @@ class D3D11Compositor final : public ICompositor {
       float uvScaleX,
       float uvScaleY,
       float uvOffsetX,
-      float uvOffsetY) {
+      float uvOffsetY,
+      const float* revealEdge = nullptr) {
     if (!bindAdvancedGrade(layer.plan.hasColorGrade ? layer.plan.colorGrade : renderPlan.colorGrade)) return false;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -1639,6 +1640,7 @@ class D3D11Compositor final : public ICompositor {
     constants->uvOffset[1] = uvOffsetY;
     applyYuvParams(constants, yuvShaderParamsForFrame(layer.frame));
     if (tilesEffectsAvailable_) applyTilesDecoration(*constants, layer.plan, targetWidth_, targetHeight_);
+    if (revealEdge) std::memcpy(constants->revealEdge, revealEdge, sizeof(constants->revealEdge));
     context_->Unmap(constantBuffer_.get(), 0);
     ID3D11Buffer* buffers[] = {constantBuffer_.get()};
     context_->PSSetConstantBuffers(0, 1, buffers);
@@ -2151,15 +2153,17 @@ class D3D11Compositor final : public ICompositor {
       context_->PSSetShaderResources(0, 1, views);
       context_->PSSetSamplers(0, 1, samplers);
       const auto draw = [&](const compositor::LayerRect& destination, const compositor::LayerRect& scissor,
-                            float opacity, float u, float v, float x, float y) {
+                            float opacity, float u, float v, float x, float y, const float* revealEdge) {
         setScissorFromRect(scissor);
         setViewportFromRect(destination);
-        if (writeLayerConstants(layer, renderPlan, 0xffffffffu, opacity, u, v, x, y)) {
+        if (writeLayerConstants(layer, renderPlan, 0xffffffffu, opacity, u, v, x, y, revealEdge)) {
           context_->Draw(3, 0);
           composited = true;
         }
       };
       if (const auto layout = overlayRaster_.activeRuns()) {
+        // Run geometry (motion, P5 reveal edge, P7 loops, crawl) is the shared
+        // graphics::placeRun; this loop only maps it to D3D11 state.
         const auto state = overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
         const auto toRect = [&](const graphics::GraphicsBox& box) {
           return compositor::LayerRect{animated.x + float(box.x / layout->width) * animated.width,
@@ -2167,41 +2171,29 @@ class D3D11Compositor final : public ICompositor {
               float(box.width / layout->width) * animated.width,
               float(box.height / layout->height) * animated.height};
         };
+        graphics::GraphicsRunPlacement placement;
         for (size_t i = 0; i < layout->runs.size(); ++i) {
-          const auto& run = layout->runs[i];
+          if (!graphics::placeRun(*layout, i, state, overlay.graphicsCrawlDistance, placement)) continue;
           const auto& slice = layout->slices[i];
-          if (slice.width <= 0 || slice.height <= 0) continue;
-          const auto sample = graphics::sampleRun(*layout->drawing, run.unit, state);
-          if (sample.opacity <= 0) continue;
-          auto source = run.source;
-          auto mask = sample.clip;
-          const auto& item = layout->drawing->primitives[run.first];
-          if (item.crawlStart) {
-            const auto& crawl = *layout->drawing->crawl;
-            const auto distance = overlay.graphicsCrawlDistance;
-            if (distance && *distance >= crawl.passWidth) continue;
-            source.x = crawl.window.x + (distance ? graphics::crawlItemX(crawl.window.width,
-                *item.crawlStart, source.width, *distance, crawl.rightward) : *item.crawlStart);
-            const auto window = sample.transform.apply(crawl.clip);
-            if (graphics::intersect(sample.transform.apply(source), window).width <= 0) continue;
-            mask = mask ? graphics::intersect(*mask, window) : window;
-          }
-          const auto destination = toRect(sample.transform.apply(source));
+          const auto destination = toRect(placement.destination);
           if (destination.width <= 0 || destination.height <= 0) continue;
           auto scissor = clip;
-          if (mask) {
-            const auto bounds = toRect(*mask);
+          if (placement.mask) {
+            const auto bounds = toRect(*placement.mask);
             const float x = std::max(clip.x, bounds.x), y = std::max(clip.y, bounds.y);
             scissor = {x, y, std::min(clip.x + clip.width, bounds.x + bounds.width) - x,
                 std::min(clip.y + clip.height, bounds.y + bounds.height) - y};
           }
           if (scissor.width <= 0 || scissor.height <= 0) continue;
-          draw(destination, scissor, alpha * float(sample.opacity),
+          float revealEdge[4];
+          graphics::revealEdgeConstants(placement.edge, layout->width, layout->height,
+              animated.x, animated.y, animated.width, animated.height, int(targetWidth_), int(targetHeight_), revealEdge);
+          draw(destination, scissor, alpha * float(placement.opacity),
               float(slice.width) / layout->atlasWidth, float(slice.height) / layout->atlasHeight,
-              float(slice.x) / layout->atlasWidth, float(slice.y) / layout->atlasHeight);
+              float(slice.x) / layout->atlasWidth, float(slice.y) / layout->atlasHeight, revealEdge);
         }
       } else {
-        draw(animated, clip, alpha, 1.f, 1.f, 0.f, 0.f);
+        draw(animated, clip, alpha, 1.f, 1.f, 0.f, 0.f, nullptr);
       }
       ID3D11ShaderResourceView* nullViews[] = {nullptr};
       context_->PSSetShaderResources(0, 1, nullViews);

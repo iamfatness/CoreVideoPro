@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "templateId": "motion-polish",
+  "templateVersion": 1,
+  "name": "Motion polish",
+  "family": "lower-third",
+  "canvas": {
+    "width": 1920,
+    "height": 1080
+  },
+  "bounds": {
+    "width": 1060,
+    "height": 168
+  },
+  "brandTokens": [
+    "brand.primary",
+    "brand.onPrimary",
+    "brand.accent",
+    "brand.fontBody"
+  ],
+  "fields": [
+    {
+      "id": "name",
+      "type": "string",
+      "default": "Ada Otieno Mwangi",
+      "required": true,
+      "bindable": true,
+      "maxLength": 128
+    },
+    {
+      "id": "title",
+      "type": "string",
+      "default": "Head of Engineering and Platform Reliability, East Africa Region",
+      "bindable": true,
+      "maxLength": 256
+    }
+  ],
+  "layers": [
+    {
+      "id": "plate",
+      "metadata": {
+        "label": "Plate"
+      },
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 1060,
+      "height": 168,
+      "fill": {
+        "token": "brand.primary"
+      },
+      "animations": {
+        "in": {
+          "startMs": 0,
+          "easing": "expo-out",
+          "durationMs": 400,
+          "type": "reveal",
+          "direction": "left",
+          "feather": 48
+        }
+      }
+    },
+    {
+      "id": "shine",
+      "metadata": {
+        "label": "Shine"
+      },
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 80,
+      "height": 168,
+      "opacity": 0.3,
+      "fill": "#FFFFFF",
+      "loop": {
+        "type": "sweep",
+        "periodMs": 8000,
+        "durationMs": 1000
+      }
+    },
+    {
+      "id": "accent",
+      "metadata": {
+        "label": "Accent bar"
+      },
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 8,
+      "height": 168,
+      "fill": {
+        "token": "brand.accent"
+      },
+      "loop": {
+        "type": "pulse",
+        "periodMs": 1200
+      }
+    },
+    {
+      "id": "name-label",
+      "metadata": {
+        "label": "Name"
+      },
+      "type": "text",
+      "text": {
+        "field": "name"
+      },
+      "x": 32,
+      "y": 20,
+      "width": 996,
+      "height": 54,
+      "font": {
+        "token": "brand.fontBody"
+      },
+      "fontWeight": 600,
+      "fontSize": 42,
+      "lineHeight": 1.2,
+      "color": {
+        "token": "brand.onPrimary"
+      },
+      "align": "left",
+      "maxLines": 1,
+      "overflow": "ellipsis",
+      "stagger": {
+        "by": "word",
+        "ms": 60
+      },
+      "animations": {
+        "in": {
+          "startMs": 200,
+          "easing": "quint-out",
+          "distance": 24,
+          "durationMs": 300,
+          "type": "rise"
+        }
+      }
+    },
+    {
+      "id": "title-label",
+      "metadata": {
+        "label": "Title"
+      },
+      "type": "text",
+      "text": {
+        "field": "title"
+      },
+      "x": 32,
+      "y": 80,
+      "width": 420,
+      "height": 72,
+      "font": {
+        "token": "brand.fontBody"
+      },
+      "fontWeight": 400,
+      "fontSize": 28,
+      "lineHeight": 1.2,
+      "color": {
+        "token": "brand.onPrimary"
+      },
+      "align": "left",
+      "maxLines": 2,
+      "overflow": "wrap-then-ellipsis",
+      "stagger": {
+        "by": "line",
+        "ms": 100
+      },
+      "animations": {
+        "in": {
+          "startMs": 300,
+          "easing": "ease-out",
+          "durationMs": 250,
+          "type": "fade"
+        }
+      }
+    }
+  ],
+  "animations": {
+    "in": {
+      "type": "fade",
+      "durationMs": 250,
+      "easing": "ease-out"
+    },
+    "out": {
+      "type": "fade",
+      "durationMs": 200,
+      "easing": "ease-in"
+    }
+  },
+  "defaultPlacement": {
+    "anchor": "lower-left",
+    "x": 96,
+    "y": -54,
+    "scale": 1
+  }
+}
