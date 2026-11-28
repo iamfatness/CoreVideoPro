@@ -343,6 +343,68 @@ class Layout {
     style.italic = fontStyle == "italic";
     return style;
   }
+  // A fill object is a gradient when it has any gradient key; a colour
+  // reference ({"token"} or {"field"}) has none of them.
+  static bool isGradient(const Json& fill) {
+    return fill.isObject() && (fill.get("stops") || fill.get("type") || fill.get("angle") || fill.get("center") ||
+                               fill.get("direction"));
+  }
+  // Graphics styles P2. Two forms:
+  //   {"stops":[c0,c1,...], "direction":"horizontal"|"vertical"}   (the V1 form; 2..8 stops)
+  //   {"type":"linear"|"radial", "angle":deg, "center":[x,y], "stops":[...]}
+  // A stop is a colour (literal, token or field), evenly spaced, or
+  // {"color":c, "offset":0..1}; either every stop has an offset or none.
+  GraphicsGradient gradient(const Json& fill) {
+    keys(fill, {"stops", "direction", "type", "angle", "center"});
+    GraphicsGradient result;
+    const bool modern = fill.get("type") || fill.get("angle") || fill.get("center");
+    if (modern) {
+      need(!fill.get("direction"), "template-gradient-direction");
+      const auto type = stringProperty(fill, "type", "linear");
+      need(type == "linear" || type == "radial", "template-gradient-type");
+      result.radial = type == "radial";
+      need(!result.radial || !fill.get("angle"), "template-gradient-angle");
+      need(result.radial || !fill.get("center"), "template-gradient-center");
+      if (!result.radial) result.angle = quantity(fill, "angle", 0, 360, 180);
+      if (const auto* center = fill.get("center")) {
+        need(center->isArray() && center->asArray().size() == 2, "template-gradient-center");
+        const auto& xy = center->asArray();
+        for (const auto& value : xy)
+          need(value.isNumber() && std::isfinite(value.asNumber()) && value.asNumber() >= 0 && value.asNumber() <= 1,
+               "template-gradient-center");
+        result.centerX = xy[0].asNumber();
+        result.centerY = xy[1].asNumber();
+      }
+    } else {
+      const auto direction = stringProperty(fill, "direction", "horizontal");
+      need(direction == "horizontal" || direction == "vertical", "template-gradient-direction");
+      result.angle = direction == "vertical" ? 180 : 90;
+    }
+    const auto* stops = fill.get("stops");
+    need(stops && stops->isArray() && stops->asArray().size() >= 2 && stops->asArray().size() <= 8,
+         "template-gradient-stops");
+    const auto& list = stops->asArray();
+    const auto hasOffset = [](const Json& stop) { return stop.isObject() && stop.get("color"); };
+    const bool offsets = hasOffset(list.front());
+    double previous = 0;
+    for (size_t i = 0; i < list.size(); ++i) {
+      const auto& stop = list[i];
+      need(hasOffset(stop) == offsets, "template-gradient-offset");
+      GraphicsGradientStop parsed{double(i) / double(list.size() - 1), 0};
+      if (offsets) {
+        keys(stop, {"color", "offset"});
+        need(stop.get("offset") != nullptr, "template-gradient-offset");
+        parsed.offset = quantity(stop, "offset", 0, 1);
+        need(parsed.offset >= previous, "template-gradient-offset");
+        previous = parsed.offset;
+        parsed.color = color(resolve(stop.get("color"), "color").asString());
+      } else {
+        parsed.color = color(resolve(&stop, "color").asString());
+      }
+      result.stops.push_back(parsed);
+    }
+    return result;
+  }
   static std::string transformedText(const Json& node, const std::string& text) {
     const auto transform = stringProperty(node, "textTransform", "none");
     need(transform == "none" || transform == "uppercase" || transform == "lowercase", "template-text-transform");
@@ -590,10 +652,9 @@ class Layout {
         return true;
       }
       const auto* fill = node.get("fill"); need(fill, "template-fill-required");
-      if (fill->isObject() && fill->get("stops")) {
-        keys(*fill, {"stops", "direction"}); const auto& stops = fill->get("stops")->asArray(); need(fill->get("stops")->isArray() && stops.size() == 2, "template-gradient-stops");
-        p.color = color(resolve(&stops[0], "color").asString()); p.endColor = color(resolve(&stops[1], "color").asString()); p.gradient = true;
-        const auto direction = stringProperty(*fill, "direction", "horizontal"); need(direction == "horizontal" || direction == "vertical", "template-gradient-direction"); p.verticalGradient = direction == "vertical";
+      if (isGradient(*fill)) {
+        p.gradient = gradient(*fill);
+        p.color = p.gradient->stops.front().color;
       } else p.color = color(resolve(fill, "color").asString());
       p.cornerRadius = std::min(quantity(node, "cornerRadius", 0, 4096, 0), std::min(p.box.width, p.box.height) / 2);
     } else if (type == "image") {
@@ -834,6 +895,16 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::corporateLowerThird() 
     return result;
   }();
   return definition;
+}
+std::array<double, 4> linearGradientLine(const GraphicsGradient& gradient, const GraphicsBox& b) {
+  if (gradient.angle == 90) return {b.x, b.y, b.x + b.width, b.y};
+  if (gradient.angle == 180) return {b.x, b.y, b.x, b.y + b.height};
+  constexpr double kPi = 3.14159265358979323846;
+  const double radians = gradient.angle * kPi / 180;
+  const double dx = std::sin(radians), dy = -std::cos(radians);  // CSS: 0 points up, clockwise
+  const double half = (std::fabs(b.width * dx) + std::fabs(b.height * dy)) / 2;
+  const double cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+  return {cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half};
 }
 uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, int height) {
   const uint64_t raster = uint64_t(std::max(width, 0)) * uint64_t(std::max(height, 0)) * 8;

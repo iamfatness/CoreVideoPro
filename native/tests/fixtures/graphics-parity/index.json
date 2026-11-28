@@ -172,6 +172,12 @@
    "source": "manifest:text-style-tracking-italic-caps.json",
    "fields": {},
    "brand": {}
+  },
+  {
+   "name": "gradient-angle-stops-radial",
+   "source": "manifest:gradient-angle-stops-radial.json",
+   "fields": {},
+   "brand": {}
   }
  ]
 }

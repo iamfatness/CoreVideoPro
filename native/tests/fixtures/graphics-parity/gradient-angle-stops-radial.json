@@ -1,0 +1,118 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-gradient-styles",
+ "templateVersion": 1,
+ "name": "p-gradient-styles",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 800,
+  "height": 400
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "angled",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 400,
+   "height": 150,
+   "fill": {
+    "type": "linear",
+    "angle": 135,
+    "stops": [
+     "#E0302AFF",
+     "#F5B700FF",
+     "#2050A0FF"
+    ]
+   }
+  },
+  {
+   "id": "offsets",
+   "type": "rect",
+   "x": 400,
+   "y": 0,
+   "width": 400,
+   "height": 150,
+   "fill": {
+    "type": "linear",
+    "angle": 270,
+    "stops": [
+     { "color": "#10203000", "offset": 0 },
+     { "color": "#102030FF", "offset": 0.2 },
+     { "color": "#44C1A1C0", "offset": 0.7 },
+     { "color": "#FFFFFFFF", "offset": 1 }
+    ]
+   }
+  },
+  {
+   "id": "radial",
+   "type": "rect",
+   "x": 0,
+   "y": 150,
+   "width": 400,
+   "height": 150,
+   "fill": {
+    "type": "radial",
+    "stops": [
+     "#FFFFFFFF",
+     "#2050A060",
+     "#2050A000"
+    ]
+   }
+  },
+  {
+   "id": "radial-off-centre",
+   "type": "ellipse",
+   "x": 400,
+   "y": 150,
+   "width": 400,
+   "height": 150,
+   "fill": {
+    "type": "radial",
+    "center": [0.3, 0.4],
+    "stops": [
+     "#F5B700FF",
+     "#E0302AFF",
+     "#401020FF"
+    ]
+   }
+  },
+  {
+   "id": "eight-stops",
+   "type": "rect",
+   "x": 0,
+   "y": 310,
+   "width": 800,
+   "height": 80,
+   "cornerRadius": 24,
+   "fill": {
+    "type": "linear",
+    "angle": 30,
+    "stops": [
+     "#FF0000FF",
+     "#FF8000FF",
+     "#FFFF00FF",
+     "#00FF00FF",
+     "#00FFFFFF",
+     "#0000FFFF",
+     "#8000FFFF",
+     "#FF00FF80"
+    ]
+   }
+  }
+ ]
+}

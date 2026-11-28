@@ -2,6 +2,8 @@
 // section 6.1): the shared model's schema, limits and resolved primitives.
 // Pixels are judged by the parity fixtures (native/tests/fixtures/graphics-parity).
 
+#include <array>
+#include <cmath>
 #include <string>
 
 #include "graphics/GraphicsTemplate.h"
@@ -106,6 +108,112 @@ TEST(GraphicsStylePrimitives, LetterSpacingWidensMeasuredTextAndShrinksAFit) {
   ASSERT_EQ("", resolveOne(text({{"width", 200}, {"minFontSize", 8}, {"textTransform", "uppercase"}}), upper));
   EXPECT_LT(upper.primitives[0].fontSize, plain.primitives[0].fontSize);
 #endif
+}
+
+// ── P2: angled, multi-stop and radial gradients ──────────────────────────────
+
+M rect(Json fill) {
+  return M{{"id", "r"}, {"type", "rect"}, {"x", 100}, {"y", 20}, {"width", 400}, {"height", 100}, {"fill", std::move(fill)}};
+}
+
+TEST(GraphicsStylePrimitives, TheV1TwoStopFormStillParsesAsNinetyAndOneEightyDegrees) {
+  GraphicsDrawing drawing;
+  ASSERT_EQ("", resolveOne(rect(M{{"stops", Json::Array{"#FF0000", "#0000FF80"}}}), drawing));
+  const auto& p = drawing.primitives[0];
+  ASSERT_TRUE(p.gradient);
+  EXPECT_FALSE(p.gradient->radial);
+  EXPECT_EQ(90.0, p.gradient->angle);
+  ASSERT_EQ(2u, p.gradient->stops.size());
+  EXPECT_EQ(0xffff0000u, p.color);  // the first stop
+  EXPECT_EQ(0.0, p.gradient->stops[0].offset);
+  EXPECT_EQ(1.0, p.gradient->stops[1].offset);
+  EXPECT_EQ(0x800000ffu, p.gradient->stops[1].color);
+  // V1 geometry, exactly: horizontal runs along the top edge, vertical down the left.
+  const auto horizontal = corevideo::graphics::linearGradientLine(*p.gradient, p.box);
+  EXPECT_EQ((std::array<double, 4>{100, 20, 500, 20}), horizontal);
+  ASSERT_EQ("", resolveOne(rect(M{{"stops", Json::Array{"#FF0000", "#0000FF"}}, {"direction", "vertical"}}), drawing));
+  EXPECT_EQ(180.0, drawing.primitives[0].gradient->angle);
+  EXPECT_EQ((std::array<double, 4>{100, 20, 100, 120}),
+            corevideo::graphics::linearGradientLine(*drawing.primitives[0].gradient, drawing.primitives[0].box));
+  EXPECT_EQ("template-gradient-direction",
+            resolveOne(rect(M{{"stops", Json::Array{"#FF0000", "#0000FF"}}, {"direction", "diagonal"}}), drawing));
+}
+
+TEST(GraphicsStylePrimitives, AngledGradientLineCoversTheBoxCornersLikeCss) {
+  corevideo::graphics::GraphicsGradient g;
+  const corevideo::graphics::GraphicsBox box{0, 0, 400, 100};
+  g.angle = 0;  // to top
+  auto line = corevideo::graphics::linearGradientLine(g, box);
+  EXPECT_NEAR(200, line[0], 1e-9); EXPECT_NEAR(100, line[1], 1e-9);
+  EXPECT_NEAR(200, line[2], 1e-9); EXPECT_NEAR(0, line[3], 1e-9);
+  g.angle = 45;
+  line = corevideo::graphics::linearGradientLine(g, box);
+  // Both far corners project onto the ends: (0,100) -> 0 and (400,0) -> 1.
+  const double dx = line[2] - line[0], dy = line[3] - line[1], length2 = dx * dx + dy * dy;
+  EXPECT_NEAR(0, ((0 - line[0]) * dx + (100 - line[1]) * dy) / length2, 1e-9);
+  EXPECT_NEAR(1, ((400 - line[0]) * dx + (0 - line[1]) * dy) / length2, 1e-9);
+}
+
+TEST(GraphicsStylePrimitives, MultiStopAndRadialGradientsResolve) {
+  GraphicsDrawing drawing;
+  ASSERT_EQ("", resolveOne(rect(M{{"type", "linear"}, {"angle", 135},
+                                  {"stops", Json::Array{"#FF0000", "#00FF00", "#0000FF", "#FFFFFF"}}}), drawing));
+  const auto& linear = *drawing.primitives[0].gradient;
+  EXPECT_EQ(135.0, linear.angle);
+  ASSERT_EQ(4u, linear.stops.size());
+  EXPECT_NEAR(1.0 / 3, linear.stops[1].offset, 1e-12);
+  EXPECT_NEAR(2.0 / 3, linear.stops[2].offset, 1e-12);
+  ASSERT_EQ("", resolveOne(rect(M{{"type", "linear"}, {"stops", Json::Array{"#FF0000", "#0000FF"}}}), drawing));
+  EXPECT_EQ(180.0, drawing.primitives[0].gradient->angle);  // CSS default: to bottom
+  ASSERT_EQ("", resolveOne(rect(M{{"type", "radial"}, {"center", Json::Array{0.25, 1}},
+                                  {"stops", Json::Array{M{{"color", "#FFFFFF"}, {"offset", 0}},
+                                                        M{{"color", "#FFFFFF80"}, {"offset", 0.4}},
+                                                        M{{"color", "#00000000"}, {"offset", 1}}}}}), drawing));
+  const auto& radial = *drawing.primitives[0].gradient;
+  EXPECT_TRUE(radial.radial);
+  EXPECT_EQ(0.25, radial.centerX);
+  EXPECT_EQ(1.0, radial.centerY);
+  EXPECT_EQ(0.4, radial.stops[1].offset);
+  EXPECT_EQ(0x80ffffffu, radial.stops[1].color);
+  // Ellipses take gradients too.
+  const M ellipse{{"id", "e"}, {"type", "ellipse"}, {"x", 0}, {"y", 0}, {"width", 50}, {"height", 50},
+                  {"fill", M{{"type", "radial"}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}}};
+  ASSERT_EQ("", resolveOne(ellipse, drawing));
+  EXPECT_TRUE(drawing.primitives[0].gradient->radial);
+}
+
+TEST(GraphicsStylePrimitives, GradientLimitsAreEnforced) {
+  GraphicsDrawing drawing;
+  Json::Array eight, nine;
+  for (int i = 0; i < 8; ++i) eight.push_back("#FFFFFF");
+  nine = eight;
+  nine.push_back("#000000");
+  EXPECT_EQ("", resolveOne(rect(M{{"type", "linear"}, {"stops", eight}}), drawing));
+  EXPECT_EQ("template-gradient-stops", resolveOne(rect(M{{"type", "linear"}, {"stops", nine}}), drawing));
+  EXPECT_EQ("template-gradient-stops", resolveOne(rect(M{{"stops", Json::Array{"#FFFFFF"}}}), drawing));
+  EXPECT_EQ("template-gradient-stops", resolveOne(rect(M{{"type", "linear"}}), drawing));
+  EXPECT_EQ("template-gradient-type",
+            resolveOne(rect(M{{"type", "conic"}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}), drawing));
+  EXPECT_EQ("template-geometry-or-number",
+            resolveOne(rect(M{{"angle", 361}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}), drawing));
+  EXPECT_EQ("template-gradient-angle",
+            resolveOne(rect(M{{"type", "radial"}, {"angle", 45}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}), drawing));
+  EXPECT_EQ("template-gradient-center",
+            resolveOne(rect(M{{"type", "linear"}, {"center", Json::Array{0.5, 0.5}}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}), drawing));
+  EXPECT_EQ("template-gradient-center",
+            resolveOne(rect(M{{"type", "radial"}, {"center", Json::Array{0.5, 1.5}}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}), drawing));
+  EXPECT_EQ("template-gradient-direction",
+            resolveOne(rect(M{{"type", "linear"}, {"direction", "vertical"}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}), drawing));
+  EXPECT_EQ("unsupported-template-property",
+            resolveOne(rect(M{{"type", "linear"}, {"repeat", true}, {"stops", Json::Array{"#FFFFFF", "#000000"}}}), drawing));
+  // Offsets: all or none, in 0..1, never decreasing.
+  EXPECT_EQ("template-gradient-offset", resolveOne(rect(M{{"type", "linear"}, {"stops", Json::Array{
+      M{{"color", "#FFFFFF"}, {"offset", 0}}, "#000000"}}}), drawing));
+  EXPECT_EQ("template-gradient-offset", resolveOne(rect(M{{"type", "linear"}, {"stops", Json::Array{
+      M{{"color", "#FFFFFF"}, {"offset", 0.6}}, M{{"color", "#000000"}, {"offset", 0.5}}}}}), drawing));
+  EXPECT_EQ("template-geometry-or-number", resolveOne(rect(M{{"type", "linear"}, {"stops", Json::Array{
+      M{{"color", "#FFFFFF"}, {"offset", 0}}, M{{"color", "#000000"}, {"offset", 1.5}}}}}), drawing));
+  EXPECT_EQ("template-color-required", resolveOne(rect(M{{"type", "linear"}, {"stops", Json::Array{"red", "#000000"}}}), drawing));
 }
 
 }  // namespace
