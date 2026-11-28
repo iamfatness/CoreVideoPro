@@ -368,7 +368,7 @@ bool GraphicsInstances::apply(const Json& command) {
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
       {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode", "expectedAutomationRevision", "expectedActivationRevision"}},
       {"graphics-authority-set", {"family", "authority"}},
-      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {"includeThumbnails"}},
+      {"graphics-template-install", {"manifest", "packageRoot", "packRoot"}}, {"graphics-template-list", {"includeThumbnails"}},
       {"graphics-template-remove", {"templateId", "templateVersion"}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
@@ -383,7 +383,7 @@ bool GraphicsInstances::apply(const Json& command) {
     else if (key == "manifest") {
       if (!value.isString() || value.asString().empty() || value.asString().size() > 256 * 1024)
         return finish(requestId, false, "template-manifest-size");
-    } else if (key == "packageRoot") {
+    } else if (key == "packageRoot" || key == "packRoot") {
       if (!value.isString() || value.asString().size() > 2048 || value.asString().find('\0') != std::string::npos)
         return finish(requestId, false, "graphics-package-root-invalid");
     } else if(key=="image") {if(!value.isNull() && (!value.isObject() || value.asObject().size()!=3)) return finish(requestId,false,"invalid-graphics-image");}
@@ -415,7 +415,7 @@ bool GraphicsInstances::apply(const Json& command) {
   // Install bytes are copied once for bounded retry identity, never parsed,
   // hashed or re-escaped on the frame/control owner.
   while(!operations_.empty() && monotonicMs_()-operations_.front().admittedMs>300000) operations_.pop_front();
-  const auto fingerprint = type + ":" + (type == "graphics-template-install" ? body->getString("manifest") + '\0' + body->getString("packageRoot") : body->stringify());
+  const auto fingerprint = type + ":" + (type == "graphics-template-install" ? body->getString("manifest") + '\0' + body->getString("packageRoot") + '\0' + body->getString("packRoot") : body->stringify());
   for (const auto& previous : operations_) if (previous.clientId == pendingClient_ && previous.requestId == requestId) {
     if (previous.fingerprint != fingerprint) return finish(requestId, false, "request-id-reused");
     lastResult_ = previous.result; publish();
@@ -425,6 +425,13 @@ bool GraphicsInstances::apply(const Json& command) {
   if (type == "graphics-template-list") {
     if(const auto* demand=body->get("includeThumbnails");demand && demand->asBool() && !templates_.requestThumbnails()) return finish(requestId,false,"template-library-busy");
     return finish(requestId, true, "template-catalog-observed");
+  }
+  if (type == "graphics-template-install" && body->get("packRoot")) {
+    // A style pack (graphics styles 6.2): one queued install of every template
+    // the pack lists, after the pack lint. Never mixed with a single manifest.
+    if (body->get("manifest") || body->get("packageRoot")) return finish(requestId, false, "graphics-pack-root-invalid");
+    const auto reason = templates_.submitPack(pendingClient_, requestId, body->getString("packRoot"));
+    return finish(requestId, reason == "template-install-queued", reason);
   }
   if (type == "graphics-template-install") {
     const auto reason = templates_.submit(pendingClient_, requestId, body->getString("manifest"), body->getString("packageRoot"));

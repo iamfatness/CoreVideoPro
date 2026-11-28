@@ -46,6 +46,8 @@ clipping, gradients and DirectWrite shaping. `graphics-template-install` takes a
 UTF-8 JSON manifest string of at most 256 KiB. A bounded persistent worker parses,
 validates, hashes and publishes definitions. Admission reports queued; inspect
 `templateInstalls` for installed/failed completion. It never changes an instance.
+Instead of a manifest it can take `packRoot`, a graphics style pack folder: one job that lints the
+pack and installs every template it lists, all or none (`docs/reference/graphics-packs.md`).
 Same ID/version with different content is refused. At most two imports are pending,
 16 immutable declarative versions and 256 KiB canonical document bytes are retained;
 the 16-entry result history is bounded. Catalog publication is an immutable lease.

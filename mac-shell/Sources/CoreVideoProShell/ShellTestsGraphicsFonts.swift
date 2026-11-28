@@ -15,7 +15,34 @@ extension ShellTests {
     static let graphicsFontsCases: [(String, () -> Void)] = [
         ("graphics-fonts/launch-env-names-the-app-fonts-for-the-installed-core", testLaunchEnvNamesTheAppFonts),
         ("graphics-fonts/directory-resolution", testGraphicsFontsDirectoryResolution),
+        ("graphics-fonts/launch-env-names-the-app-packs", testLaunchEnvNamesTheAppPacks),
     ]
+
+    // Graphics style packs (slice 7) follow the fonts' installed-layout rule.
+    static func testLaunchEnvNamesTheAppPacks() {
+        var paths = ShellPaths.Paths()
+        paths.corePath = "/Library/Application Support/CoreVideo Pro/corevideo-native"
+        paths.graphicsPacksDirectory = "/Applications/CoreVideo Pro.app/Contents/Resources/packs"
+        let env = CoreLaunchEnvironment.extras(paths: paths, processEnvironment: [:], zoomPublicAppKey: nil)
+        expectEqual(env["COREVIDEO_GRAPHICS_PACKS_DIR"], "/Applications/CoreVideo Pro.app/Contents/Resources/packs",
+                    "the installed core is told where the app's packs are")
+        let override = CoreLaunchEnvironment.extras(
+            paths: paths, processEnvironment: ["COREVIDEO_GRAPHICS_PACKS_DIR": "/tmp/packs-override"], zoomPublicAppKey: nil)
+        expectEqual(override["COREVIDEO_GRAPHICS_PACKS_DIR"], "/tmp/packs-override", "an explicit override wins")
+        paths.graphicsPacksDirectory = nil
+        let none = CoreLaunchEnvironment.extras(paths: paths, processEnvironment: [:], zoomPublicAppKey: nil)
+        expect(none["COREVIDEO_GRAPHICS_PACKS_DIR"] == nil, "no folder found: the variable is not invented")
+
+        let root = NSTemporaryDirectory() + "cvp-graphics-packs-\(UUID().uuidString)"
+        let resources = root + "/App.app/Contents/Resources"
+        let fm = FileManager.default
+        defer { try? fm.removeItem(atPath: root) }
+        try? fm.createDirectory(atPath: resources + "/packs", withIntermediateDirectories: true)
+        expectEqual(ShellPaths.graphicsPacksDirectory(bundleResources: resources, repoRoot: root + "/none"),
+                    resources + "/packs", "the app's packs folder is found")
+        expect(ShellPaths.graphicsPacksDirectory(bundleResources: root + "/none", repoRoot: root + "/none") == nil,
+               "nothing found is nil")
+    }
 
     static func testLaunchEnvNamesTheAppFonts() {
         var paths = ShellPaths.Paths()

@@ -150,6 +150,11 @@ cp mac-shell/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
 mkdir -p "$APP/Contents/Resources/GraphicsFonts"
 cp native/resources/graphics-fonts/*.ttf native/resources/graphics-fonts/OFL.txt \
    "$APP/Contents/Resources/GraphicsFonts/"
+# Built-in graphics style packs (packs/<id>/: templates, palettes, OFL fonts with
+# OFL.txt, PNG assets). Data only, sealed by the app signature. The shell names
+# this folder in COREVIDEO_GRAPHICS_PACKS_DIR for the pkg-installed core.
+rm -rf "$APP/Contents/Resources/packs"
+cp -R native/resources/graphics-packs "$APP/Contents/Resources/packs"
 # App icon (regenerate with scripts/make-app-icon.swift + iconutil)
 cp mac-shell/Resources/AppIcon.icns "$APP/Contents/Resources/" 2>/dev/null || true
 if need_helper "$CORE_DIR/corevideo-native" "media core"; then

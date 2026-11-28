@@ -21,6 +21,10 @@ class GraphicsTemplateRegistry {
     uint64_t documentBytes = 0;
   };
   std::string submit(const std::string& client, const std::string& request, const std::string& manifest, const std::string& packageRoot = {});
+  // A style pack folder (GraphicsPack.h): the worker lints it, then installs
+  // every template it lists with the pack root as package root, all or none,
+  // as one queued install. Same admission and replay rules as submit().
+  std::string submitPack(const std::string& client, const std::string& request, const std::string& packRoot);
   // A shared immutable lease: a stalled worker cannot stall a frame.
   std::shared_ptr<const Publication> poll() const;
   bool requestThumbnails();
@@ -30,7 +34,12 @@ class GraphicsTemplateRegistry {
   std::string remove(const std::string& templateId, int templateVersion);
   static bool builtIn(const std::string& templateId, int templateVersion);
  private:
-  struct Job { std::string client, request, manifest, state, reason, packageRoot; };
+  struct Job { std::string client, request, manifest, state, reason, packageRoot, packRoot, detail; };
+  std::string admit(std::shared_ptr<Job> job);
+  // Validates one document and its assets against the pool without
+  // publishing; staged pool entries and bytes accumulate across a pack.
+  std::shared_ptr<const GraphicsTemplate> prepare(const std::string& manifest, const std::string& packageRoot,
+      std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>& newAssets, uint64_t& addedBytes, std::string& error);
   void run();
   void publishLocked();
   mutable std::mutex mutex_;

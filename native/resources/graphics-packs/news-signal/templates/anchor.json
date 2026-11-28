@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "templateId": "news-signal-anchor",
+  "templateVersion": 1,
+  "name": "News Signal anchor",
+  "family": "lower-third",
+  "canvas": {"width": 1920, "height": 1080},
+  "bounds": {"width": 1000, "height": 150},
+  "brandTokens": ["brand.primary", "brand.secondary", "brand.accent", "brand.onPrimary"],
+  "fields": [
+    {"id": "name", "type": "string", "default": "", "required": true, "bindable": true, "maxLength": 256},
+    {"id": "title", "type": "string", "default": "", "required": false, "bindable": true, "maxLength": 512}
+  ],
+  "layers": [
+    {"id": "strip", "type": "rect", "x": 0, "y": 0, "width": 12, "height": 150, "fill": {"token": "brand.accent"}},
+    {"id": "name-plate", "type": "rect", "x": 12, "y": 0, "width": 988, "height": 92, "fill": {"token": "brand.primary"}},
+    {"id": "highlight", "type": "rect", "x": 12, "y": 0, "width": 988, "height": 2, "fill": "#FFFFFF40", "fixed": true},
+    {"id": "title-bar", "type": "rect", "x": 12, "y": 92, "width": 988, "height": 58, "fill": {"token": "brand.secondary"}},
+    {"id": "name-text", "type": "text", "x": 40, "y": 14, "width": 940, "height": 64, "text": {"field": "name"},
+     "font": "Barlow Semi Condensed", "fontWeight": 600, "fontSize": 48, "lineHeight": 1.2,
+     "color": {"token": "brand.onPrimary"}, "align": "left", "maxLines": 1, "overflow": "ellipsis"},
+    {"id": "title-text", "type": "text", "x": 40, "y": 100, "width": 940, "height": 44, "text": {"field": "title"},
+     "font": "Barlow Semi Condensed", "fontWeight": 600, "fontSize": 30, "lineHeight": 1.2,
+     "color": {"token": "brand.onPrimary"}, "align": "left", "maxLines": 1, "overflow": "ellipsis",
+     "textTransform": "uppercase", "letterSpacing": 0.06, "collapseWhenEmpty": true}
+  ],
+  "animations": {
+    "in": {"type": "slide", "direction": "left", "durationMs": 400, "easing": "ease-out"},
+    "out": {"type": "fade", "durationMs": 280, "easing": "linear"}
+  },
+  "metadata": {"pack": "news-signal"}
+}

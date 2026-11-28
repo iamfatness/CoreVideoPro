@@ -53,6 +53,12 @@ foreach ($file in $nativeFiles) {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Production native component missing: $file" }
     Copy-Item -LiteralPath $source -Destination $app
 }
+# Built-in graphics style packs beside corevideo-native.exe, where the core looks
+# for them (packs/<id>/: templates, palettes, OFL fonts with OFL.txt, PNG assets).
+# Staged from the repo, not a build directory, so the package matches the source.
+$packsSource = Join-Path $repoRoot 'native/resources/graphics-packs'
+if (-not (Test-Path -LiteralPath (Join-Path $packsSource 'news-signal/pack.json') -PathType Leaf)) { throw 'Built-in graphics packs missing: native/resources/graphics-packs' }
+Copy-Item -LiteralPath $packsSource -Destination (Join-Path $app 'packs') -Recurse -Force
 # Keep the Zoom process and SDK isolated from the app-local CRT used by WinUI
 # and the main native core. Zoom uses the installed Microsoft x64 VC runtime.
 # Do not use sync-zoom-runtime-to-app.ps1 here: it also flattens SDK files into

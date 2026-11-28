@@ -5,3 +5,5 @@ docs/design-reference/volt-graphics-original-2026-10-16.md -text -whitespace
 # Operator-style data inputs for the graphics-shell vectors are byte-exact inputs (CRLF vs LF
 # changes how a quoted multi-line CSV cell parses): never convert their line endings.
 contracts/graphics-shell/data/** -text
+# Pack fonts and their licence text ship verbatim (graphics styles 6.2).
+native/resources/graphics-packs/*/fonts/** -text -whitespace

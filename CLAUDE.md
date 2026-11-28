@@ -241,6 +241,7 @@ phrase they quote.
 | [`docs/reference/source-thumbnail-isolation.md`](docs/reference/source-thumbnail-isolation.md) | Sources input thumbnails, per-source GPU export identity and source-epoch publication |
 | [`docs/reference/source-grading-spec.md`](docs/reference/source-grading-spec.md) | per-source grade compatibility, expanded editor, native preview and scopes |
 | [`docs/reference/volt-graphics-spec.md`](docs/reference/volt-graphics-spec.md) | approved first graphics milestone; [reconciliation](docs/reference/volt-graphics-reconciliation.md), [implementation dependencies](docs/reference/volt-graphics-implementation-plan.md) and [native compatibility instance API](docs/reference/volt-native-instances.md) |
+| [`docs/reference/graphics-packs.md`](docs/reference/graphics-packs.md) | graphics style packs (`native/resources/graphics-packs/`), the pack lint, pack install, bundled pack fonts and how graphics text picks a font |
 | [`docs/reference/srt-ingest.md`](docs/reference/srt-ingest.md) | SRT contribution feeds in |
 | [`docs/reference/stream-failure-reasons.md`](docs/reference/stream-failure-reasons.md) | stream error surfacing |
 | [`docs/reference/studioviewmodel-strangler.md`](docs/reference/studioviewmodel-strangler.md) | adding anything to `StudioViewModel.cs` or extracting from it |

@@ -1,4 +1,5 @@
 #include "graphics/GraphicsTemplateRegistry.h"
+#include "graphics/GraphicsPack.h"
 #include "graphics/GraphicsThumbnail.h"
 #include <atomic>
 
@@ -50,16 +51,23 @@ std::string GraphicsTemplateRegistry::remove(const std::string& templateId, int 
 std::string GraphicsTemplateRegistry::submit(const std::string& client, const std::string& request, const std::string& manifest, const std::string& packageRoot) {
   if (manifest.empty() || manifest.size() > 256 * 1024) return "template-manifest-size";
   if (packageRoot.size() > 2048 || packageRoot.find('\0') != std::string::npos) return "graphics-package-root-invalid";
+  return admit(std::make_shared<Job>(Job{client, request, manifest, "queued", "", packageRoot, "", ""}));
+}
+std::string GraphicsTemplateRegistry::submitPack(const std::string& client, const std::string& request, const std::string& packRoot) {
+  if (packRoot.empty() || packRoot.size() > 2048 || packRoot.find('\0') != std::string::npos) return "graphics-pack-root-invalid";
+  return admit(std::make_shared<Job>(Job{client, request, "", "queued", "", "", packRoot, ""}));
+}
+std::string GraphicsTemplateRegistry::admit(std::shared_ptr<Job> job) {
   // Never wait for validation/catalog publication. Contention is retryable.
   std::unique_lock lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock()) return "template-import-busy";
-  for (const auto& old : history_) if (old->client == client && old->request == request)
-    return old->manifest == manifest && old->packageRoot == packageRoot ? "template-install-queued" : "request-id-reused";
+  for (const auto& old : history_) if (old->client == job->client && old->request == job->request)
+    return old->manifest == job->manifest && old->packageRoot == job->packageRoot && old->packRoot == job->packRoot
+        ? "template-install-queued" : "request-id-reused";
   size_t pending = 0;
   for (const auto& old : history_) if (old->state == "queued" || old->state == "validating") ++pending;
   if (pending >= 2) return "template-import-busy";
   // No work/status construction under the deadline: wake the owner to publish.
-  auto job = std::make_shared<Job>(Job{client, request, manifest, "queued", "", packageRoot});
   if (history_.size() == 16) {
     if (history_.front()->state == "queued" || history_.front()->state == "validating") return "template-import-busy";
     history_.pop_front();
@@ -86,11 +94,61 @@ void GraphicsTemplateRegistry::publishLocked() {
     for (auto byte : definition->hash()) { hash += hex[byte >> 4]; hash += hex[byte & 15]; }
     row["manifestHash"] = std::move(hash); catalog.emplace_back(std::move(row));
   }
-  for (const auto& job : history_) installs.emplace_back(Json::Object{
-    {"clientId", job->client}, {"requestId", job->request}, {"state", job->state}, {"reason", job->reason}});
+  for (const auto& job : history_) {
+    Json::Object row{{"clientId", job->client}, {"requestId", job->request}, {"state", job->state}, {"reason", job->reason}};
+    // A pack install names its folder and, on failure, the first lint problem.
+    if (!job->packRoot.empty()) row["packRoot"] = job->packRoot;
+    if (!job->detail.empty()) row["detail"] = job->detail;
+    installs.emplace_back(std::move(row));
+  }
   publication->definitions = definitions_; publication->catalog = std::move(catalog); publication->installs = std::move(installs);
   publication->encodedAssetBytes = assetBytes_; publication->documentBytes = documentBytes_;
   std::atomic_store(&publication_, std::shared_ptr<const Publication>(std::move(publication)));
+}
+std::shared_ptr<const GraphicsTemplate> GraphicsTemplateRegistry::prepare(const std::string& manifest, const std::string& packageRoot,
+    std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>& newAssets, uint64_t& addedBytes, std::string& error) {
+  auto definition = GraphicsTemplate::load(manifest, error);
+  GraphicsAssets assets;
+  if (definition && packageRoot.empty() && definition->document().get("assets")) {
+    for(const auto& declaration:definition->document().get("assets")->asArray()) {
+      const auto found=assetPool_.find(declaration.getString("sha256"));
+      if(found==assetPool_.end()) {
+        if(declaration.get("optional") && declaration.get("optional")->asBool()) continue;
+        error="graphics-package-root-required"; definition.reset(); break;
+      }
+      auto asset=graphicsAssetFromBytes(declaration.getString("id"),found->second,error);
+      if(!asset) {definition.reset();break;}
+      const auto file=declaration.getString("file"); const bool png=file.size()>=4 && file.substr(file.size()-4)==".png";
+      const auto& bytes=*asset->encoded; const bool jpeg=bytes.size()>=2 && bytes[0]==0xff && bytes[1]==0xd8;
+      if(png==jpeg) {error="graphics-asset-extension-mismatch";definition.reset();break;}
+      assets.emplace(asset->id,std::move(asset));
+    }
+  } else if (definition && !loadGraphicsAssets(definition->document(), packageRoot, assets, error)) definition.reset();
+  if (!definition) return definition;
+  // Reuse verified immutable bytes across IDs and versions. Only this worker
+  // touches the pool; failed/colliding imports never publish new pool entries.
+  for (auto& entry : assets) {
+    auto asset = std::make_shared<GraphicsAsset>(*entry.second);
+    const auto existing = assetPool_.find(asset->sha256);
+    if (existing != assetPool_.end()) asset->encoded = existing->second;
+    else {
+      const auto [found, inserted] = newAssets.emplace(asset->sha256, asset->encoded);
+      if (inserted) addedBytes += asset->encoded->size(); else asset->encoded = found->second;
+    }
+    entry.second = std::move(asset);
+  }
+  constexpr uint64_t assetLimit = 128ull * 1024 * 1024;
+  if (addedBytes > assetLimit - assetBytes_) {
+    for (auto it = assetPool_.begin(); it != assetPool_.end() && addedBytes > assetLimit - assetBytes_;) {
+      // A live definition, prepared revision or private draft retains its own lease.
+      if (it->second.use_count() == 1) {
+        assetBytes_ -= it->second->size();
+        it = assetPool_.erase(it);
+      } else ++it;
+    }
+  }
+  if (addedBytes > assetLimit - assetBytes_) { error = "graphics-encoded-asset-capacity"; return {}; }
+  return GraphicsTemplate::load(manifest, error, std::move(assets));
 }
 void GraphicsTemplateRegistry::run() {
   for (;;) {
@@ -112,74 +170,59 @@ void GraphicsTemplateRegistry::run() {
       }
       continue;
     }
-    std::string error;
-    auto definition = GraphicsTemplate::load(job->manifest, error);
-    GraphicsAssets assets;
-    if (definition && job->packageRoot.empty() && definition->document().get("assets")) {
-      for(const auto& declaration:definition->document().get("assets")->asArray()) {
-        const auto found=assetPool_.find(declaration.getString("sha256"));
-        if(found==assetPool_.end()) {
-          if(declaration.get("optional") && declaration.get("optional")->asBool()) continue;
-          error="graphics-package-root-required"; definition.reset(); break;
-        }
-        auto asset=graphicsAssetFromBytes(declaration.getString("id"),found->second,error);
-        if(!asset) {definition.reset();break;}
-        const auto file=declaration.getString("file"); const bool png=file.size()>=4 && file.substr(file.size()-4)==".png";
-        const auto& bytes=*asset->encoded; const bool jpeg=bytes.size()>=2 && bytes[0]==0xff && bytes[1]==0xd8;
-        if(png==jpeg) {error="graphics-asset-extension-mismatch";definition.reset();break;}
-        assets.emplace(asset->id,std::move(asset));
-      }
-    } else if (definition && !loadGraphicsAssets(definition->document(), job->packageRoot, assets, error)) definition.reset();
-    // Reuse verified immutable bytes across IDs and versions. Only this worker
-    // touches the pool; failed/colliding imports never publish new pool entries.
+    std::string error, detail;
+    std::vector<std::string> manifests;
+    std::string packageRoot = job->packageRoot;
+    if (job->packRoot.empty()) manifests.push_back(job->manifest);
+    else {
+      // The full pack lint runs first; a pack with any problem installs nothing.
+      GraphicsPackManifest pack;
+      if (!graphicsPackInstallManifests(job->packRoot, manifests, detail) ||
+          !readGraphicsPackManifest(job->packRoot, pack, detail)) { error = "graphics-pack-invalid"; manifests.clear(); }
+      else packageRoot = pack.root;
+    }
+    std::vector<std::shared_ptr<const GraphicsTemplate>> definitions;
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> newAssets;
     uint64_t addedBytes = 0;
-    if (definition) {
-      for (auto& entry : assets) {
-        auto asset = std::make_shared<GraphicsAsset>(*entry.second);
-        const auto existing = assetPool_.find(asset->sha256);
-        if (existing != assetPool_.end()) asset->encoded = existing->second;
-        else {
-          const auto [found, inserted] = newAssets.emplace(asset->sha256, asset->encoded);
-          if (inserted) addedBytes += asset->encoded->size(); else asset->encoded = found->second;
-        }
-        entry.second = std::move(asset);
+    for (const auto& manifest : manifests) {
+      auto definition = prepare(manifest, packageRoot, newAssets, addedBytes, error);
+      if (!definition) {
+        if (!job->packRoot.empty()) detail = "template " + std::to_string(definitions.size() + 1) + ": " + error;
+        definitions.clear();
+        break;
       }
-      constexpr uint64_t assetLimit = 128ull * 1024 * 1024;
-      if (addedBytes > assetLimit - assetBytes_) {
-        for (auto it = assetPool_.begin(); it != assetPool_.end() && addedBytes > assetLimit - assetBytes_;) {
-          // A live definition, prepared revision or private draft retains its own lease.
-          if (it->second.use_count() == 1) {
-            assetBytes_ -= it->second->size();
-            it = assetPool_.erase(it);
-          } else ++it;
-        }
-      }
-      if (addedBytes > assetLimit - assetBytes_) { error = "graphics-encoded-asset-capacity"; definition.reset(); }
-      else definition = GraphicsTemplate::load(job->manifest, error, std::move(assets));
+      definitions.push_back(std::move(definition));
     }
-    const auto bytes = definition ? definition->document().stringify().size() : 0;
     {
       std::lock_guard lock(mutex_);
       if (stopping_) return;
-      if (definition) {
+      // All or none: decide every key before publishing any.
+      size_t added = 0, addedDocumentBytes = 0;
+      for (const auto& definition : definitions) {
+        if (!error.empty()) break;
         const auto key = std::make_pair(definition->id(), definition->version());
         const auto found = definitions_.find(key);
         if (key.first == "compact-solid" || key.first == "minimal-accent" || key.first == "broadcast") error = "template-id-reserved";
-        else if (found != definitions_.end()) {
-          if (found->second->hash() != definition->hash()) error = "template-version-immutable";
-          else definitions_[key] = definition; // explicit repair affects future instances only
-        } else if (definitions_.size() >= 16 || documentBytes_ + bytes > 256 * 1024) error = "template-library-capacity";
-        else { definitions_[key] = definition; documentBytes_ += bytes; }
-        if (error.empty()) {
-          for (auto& asset : newAssets) assetPool_.emplace(std::move(asset));
-          assetBytes_ += addedBytes;
-          origins_[key] = job->packageRoot;
+        else if (found != definitions_.end()) { if (found->second->hash() != definition->hash()) error = "template-version-immutable"; }
+        else { ++added; addedDocumentBytes += definition->document().stringify().size(); }
+      }
+      if (error.empty() && added && (definitions_.size() + added > 16 || documentBytes_ + addedDocumentBytes > 256 * 1024))
+        error = "template-library-capacity";
+      if (error.empty() && !definitions.empty()) {
+        for (const auto& definition : definitions) {
+          const auto key = std::make_pair(definition->id(), definition->version());
+          // An identical re-import is an explicit repair: future instances only.
+          if (!definitions_.count(key)) documentBytes_ += definition->document().stringify().size();
+          definitions_[key] = definition;
+          origins_[key] = packageRoot;
           if(thumbnailsRequested_) {thumbnails_.erase(key);thumbnailsPending_=true;}
         }
+        for (auto& asset : newAssets) assetPool_.emplace(std::move(asset));
+        assetBytes_ += addedBytes;
       }
-      job->state = error.empty() && definition ? "installed" : "failed";
+      job->state = error.empty() && !definitions.empty() ? "installed" : "failed";
       job->reason = error;
+      job->detail = job->state == "failed" ? detail : std::string();
       publishLocked();
     }
   }

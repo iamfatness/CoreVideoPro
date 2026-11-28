@@ -127,6 +127,8 @@ add_library(corevideo_native
   src/graphics/GraphicsInstances.cpp
   src/graphics/GraphicsTemplate.cpp
   src/graphics/GraphicsTemplateRegistry.cpp
+  src/graphics/GraphicsPack.cpp
+  src/graphics/GraphicsFontsDirectWrite.cpp
   src/graphics/GraphicsAssets.cpp
   src/graphics/GraphicsCuratedTemplates.cpp
   src/graphics/GraphicsTemplateDraft.cpp
@@ -241,6 +243,17 @@ if(APPLE)
 endif()
 
 target_include_directories(corevideo_native PUBLIC src)
+
+# Built-in graphics style packs (graphics styles 6.2, docs/reference/graphics-packs.md)
+# ride beside every build's executables in packs/, where the core looks for them
+# (GraphicsPack.cpp graphicsPacksDirectory) and where the Windows install and the
+# .app keep them. Copied at configure; CONFIGURE_DEPENDS re-runs it on a change.
+file(GLOB_RECURSE COREVIDEO_GRAPHICS_PACK_FILES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/graphics-packs/*")
+if(COREVIDEO_GRAPHICS_PACK_FILES)
+  file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/packs")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/resources/graphics-packs/" DESTINATION "${CMAKE_BINARY_DIR}/packs")
+endif()
 # Phase 4 O5: ProgramAacEncoder.cpp (built in every configuration) uses
 # AudioToolbox on Apple for the shared stream AAC.
 if(APPLE)
@@ -970,6 +983,7 @@ if(BUILD_TESTING)
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GraphicsStylePrimitivesTest.cpp
+    tests/GraphicsPackTest.cpp tests/GraphicsPackFontsD3D11Test.cpp
     tests/GraphicsRasterParity.cpp tests/GraphicsRasterParityTest.cpp
     tests/OverlayRasterFrontHalfTest.cpp
     tests/GraphicsMotionTest.cpp
@@ -1279,6 +1293,7 @@ if(BUILD_TESTING)
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GraphicsStylePrimitivesTest.cpp
+    tests/GraphicsPackTest.cpp
     tests/GraphicsMotionTest.cpp
     tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsEditorShapesTest.cpp

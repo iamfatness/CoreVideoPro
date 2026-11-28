@@ -16,6 +16,7 @@
 #include "compositor/CompositorFaultInjection.h"
 #include "compositor/OverlayRasterFrontHalf.h"
 #include "compositor/ShapeShadowRaster.h"
+#include "graphics/GraphicsFontsDirectWrite.h"
 #include "modules/OverlayTileRaster.h"
 #include "core/ComApartmentLifetime.h"
 
@@ -554,8 +555,6 @@ bool drawShapeShadow(ID2D1RenderTarget& target, const graphics::GraphicsPrimitiv
 bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
     const graphics::GraphicsDrawing& drawing, float scale, const std::map<std::string, ImageInput>& images,
     size_t first, size_t count, float offsetX, float offsetY) {
-  ComPtrLite<IDWriteFontCollection> fonts;
-  if (FAILED(dwriteFactory_->GetSystemFontCollection(fonts.put())) || !fonts) return false;
   target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
       D2D1::Matrix3x2F::Translation(offsetX, offsetY));
   bool complete = true;
@@ -660,15 +659,19 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
             stroke.get(), float(p.strokeWidth));
       }
       else if (p.type == "text" && !p.text.empty()) {
-        const auto family = widenUtf8(p.font), text = widenUtf8(p.text);        UINT32 fontIndex = 0; BOOL exists = FALSE;
+        const auto text = widenUtf8(p.text);
+        // System family, else a pack font from the private collection, else a
+        // missing pack font's fallback with a warning (graphics styles P8).
+        const auto font = graphics::resolveDirectWriteGraphicsFont(dwriteFactory_.get(), p.font);
         ComPtrLite<IDWriteTextFormat> format;
         ComPtrLite<IDWriteTextLayout> layout;
-        const bool ready = SUCCEEDED(fonts->FindFamilyName(family.c_str(), &fontIndex, &exists)) && exists &&
-            SUCCEEDED(dwriteFactory_->CreateTextFormat(family.c_str(), fonts.get(), DWRITE_FONT_WEIGHT(p.fontWeight),
+        const bool ready = font.available() &&
+            SUCCEEDED(dwriteFactory_->CreateTextFormat(font.family.c_str(), font.collection.get(), DWRITE_FONT_WEIGHT(p.fontWeight),
                 p.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                 float(p.fontSize), L"", format.put()));
-        if (!ready) { complete = false; workerWarning_ = "Requested graphics font is unavailable: " + p.font; }
+        if (!ready) { complete = false; workerWarning_ = font.error.empty() ? "Requested graphics font is unavailable: " + p.font : font.error; }
         else {
+          if (!font.warning.empty() && workerWarning_.empty()) workerWarning_ = font.warning;
           bool textReady = SUCCEEDED(format->SetTextAlignment(p.align == "center" ? DWRITE_TEXT_ALIGNMENT_CENTER : p.align == "right" ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING)) &&
               SUCCEEDED(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)) &&
               SUCCEEDED(format->SetWordWrapping(p.overflow == "wrap-then-ellipsis" ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));

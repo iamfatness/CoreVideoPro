@@ -1,0 +1,20 @@
+{
+  "id": "news-signal",
+  "name": "News: Signal",
+  "genre": "news",
+  "version": "0.1.0",
+  "palettes": ["palettes/navy-red.json"],
+  "fonts": [
+    {
+      "family": "Barlow Semi Condensed",
+      "file": "fonts/BarlowSemiCondensed-SemiBold.ttf",
+      "weight": 600,
+      "style": "normal",
+      "fallback": "Segoe UI"
+    }
+  ],
+  "templates": ["templates/anchor.json"],
+  "metadata": {
+    "status": "First piece of the News pack (graphics styles slice 7): one template, one palette, one font. Slice 10 completes it."
+  }
+}

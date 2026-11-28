@@ -111,6 +111,14 @@ function Stage-DevNativeArtifacts {
         Write-Host "[build-native-dev] staged $artifact -> $targetDir" -ForegroundColor DarkGray
       }
     }
+    # Built-in graphics packs ride beside the core (docs/reference/graphics-packs.md).
+    $packs = Join-Path $SourceDir "packs"
+    $packsDestination = Join-Path $targetDir "packs"
+    if ((Test-Path $packs) -and ((Resolve-Path $packs).Path -ine [System.IO.Path]::GetFullPath($packsDestination))) {
+      if (Test-Path $packsDestination) { Remove-Item -LiteralPath $packsDestination -Recurse -Force }
+      Copy-Item -LiteralPath $packs -Destination $packsDestination -Recurse -Force
+      Write-Host "[build-native-dev] staged packs -> $targetDir" -ForegroundColor DarkGray
+    }
   }
 }
 
