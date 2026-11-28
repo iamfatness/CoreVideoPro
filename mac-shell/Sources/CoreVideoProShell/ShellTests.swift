@@ -1303,26 +1303,26 @@ enum ShellTests {
     }
 
     private static func testBudgetCameraOffSpendsNothing() {
-        // 11 camera-on wall sources w1..w11 (w10/w11 exist to make the cap
+        // 9 camera-on wall sources w1..w9 (w8/w9 exist to make the cap
         // reachable) plus a camera-OFF program route ahead of all of them.
         // Windows rule (ZoomSourceSetPolicy): camera-off never spends VIDEO
-        // budget. The cap is 10 — Windows DefaultMaxVideoSubscriptions, the
-        // fixture-derived constant here.
-        let wall = (1...11).map { "w\($0)" }
+        // budget. The cap is 8 — Windows DefaultMaxVideoSubscriptions (owner
+        // ruling 2026-11-13: Pro pulls 8 Zoom feeds; the rest of 16 come from Edge).
+        let wall = (1...9).map { "w\($0)" }
         let entries = ZoomSourceBudget.videoEntries(
             programRouted: ["p-off"],
             previewRouted: [],
             multiviewAssigned: wall,
             isoArmed: [],
             cameraOn: Set(wall))
-        expectEqual(entries.count, 10, "the video budget is exactly 10 subscriptions")
+        expectEqual(entries.count, 8, "the video budget is exactly 8 subscriptions")
         expect(!entries.contains { $0.participantId == "p-off" },
                "a camera-off source never spends video budget")
-        expect(entries.contains { $0.participantId == "w10" },
+        expect(entries.contains { $0.participantId == "w8" },
                "the slot a camera-off source would have taken goes to the next candidate")
-        expect(!entries.contains { $0.participantId == "w11" },
-               "the 11th camera-on candidate is over budget")
-        expectEqual(ZoomSourceBudget.maxVideoSubscriptions, 10,
+        expect(!entries.contains { $0.participantId == "w9" },
+               "the 9th camera-on candidate is over budget")
+        expectEqual(ZoomSourceBudget.maxVideoSubscriptions, 8,
                     "CONFIRMATORY: documents the owner ruling; the count assertion above is the guard")
     }
 

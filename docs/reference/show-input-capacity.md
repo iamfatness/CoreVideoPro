@@ -22,15 +22,19 @@ sources practical):
 |---|---|---|
 | Show Input slots | `ShowInputRosterService.MaxShowInputs` | 16 |
 | Multiview source tiles | `ShowInputRosterService.MaxMultiviewBoxes`, `GpuTierPolicy.ProductTileCapacity`, `StudioViewModel.MaxMultiviewTileCount`, core `MediaCore::multiviewTileCount_` default, `configureMultiviewer` clamp | 16 |
-| Zoom video subscriptions | `ZoomMediaSpinePayloadBuilder.DefaultMaxVideoSubscriptions` (Mac: `ZoomSourceBudget.maxVideoSubscriptions`) | 8 |
+| Zoom video subscriptions | `ZoomMediaSpinePayloadBuilder.DefaultMaxVideoSubscriptions` | 8 |
 | 1080P camera grant | `ZoomSubscriptionResolutionPolicy` `kMaxConcurrentFullResolutionCameras` | 8 (unchanged) |
-| Zoom slots filled by roster auto-assign | `ShowInputRosterService.MaxAutoAssignedZoomSlots` (Mac: `AppModel.maxAutoAssignedZoomSlots`) | 8 |
+| Zoom slots filled by roster auto-assign | `ShowInputRosterService.MaxAutoAssignedZoomSlots` | 8 |
 | SRT / RTMP ingest listeners | `StudioViewModel.MaxSrtIngestSources` (ports 10000-10015), `RtmpIngestSourcesCoordinator.MaxSources` | 16 each |
 | CPU-prepared sources active at once (NDI, SRT, RTMP, UVC, browser) | `CpuSourcePreparation::kMaxActive` | 24 |
 | Shell-SHM captures (webcam, screen) | `ShmCapturePreparation::kMaxSources` (memory still bounded by `kBudgetBytes`, 512 MiB) | 24 |
 | Sources-inspector thumbnail exports | `MediaCoreMonitors.cpp` `kMaxInspectorRows` | 16 |
 | Multiview tile ceiling per GPU tier | `GpuTierPolicy.ForTier` (#439): under 8 GB or unknown 9, 8-16 GB 16, 16 GB+ 25 capped to 16 | unchanged |
 | Per-guest ISO | `kIsoReaderCount`, `IsoSourceSelectionResolver.DefaultMaxIsoSources` | 8 (unchanged) |
+
+**Mac shell: not ported yet.** The Mac still has 10 Show Input slots (`AppModel.slots`) and
+10 Zoom video subscriptions (`ZoomSourceBudget.maxVideoSubscriptions`). The shared core
+numbers above (CPU-prepared and SHM sources, inspector rows, multiview clamp) apply to both.
 
 ## Behavior rules
 

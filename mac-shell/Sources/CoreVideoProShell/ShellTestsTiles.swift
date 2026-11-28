@@ -1232,8 +1232,8 @@ extension ShellTests {
         input.participants = (0..<11).map { ("g\($0)", true) }
         input.multiview = (0..<11).map { ["kind": "participant-video", "participantId": "g\($0)", "slot": $0, "label": "Guest \($0)"] }
         let parts = ZoomSourceBudget.spineParts(input, names: [:])
-        expectEqual(parts.multiviewSources.last?["label"] as? String, "Guest 10 · no video: subscription limit (10)", "\(w): label")
-        expectEqual(parts.shortfall.first?["participantId"] as? String, "g10", "\(w): shortfall")
+        expectEqual(parts.multiviewSources.last?["label"] as? String, "Guest 10 · no video: subscription limit (8)", "\(w): label")
+        expectEqual(parts.shortfall.first?["participantId"] as? String, "g8", "\(w): shortfall (the cap is 8)")
     }
 
     // ── Task 14 ──────────────────────────────────────────────────────────────

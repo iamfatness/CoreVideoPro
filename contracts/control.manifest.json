@@ -350,7 +350,7 @@
           "Name": "slot",
           "Type": "int",
           "Required": true,
-          "Description": "Show Input slot 1-10"
+          "Description": "Show Input slot 1-16"
         }
       ]
     },
@@ -600,14 +600,14 @@
     {
       "Id": "input.assign",
       "Title": "Assign input",
-      "Description": "Assign a source to a Show Input slot (1-10).",
+      "Description": "Assign a source to a Show Input slot (1-16).",
       "OscAddress": "/cvp/input/assign",
       "Params": [
         {
           "Name": "slot",
           "Type": "int",
           "Required": true,
-          "Description": "1-10"
+          "Description": "1-16"
         },
         {
           "Name": "sourceId",
@@ -659,7 +659,7 @@
           "Name": "slot",
           "Type": "int",
           "Required": true,
-          "Description": "1-10"
+          "Description": "1-16"
         },
         {
           "Name": "name",
@@ -698,7 +698,7 @@
           "Name": "slot",
           "Type": "int",
           "Required": true,
-          "Description": "1-10"
+          "Description": "1-16"
         },
         {
           "Name": "on",
@@ -1521,7 +1521,7 @@
           "Name": "count",
           "Type": "int",
           "Required": true,
-          "Description": "1-10"
+          "Description": "1-16"
         }
       ]
     },
