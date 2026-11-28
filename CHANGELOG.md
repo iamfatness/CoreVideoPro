@@ -64,6 +64,38 @@ build). Acceptance by the owner is pending: see `docs/qa/macos-1.0-owner-accepta
 
 - 
 
+## [1.1.0] - 2026-11-27
+
+Windows. The macOS app has its own version line above.
+
+### Added
+
+- **16 sources (#1041, owner ruling 2026-11-13).** Show Inputs and the multiview wall hold
+  16 sources (was 10). Pro pulls at most 8 Zoom video feeds, all inside the 1080P grant; the
+  other slots take NDI, SRT (CoreVideo Edge), RTMP, webcams, screens or clips. Roster
+  auto-assign fills at most 8 Zoom slots; a Zoom guest placed by hand counts toward the 8, and
+  a camera-on guest past the budget shows "no video: subscription limit (8)" instead of a
+  frozen tile. SRT and RTMP ingest take 16 sources each (SRT ports 10000-10015). The wall
+  keeps its layout through 12 sources and uses three rows at 13-16. A saved multiview count
+  of 10 (the old maximum) moves to 16 (preferences v18). GPU tiers are unchanged (9 tiles
+  under 8 GB). ISO stays at 8. See `docs/reference/show-input-capacity.md`. The 16-source
+  render budget (#517) has not been measured on a live show.
+
+### Fixed
+
+- **Long crawls play.** A crawl longer than about two screen widths failed with "Graphics
+  preparation exceeded its admitted budget." It is now admitted at its real size.
+- **Graphics text weight no longer depends on the PC's ClearType tuning.** Overlay text is
+  drawn with fixed grayscale settings, so a template looks the same on every machine and
+  matches the Mac.
+- **A corrupt PNG in a graphics template fails clearly.** A PNG whose pixel data is damaged
+  used to air as an empty image with no warning. It now fails with "Graphics image could not
+  be decoded: <id>".
+- **An audio bed that stalls can recover.** An audio-only clip that stopped for 6 seconds
+  could stay silent until the operator pressed Play, which restarted it from the beginning.
+- **SRT destination hosts.** A host can no longer add `srt://` options through an IPv6 zone
+  id, and a bare IPv6 address is no longer misread as host plus port.
+
 ## [1.0.0] - 2026-11-11
 
 ### Added
