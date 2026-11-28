@@ -18,6 +18,7 @@
 #include "compositor/D2DCurveFlattening.h"
 #include "compositor/CoreTextThumbnail.h"
 #include "compositor/OverlayRasterFrontHalf.h"
+#include "compositor/ShapeShadowRaster.h"
 #include "graphics/GraphicsTextCoreText.h"
 #include "graphics/GraphicsTemplate.h"
 #include "modules/OverlayTileRaster.h"
@@ -531,6 +532,52 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
   return true;
 }
 
+// Composites a shape's shadow (styles P4) under the shape: the same finished
+// premultiplied pixels the Windows raster draws (ShapeShadowRaster.h, never
+// CGContextSetShadowWithColor's Gaussian), placed 1:1 in device pixels inside
+// the shadow clip. (x, y) are D2D's top-down device pixels; the CTM maps them
+// to this context's device space.
+bool drawShapeShadow(CGContextRef cg, CGColorSpaceRef space, const graphics::GraphicsPrimitive& p, double scale,
+                     double offsetX, double offsetY) {
+  namespace shadows = compositor::shapeshadow;
+  shadows::Outline outline;
+  outline.x = p.box.x; outline.y = p.box.y; outline.width = p.box.width; outline.height = p.box.height;
+  outline.cornerRadius = p.cornerRadius;
+  if (p.type == "ellipse") outline.kind = shadows::Outline::Kind::Ellipse;
+  else if (!p.polygon.empty()) {
+    outline.kind = shadows::Outline::Kind::Polygon;
+    for (const auto& point : p.polygon) outline.points.push_back({point.x, point.y});
+  }
+  const auto& s = *p.shapeShadow;
+  const auto& c = p.shadowClip;
+  const auto shadow = shadows::rasterize(outline, s.color, s.dx, s.dy, s.blur, s.spread, p.opacity, c.x, c.y,
+      c.width, c.height, scale, offsetX, offsetY, int(CGBitmapContextGetWidth(cg)), int(CGBitmapContextGetHeight(cg)));
+  if (shadow.refused) return false;
+  if (shadow.width <= 0 || shadow.height <= 0) return true;
+  CfRef<CGContextRef> pixels(CGBitmapContextCreate(const_cast<uint8_t*>(shadow.bgra.data()), size_t(shadow.width),
+      size_t(shadow.height), 8, size_t(shadow.width) * 4, space,
+      CGBitmapInfo(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little));
+  if (!pixels) return false;
+  CfRef<CGImageRef> image(CGBitmapContextCreateImage(pixels.get()));
+  if (!image) return false;
+  // The template-space rect of those device pixels, then through the CTM.
+  const CGAffineTransform ctm = CGContextGetCTM(cg);
+  const CGRect user = CGRectMake(CGFloat((shadow.x - offsetX) / scale), CGFloat((shadow.y - offsetY) / scale),
+                                 CGFloat(shadow.width / scale), CGFloat(shadow.height / scale));
+  const CGRect mapped = CGRectApplyAffineTransform(user, ctm);
+  const CGRect device = CGRectMake(std::round(mapped.origin.x), std::round(mapped.origin.y), CGFloat(shadow.width),
+                                   CGFloat(shadow.height));
+  CGContextSaveGState(cg);
+  CGContextSetShouldAntialias(cg, false);
+  CGContextClipToRect(cg, cgRect(c));  // aliased, as every primitive clip
+  CGContextSetShouldAntialias(cg, true);
+  CGContextConcatCTM(cg, CGAffineTransformInvert(ctm));  // device pixels; the clip stays
+  CGContextSetInterpolationQuality(cg, kCGInterpolationNone);
+  CGContextDrawImage(cg, device, image.get());
+  CGContextRestoreGState(cg);
+  return true;
+}
+
 // Draws primitives [first, first + count) of `drawing` at `scale`, translated
 // by (offsetX, offsetY) pixels, into a context whose CTM is already top-down.
 bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::GraphicsDrawing& drawing, double scale,
@@ -544,6 +591,10 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
   for (size_t i = first; i < first + count && i < drawing.primitives.size(); ++i) {
     const auto& p = drawing.primitives[i];
     const auto& b = p.box;
+    if (p.shapeShadow && !drawShapeShadow(cg, space, p, scale, offsetX, offsetY)) {
+      complete = false;
+      warning = "Graphics shadow is too large to prepare.";
+    }
     CGContextSaveGState(cg);
     // Axis-aligned, aliased clip (D2D PushAxisAlignedClip ALIASED).
     CGContextSetShouldAntialias(cg, false);
@@ -646,7 +697,14 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
     // Strokes widen the same flattened polygon D2D widens; Core Graphics'
     // default miter join (limit 10) is D2D's default stroke style.
     const double tolerance = flatteningTolerance(cg);
-    if (p.type == "rect") {
+    if (p.type == "rect" && !p.polygon.empty()) {
+      // Polygon / skewed plate (styles P3): straight edges, no radius or stroke;
+      // non-zero fill, as the D2D path geometry is set to winding.
+      std::vector<d2dcurves::Point> points;
+      for (const auto& point : p.polygon) points.push_back({point.x, point.y});
+      CfRef<CGPathRef> shape(createPolygonPath(points));
+      fillShape(shape.get());
+    } else if (p.type == "rect") {
       CfRef<CGPathRef> shape(createRoundedPath(cgRect(b), p.cornerRadius, tolerance));
       fillShape(shape.get());
       if (stroke) {

@@ -178,6 +178,12 @@
    "source": "manifest:gradient-angle-stops-radial.json",
    "fields": {},
    "brand": {}
+  },
+  {
+   "name": "shapes-polygon-skew-shadow",
+   "source": "manifest:shapes-polygon-skew-shadow.json",
+   "fields": {},
+   "brand": {}
   }
  ]
 }

@@ -20,6 +20,11 @@ struct GraphicsTextShadow { uint32_t color; double x, y, blur; };
 // ellipse with radii half the box, centred at (centerX, centerY) in box units.
 // 2..8 stops, offsets non-decreasing in 0..1, straight ARGB colours.
 struct GraphicsGradientStop { double offset; uint32_t color; };
+// Graphics styles P3: a polygon plate's vertices, template units.
+struct GraphicsPoint { double x, y; };
+// Graphics styles P4: a shape's drop shadow (template units). Glow is a
+// shadow at dx = dy = 0. Drawn by compositor/ShapeShadowRaster.h.
+struct GraphicsShapeShadow { uint32_t color; double dx, dy, blur, spread; };
 struct GraphicsGradient {
   bool radial = false;
   double angle = 90, centerX = 0.5, centerY = 0.5;
@@ -40,6 +45,13 @@ struct GraphicsPrimitive {
   double strokeWidth = 0;
   bool lineRises = false;
   std::optional<GraphicsGradient> gradient;
+  // A rect with shape "polygon" or a skewX: its outline (3..16 points,
+  // absolute template units, inside the box). Empty: the box itself.
+  std::vector<GraphicsPoint> polygon;
+  // Rect/ellipse shadow, and the clip it composites inside: the parent clip
+  // around the shifted, grown shape (the shape's own clip is its box).
+  std::optional<GraphicsShapeShadow> shapeShadow;
+  GraphicsBox shadowClip;
   int unit = -1;
   int fontWeight = 400, maxLines = 1;
   // Text style (graphics styles P1). letterSpacing is extra advance after

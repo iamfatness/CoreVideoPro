@@ -70,7 +70,9 @@ struct ParityRegion {
 };
 
 // {width, height, scale, primitives:[{id,type,box:[x,y,w,h],clip:[...],fontSize,lineHeight,maxLines,
-//  color,crawlStart?}], crawl?:{passWidth}, slices?:[{x,y,width,height,first,count,source:[...]}]}.
+//  color,crawlStart?,shadow?:[x,y,w,h]}], crawl?:{passWidth}, slices?:[{x,y,width,height,first,count,source:[...]}]}.
+// `shadow` is a shape shadow's clip (styles P4); regionsFromLayout judges it
+// as a geometry region "<id>.shadow" with no grow.
 // Boxes are in RASTER px. With `atlas`, primitives are placed in their atlas
 // slice (planRuns + packAtlas, the code both rasters use), as the atlas
 // texture holds them.

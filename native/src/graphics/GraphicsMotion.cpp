@@ -142,18 +142,22 @@ std::vector<GraphicsRun> planRuns(const GraphicsDrawing& drawing) {
       runs.push_back({primitive.unit, i, 0, {}});
     auto& run = runs.back();
     ++run.count;
-    const auto& clip = primitive.clip;
-    if (clip.width <= 0 || clip.height <= 0) continue;
-    if (run.source.width == 0 || run.source.height == 0) {
-      run.source = clip;
-      continue;
-    }
-    const double right = std::max(run.source.x + run.source.width, clip.x + clip.width);
-    const double bottom = std::max(run.source.y + run.source.height, clip.y + clip.height);
-    run.source.x = std::min(run.source.x, clip.x);
-    run.source.y = std::min(run.source.y, clip.y);
-    run.source.width = right - run.source.x;
-    run.source.height = bottom - run.source.y;
+    const auto include = [&](const GraphicsBox& clip) {
+      if (clip.width <= 0 || clip.height <= 0) return;
+      if (run.source.width == 0 || run.source.height == 0) {
+        run.source = clip;
+        return;
+      }
+      const double right = std::max(run.source.x + run.source.width, clip.x + clip.width);
+      const double bottom = std::max(run.source.y + run.source.height, clip.y + clip.height);
+      run.source.x = std::min(run.source.x, clip.x);
+      run.source.y = std::min(run.source.y, clip.y);
+      run.source.width = right - run.source.x;
+      run.source.height = bottom - run.source.y;
+    };
+    // A shape shadow paints outside its box, inside its own clip (styles P4).
+    if (primitive.shapeShadow) include(primitive.shadowClip);
+    include(primitive.clip);
   }
   return runs;
 }

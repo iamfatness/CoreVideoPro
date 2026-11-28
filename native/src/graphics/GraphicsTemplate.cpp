@@ -405,6 +405,43 @@ class Layout {
     }
     return result;
   }
+  // Graphics styles P3: a rect's polygon outline, from "shape":"polygon" with
+  // "points":[[x,y],...] (3..16, box units 0..1), or from "skewX" (degrees,
+  // -60..60): a parallelogram inside the box whose top edge leans right for a
+  // positive angle. Neither takes a corner radius or a stroke.
+  void outline(const Json& node, GraphicsPrimitive& p) {
+    const auto shape = stringProperty(node, "shape", "rect");
+    need(shape == "rect" || shape == "polygon", "template-shape");
+    const auto& b = p.box;
+    if (shape == "polygon") {
+      need(!node.get("skewX"), "template-shape-skew");
+      const auto* points = node.get("points");
+      need(points && points->isArray() && points->asArray().size() >= 3 && points->asArray().size() <= 16,
+           "template-polygon-points");
+      for (const auto& point : points->asArray()) {
+        need(point.isArray() && point.asArray().size() == 2, "template-polygon-points");
+        const auto& xy = point.asArray();
+        for (const auto& v : xy)
+          need(v.isNumber() && std::isfinite(v.asNumber()) && v.asNumber() >= 0 && v.asNumber() <= 1,
+               "template-polygon-points");
+        p.polygon.push_back({b.x + xy[0].asNumber() * b.width, b.y + xy[1].asNumber() * b.height});
+      }
+    } else {
+      need(!node.get("points"), "template-polygon-points");
+      const double skew = quantity(node, "skewX", -60, 60, 0);
+      if (skew != 0) {
+        constexpr double kPi = 3.14159265358979323846;
+        const double shift = std::tan(skew * kPi / 180) * b.height;
+        need(std::fabs(shift) < b.width, "template-shape-skew");
+        if (shift > 0)
+          p.polygon = {{b.x + shift, b.y}, {b.x + b.width, b.y}, {b.x + b.width - shift, b.y + b.height}, {b.x, b.y + b.height}};
+        else
+          p.polygon = {{b.x, b.y}, {b.x + b.width + shift, b.y}, {b.x + b.width, b.y + b.height}, {b.x - shift, b.y + b.height}};
+      }
+    }
+    if (!p.polygon.empty())
+      need(!node.get("cornerRadius") && !node.get("stroke") && !node.get("strokeWidth"), "template-shape-polygon-style");
+  }
   static std::string transformedText(const Json& node, const std::string& text) {
     const auto transform = stringProperty(node, "textTransform", "none");
     need(transform == "none" || transform == "uppercase" || transform == "lowercase", "template-text-transform");
@@ -582,8 +619,8 @@ class Layout {
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
     std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations"};
     if (type == "group") allowed.insert({"children", "flow", "gap", "padding", "minWidth", "maxWidth"});
-    else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth"});
-    else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth"});
+    else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth", "shape", "points", "skewX", "shadow"});
+    else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth", "shadow"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize", "letterSpacing", "fontStyle", "textTransform"});
     else if (type == "crawl") allowed.insert({"items", "font", "fontSize", "color", "speed", "gap", "direction", "mode"});
@@ -657,6 +694,18 @@ class Layout {
         p.color = p.gradient->stops.front().color;
       } else p.color = color(resolve(fill, "color").asString());
       p.cornerRadius = std::min(quantity(node, "cornerRadius", 0, 4096, 0), std::min(p.box.width, p.box.height) / 2);
+      if (type == "rect") outline(node, p);
+      if (const auto* shadow = node.get("shadow")) {
+        keys(*shadow, {"color", "dx", "dy", "blur", "spread"});
+        GraphicsShapeShadow s{color(resolve(shadow->get("color"), "color").asString()),
+            quantity(*shadow, "dx", -256, 256, 0), quantity(*shadow, "dy", -256, 256, 0),
+            quantity(*shadow, "blur", 0, 64, 0), quantity(*shadow, "spread", 0, 64, 0)};
+        // The blur's reach (ShapeShadowRaster.h: about 1.5 x blur) plus the spread.
+        const double extent = s.spread + 2 * s.blur + 1;
+        p.shadowClip = intersect(clip, {p.box.x + s.dx - extent, p.box.y + s.dy - extent,
+            p.box.width + 2 * extent, p.box.height + 2 * extent});
+        p.shapeShadow = s;
+      }
     } else if (type == "image") {
       const auto source = resolve(node.get("asset"), "image"); need(source.isString(), "template-image-reference");
       const auto assetId = source.asString();

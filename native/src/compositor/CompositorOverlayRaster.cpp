@@ -15,6 +15,7 @@
 
 #include "compositor/CompositorFaultInjection.h"
 #include "compositor/OverlayRasterFrontHalf.h"
+#include "compositor/ShapeShadowRaster.h"
 #include "modules/OverlayTileRaster.h"
 #include "core/ComApartmentLifetime.h"
 
@@ -508,6 +509,46 @@ bool drawTextEffects(ID2D1Factory& factory, ID2D1RenderTarget& target,
   }
   return true;
 }
+
+// The outline ShapeShadowRaster casts a shadow from (styles P4).
+compositor::shapeshadow::Outline shadowOutline(const graphics::GraphicsPrimitive& p) {
+  compositor::shapeshadow::Outline o;
+  o.x = p.box.x; o.y = p.box.y; o.width = p.box.width; o.height = p.box.height; o.cornerRadius = p.cornerRadius;
+  if (p.type == "ellipse") o.kind = compositor::shapeshadow::Outline::Kind::Ellipse;
+  else if (!p.polygon.empty()) {
+    o.kind = compositor::shapeshadow::Outline::Kind::Polygon;
+    for (const auto& point : p.polygon) o.points.push_back({point.x, point.y});
+  }
+  return o;
+}
+
+// Composites a shape's shadow (styles P4) under the shape. The pixels come
+// finished from ShapeShadowRaster.h (the Mac raster composites the same
+// bytes); here they are drawn 1:1 in device pixels, inside the shadow clip.
+bool drawShapeShadow(ID2D1RenderTarget& target, const graphics::GraphicsPrimitive& p, float scale, float offsetX,
+                     float offsetY) {
+  const auto& s = *p.shapeShadow;
+  const auto size = target.GetPixelSize();
+  const auto& c = p.shadowClip;
+  const auto shadow = compositor::shapeshadow::rasterize(shadowOutline(p), s.color, s.dx, s.dy, s.blur, s.spread,
+      p.opacity, c.x, c.y, c.width, c.height, scale, offsetX, offsetY, int(size.width), int(size.height));
+  if (shadow.refused) return false;
+  if (shadow.width <= 0 || shadow.height <= 0) return true;
+  ComPtrLite<ID2D1Bitmap> bitmap;
+  if (FAILED(target.CreateBitmap(D2D1::SizeU(UINT32(shadow.width), UINT32(shadow.height)), shadow.bgra.data(),
+          UINT32(shadow.width) * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+          D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96), bitmap.put()))) return false;
+  target.PushAxisAlignedClip(D2D1::RectF(float(c.x), float(c.y), float(c.x + c.width), float(c.y + c.height)),
+                             D2D1_ANTIALIAS_MODE_ALIASED);
+  D2D1_MATRIX_3X2_F transform{};
+  target.GetTransform(&transform);
+  target.SetTransform(D2D1::Matrix3x2F::Identity());
+  target.DrawBitmap(bitmap.get(), D2D1::RectF(float(shadow.x), float(shadow.y), float(shadow.x + shadow.width),
+      float(shadow.y + shadow.height)), 1.f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+  target.SetTransform(transform);
+  target.PopAxisAlignedClip();
+  return true;
+}
 }  // namespace
 
 bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
@@ -522,6 +563,7 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
   for (size_t i = first; i < first + count; ++i) {
     const auto& p = drawing.primitives[i];
     const auto& b = p.box; const auto& c = p.clip;
+    if (p.shapeShadow && !drawShapeShadow(*target, p, scale, offsetX, offsetY)) complete = false;
     target->PushAxisAlignedClip(D2D1::RectF(float(c.x), float(c.y), float(c.x + c.width), float(c.y + c.height)), D2D1_ANTIALIAS_MODE_ALIASED);
     if (p.type == "image") {
       if (!p.image) complete = false;
@@ -589,7 +631,20 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
     if (!brush) complete = false;
     else {
       brush->SetOpacity(float(p.opacity));
-      if (p.type == "rect") {
+      if (p.type == "rect" && !p.polygon.empty()) {
+        // Polygon / skewed plate (styles P3): no corner radius, no stroke.
+        ComPtrLite<ID2D1PathGeometry> path;
+        ComPtrLite<ID2D1GeometrySink> sink;
+        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(path.put())) && SUCCEEDED(path->Open(sink.put()))) {
+          sink->SetFillMode(D2D1_FILL_MODE_WINDING);  // CGContextFillPath's non-zero rule
+          sink->BeginFigure(D2D1::Point2F(float(p.polygon[0].x), float(p.polygon[0].y)), D2D1_FIGURE_BEGIN_FILLED);
+          for (size_t v = 1; v < p.polygon.size(); ++v)
+            sink->AddLine(D2D1::Point2F(float(p.polygon[v].x), float(p.polygon[v].y)));
+          sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+          if (SUCCEEDED(sink->Close())) target->FillGeometry(path.get(), brush);
+          else complete = false;
+        } else complete = false;
+      } else if (p.type == "rect") {
         target->FillRoundedRectangle(D2D1::RoundedRect(
             D2D1::RectF(float(b.x), float(b.y), float(b.x + b.width), float(b.y + b.height)), float(p.cornerRadius), float(p.cornerRadius)), brush);
         if (stroke) {
