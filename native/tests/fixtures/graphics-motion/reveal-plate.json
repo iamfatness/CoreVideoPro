@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "templateId": "motion-reveal-plate",
+  "templateVersion": 1,
+  "name": "Motion reveal plate",
+  "family": "lower-third",
+  "canvas": {
+    "width": 1920,
+    "height": 1080
+  },
+  "bounds": {
+    "width": 1060,
+    "height": 168
+  },
+  "brandTokens": [],
+  "fields": [],
+  "layers": [
+    {
+      "id": "plate",
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 1060,
+      "height": 168,
+      "fill": "#FF0000",
+      "animations": {
+        "in": {
+          "startMs": 0,
+          "easing": "linear",
+          "durationMs": 1000,
+          "type": "reveal",
+          "direction": "left",
+          "feather": 200
+        }
+      }
+    }
+  ],
+  "animations": {
+    "in": {
+      "type": "fade",
+      "durationMs": 250,
+      "easing": "ease-out"
+    },
+    "out": {
+      "type": "fade",
+      "durationMs": 200,
+      "easing": "ease-in"
+    }
+  },
+  "defaultPlacement": {
+    "anchor": "lower-left",
+    "x": 96,
+    "y": -54,
+    "scale": 1
+  }
+}

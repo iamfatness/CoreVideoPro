@@ -1,0 +1,86 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-stagger-lines",
+ "templateVersion": 1,
+ "name": "p-stagger-lines",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 200
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 900,
+   "height": 200,
+   "fill": "#203040",
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "direction": "left",
+     "durationMs": 400,
+     "easing": "expo-out",
+     "feather": 48
+    }
+   }
+  },
+  {
+   "id": "shine",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 60,
+   "height": 200,
+   "opacity": 0.3,
+   "fill": "#FFFFFF",
+   "loop": {
+    "type": "sweep",
+    "periodMs": 8000
+   }
+  },
+  {
+   "id": "t",
+   "type": "text",
+   "x": 10,
+   "y": 10,
+   "width": 880,
+   "height": 180,
+   "text": "Parity text wraps across lines and ends in an ellipsis when the third line still cannot hold the remaining words of this sentence",
+   "font": "Arial",
+   "fontSize": 44,
+   "color": "#FFFFFF",
+   "maxLines": 3,
+   "overflow": "wrap-then-ellipsis",
+   "lineHeight": 1.2,
+   "stagger": {
+    "by": "line",
+    "ms": 100
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 200,
+     "durationMs": 300,
+     "easing": "quint-out"
+    }
+   }
+  }
+ ]
+}

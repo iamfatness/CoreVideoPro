@@ -461,6 +461,63 @@ TEST(GradePreviewPixels, PrivatePreviewPlaysLayerMotionWithoutTouchingProgram) {
   compositor->submitGradePreviews({});
 }
 
+// P5: a reveal's leading edge is a feather ramp drawn by the overlay shader,
+// not a hard scissor. Fixture invariant (reveal-plate.json): a 1060x168 red
+// plate at x 96 / 1920 reveals from the left over 1000 ms, linear, feather 200.
+// At 500 ms its lead is at plate x 630 (normalized 0.378) and the ramp starts
+// at plate x 430 (0.274), so 0.15 is fully covered, 0.326 is mid-ramp and
+// 0.45 is not yet revealed.
+TEST(GradePreviewPixels, RevealFeatherRampsCoverageAcrossItsLeadingEdge) {
+  using namespace corevideo;
+  auto compositor = isolatedCompositor();
+  ASSERT_TRUE(compositor);
+  auto request = requestAtSize(64);
+  request.programPlan.skipCpuReadback = false;
+  auto input = std::make_shared<graphics::GraphicsTemplateInput>();
+  std::string error;
+  input->definition = graphics::GraphicsTemplate::load(graphics::test::motionFixture("reveal-plate.json"), error);
+  ASSERT_TRUE(input->definition) << error;
+  if (!input->definition) return;
+  input->fields = input->definition->defaultFields();
+  input->brand = graphics::test::motionBrand();
+  input->placement = input->definition->defaultPlacement();
+  CompositorOverlayContent overlay;
+  overlay.appearance.enabled = true;
+  overlay.graphicsTemplate = std::move(input);
+  overlay.graphicsMotion = graphics::GraphicsMotionState{graphics::GraphicsMotionPhase::Settled, 0,
+      {"fade","left","ease-out",250},{"fade","left","ease-in",200}};
+  // Samples {0.15, 0.326, 0.45} at y 0.9 with the move at `elapsed` ms.
+  const auto sample = [&](double elapsed, int revision) {
+    GradePreviewDemand demand{"private-reveal", "preview:lower-third", revision, {}};
+    demand.lowerThirdPreview = overlay;
+    demand.playMode = "in";
+    demand.playElapsedMs = elapsed;
+    request.gradePreviews = {demand};
+    const auto surface = awaitGrade(*compositor, request, demand.instanceId, revision);
+    EXPECT_FALSE(surface.texture.sharedHandleHex.empty());
+    if (surface.texture.sharedHandleHex.empty()) return std::vector<uint32_t>{};
+    return consumeSamples(surface.texture, {{.15f, .9f}, {.326f, .9f}, {.45f, .9f}});
+  };
+  const auto red = [](uint32_t argb) { return int((argb >> 16) & 255); };
+  const auto blank = sample(0, 1);      // nothing revealed yet: the bare background
+  const auto half = sample(500, 2);
+  const auto whole = sample(1000, 3);   // settled: the whole plate
+  ASSERT_EQ(3u, blank.size());
+  ASSERT_EQ(3u, half.size());
+  ASSERT_EQ(3u, whole.size());
+  if (blank.size() != 3 || half.size() != 3 || whole.size() != 3) return;
+  EXPECT_GT(red(whole[1]), 220) << std::hex << whole[1];
+  EXPECT_GT(red(whole[1]) - red(blank[1]), 100) << "plate and background must differ for the ramp to be measurable";
+  EXPECT_EQ(whole[0], half[0]) << "behind the ramp the plate is fully covered: " << std::hex << half[0];
+  EXPECT_EQ(blank[2], half[2]) << "past the lead nothing is drawn: " << std::hex << half[2];
+  // Mid-ramp coverage is near half: well inside (25%, 75%) of the way from blank to whole.
+  // A hard edge (no feather) would draw the whole plate colour here.
+  const int none = red(blank[1]), full = red(whole[1]), mid = red(half[1]);
+  EXPECT_GT(mid, none + (full - none) / 4) << std::hex << half[1];
+  EXPECT_LT(mid, none + 3 * (full - none) / 4) << std::hex << half[1];
+  compositor->submitGradePreviews({});
+}
+
 TEST(AdvancedGradePixels, ExposurePrimariesStackOrderLutDomainAndGlobalIntensityHaveIndependentExpectedValues) {
   auto compositor=isolatedCompositor(); ASSERT_TRUE(compositor);
   auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;

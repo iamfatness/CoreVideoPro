@@ -449,6 +449,41 @@ template <class Backend> void contractAtlasSpaceFailureWording() {
   EXPECT_EQ(out.warning, "Graphics motion needs more texture space than one graphic allows; give fewer layers their own motion.");
 }
 
+// P6 stagger admission. Each staggered word is its own atlas slice, so a
+// twelve-word layer needs twelve slices from ONE authored motion layer.
+// Fixture invariant: the actual atlas exceeds the admission an unstaggered
+// count (2 * units + 1 runs) would allow (asserted), so before the stagger
+// term the worker refused it with "Graphics preparation exceeded its admitted
+// budget."; with it, the graphic prepares.
+template <class Backend> void contractStaggeredWordsPrepareWithinTheirAdmission() {
+  CONTRACT_DEVICE_OR_RETURN(device);
+  const std::string layers =
+      R"([{"id":"words","type":"text","x":10,"y":0,"width":1900,"height":200,"font":"Arial","fontSize":48,)"
+      R"("color":"#FFFFFF","maxLines":1,"overflow":"ellipsis","text":"Al Bo Cy Di Ed Fa Gi Ho Iv Jo Ka Lu",)"
+      R"("stagger":{"by":"word","ms":40},"animations":{"in":{"type":"reveal","durationMs":200,"feather":24}}}])";
+  std::string error;
+  const auto overlay = templateOverlay(simpleManifest("contract-stagger", 1920, 200, layers), {}, &error);
+  ASSERT_TRUE(overlay.graphicsTemplate && overlay.graphicsTemplate->definition) << error;
+  if (!overlay.graphicsTemplate || !overlay.graphicsTemplate->definition) return;
+  const auto& summary = overlay.graphicsTemplate->definition->motionSummary();
+  corevideo::graphics::GraphicsDrawing drawing;
+  ASSERT_TRUE(overlay.graphicsTemplate->definition->resolve(overlay.graphicsTemplate->fields,
+      overlay.graphicsTemplate->brand, drawing, error)) << error;
+  auto runs = corevideo::graphics::planRuns(drawing);
+  ASSERT_EQ(runs.size(), size_t(12)) << "one slice per word";
+  std::vector<corevideo::graphics::GraphicsAtlasSlice> slices;
+  int atlasWidth = 0, atlasHeight = 0;
+  ASSERT_TRUE(corevideo::graphics::packAtlas(runs, 1.0, slices, atlasWidth, atlasHeight));
+  const uint64_t atlasBytes = uint64_t(atlasWidth) * uint64_t(atlasHeight) * 4;
+  const uint64_t unstaggered = uint64_t(1 + 1920) * ((2 * summary.units + 1) * (200 + 3) - 2) * 4;
+  ASSERT_GT(atlasBytes, unstaggered) << "the atlas fits the unstaggered admission; the case proves nothing";
+  EXPECT_GE(corevideo::graphics::overlayAdmissionBytes(overlay.graphicsTemplate.get(), 1920, 200), atlasBytes);
+  typename Backend::Raster raster;
+  const auto out = waitTerminal<Backend>(raster, device, overlay, 1920, 200, true);
+  EXPECT_EQ(out.state, "ready") << out.warning;
+  EXPECT_TRUE(out.texture);
+}
+
 // A strict template whose image header decodes but whose pixels do not.
 template <class Backend> void contractImageDecodeFailureWording() {
   CONTRACT_DEVICE_OR_RETURN(device);

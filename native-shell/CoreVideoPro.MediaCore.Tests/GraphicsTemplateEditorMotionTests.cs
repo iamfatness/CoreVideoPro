@@ -96,6 +96,81 @@ public sealed class GraphicsTemplateEditorMotionTests
     }
 
     [Fact]
+    public void RevealWritesItsFeatherAndRoundTrips()
+    {
+        var scratch = GraphicsTemplateEditor.SetLayerMotion(Seed(), "plate", "in", GraphicsMotionModel.DefaultFor("reveal"));
+        Assert.Equal(new GraphicsLayerMotion("reveal", 0, 400, "expo-out", "left", Feather: 32), GraphicsTemplateEditor.LayerMotion(scratch, "plate", "in"));
+        var plate = JsonNode.Parse(scratch.Manifest)!["layers"]!.AsArray().First(node => node!["id"]!.GetValue<string>() == "plate")!;
+        Assert.Equal(32, plate["animations"]!["in"]!["feather"]!.GetValue<double>());
+        Assert.Equal("Reveal from left", GraphicsMotionModel.Bars(scratch, "in")[0].Caption);
+        scratch = GraphicsTemplateEditor.SetLayerMotion(scratch, "plate", "in", new("reveal", 0, 400, "quint-out", "up", Feather: 0));
+        Assert.Equal(0d, GraphicsTemplateEditor.LayerMotion(scratch, "plate", "in")!.Feather);
+        Assert.Equal("Choose an edge from the list.", Assert.Throws<InvalidDataException>(() =>
+            GraphicsTemplateEditor.SetLayerMotion(scratch, "plate", "in", new("wipe", 0, 300, Direction: "left", Feather: 10))).Message);
+        Assert.Equal("Choose a feel from the list.", Assert.Throws<InvalidDataException>(() =>
+            GraphicsTemplateEditor.SetLayerMotion(scratch, "plate", "in", new("reveal", 0, 300, "bounce", "left"))).Message);
+    }
+
+    [Fact]
+    public void StaggerTimesTextMovesAndStaysWithinThreeSeconds()
+    {
+        var scratch = GraphicsTemplateEditor.SetLayerMotion(Seed(), "name-label", "in", new("rise", 200, 300, Distance: 24));
+        Assert.Equal("Only text layers can build line by line or word by word.", Assert.Throws<InvalidDataException>(() =>
+            GraphicsTemplateEditor.SetLayerStagger(scratch, "plate", new("word", 60))).Message);
+        Assert.Equal("Give this layer its own motion first.", Assert.Throws<InvalidOperationException>(() =>
+            GraphicsTemplateEditor.SetLayerStagger(scratch, "title-label", new("line", 60))).Message);
+        scratch = GraphicsTemplateEditor.SetLayerStagger(scratch, "name-label", new("word", 60));
+        Assert.Equal(new GraphicsLayerStagger("word", 60), GraphicsTemplateEditor.LayerStagger(scratch, "name-label"));
+        // The last of up to 12 words starts 11 * 60 ms after the first.
+        Assert.Equal(200 + 300 + 11 * 60, GraphicsMotionModel.Total(scratch, "in"));
+        Assert.EndsWith(" · word by word", GraphicsMotionModel.Bars(scratch, "in").Single(bar => bar.LayerId == "name-label").Caption);
+        Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetLayerStagger(scratch, "name-label", new("word", 230)));
+        Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetLayerMotion(scratch, "name-label", "in", new("rise", 2100, 300, Distance: 24)));
+        // Removing the layer's own move removes its stagger with it (the native core requires both).
+        scratch = GraphicsTemplateEditor.SetLayerMotion(scratch, "name-label", "in", null);
+        Assert.Null(GraphicsTemplateEditor.LayerStagger(scratch, "name-label"));
+    }
+
+    [Fact]
+    public void LoopsAreValidatedAndCountTowardTheMotionLayerLimit()
+    {
+        var scratch = GraphicsTemplateEditor.SetLayerLoop(Seed(), "accent", GraphicsMotionModel.DefaultLoop("pulse"));
+        Assert.Equal(new GraphicsLayerLoop("pulse", 1200), GraphicsTemplateEditor.LayerLoop(scratch, "accent"));
+        scratch = GraphicsTemplateEditor.SetLayerLoop(scratch, "plate", GraphicsMotionModel.DefaultLoop("sweep"));
+        Assert.Equal(new GraphicsLayerLoop("sweep", 8000, 1000, "left"), GraphicsTemplateEditor.LayerLoop(scratch, "plate"));
+        Assert.EndsWith(" · loops: pulse", GraphicsMotionModel.Bars(scratch, "in").Single(bar => bar.LayerId == "accent").Caption);
+        Assert.Equal("A loop repeats every 0.25 to 60 s.", Assert.Throws<InvalidDataException>(() =>
+            GraphicsTemplateEditor.SetLayerLoop(scratch, "accent", new("pulse", 100))).Message);
+        Assert.Equal("A sweep crosses within its period.", Assert.Throws<InvalidDataException>(() =>
+            GraphicsTemplateEditor.SetLayerLoop(scratch, "accent", new("sweep", 1000, 1500))).Message);
+        Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetLayerLoop(scratch, "accent", new("spin", 1000)));
+        scratch = GraphicsTemplateEditor.SetLayerLoop(scratch, "accent", null);
+        Assert.Null(GraphicsTemplateEditor.LayerLoop(scratch, "accent"));
+        var full = Seed();
+        for (var i = 0; i < 12; ++i) full = GraphicsTemplateEditor.AddLayer(full, "shape").Scratch;
+        full = GraphicsTemplateEditor.ApplyMotionPreset(full, "everything-fades");
+        full = GraphicsTemplateEditor.AddLayer(full, "shape").Scratch;
+        Assert.Throws<InvalidOperationException>(() => GraphicsTemplateEditor.SetLayerLoop(full, "shape-13", GraphicsMotionModel.DefaultLoop("drift")));
+    }
+
+    [Fact]
+    public void EditorPolishOutputLoadsInTheNativeShapeItWrites()
+    {
+        var scratch = GraphicsTemplateEditor.SetLayerMotion(Seed(), "plate", "in", GraphicsMotionModel.DefaultFor("reveal"));
+        scratch = GraphicsTemplateEditor.SetLayerMotion(scratch, "name-label", "in", new("rise", 200, 300, "quint-out", Distance: 24));
+        scratch = GraphicsTemplateEditor.SetLayerStagger(scratch, "name-label", new("word", 60));
+        scratch = GraphicsTemplateEditor.SetLayerLoop(scratch, "accent", GraphicsMotionModel.DefaultLoop("drift"));
+        var layers = JsonNode.Parse(scratch.Manifest)!["layers"]!.AsArray();
+        var name = layers.First(node => node!["id"]!.GetValue<string>() == "name-label")!;
+        Assert.Equal("word", name["stagger"]!["by"]!.GetValue<string>());
+        Assert.Equal(60, name["stagger"]!["ms"]!.GetValue<double>());
+        // Out mirrors In keeps the stagger: both phases share it.
+        Assert.NotNull(name["animations"]!["out"]);
+        var accent = layers.First(node => node!["id"]!.GetValue<string>() == "accent")!;
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"type":"drift","periodMs":4000,"direction":"up","distance":6}"""), accent["loop"]));
+    }
+
+    [Fact]
     public void EditingAndDuplicatingRespectTheSixteenLayerLimit()
     {
         var scratch = Seed();

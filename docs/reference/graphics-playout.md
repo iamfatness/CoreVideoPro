@@ -508,10 +508,28 @@ keys move the selected bar by 50 ms and Shift+arrow changes its duration.
 | Wipe | The layer is revealed from the chosen edge. |
 | Grow | The layer scales from one edge. |
 | Pop | The layer grows from its centre, overshoots slightly, and settles. |
+| Reveal | Like Wipe, but the leading edge is soft. **Edge** sets the feather (hard, or 16 to 128 px). |
 
 **Starts at**, **Takes**, and **Feel** set the delay, duration and easing.
-Slide, Wipe, and Grow have direction controls. Fade + rise and Slide have a
-travel-distance control. **Moves with the graphic** restores the layer's
+**Snap, then settle** (`expo-out`) and **Quick, then settle** (`quint-out`) are
+the pack conventions for reveals and text moves.
+Slide, Wipe, Reveal, and Grow have direction controls. Fade + rise and Slide have a
+travel-distance control.
+
+**Build** (text layers with their own move) repeats the move **Line by line**
+or **Word by word**, each piece a **Gap** later (0.04 to 0.15 s). Out uses
+the same build. A word build splits at most 12 pieces; the 12th carries the
+rest of the words. Wrapping text builds line by line only. With its build,
+the last possible piece must still finish within 3.0 s. A preset clears every
+build.
+
+**Loop** puts a looping accent on any layer: **Shine sweep** crosses the
+layer's area once at the start of every period (8 s by default), **Pulse**
+dims it to 40% and back, **Drift** sways it 6 px. Loops start when the
+graphic starts entering and run on Program, on a cued graphic in Preview, and
+in this canvas while **Loop** plays. A loop counts toward the 16 layers with
+their own motion. Loops need the layer motion: a row whose own Motion moves
+the whole graphic shows the layer still. **Moves with the graphic** restores the layer's
 inherited motion. Per-layer moves are masked by their parent's area. Each
 phase must finish within 3.0 seconds, and up to 16 layers can have their own
 motion.
@@ -541,6 +559,47 @@ Play Out during In reverse the current move from its current position.
 3. Press **Play preview**. The plate begins before the name in the private canvas.
 4. Press **Save to playlist**. Go to **Operate** and press **Show** on that row.
 5. Confirm the plate wipes in first on Program and the name starts 0.20 s later. Confirm the instance leaves air after its last layer finishes Out.
+
+### Motion polish: reveal, build, loop (graphics styles slice 8, P5-P7)
+
+Template schema (core `GraphicsTemplate` validates; `GraphicsMotion` samples):
+
+- `animations.in|out` `{type:"reveal", direction, feather}`: `feather` 0-512 template px
+  (default 32; only on `reveal`). Easings add `expo-out` and `quint-out`.
+- Text `stagger: {by:"line"|"word", ms}`: `ms` 10-1000; needs the layer's own
+  `animations`; `word` refuses `overflow:"wrap-then-ellipsis"`
+  (`template-stagger-word-wrap`). The bound piece count (word 12, line `maxLines`)
+  times `ms` must keep every phase within 3000 ms (`template-motion-too-long`).
+- Any layer `loop: {type:"sweep"|"pulse"|"drift", periodMs, durationMs?, direction?, distance?}`:
+  `periodMs` 250-60000; `durationMs` (sweep only) 50-period, default min(1000, period);
+  `direction` (sweep, drift); `distance` (drift only) 1-256, default 6. A loop makes
+  the layer a motion unit, counted in the 16.
+
+How it renders, with nothing new on the render thread that allocates or blocks:
+
+- **Reveal** is the wipe clip plus a feather. `sampleUnit` emits a
+  `GraphicsRevealEdge` (axis, side, lead, width) that a parent transform scales
+  like a clip. The overlay pixel shader (D3D11 `kCompositorOverlayPixelShader`,
+  Metal `compositorOverlay`, the same expression) multiplies coverage by
+  `saturate((z - dot(n, pixel)) * w)` from `LayerShaderConstants::revealEdge`
+  (now 208 bytes). The innermost reveal's edge wins in a nested chain; a parent
+  reveal still clips at its lead.
+- **Build** splits at resolve (raster owner, never per frame): each piece is
+  the same text primitive clipped to its line band (line pitch from the top of
+  the box) or word band (word boundaries mid-space, measured with the
+  platform shaper), each its own unit with its start moved `k * ms`. Pieces are
+  separate runs, so separate atlas slices, and the settled frame is
+  pixel-identical to the unbuilt layer. `GraphicsMotionSummary::staggerUnits`
+  bounds the extra units, and `overlayAdmissionBytes` counts them
+  (`OverlayRasterContract.StaggeredWordsPrepareWithinTheirAdmission`).
+- **Loops** are a per-frame transform or opacity of the layer's pre-rastered
+  slice (`sampleLoop`), applied in every phase including Settled. Their clock
+  is `GraphicsMotionState::loopMs`: from `GraphicsLayerClock` (time since the
+  entrance began) on Program, monotonic time for a cued Preview, play time in
+  the Designer canvas.
+- Both compositors place every run through `graphics::placeRun` and
+  `graphics::revealEdgeConstants`, so motion, reveal, loops and crawl share one
+  implementation on Windows and Mac.
 
 ## Show vs Cue
 

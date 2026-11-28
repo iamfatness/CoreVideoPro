@@ -2,6 +2,14 @@
 
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
+- **Atlas run geometry has one implementation: `graphics::placeRun` (styles slice 8, 2026-11-28).**
+  The D3D11 and Metal overlay loops used to duplicate motion, crawl and mask math. Both now call
+  `placeRun` and `revealEdgeConstants` and only map the result to API state. Put new per-run motion
+  there, never in one compositor. The reveal feather lives in `LayerShaderConstants::revealEdge`
+  (the struct is 208 bytes); `kCompositorOverlayPixelShader` and MSL `compositorOverlay` must keep the
+  same coverage expression. A staggered text layer is several primitives with the same text and
+  different clips, each its own unit: count derived units with `GraphicsMotionSummary::staggerUnits`,
+  never by `drawing.units.size()` (the 16-layer limit counts authored layers only).
 - **Graphics text weight is pinned on both rasters; change it on both or neither (G4, 2026-11-27).**
   With no rendering params set, D2D took gamma and grayscale contrast from the PC's ClearType
   tuning (`HKCU/Software/Microsoft/Avalon.Graphics/DISPLAYn`), so on-air text weight varied by

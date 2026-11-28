@@ -34,7 +34,7 @@ public sealed partial class GraphicsDesignerControl
                 _motionPanel.Children.Add(Note("Choose a layer to set its motion."));
                 return;
             }
-            BuildMotionPanel(row.Id, document);
+            BuildMotionPanel(row.Id, row.Kind, document);
         }
         catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or System.Text.Json.JsonException)
         {
@@ -42,7 +42,7 @@ public sealed partial class GraphicsDesignerControl
         }
     }
 
-    private void BuildMotionPanel(string id, NativeGraphicsScratch document)
+    private void BuildMotionPanel(string id, string kind, NativeGraphicsScratch document)
     {
         var phase = _motionPhase;
         var readOnly = phase == "out" && GraphicsTemplateEditor.OutMirrorsIn(document);
@@ -112,6 +112,12 @@ public sealed partial class GraphicsDesignerControl
             _motionPanel.Children.Add(MotionChoice(id, phase, basis.Type == "rise" ? "Rises by" : "Travels", distances,
                 basis.FromEdge ? "edge" : basis.Distance?.ToString(CultureInfo.InvariantCulture), canEdit,
                 (move, choice) => move with { FromEdge = choice == "edge", Distance = choice == "edge" ? null : double.Parse(choice, CultureInfo.InvariantCulture) }));
+        if (GraphicsMotionModel.Feathers(basis.Type) is { Count: > 0 } feathers)
+            _motionPanel.Children.Add(MotionChoice(id, phase, "Edge", feathers,
+                (basis.Feather ?? 0).ToString(CultureInfo.InvariantCulture), canEdit,
+                (move, choice) => move with { Feather = double.Parse(choice, CultureInfo.InvariantCulture) }));
+        if (kind is "Text" or "Clock") BuildStaggerChoices(id, CanEdit && own is not null);
+        BuildLoopChoices(id, CanEdit);
         _motionPanel.Children.Add(Heading("WHOLE-GRAPHIC PRESETS"));
         foreach (var (preset, label) in GraphicsMotionModel.Presets)
         {
@@ -124,6 +130,70 @@ public sealed partial class GraphicsDesignerControl
             _motionPanel.Children.Add(button);
         }
         _motionPanel.Children.Add(Note("A preset fills every bar; adjust any one afterwards."));
+    }
+
+    // P6: a text layer's own move can repeat line by line or word by word.
+    // Both phases share it, so it is editable whenever the layer has its own move.
+    private void BuildStaggerChoices(string id, bool enabled)
+    {
+        var document = _session?.TemplateDocument;
+        if (document is null) return;
+        var stagger = GraphicsTemplateEditor.LayerStagger(document, id);
+        _motionPanel.Children.Add(Heading("BUILD"));
+        _motionPanel.Children.Add(PanelChoice("Builds", GraphicsMotionModel.Staggers, stagger?.By ?? "none", enabled,
+            choice => scratch => GraphicsTemplateEditor.SetLayerStagger(scratch, id, choice == "none" ? null :
+                new(choice, GraphicsTemplateEditor.LayerStagger(scratch, id)?.Ms ?? 80))));
+        if (stagger is not null)
+            _motionPanel.Children.Add(PanelChoice("Gap", GraphicsMotionModel.StaggerDelays,
+                stagger.Ms.ToString(CultureInfo.InvariantCulture), enabled,
+                choice => scratch => GraphicsTemplateEditor.SetLayerStagger(scratch, id,
+                    stagger with { Ms = double.Parse(choice, CultureInfo.InvariantCulture) })));
+        if (!enabled && stagger is null) _motionPanel.Children.Add(Note("Give this layer its own move to build it line by line or word by word."));
+    }
+
+    // P7: a looping accent runs while the graphic is on air, on top of its In and Out.
+    private void BuildLoopChoices(string id, bool enabled)
+    {
+        var document = _session?.TemplateDocument;
+        if (document is null) return;
+        var loop = GraphicsTemplateEditor.LayerLoop(document, id);
+        _motionPanel.Children.Add(Heading("LOOP"));
+        _motionPanel.Children.Add(PanelChoice("Loops", GraphicsMotionModel.Loops, loop?.Type ?? "none", enabled,
+            choice => scratch => GraphicsTemplateEditor.SetLayerLoop(scratch, id,
+                choice == "none" ? null : GraphicsMotionModel.DefaultLoop(choice))));
+        if (loop is not null)
+        {
+            _motionPanel.Children.Add(PanelChoice("Repeats", GraphicsMotionModel.LoopPeriods,
+                loop.PeriodMs.ToString(CultureInfo.InvariantCulture), enabled,
+                choice => scratch =>
+                {
+                    var period = double.Parse(choice, CultureInfo.InvariantCulture);
+                    var current = GraphicsTemplateEditor.LayerLoop(scratch, id) ?? loop;
+                    return GraphicsTemplateEditor.SetLayerLoop(scratch, id, current with { PeriodMs = period,
+                        DurationMs = current.DurationMs is { } crossing ? Math.Min(crossing, period) : null });
+                }));
+            if (loop.Type is "sweep" or "drift")
+                _motionPanel.Children.Add(PanelChoice(loop.Type == "sweep" ? "Crosses from" : "Drifts",
+                    GraphicsMotionModel.LoopDirections(loop.Type), loop.Direction, enabled,
+                    choice => scratch => GraphicsTemplateEditor.SetLayerLoop(scratch, id,
+                        (GraphicsTemplateEditor.LayerLoop(scratch, id) ?? loop) with { Direction = choice })));
+            _motionPanel.Children.Add(Note("Loops play on Program, on a cued Preview, and in Loop on this canvas."));
+        }
+    }
+
+    private ComboBox PanelChoice(string label, IReadOnlyList<(string Id, string Label)> choices, string? selected, bool enabled,
+        Func<string, Func<NativeGraphicsScratch, NativeGraphicsScratch>> change)
+    {
+        var combo = new ComboBox { Header = label, HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = enabled };
+        foreach (var choice in choices) combo.Items.Add(new ComboBoxItem { Content = choice.Label, Tag = choice.Id });
+        combo.SelectedItem = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Tag as string == selected);
+        AutomationProperties.SetName(combo, label);
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (_loading || combo.SelectedItem is not ComboBoxItem { Tag: string choice }) return;
+            DispatcherQueue.TryEnqueue(() => { if (!Apply(change(choice))) _motionPanelSignature = ""; });
+        };
+        return combo;
     }
 
     private TextBox MotionTime(string id, string phase, string label, double milliseconds, bool duration, bool enabled)

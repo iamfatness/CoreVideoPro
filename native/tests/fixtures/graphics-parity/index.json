@@ -88,6 +88,13 @@
    "atlas": true
   },
   {
+   "name": "stagger-lines-atlas",
+   "source": "manifest:stagger-lines-atlas.json",
+   "fields": {},
+   "brand": {},
+   "atlas": true
+  },
+  {
    "name": "segoe-substitution",
    "source": "manifest:segoe-substitution.json",
    "fields": {},

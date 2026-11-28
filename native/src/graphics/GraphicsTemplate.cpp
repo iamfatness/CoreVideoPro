@@ -620,12 +620,12 @@ class Layout {
   bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}, int unit = -1, double plateWidth = 0, bool fitChildren = false) {
     need(depth <= 8 && ++nodes_ <= 64, "template-layer-limit");
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
-    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations"};
+    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations", "loop"};
     if (type == "group") allowed.insert({"children", "flow", "gap", "padding", "minWidth", "maxWidth"});
     else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth", "shape", "points", "skewX", "shadow"});
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth", "shadow"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
-    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize", "letterSpacing", "fontStyle", "textTransform"});
+    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize", "letterSpacing", "fontStyle", "textTransform", "stagger"});
     else if (type == "crawl") allowed.insert({"items", "font", "fontSize", "color", "speed", "gap", "direction", "mode"});
     else if (type == "table") allowed.insert({"columns", "rows", "rowHeight", "font", "fontSize", "color", "headerFill", "rowFill", "alternateFill"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
@@ -643,18 +643,27 @@ class Layout {
     if (fitChildren && type == "text")
       p.box.width = std::clamp(clip.x + clip.width - p.box.x, 1., p.box.width);
     p.clip = intersect(clip, p.box); p.opacity = opacity * quantity(node, "opacity", 0, 1, 1);
-    if (const auto* animations = node.get("animations")) {
-      need(animations->isObject() && !animations->asObject().empty(), "template-layer-motion");
-      GraphicsMotionUnit motion{nodeId, unit, unit < 0 && depth == 0, {}, {}, p.box, clip};
-      for (const auto& [phase, value] : animations->asObject()) {
-        need(phase == "in" || phase == "out", "template-layer-motion");
-        (phase == "in" ? motion.in : motion.out) = GraphicsLayerMotion::read(value);
+    const auto* animations = node.get("animations");
+    const auto* loop = node.get("loop");
+    if (animations || loop) {
+      // A loop-only layer under an unanimated parent still moves with the
+      // graphic (root), like a top-level layer without its own motion.
+      GraphicsMotionUnit motion{nodeId, unit, unit < 0 && (depth == 0 || !animations), {}, {}, p.box, clip};
+      if (animations) {
+        need(animations->isObject() && !animations->asObject().empty(), "template-layer-motion");
+        for (const auto& [phase, value] : animations->asObject()) {
+          need(phase == "in" || phase == "out", "template-layer-motion");
+          (phase == "in" ? motion.in : motion.out) = GraphicsLayerMotion::read(value);
+        }
       }
-      need(draw_->units.size() < 16, "template-motion-layer-limit");
+      if (loop) motion.loop = GraphicsLayerLoop::read(*loop);
+      // Authored layers only: stagger pieces are derived units, bounded apart.
+      need(layerUnits_++ < 16, "template-motion-layer-limit");
       unit = static_cast<int>(draw_->units.size());
       draw_->units.push_back(std::move(motion));
     }
     p.unit = unit;
+    std::string staggerBy;
     if (unit < 0 && type != "group") hasUnanimatedLayer_ = true;
     draw_->nodes.push_back({nodeId,parentId,type,p.box,p.clip,visible && p.opacity>0});
     if (type == "group") {
@@ -769,10 +778,94 @@ class Layout {
             quantity(*shadow, "x", -256, 256, 0), quantity(*shadow, "y", -256, 256, 0),
             quantity(*shadow, "blur", 0, 16, 0)};
       }
+      if (const auto* stagger = node.get("stagger")) {
+        keys(*stagger, {"by", "ms"});
+        staggerBy = stringProperty(*stagger, "by", "");
+        need(staggerBy == "line" || staggerBy == "word", "template-stagger");
+        need(animations != nullptr, "template-stagger-needs-motion");
+        // Word pieces are measured on one line; a wrapping layer staggers by line.
+        need(staggerBy == "line" || p.overflow != "wrap-then-ellipsis", "template-stagger-word-wrap");
+        const auto* ms = stagger->get("ms");
+        need(ms && ms->isNumber() && std::isfinite(ms->asNumber()) && ms->asNumber() >= 10 && ms->asNumber() <= 1000, "template-stagger");
+        auto& owner = draw_->units[size_t(unit)];
+        owner.staggerPieces = staggerBy == "word" ? kGraphicsStaggerMaxWords : p.maxLines;
+        owner.staggerMs = ms->asNumber();
+        // The last piece must still finish within the 3.0 s phase limit.
+        for (const auto* phase : {&owner.in, &owner.out})
+          if (*phase) need((*phase)->startMs + (*phase)->durationMs + (owner.staggerPieces - 1) * owner.staggerMs <= 3000,
+                           "template-motion-too-long");
+      }
       if (boolean(node, "collapseWhenEmpty") && p.text.empty()) {draw_->nodes.back().visible=false;return false;}
     }
     if (!visible) return false;
+    if (!staggerBy.empty() && !validate_ && !p.text.empty()) return staggerText(std::move(p), staggerBy);
     draw_->primitives.push_back(std::move(p)); return true;
+  }
+  // P6: one text layer becomes several timed pieces. Each piece is the SAME
+  // text primitive clipped to its line or word band, so every piece rasters
+  // exactly the pixels the unstaggered layer would (no re-layout, no kerning
+  // change) into its own atlas slice; each band is its own motion unit whose
+  // move starts staggerMs after the previous one.
+  bool staggerText(GraphicsPrimitive p, const std::string& by) {
+    const int unit = p.unit;
+    std::vector<GraphicsBox> bands;
+    const auto& box = p.box;
+    // The P1 style the raster draws with (p.text is already case-transformed).
+    const TextStyle style{p.fontSize > 0 ? p.letterSpacing / p.fontSize : 0., p.italic};
+    if (by == "line") {
+      const double pitch = p.fontSize * p.lineHeight;
+      const auto measured = measureText(p.text, p.font, p.fontSize, p.fontWeight, box.width, p.overflow == "wrap-then-ellipsis", style);
+      const int lines = std::clamp(int(measured.lines), 1, p.maxLines);
+      for (int k = 0; k < lines; ++k) {
+        const double top = k == 0 ? p.clip.y : box.y + k * pitch;
+        const double bottom = k == lines - 1 ? p.clip.y + p.clip.height : box.y + (k + 1) * pitch;
+        bands.push_back({p.clip.x, top, p.clip.width, bottom - top});
+      }
+    } else {
+      // Word boundaries sit mid-space: halfway between the end of one word and
+      // the start of the next, measured with the shaper the raster draws with.
+      std::vector<std::pair<size_t, size_t>> words;  // [begin, end) byte offsets
+      for (size_t i = 0; i < p.text.size();) {
+        while (i < p.text.size() && (p.text[i] == ' ' || p.text[i] == '\t')) ++i;
+        const size_t begin = i;
+        while (i < p.text.size() && p.text[i] != ' ' && p.text[i] != '\t') ++i;
+        if (i > begin) words.push_back({begin, i});
+      }
+      const size_t pieces = std::min<size_t>(words.size(), kGraphicsStaggerMaxWords);
+      const auto width = [&](size_t bytes) {
+        return measureText(p.text.substr(0, bytes), p.font, p.fontSize, p.fontWeight, 8192, false, style).width;
+      };
+      const double lineWidth = words.empty() ? 0 : width(words.back().second);
+      double origin = box.x;
+      if (lineWidth < box.width) {
+        if (p.align == "center") origin += (box.width - lineWidth) / 2;
+        else if (p.align == "right") origin += box.width - lineWidth;
+      }
+      double left = p.clip.x;
+      for (size_t k = 0; k < pieces; ++k) {
+        double right = p.clip.x + p.clip.width;
+        if (k + 1 < pieces) right = std::max(left, origin + (width(words[k].second) + width(words[k + 1].first)) / 2);
+        bands.push_back({left, p.clip.y, std::max(0., right - left), p.clip.height});
+        left = right;
+      }
+    }
+    if (bands.size() < 2) { draw_->primitives.push_back(std::move(p)); return true; }
+    const auto base = draw_->units[size_t(unit)];
+    for (size_t k = 0; k < bands.size(); ++k) {
+      auto piece = p;
+      piece.clip = intersect(p.clip, bands[k]);
+      if (k == 0) {
+        draw_->units[size_t(unit)].box = bands[k];
+      } else {
+        auto timed = base;
+        timed.box = bands[k];
+        for (auto* phase : {&timed.in, &timed.out}) if (*phase) (*phase)->startMs += double(k) * base.staggerMs;
+        piece.unit = int(draw_->units.size());
+        draw_->units.push_back(std::move(timed));
+      }
+      draw_->primitives.push_back(std::move(piece));
+    }
+    return true;
   }
   const Json& document_; const Json& fields_; const Json& brand_; const GraphicsAssets& assets_; bool validate_;
   std::shared_ptr<const GraphicsAsset> logo_;
@@ -780,6 +873,7 @@ class Layout {
   std::set<const Json*> measuredNodes_;
   bool hasUnanimatedLayer_ = false;
   bool hasTable_ = false, hasCrawl_ = false;
+  size_t layerUnits_ = 0;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace
@@ -789,7 +883,7 @@ GraphicsLayerMotion GraphicsLayerMotion::read(const Json& value) {
   need(value.isObject(), error);
   for (const auto& [key, item] : value.asObject()) {
     need(key == "type" || key == "startMs" || key == "durationMs" ||
-        key == "easing" || key == "direction" || key == "distance", error);
+        key == "easing" || key == "direction" || key == "distance" || key == "feather", error);
   }
   const auto string = [&](const char* key, const char* fallback) {
     const auto* property = value.get(key);
@@ -808,13 +902,15 @@ GraphicsLayerMotion GraphicsLayerMotion::read(const Json& value) {
   const bool slide = motion.type == "slide", grow = motion.type == "grow", rise = motion.type == "rise";
   const bool cut = motion.type == "cut";
   need(isGraphicsMotionType(motion.type), error);
+  const bool reveal = motion.type == "reveal";
   motion.easing = string("easing", "ease-out");
-  need(motion.easing == "linear" || motion.easing == "ease-in" ||
-      motion.easing == "ease-out" || motion.easing == "ease-in-out", error);
+  need(isGraphicsMotionEasing(motion.easing), error);
   motion.startMs = number("startMs", 0, 0, 3000);
   motion.durationMs = number("durationMs", 0, cut ? 0 : 1, cut ? 0 : 3000);
   need(motion.startMs + motion.durationMs <= 3000, "template-motion-too-long");
-  need(!value.get("direction") || slide || grow || motion.type == "wipe", error);
+  need(!value.get("direction") || slide || grow || reveal || motion.type == "wipe", error);
+  need(!value.get("feather") || reveal, error);
+  if (reveal) motion.feather = number("feather", 32, 0, 512);
   motion.direction = string("direction", grow ? "down" : "left");
   need(motion.direction == "left" || motion.direction == "right" ||
       motion.direction == "up" || motion.direction == "down", error);
@@ -827,8 +923,53 @@ GraphicsLayerMotion GraphicsLayerMotion::read(const Json& value) {
 
 Json GraphicsLayerMotion::json() const {
   Json::Object value{{"type", type}, {"startMs", startMs}, {"durationMs", durationMs}, {"easing", easing}};
-  if (type == "slide" || type == "wipe" || type == "grow") value["direction"] = direction;
+  if (type == "slide" || type == "wipe" || type == "grow" || type == "reveal") value["direction"] = direction;
   if (type == "slide" || type == "rise") value["distance"] = distanceEdge ? Json("edge") : Json(distance);
+  if (type == "reveal") value["feather"] = feather;
+  return value;
+}
+
+GraphicsLayerLoop GraphicsLayerLoop::read(const Json& value) {
+  constexpr auto error = "template-layer-loop";
+  need(value.isObject(), error);
+  for (const auto& [key, item] : value.asObject())
+    need(key == "type" || key == "periodMs" || key == "durationMs" || key == "direction" || key == "distance", error);
+  const auto* type = value.get("type");
+  need(type && type->isString(), error);
+  GraphicsLayerLoop loop;
+  loop.type = type->asString();
+  const bool sweep = loop.type == "sweep", drift = loop.type == "drift";
+  need(sweep || drift || loop.type == "pulse", error);
+  const auto number = [&](const char* key, double fallback, double minimum, double maximum) {
+    const auto* property = value.get(key);
+    need(!property || property->isNumber(), error);
+    const double result = property ? property->asNumber() : fallback;
+    need(std::isfinite(result) && result >= minimum && result <= maximum, error);
+    return result;
+  };
+  const auto* period = value.get("periodMs");
+  need(period, error);
+  loop.periodMs = number("periodMs", 0, kGraphicsLoopMinPeriodMs, kGraphicsLoopMaxPeriodMs);
+  need(!value.get("durationMs") || sweep, error);
+  if (sweep) loop.durationMs = number("durationMs", std::min(1000., loop.periodMs), 50, loop.periodMs);
+  need(!value.get("direction") || sweep || drift, error);
+  if (const auto* direction = value.get("direction")) {
+    need(direction->isString(), error);
+    loop.direction = direction->asString();
+  } else {
+    loop.direction = drift ? "up" : "left";
+  }
+  need(loop.direction == "left" || loop.direction == "right" || loop.direction == "up" || loop.direction == "down", error);
+  need(!value.get("distance") || drift, error);
+  if (drift) loop.distance = number("distance", 6, 1, 256);
+  return loop;
+}
+
+Json GraphicsLayerLoop::json() const {
+  Json::Object value{{"type", type}, {"periodMs", periodMs}};
+  if (type == "sweep") value["durationMs"] = durationMs;
+  if (type == "sweep" || type == "drift") value["direction"] = direction;
+  if (type == "drift") value["distance"] = distance;
   return value;
 }
 
@@ -916,8 +1057,12 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
     motion.layered = motion.units != 0;
     motion.inFollows = motion.outFollows = !motion.layered || layout.hasUnanimatedLayer();
     for (const auto& unit : analysis.units) {
-      if (unit.in) motion.inMs = std::max(motion.inMs, unit.in->startMs + unit.in->durationMs);
-      if (unit.out) motion.outMs = std::max(motion.outMs, unit.out->startMs + unit.out->durationMs);
+      // A staggered layer's last piece starts (pieces - 1) * ms later.
+      const double spread = double(unit.staggerPieces - 1) * unit.staggerMs;
+      motion.staggerUnits += size_t(unit.staggerPieces - 1);
+      motion.loops = motion.loops || unit.loop.has_value();
+      if (unit.in) motion.inMs = std::max(motion.inMs, unit.in->startMs + unit.in->durationMs + spread);
+      if (unit.out) motion.outMs = std::max(motion.outMs, unit.out->startMs + unit.out->durationMs + spread);
       if (unit.root && !unit.in) motion.inFollows = true;
       if (unit.root && !unit.out) motion.outFollows = true;
     }
@@ -966,8 +1111,10 @@ uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, in
   const bool layered = motion.layered && !input->wholeGraphicMotion;
   if (!layered && !motion.crawl) return raster;
   // Each animated subtree can split its surrounding paint run twice; each
-  // crawl item is its own run and splits its surrounding run once more.
-  const uint64_t maxRuns = (layered ? 2 * uint64_t(motion.units) + 1 : 1) + (motion.crawl ? 64 + 1 : 0);
+  // crawl item is its own run and splits its surrounding run once more. A
+  // staggered text layer's pieces are units too (P6), each one more run.
+  const uint64_t units = uint64_t(motion.units) + uint64_t(motion.staggerUnits);
+  const uint64_t maxRuns = (layered ? 2 * units + 1 : 1) + (motion.crawl ? 64 + 1 : 0);
   const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (uint64_t(height) + 3) - 2);
   const double sourceWidth = motion.crawl ? 8192. : definition.width();  // bounds and crawl items are <= 8192
   const auto maxWidth = uint64_t(std::min(16384., 1 + std::ceil(height * sourceWidth / definition.height())));

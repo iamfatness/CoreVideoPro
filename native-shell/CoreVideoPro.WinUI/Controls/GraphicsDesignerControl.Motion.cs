@@ -195,7 +195,7 @@ public sealed partial class GraphicsDesignerControl
         var color = bar.Type switch
         {
             "wipe" => 0x4A7CC9, "grow" => 0xB5463F, "rise" => 0x2E8A73, "slide" => 0x8A6E2E,
-            "pop" => 0x6B5BAA, _ => 0x2E6E8A
+            "pop" => 0x6B5BAA, "reveal" => 0x3E8FB0, _ => 0x2E6E8A
         };
         return new SolidColorBrush(Windows.UI.Color.FromArgb(255, (byte)(color >> 16), (byte)(color >> 8), (byte)color));
     }
