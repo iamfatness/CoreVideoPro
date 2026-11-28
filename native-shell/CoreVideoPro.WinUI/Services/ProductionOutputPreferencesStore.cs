@@ -66,7 +66,10 @@ public sealed class ProductionOutputPreferences
     // removed (byte-identical behavior for older files). Downgrade is safe: an
     // older build drops the field and the catalog scenes simply reappear.
     // v17 (#1196): scene names are metadata, including renamed catalog scenes.
-    public const int CurrentVersion = 17;
+    // v18 (owner ruling 2026-11-13): Show Inputs and the multiviewer hold 16. A saved
+    // tile count of 10 was the old product maximum ("every input on the wall"), so it
+    // moves once to the new maximum; any other saved count is kept.
+    public const int CurrentVersion = 18;
 
     private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
     public int ProgramBufferFrames
@@ -156,7 +159,7 @@ public sealed class ProductionOutputPreferences
     public bool VirtualCameraFramerEnabled { get; set; }
     public string? VirtualCameraName { get; set; }
     public string? MultiviewLayoutMode { get; set; }
-    public int MultiviewTileCount { get; set; } = 10;
+    public int MultiviewTileCount { get; set; } = ShowInputRosterService.MaxMultiviewBoxes;
     public bool MultiviewShowLabels { get; set; } = true;
     public bool MultiviewShowTally { get; set; } = true;
     public bool MultiviewShowMeters { get; set; } = true;
@@ -448,6 +451,11 @@ public static class ProductionOutputPreferencesSerializer
                 preferences.StreamNdiEnabled = false;
 #pragma warning restore CS0618
                 preferences.NdiOutputEnabled = false;
+            }
+
+            if (preferences.Version < 18 && preferences.MultiviewTileCount == 10)
+            {
+                preferences.MultiviewTileCount = ShowInputRosterService.MaxMultiviewBoxes;
             }
 
             if (preferences.Version < ProductionOutputPreferences.CurrentVersion)

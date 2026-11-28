@@ -7,9 +7,10 @@
 // (native/src/modules/ZoomEngineRuntime.cpp:435-470, `Budget::resolve` at line 469,
 // called for every non-audio subscription) applies NO videoOn check (E5) — that
 // filter is this policy's job, mirroring Windows' ZoomSourceSetPolicy. The cap is
-// DefaultMaxVideoSubscriptions = 10 (E1,
-// native-shell/CoreVideoPro.MediaCore/Services/ZoomMediaSpinePayloadBuilder.cs:19),
-// the number that ended the 2026-08-09 Susan Cho frozen-tile incident.
+// DefaultMaxVideoSubscriptions = 8 (E1,
+// native-shell/CoreVideoPro.MediaCore/Services/ZoomMediaSpinePayloadBuilder.cs),
+// owner ruling 2026-11-13: Pro pulls at most 8 Zoom feeds, all inside the 1080P grant;
+// the other sources (up to 16) come from CoreVideo Edge or local inputs.
 //
 // CURRENT WIRE (since commit deb2689e, the 1080P kind flip — SHIPPED, not pending):
 // AppModel.spineSubscriptionPayloads emits kind "participant-video" plus each
@@ -29,7 +30,7 @@ struct ZoomSourceBudget {
         let purpose: String
     }
 
-    static let maxVideoSubscriptions = 10
+    static let maxVideoSubscriptions = 8
 
     /// Thin wrapper over `resolve` for callers without Tiles: fixed Program
     /// routes -> fixed Preview routes -> multiview (slot order) -> ISO, camera-on

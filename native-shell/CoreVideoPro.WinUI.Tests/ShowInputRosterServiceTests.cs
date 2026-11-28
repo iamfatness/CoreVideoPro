@@ -857,17 +857,56 @@ public sealed class ShowInputRosterServiceTests
     [Fact]
     public void SyncZoomParticipantSlots_StopsWhenEverySlotIsTaken()
     {
+        // Every slot but two holds a local source; auto-assign fills the two free slots and stops.
         var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
-        var roster = new List<string>();
-        for (var i = 0; i < ShowInputRosterService.MaxShowInputs + 3; i++)
+        foreach (var slot in slots.Take(ShowInputRosterService.MaxShowInputs - 2))
         {
-            roster.Add($"p-{i}");
+            slot.Kind = ShowInputKind.UvcWebcam;
+            slot.CaptureDeviceId = $"cam-{slot.SlotNumber}";
         }
+
+        var roster = Enumerable.Range(0, 5).Select(i => $"p-{i}").ToList();
 
         ShowInputRosterService.SyncZoomParticipantSlots(slots, roster, autoAssign: true);
 
-        Assert.All(slots, slot => Assert.Equal(ShowInputKind.ZoomParticipant, slot.Kind));
-        Assert.Equal(ShowInputRosterService.MaxShowInputs, slots.Count(s => s.IsAssigned));
+        Assert.All(slots, slot => Assert.True(slot.IsAssigned));
+        Assert.Equal(["p-0", "p-1"], slots.Where(s => s.Kind == ShowInputKind.ZoomParticipant).Select(s => s.ParticipantId!));
+    }
+
+    // Owner ruling 2026-11-13: Pro pulls at most 8 Zoom feeds. Show Inputs hold 16, so auto-assign
+    // stops at 8 Zoom participants and leaves slots 9-16 free for Edge / NDI / SRT / local sources.
+    [Fact]
+    public void SyncZoomParticipantSlots_AutoAssignStopsAtProZoomBudget()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        var roster = Enumerable.Range(0, 20).Select(i => $"p-{i}").ToList();
+
+        ShowInputRosterService.SyncZoomParticipantSlots(slots, roster, autoAssign: true);
+
+        Assert.Equal(16, ShowInputRosterService.MaxShowInputs);
+        Assert.Equal(8, ShowInputRosterService.MaxAutoAssignedZoomSlots);
+        Assert.Equal(Enumerable.Range(1, 8), slots.Where(s => s.Kind == ShowInputKind.ZoomParticipant).Select(s => s.SlotNumber));
+        Assert.All(slots.Skip(8), slot => Assert.Equal(ShowInputKind.Unassigned, slot.Kind));
+    }
+
+    [Fact]
+    public void SyncZoomParticipantSlots_HandAssignedZoomSlotsCountTowardTheAutoAssignBudget()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        for (var i = 0; i < 7; i++)
+        {
+            slots[15 - i].Kind = ShowInputKind.ZoomParticipant;
+            slots[15 - i].ParticipantId = $"hand-{i}";
+        }
+
+        var roster = slots.Where(s => s.ParticipantId is not null).Select(s => s.ParticipantId!)
+            .Concat(["new-1", "new-2"]).ToList();
+
+        ShowInputRosterService.SyncZoomParticipantSlots(slots, roster, autoAssign: true);
+
+        Assert.Equal(8, slots.Count(s => s.Kind == ShowInputKind.ZoomParticipant));
+        Assert.Equal("new-1", slots[0].ParticipantId);
+        Assert.Equal(ShowInputKind.Unassigned, slots[1].Kind);
     }
 
     [Fact]

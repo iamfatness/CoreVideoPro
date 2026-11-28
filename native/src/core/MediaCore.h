@@ -1566,7 +1566,7 @@ class MediaCore {
   // User-selectable multiviewer configuration (configure-multiviewer command).
   // layoutMode: "grid" | "pgmPvwTop" | "pgmPvwLarge" | "pgmPvwSide".
   std::string multiviewLayoutMode_ = "grid";
-  int multiviewTileCount_ = 10;
+  int multiviewTileCount_ = 16;  // Show Input capacity (owner ruling 2026-11-13)
   bool multiviewShowLabels_ = true;
   bool multiviewShowTally_ = true;
   bool multiviewShowMeters_ = true;

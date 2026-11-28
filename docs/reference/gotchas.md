@@ -332,10 +332,11 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   return. Pinned by `ZoomEngineRuntime.AResolutionReSubscribeKeepsTheSourcesLastFrameForTheCompositor`.
   **(4) LOUD, BUT MULTIVIEW-ONLY.** A camera-on source the cap leaves out goes in the
   payload's `videoSubscriptionShortfall` + `warnings`, and its multiview tile label
-  reads "<name> · no video: subscription limit (10)". A BUS source with no wall tile
+  reads "<name> · no video: subscription limit (8)" (the cap is 8 since the 2026-11-13
+  16-source ruling, `show-input-capacity.md`; it was 10). A BUS source with no wall tile
   (a cued Preview guest) is named on the PGM / PVW cell instead: the multiview layout
   carries `programNotice` / `previewNotice`, the core appends it to the cell label and
-  the overlay draws "PREVIEW · no video: <names> (subscription limit 10)" (the tile LABEL
+  the overlay draws "PREVIEW · no video: <names> (subscription limit 8)" (the tile LABEL
   is part of `VideoSurfaceCoordinator.MultiviewLayoutSignature`, so a label-only change
   reaches the overlay; the production sync's plain layout still blinks it for up to one
   spine tick after a user action). The

@@ -27,7 +27,7 @@ checks the event query before publishing an immutable attributed wrapper.
 An upload may prepare one future arrival ahead of CPU selection. Preparing
 unbounded future arrivals can evict a frame before CPU playout selects it.
 
-Limits remain 64 registered sources, 16 active generations, 28 pending tokens
+Limits remain 64 registered sources, 24 active generations (16 until the 2026-11-13 16-source ruling), 28 pending tokens
 per source and 512 MiB shared production storage. A source may keep one charged
 retiring generation. A third generation is refused until that lease releases.
 CPU and ISO references do not pin GPU slots; submitted GPU reads do.

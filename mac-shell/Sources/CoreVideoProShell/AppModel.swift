@@ -3364,7 +3364,7 @@ final class AppModel: ObservableObject {
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
         // The budget's labels ride the sources ("<name> · no video: subscription
-        // limit (10)"); the bus notices name a cued guest it left out.
+        // limit (8)"); the bus notices name a cued guest it left out.
         let multiviewSources = parts.multiviewSources
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →

@@ -101,7 +101,7 @@ public static class ControlActionRegistry
                 {
                     new ControlParam("sceneId", s, true),
                     new ControlParam("routeId", s, true, "Route id on that scene (for example ohg-host)"),
-                    new ControlParam("slot", i, true, "Show Input slot 1-10")
+                    new ControlParam("slot", i, true, "Show Input slot 1-16")
                 }),
             new("scene.list", "List scenes",
                 "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id."),
@@ -138,10 +138,10 @@ public static class ControlActionRegistry
                  new ControlParam("route", s, false, "Route id; optional in a scene with one eligible route")]),
 
             // ---- Show Inputs ------------------------------------------------------------
-            new("input.assign", "Assign input", "Assign a source to a Show Input slot (1-10).",
+            new("input.assign", "Assign input", "Assign a source to a Show Input slot (1-16).",
                 new[]
                 {
-                    new ControlParam("slot", i, true, "1-10"),
+                    new ControlParam("slot", i, true, "1-16"),
                     new ControlParam("sourceId", s, true, "zoom:<pid> | capture:<id> | media:<id>")
                 }),
             new("source.capture.online.set", "Connect or take capture offline", "Use the existing capture device controls. Taking a device offline unassigns its inputs; native video readiness remains separately observed.",
@@ -151,7 +151,7 @@ public static class ControlActionRegistry
             new("input.name", "Name input source", "Set the display name override for a Show Input's source (blank resets).",
                 new[]
                 {
-                    new ControlParam("slot", i, true, "1-10"),
+                    new ControlParam("slot", i, true, "1-16"),
                     new ControlParam("name", s, false)
                 }),
             new("source.dropout.set", "Source on dropout", "Set what a source shows when it stops delivering (hold last frame or black). Zoom-only this slice.",
@@ -163,7 +163,7 @@ public static class ControlActionRegistry
             new("input.inShow.set", "Input in-show", "Add/remove a Show Input slot from the show.",
                 new[]
                 {
-                    new ControlParam("slot", i, true, "1-10"),
+                    new ControlParam("slot", i, true, "1-16"),
                     new ControlParam("on", b, true)
                 }),
 
@@ -296,7 +296,7 @@ public static class ControlActionRegistry
             new("multiview.layout.set", "Multiview layout", "Set the multiview layout mode.",
                 new[] { new ControlParam("mode", s, true, "grid | pgmPvwTop | pgmPvwLarge | pgmPvwSide") }),
             new("multiview.tileCount.set", "Multiview tiles", "Set the multiview source tile count.",
-                new[] { new ControlParam("count", i, true, "1-10") }),
+                new[] { new ControlParam("count", i, true, "1-16") }),
             new("multiview.showLabels.set", "Multiview labels", "Toggle multiview labels.",
                 new[] { new ControlParam("on", b, true) }),
             new("multiview.showTally.set", "Multiview tally", "Toggle multiview tally borders.",

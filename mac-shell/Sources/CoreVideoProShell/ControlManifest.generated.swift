@@ -133,7 +133,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "scene.route.set", title: "Set scene route", description: "Cue a scene to Preview and point one named route at a Show Input slot. Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.", params: [
                 ControlParam(name: "sceneId", type: .string, required: true, description: nil),
                 ControlParam(name: "routeId", type: .string, required: true, description: "Route id on that scene (for example ohg-host)"),
-                ControlParam(name: "slot", type: .int, required: true, description: "Show Input slot 1-10"),
+                ControlParam(name: "slot", type: .int, required: true, description: "Show Input slot 1-16"),
             ]),
             availability: .supported),
         ControlManifestEntry(
@@ -215,8 +215,8 @@ enum ControlManifestGenerated {
             ]),
             availability: .supported),
         ControlManifestEntry(
-            action: ControlAction(id: "input.assign", title: "Assign input", description: "Assign a source to a Show Input slot (1-10).", params: [
-                ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
+            action: ControlAction(id: "input.assign", title: "Assign input", description: "Assign a source to a Show Input slot (1-16).", params: [
+                ControlParam(name: "slot", type: .int, required: true, description: "1-16"),
                 ControlParam(name: "sourceId", type: .string, required: true, description: "zoom:<pid> | capture:<id> | media:<id>"),
             ]),
             availability: .supported),
@@ -233,7 +233,7 @@ enum ControlManifestGenerated {
             availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "input.name", title: "Name input source", description: "Set the display name override for a Show Input's source (blank resets).", params: [
-                ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
+                ControlParam(name: "slot", type: .int, required: true, description: "1-16"),
                 ControlParam(name: "name", type: .string, required: false, description: nil),
             ]),
             availability: .supported),
@@ -245,7 +245,7 @@ enum ControlManifestGenerated {
             availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "input.inShow.set", title: "Input in-show", description: "Add/remove a Show Input slot from the show.", params: [
-                ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
+                ControlParam(name: "slot", type: .int, required: true, description: "1-16"),
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
             availability: .supported),
@@ -530,7 +530,7 @@ enum ControlManifestGenerated {
             availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.tileCount.set", title: "Multiview tiles", description: "Set the multiview source tile count.", params: [
-                ControlParam(name: "count", type: .int, required: true, description: "1-10"),
+                ControlParam(name: "count", type: .int, required: true, description: "1-16"),
             ]),
             availability: .supported),
         ControlManifestEntry(

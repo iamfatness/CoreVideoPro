@@ -31,11 +31,11 @@ public sealed record GpuTierPolicy(
     public const string Canvas4K = "3840x2160";
 
     /// <summary>
-    /// Tile capacity the product can actually render today (the 10 Show Input
-    /// slots). The tier ceilings of 16 and 25 are the ruled policy; the
-    /// effective ceiling is min(tier ceiling, this) until the wall supports more.
+    /// Tile capacity the product can actually render (the 16 Show Input slots,
+    /// owner ruling 2026-11-13). The tier ceilings of 9, 16 and 25 are the ruled
+    /// policy; the effective ceiling is min(tier ceiling, this).
     /// </summary>
-    public const int ProductTileCapacity = 10;
+    public const int ProductTileCapacity = ShowInputRosterService.MaxMultiviewBoxes;
 
     public const string UnknownVramNotice =
         "GPU memory could not be measured, so canvas and multiview limits use the under-8 GB tier.";

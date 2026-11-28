@@ -232,6 +232,7 @@ phrase they quote.
 | [`docs/reference/recording-output-location.md`](docs/reference/recording-output-location.md) | recording output paths |
 | [`docs/reference/scenes.md`](docs/reference/scenes.md) | the scene rail: catalog vs custom scenes, removal rules (on-air + last-scene guards only, #1070), `RemovedCatalogSceneIds` persistence, New scene starters, Restore starter scenes, `scene.list` / `scene.restoreStarters`, consumers that cue catalog ids (Magic Scene, shot layouts, the outputs drill) |
 | [`docs/reference/secrets-and-oauth.md`](docs/reference/secrets-and-oauth.md) | secrets storage, OAuth return URI |
+| [`docs/reference/show-input-capacity.md`](docs/reference/show-input-capacity.md) | Show Input / multiview slot counts (16), Pro's Zoom video budget (8), auto-assign, SRT/RTMP ingest counts, wall geometry past 10 sources (owner ruling 2026-11-13, #1041) |
 | [`docs/reference/shared-texture-export-cost.md`](docs/reference/shared-texture-export-cost.md) | creating D3D exports / anything new on the render thread |
 | [`docs/reference/source-bus.md`](docs/reference/source-bus.md) | the source bus, ingests, bus health, slates, hold/black |
 | [`docs/reference/status-snapshot-isolation-spec.md`](docs/reference/status-snapshot-isolation-spec.md) | proposed #870 status ownership, off-lock assembly, freshness and delivery acceptance; [implementation sequence](docs/reference/status-snapshot-isolation-plan.md) |

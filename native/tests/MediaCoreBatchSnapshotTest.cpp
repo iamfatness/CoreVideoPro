@@ -151,13 +151,15 @@ struct SourcePreviewRequestRig {
     observed = probe.get(); modules.compositor = std::move(probe);
     core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
     std::vector<std::shared_ptr<corevideo::core::ISource>> sources;
-    for (int i = 0; i < 12; ++i)
+    // 18 = the 16-row inspector bound (Show Input capacity, owner ruling
+    // 2026-11-13) plus two rows that must stay unexported.
+    for (int i = 0; i < 18; ++i)
       sources.push_back(std::make_shared<SourcePreviewEpochedSource>("speaker-" + std::to_string(i)));
     core->useZoomSourcesForTest(std::move(sources));
   }
   void assign(bool duplicate = false) {
     corevideo::rpc::Json::Array rows;
-    for (int i = 0; i < 12; ++i) {
+    for (int i = 0; i < 18; ++i) {
       const auto id = "speaker-" + std::to_string(duplicate && i == 1 ? 0 : i);
       rows.emplace_back(corevideo::rpc::Json::Object{{"sourceId", "zoom:" + id},
           {"kind", "participant"}, {"participantId", id}, {"slot", i}});
@@ -200,9 +202,9 @@ TEST(SourcePreviewRequestIntegration, CompositePreviewRequiresLiveInspectorInter
   EXPECT_EQ(rig.observed->grade.gradePreviews[0].instanceId, "grade-editor");
   ASSERT_TRUE(rig.interest(true)); rig.core->renderDisplayTick();
   auto active = sourcePreviewDemandIds(rig.observed->monitors, SourceMonitorConsumer::Inspector);
-  ASSERT_EQ(active.size(), 10u); EXPECT_EQ(rig.observed->monitors.sourceExports.size(), 10u);
-  EXPECT_TRUE(active.count("speaker-0")); EXPECT_TRUE(active.count("speaker-9"));
-  EXPECT_FALSE(active.count("speaker-10")); EXPECT_FALSE(active.count("speaker-11"));
+  ASSERT_EQ(active.size(), 16u); EXPECT_EQ(rig.observed->monitors.sourceExports.size(), 16u);
+  EXPECT_TRUE(active.count("speaker-0")); EXPECT_TRUE(active.count("speaker-15"));
+  EXPECT_FALSE(active.count("speaker-16")); EXPECT_FALSE(active.count("speaker-17"));
   EXPECT_TRUE(sourcePreviewDemandIds(rig.observed->monitors, SourceMonitorConsumer::PreviewFallback).empty());
 
   const auto before = rig.core->sessionState();
@@ -233,8 +235,8 @@ TEST(SourcePreviewRequestIntegration, CompositePreviewRequiresLiveInspectorInter
   EXPECT_EQ(rig.observed->grade.gradePreviews[0].instanceId, "grade-editor");
 
   rig.assign(true); rig.core->renderDisplayTick();
-  EXPECT_EQ(sourcePreviewDemandIds(rig.observed->monitors, SourceMonitorConsumer::Inspector).size(), 9u);
-  EXPECT_EQ(rig.observed->monitors.sourceExports.size(), 9u);
+  EXPECT_EQ(sourcePreviewDemandIds(rig.observed->monitors, SourceMonitorConsumer::Inspector).size(), 15u);
+  EXPECT_EQ(rig.observed->monitors.sourceExports.size(), 15u);
   ASSERT_TRUE(rig.interest(false)); rig.core->renderDisplayTick();
   EXPECT_TRUE(rig.observed->monitors.sourceExports.empty());
   EXPECT_TRUE(rig.observed->monitors.previewActive);
@@ -246,8 +248,8 @@ TEST(SourcePreviewRequestIntegration, InactiveInspectorDoesNotRemoveIndependentP
   SourcePreviewRequestRig rig; rig.assign(); rig.core->renderDisplayTick();
   ASSERT_FALSE(rig.observed->monitors.previewActive);
   const auto fallback = sourcePreviewDemandIds(rig.observed->monitors, SourceMonitorConsumer::PreviewFallback);
-  ASSERT_GE(fallback.size(), 12u);
-  EXPECT_TRUE(fallback.count("speaker-11"));
+  ASSERT_GE(fallback.size(), 18u);
+  EXPECT_TRUE(fallback.count("speaker-17"));
   ASSERT_TRUE(rig.interest(true)); rig.core->renderDisplayTick();
   EXPECT_EQ(sourcePreviewDemandIds(rig.observed->monitors, SourceMonitorConsumer::PreviewFallback), fallback);
   EXPECT_TRUE(sourcePreviewDemandIds(rig.observed->monitors, SourceMonitorConsumer::Inspector).empty());
@@ -258,7 +260,7 @@ TEST(SourcePreviewRequestIntegration, InactiveInspectorDoesNotRemoveIndependentP
 TEST(SourcePreviewRequestIntegration, ExpiredConsumerLeaseStopsInspectorWhileCompositeAndGradeRemainActive) {
   SourcePreviewRequestRig rig; rig.assign(); rig.compositePreview();
   ASSERT_TRUE(rig.interest(true)); rig.core->renderDisplayTick();
-  ASSERT_EQ(rig.observed->monitors.sourceExports.size(), 10u);
+  ASSERT_EQ(rig.observed->monitors.sourceExports.size(), 16u);
   std::this_thread::sleep_for(std::chrono::milliseconds(3100));
   ASSERT_TRUE(rig.core->configureGradePreview(corevideo::rpc::Json::Object{{"instanceId", "still-open-grade"},
       {"sourceId", "speaker-0"}, {"revision", 1}, {"enabled", true}}));
@@ -286,7 +288,7 @@ TEST(SourcePreviewRequestIntegration, PublicRpcRejectsMissingOrNonBooleanInteres
       {"type", "set-source-preview-demand"}, {"enabled", "false"}});
   EXPECT_FALSE(invalidWhileActive.get("ok")->asBool());
   rig.core->renderDisplayTick();
-  EXPECT_EQ(rig.observed->monitors.sourceExports.size(), 10u);
+  EXPECT_EQ(rig.observed->monitors.sourceExports.size(), 16u);
 }
 
 TEST(SourcePreviewRequestIntegration, CurrentMonitorPayloadDoesNotWaitForProgramRendering) {

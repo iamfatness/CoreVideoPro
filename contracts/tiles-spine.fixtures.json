@@ -146,18 +146,6 @@
             "priority": 17
           },
           {
-            "participantId": "109",
-            "kind": "participant-video",
-            "purpose": "program-tiles",
-            "priority": 18
-          },
-          {
-            "participantId": "110",
-            "kind": "participant-video",
-            "purpose": "program-tiles",
-            "priority": 19
-          },
-          {
             "participantId": "101",
             "kind": "participant-audio",
             "purpose": "mix",
@@ -246,6 +234,16 @@
         ],
         "videoSubscriptionShortfall": [
           {
+            "participantId": "109",
+            "purpose": "program-tiles",
+            "reason": "subscription-limit"
+          },
+          {
+            "participantId": "110",
+            "purpose": "program-tiles",
+            "reason": "subscription-limit"
+          },
+          {
             "participantId": "111",
             "purpose": "program-tiles",
             "reason": "subscription-limit"
@@ -257,7 +255,7 @@
           }
         ],
         "warnings": [
-          "No video: subscription limit (10). 2 routed cameras are unsubscribed: Guest 111 (program-tiles), Guest 112 (program-tiles)."
+          "No video: subscription limit (8). 4 routed cameras are unsubscribed: Guest 109 (program-tiles), Guest 110 (program-tiles), Guest 111 (program-tiles), Guest 112 (program-tiles)."
         ]
       }
     },
@@ -401,18 +399,6 @@
             "priority": 17
           },
           {
-            "participantId": "109",
-            "kind": "participant-video",
-            "purpose": "program-tiles",
-            "priority": 18
-          },
-          {
-            "participantId": "110",
-            "kind": "participant-video",
-            "purpose": "program-tiles",
-            "priority": 19
-          },
-          {
             "participantId": "101",
             "kind": "participant-audio",
             "purpose": "mix",
@@ -494,17 +480,27 @@
         ],
         "videoSubscriptionShortfall": [
           {
+            "participantId": "109",
+            "purpose": "program-tiles",
+            "reason": "subscription-limit"
+          },
+          {
+            "participantId": "110",
+            "purpose": "program-tiles",
+            "reason": "subscription-limit"
+          },
+          {
             "participantId": "111",
             "purpose": "preview",
             "reason": "subscription-limit"
           }
         ],
         "warnings": [
-          "No video: subscription limit (10). 1 routed camera is unsubscribed: Guest 111 (preview)."
+          "No video: subscription limit (8). 3 routed cameras are unsubscribed: Guest 109 (program-tiles), Guest 110 (program-tiles), Guest 111 (preview)."
         ],
         "multiview": {
-          "programNotice": "",
-          "previewNotice": "no video: Guest 111 (subscription limit 10)",
+          "programNotice": "no video: Guest 109, Guest 110 (subscription limit 8)",
+          "previewNotice": "no video: Guest 111 (subscription limit 8)",
           "labels": []
         }
       }
@@ -1018,18 +1014,6 @@
             "priority": 17
           },
           {
-            "participantId": "109",
-            "kind": "participant-video",
-            "purpose": "multiview",
-            "priority": 18
-          },
-          {
-            "participantId": "110",
-            "kind": "participant-video",
-            "purpose": "multiview",
-            "priority": 19
-          },
-          {
             "participantId": "101",
             "kind": "participant-audio",
             "purpose": "mix",
@@ -1111,13 +1095,23 @@
         ],
         "videoSubscriptionShortfall": [
           {
+            "participantId": "109",
+            "purpose": "multiview",
+            "reason": "subscription-limit"
+          },
+          {
+            "participantId": "110",
+            "purpose": "multiview",
+            "reason": "subscription-limit"
+          },
+          {
             "participantId": "111",
             "purpose": "multiview",
             "reason": "subscription-limit"
           }
         ],
         "warnings": [
-          "No video: subscription limit (10). 1 routed camera is unsubscribed: Guest 111 (multiview)."
+          "No video: subscription limit (8). 3 routed cameras are unsubscribed: Guest 109 (multiview), Guest 110 (multiview), Guest 111 (multiview)."
         ],
         "multiview": {
           "programNotice": "",
@@ -1131,9 +1125,9 @@
             "Guest 106",
             "Guest 107",
             "Guest 108",
-            "Guest 109",
-            "Guest 110",
-            "Guest 111 \u00B7 no video: subscription limit (10)"
+            "Guest 109 \u00B7 no video: subscription limit (8)",
+            "Guest 110 \u00B7 no video: subscription limit (8)",
+            "Guest 111 \u00B7 no video: subscription limit (8)"
           ]
         }
       }

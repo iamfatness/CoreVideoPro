@@ -10,10 +10,11 @@ public sealed class StudioMultiviewerConfigTests
     [InlineData(1, 1)]
     [InlineData(4, 4)]
     [InlineData(10, 10)]
-    [InlineData(11, 10)]
+    [InlineData(16, 16)]
+    [InlineData(17, 16)]
     [InlineData(-3, 1)]
-    [InlineData(100, 10)]
-    public void ClampMultiviewTileCount_ClampsToOneThroughTen(int input, int expected)
+    [InlineData(100, 16)]
+    public void ClampMultiviewTileCount_ClampsToOneThroughSixteen(int input, int expected)
     {
         Assert.Equal(expected, StudioViewModel.ClampMultiviewTileCount(input));
     }
@@ -45,8 +46,8 @@ public sealed class StudioMultiviewerConfigTests
     public void MultiviewerContractDefaults_MatchSpecification()
     {
         Assert.Equal("pgmPvwTop", StudioViewModel.DefaultMultiviewLayoutMode);
-        Assert.Equal(10, StudioViewModel.DefaultMultiviewTileCount);
+        Assert.Equal(16, StudioViewModel.DefaultMultiviewTileCount);
         Assert.Equal(1, StudioViewModel.MinMultiviewTileCount);
-        Assert.Equal(10, StudioViewModel.MaxMultiviewTileCount);
+        Assert.Equal(16, StudioViewModel.MaxMultiviewTileCount);
     }
 }

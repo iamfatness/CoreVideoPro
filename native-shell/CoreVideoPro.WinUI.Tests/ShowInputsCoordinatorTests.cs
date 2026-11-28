@@ -233,7 +233,7 @@ public sealed class ShowInputsCoordinatorTests
         });
         Assert.Same(rows, coordinator.MultiviewInputRows.Rows);
         Assert.Same(row, rows[1]);
-        Assert.Equal(10, rows.Count);
+        Assert.Equal(ShowInputRosterService.MaxMultiviewBoxes, rows.Count);
         Assert.Equal("VIDEO OFF", row.StatusLabel);
         Assert.Equal("—", row.FormatLabel);
         bridge.EmitMultiview(new MultiviewSharedTexture
@@ -1139,6 +1139,11 @@ public sealed class ShowInputsCoordinatorTests
             .ToList();
 
         coordinator.ReapplyShowInputAutoAssign();
+        // Auto-assign stops at Pro's 8-feed Zoom budget (owner ruling 2026-11-13); the ninth
+        // guest goes into a slot by hand, which the operator may always do.
+        host.ShowInputs[8].Kind = ShowInputKind.ZoomParticipant;
+        host.ShowInputs[8].ParticipantId = "p9";
+        host.ShowInputs[8].InShow = true;
         foreach (var editor in coordinator.ShowInputEditors.Where(editor => editor.Kind == ShowInputKind.ZoomParticipant))
         {
             editor.IsoEnabled = true;

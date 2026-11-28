@@ -97,7 +97,7 @@ public static class MultiviewOverlayFormatting
     /// The tiles that get a click target and decorations: every PGM/PVW cell plus up to
     /// <see cref="ShowInputRosterService.MaxShowInputs"/> source cells. The cap applies to
     /// SOURCES only — the core's list leads with PGM and PVW, so a flat Take(10) used to drop
-    /// sources 9 and 10 (not cueable, no label/tally).
+    /// sources 9 and 10 (not cueable, no label/tally); the cap is 16 since the 2026-11-13 ruling.
     /// </summary>
     public static IReadOnlyList<MultiviewTile> SelectOverlayTiles(IEnumerable<MultiviewTile> tiles)
     {

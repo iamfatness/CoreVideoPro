@@ -25,7 +25,7 @@ public static class SceneRoutingService
     ];
 
     /// <summary>
-    /// "Add source" picker for the scene canvas (§4 IA): Inputs 1-10 plus the auto roles
+    /// "Add source" picker for the scene canvas (§4 IA): Inputs 1-16 plus the auto roles
     /// (Active Speaker / Screen Share / Media). The <c>input-NN</c> values mirror the per-layer
     /// source picker so an added layer references an Input directly.
     /// </summary>

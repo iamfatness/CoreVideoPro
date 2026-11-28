@@ -828,7 +828,7 @@ extension ShellTests {
             e.previewRoutes = cued ? [fixedRoute("cued")] : []; e.multiview = wall(["t0"])
             return e
         }
-        let after = ZoomSourceBudget.spineParts(cue(true), names: ["cued": "Cued guest"])
+        let after = ZoomSourceBudget.spineParts(cue(true), names: ["cued": "Cued guest"], max: 10)
         expectEqual(video(ZoomSourceBudget.resolve(cue(true))), video(ZoomSourceBudget.resolve(cue(false))),
                     "\(t).AtTheCapCueingPreviewNeverTakesVideoFromAProgramGalleryMember: Program unchanged")
         expectEqual(after.previewNotice, "no video: Cued guest (subscription limit 10)", "\(t).AtTheCap…: the PVW cell names them")
@@ -1232,8 +1232,8 @@ extension ShellTests {
         input.participants = (0..<11).map { ("g\($0)", true) }
         input.multiview = (0..<11).map { ["kind": "participant-video", "participantId": "g\($0)", "slot": $0, "label": "Guest \($0)"] }
         let parts = ZoomSourceBudget.spineParts(input, names: [:])
-        expectEqual(parts.multiviewSources.last?["label"] as? String, "Guest 10 · no video: subscription limit (10)", "\(w): label")
-        expectEqual(parts.shortfall.first?["participantId"] as? String, "g10", "\(w): shortfall")
+        expectEqual(parts.multiviewSources.last?["label"] as? String, "Guest 10 · no video: subscription limit (8)", "\(w): label")
+        expectEqual(parts.shortfall.first?["participantId"] as? String, "g8", "\(w): shortfall (the cap is 8)")
     }
 
     // ── Task 14 ──────────────────────────────────────────────────────────────

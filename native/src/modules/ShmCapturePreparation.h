@@ -11,7 +11,9 @@ class ShmCapturePreparation {
  public:
   static constexpr size_t kBudgetBytes = 512u * 1024u * 1024u;
   static constexpr size_t kPoolFrames = 4;
-  static constexpr size_t kMaxSources = 16;
+  // 24 = the 16 Show Inputs (owner ruling 2026-11-13) plus headroom for devices
+  // registered but not on the wall; was exactly 16. kBudgetBytes still bounds memory.
+  static constexpr size_t kMaxSources = 24;
   struct Stats {
     uint64_t accepted = 0, refused = 0, prepared = 0, torn = 0, poolBusy = 0, failed = 0;
     uint64_t copyTotalNs = 0, copyMaximumNs = 0;
