@@ -68,7 +68,7 @@ public sealed partial class GraphicsDesignerControl
         var tint = ContentText("Glass tint", ReadString(backdrop, "tint", "#0A0F1866"));
         var panel = ContentOptions(enabled, blur, tint, Note("Blur costs GPU time on every output. Up to four glass plates per graphic."));
         AddContentApply(panel, "Apply glass", () => Apply(s => GraphicsTemplateEditor.SetBackdrop(s, layer.Id,
-            enabled.IsChecked == true, blur.Value, tint.Text)));
+            enabled.IsChecked == true, blur.Value, tint.Literal)));
         _layerBody.Children.Add(new Expander { Header = "Glass", Content = panel, HorizontalAlignment = HorizontalAlignment.Stretch });
     }
 
