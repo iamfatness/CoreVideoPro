@@ -263,7 +263,7 @@ Ordered by how many looks each unlocks:
 | P6 | **Per-word / per-line stagger** | every pack's polish | `stagger: {by: "line"\|"word", ms}` on a text layer | atlas slices per line exist; extend unit split | same, shared core |
 | P7 | **Looping accent** | News shine sweep, Esports pulse, Worship drift | `loop: {type: "sweep"\|"pulse"\|"drift", periodMs}` on a layer | per-frame transform/opacity of a pre-rastered slice (no re-raster) | same |
 | P8 | **Bundled fonts on Windows** | consistent packs on both | pack ships OFL fonts; `fonts/` in package | private font collection via `IDWriteFactory5::CreateInMemoryFontFileLoader` (or the existing collection loader extended to the pack dir) | already loads `COREVIDEO_GRAPHICS_FONTS_DIR`, extend to pack dir |
-| P9 | **Backdrop blur ("glass")** | Worship, Corporate | `backdrop: {blur, tint}` | needs a GPU pass in the compositor over Program, not in the overlay raster | Metal MPS blur pass |
+| P9 | **Backdrop blur ("glass")** | Worship, Corporate | `backdrop: {blur, tint}` on a rect (blur 1-64 px at 1080p, at most 4 plates) | GPU pass in the compositor over Program (`D3D11BackdropBlur`), not in the overlay raster | Metal shader matching the Windows kernel (`MetalBackdropBlur`); both judged against one CPU reference. Built in slice 9: `backdrop-blur.md` |
 
 - **P1-P4 are the minimum for packs that do not look flat.**
 - P5-P7 add motion polish.
@@ -271,6 +271,8 @@ Ordered by how many looks each unlocks:
   and mimoLive warns about the same cost. **Owner ruling (2026-11-27): true backdrop blur is required.**
   No frosted approximation ships. Glass looks wait for P9 on both Windows and Mac, and P9 must hold the
   outputs release gate (zero dropped frames at 1080p60) with two pack graphics plus a crawl on air.
+  Slice 9 built the pass on both compositors and measured its GPU cost in isolation
+  (`docs/reference/backdrop-blur.md`). The outputs-gate soak with glass on air is still unverified.
 
 Each primitive carries:
 - a parity fixture in `native/tests/fixtures/graphics-parity/`;

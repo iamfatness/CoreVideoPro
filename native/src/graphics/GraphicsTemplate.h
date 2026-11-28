@@ -30,6 +30,14 @@ struct GraphicsGradient {
   double angle = 90, centerX = 0.5, centerY = 0.5;
   std::vector<GraphicsGradientStop> stops;
 };
+// P9 true backdrop blur ("glass", spec 6.1): the Program pixels behind a rect
+// plate are Gaussian-blurred and tinted by a GPU pass in the COMPOSITOR before
+// the graphic composites over them. The overlay raster draws the plate's fill
+// as usual and never sees the backdrop. `blur` is the Gaussian radius in px at
+// 1080p (sigma = blur / 2), bounded; `tint` is ARGB like every primitive colour.
+inline constexpr double kGraphicsBackdropBlurMin = 1, kGraphicsBackdropBlurMax = 64;
+inline constexpr size_t kGraphicsBackdropMaxPlates = 4;  // per template (frame budget)
+struct GraphicsBackdrop { double blur = 0; uint32_t tint = 0; };
 struct GraphicsCrawlGeometry {
   GraphicsBox window, clip;
   double speed = 120, passWidth = 0;
@@ -63,8 +71,25 @@ struct GraphicsPrimitive {
   bool italic = false;
   std::optional<GraphicsTextOutline> outline;
   std::optional<GraphicsTextShadow> shadow;
+  std::optional<GraphicsBackdrop> backdrop;  // rect only
   std::shared_ptr<const GraphicsAsset> image;
   std::string fit = "contain", imageAlign = "center", imageVerticalAlign = "center";
+};
+// One glass plate as the compositor needs it, in template units. Collected
+// once on the raster owner with the prepared raster; nothing is allocated per
+// frame. `unit` is the plate's motion unit (sampled from `motion` when the
+// raster is a layered-motion atlas; a whole-graphic raster moves as one).
+struct GraphicsBackdropPlate {
+  GraphicsBox box, clip;
+  double cornerRadius = 0, opacity = 1, blur = 0;
+  uint32_t tint = 0;
+  int unit = -1;
+};
+struct GraphicsDrawing;
+struct GraphicsBackdropSet {
+  double width = 0, height = 0;  // template bounds (the raster's coordinate space)
+  std::vector<GraphicsBackdropPlate> plates;
+  std::shared_ptr<const GraphicsDrawing> motion;  // set only for a runs (atlas) raster
 };
 struct GraphicsNodeGeometry { std::string id,parent,type; GraphicsBox box,clip; bool visible=true; };
 struct GraphicsDrawing {
@@ -122,6 +147,9 @@ struct GraphicsTemplateInput {
 // most) and one split of the surrounding run, each item at most 8192 template
 // units wide. Capped at the 256 MiB cache budget. The worker charges the
 // actual atlas against the process budget after layout.
+// The drawing's glass plates, or null when it has none (the common case costs
+// nothing). The caller attaches `motion` once the drawing is retained by a run layout.
+std::shared_ptr<GraphicsBackdropSet> collectBackdrops(const GraphicsDrawing& drawing);
 uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, int height);
 // The start and end points {x0, y0, x1, y1} of a linear gradient across `box`
 // (graphics styles P2), shared by both rasters. 90 and 180 degrees are the V1

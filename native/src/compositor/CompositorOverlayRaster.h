@@ -55,6 +55,8 @@ class CompositorOverlayRaster {
     return lastState_;
   }
   std::shared_ptr<const graphics::GraphicsRunLayout> activeRuns() const;
+  // P9 glass plates of the last call's prepared raster; null when it has none.
+  std::shared_ptr<const graphics::GraphicsBackdropSet> activeBackdrops() const;
   std::shared_ptr<const void> lease() const { return activeLease_; }
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource();
   void refuseGpuLease() {
@@ -133,6 +135,7 @@ class CompositorOverlayRaster {
   struct OverlayRasterTex {
     std::vector<uint8_t> thumbnail;
     std::shared_ptr<const graphics::GraphicsRunLayout> runs;
+    std::shared_ptr<const graphics::GraphicsBackdropSet> backdrops;
     // Declared first so the texture/view release before their budget charge.
     std::shared_ptr<graphics::GraphicsResourceBudget::Lease> budget;
     ComPtrLite<ID3D11Texture2D> texture;

@@ -35,6 +35,7 @@
 #include "compositor/TilesDecorationParams.h"
 #include "compositor/CompositorShaders.h"  // extracted HLSL shader sources + pure shader/format helpers
 #include "compositor/D3DGradeScopes.h"
+#include "compositor/D3D11BackdropBlur.h"  // P9 true backdrop blur ("glass")
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
@@ -520,6 +521,7 @@ class D3D11Compositor final : public ICompositor {
     }
 
     overlayRaster_.beginFrame();
+    backdropFailedThisFrame_ = false;
     const float background[4] = {0.047f, 0.067f, 0.094f, 1.f};
     ID3D11RenderTargetView* renderTargets[] = {renderTargetView_.get()};
     context_->OMSetRenderTargets(1, renderTargets, nullptr);
@@ -542,6 +544,8 @@ class D3D11Compositor final : public ICompositor {
     const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
+    if (backdropFailedThisFrame_) frame.warnings.push_back("graphics-backdrop-unavailable");
+    backdropFailedThisFrame_ = false;
     if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
     if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
     if (!frame.warnings.empty()) frame.health = "degraded";
@@ -1378,6 +1382,11 @@ class D3D11Compositor final : public ICompositor {
     }
 
     pipelineReady_ = true;
+    // P9 glass: compiled once with the pipeline. A failure leaves Program
+    // working; a glass plate then degrades its frame with a named warning.
+    std::string backdropError;
+    if (!backdropBlur_.initialize(device_.get(), backdropError))
+      ::corevideo::core::nativeLogf("[backdrop] glass pass unavailable: %s\n", backdropError.c_str());
   }
 
   bool ensureRenderTarget(int width, int height) {
@@ -1409,6 +1418,11 @@ class D3D11Compositor final : public ICompositor {
     if (FAILED(device_->CreateRenderTargetView(renderTarget_.get(), nullptr, renderTargetView_.put()))) {
       return false;
     }
+
+    // P9 glass scratch is reserved with the Program target (a size change, never
+    // a frame), so a glass graphic going to air allocates nothing.
+    if (backdropBlur_.ready() && !backdropBlur_.reserve(device_.get(), width, height))
+      ::corevideo::core::nativeLogf("[backdrop] glass scratch reservation failed for %dx%d\n", width, height);
 
     textureDesc.Usage = D3D11_USAGE_STAGING;
     textureDesc.BindFlags = 0;
@@ -2133,6 +2147,14 @@ class D3D11Compositor final : public ICompositor {
       return false;
     }
 
+    // P9 glass: blur the Program already beneath each plate before any of the
+    // graphic's own pixels land on it. Read the plate list now: it belongs to
+    // the raster adopted above (the next raster call replaces it).
+    if (overlayView && !overlay.holdLastRaster) {
+      if (const auto backdrops = overlayRaster_.activeBackdrops())
+        drawBackdrops(*backdrops, overlay, animated, clip, alpha);
+    }
+
     // Brand-styled band background.
     context_->RSSetState(scissorRasterizerState_.get());
     setScissorFromRect(clip);
@@ -2211,6 +2233,51 @@ class D3D11Compositor final : public ICompositor {
     }
     context_->RSSetState(rasterizerState_.get());
     return composited;
+  }
+
+  // P9 true backdrop blur (compositor/BackdropBlur.h, D3D11BackdropBlur). Runs
+  // on whatever target this pass has bound (Program, Preview, multiview), so a
+  // glass graphic looks the same on every monitor. Skipped in the NDI graphics
+  // key pass: a key is composited downstream over pictures this core never
+  // sees, so there is nothing true to blur; the plate's fill still keys.
+  void drawBackdrops(const graphics::GraphicsBackdropSet& backdrops, const CompositorOverlayContent& overlay,
+                     const compositor::LayerRect& animated, const compositor::LayerRect& clip, float alpha) {
+    if (!backdropsEnabled_ || backdrops.plates.empty()) return;
+    ComPtrLite<ID3D11RenderTargetView> view;
+    context_->OMGetRenderTargets(1, view.put(), nullptr);  // adds the reference ComPtrLite releases
+    ComPtrLite<ID3D11Resource> resource;
+    ComPtrLite<ID3D11Texture2D> texture;
+    if (view) view->GetResource(resource.put());
+    if (resource) resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.put()));
+    const auto state = overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
+    bool drew = false;
+    for (const auto& plate : backdrops.plates) {
+      compositor::BackdropDraw draw;
+      if (!compositor::resolveBackdropDraw(plate, backdrops, state, animated, clip, alpha, targetWidth_, targetHeight_, draw))
+        continue;
+      // Grows only for a secondary target larger than Program (once).
+      const bool ok = texture && backdropBlur_.ready() &&
+          backdropBlur_.reserve(device_.get(), targetWidth_, targetHeight_) &&
+          backdropBlur_.apply(context_.get(), texture.get(), view.get(), targetWidth_, targetHeight_, draw);
+      if (!ok) backdropFailedThisFrame_ = true;
+      drew = true;
+    }
+    if (!drew) return;
+    // Restore the compositor's pipeline state for the draws that follow.
+    if (view) {
+      ID3D11RenderTargetView* targets[] = {view.get()};
+      context_->OMSetRenderTargets(1, targets, nullptr);
+    }
+    ID3D11Buffer* buffers[] = {constantBuffer_.get()};
+    ID3D11SamplerState* samplers[] = {samplerState_.get()};
+    context_->PSSetConstantBuffers(0, 1, buffers);
+    context_->PSSetSamplers(0, 1, samplers);
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context_->VSSetShader(vertexShader_.get(), nullptr, 0);
+    context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
+    context_->RSSetState(rasterizerState_.get());
   }
 
   // The DirectWrite/WIC/D2D overlay-texture raster (ensureOverlayRasterFactories
@@ -3894,10 +3961,12 @@ class D3D11Compositor final : public ICompositor {
     context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
     context_->RSSetState(rasterizerState_.get());
+    backdropsEnabled_ = false;  // P9: no true backdrop exists in a key (drawBackdrops)
     for (const auto& layer : layers) {
       if (!graphicsKeyLayerSelected(layer.plan)) continue;
       drawLayer(layer, plan);
     }
+    backdropsEnabled_ = true;
     // Leave the Program target bound again for whatever follows this tick.
     ID3D11RenderTargetView* programTargets[] = {renderTargetView_.get()};
     context_->OMSetRenderTargets(1, programTargets, nullptr);
@@ -3919,6 +3988,9 @@ class D3D11Compositor final : public ICompositor {
   // texture cache). Owns its own state; runs only on the render thread, driven
   // by drawOverlayLayer. Extracted move-only into CompositorOverlayRaster.
   CompositorOverlayRaster overlayRaster_;
+  D3D11BackdropBlur backdropBlur_;
+  bool backdropFailedThisFrame_ = false;
+  bool backdropsEnabled_ = true;  // false only inside renderGraphicsKeyPass
   // #1073: per-layer last ready raster for overlays flagged holdLastRaster
   // (Tiles name lines), keyed by the resolved layer id so the program,
   // preview and multiview-cell copies of one name retain independently.

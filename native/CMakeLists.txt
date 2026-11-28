@@ -148,6 +148,7 @@ add_library(corevideo_native
   src/modules/OutputDestinationSupervisor.cpp
   src/modules/BrowserSourceHostAdapter.cpp
   src/compositor/CompositorOverlayRaster.cpp
+  src/compositor/D3D11BackdropBlur.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/EncoderCapacityProbe.cpp
   src/modules/MediaFoundationGpuVideoEncoder.cpp
@@ -203,6 +204,7 @@ add_library(corevideo_native
 if(APPLE)
   target_sources(corevideo_native PRIVATE
     src/compositor/MetalCompositorAdapter.mm
+    src/compositor/MetalBackdropBlur.mm
     src/compositor/CoreTextOverlayRaster.mm
     src/compositor/MetalPixelBufferTextures.mm
     src/compositor/MetalGradePreview.mm
@@ -212,6 +214,7 @@ if(APPLE)
     src/modules/SckScreenCaptureAdapter.mm)
   set_source_files_properties(
     src/compositor/MetalCompositorAdapter.mm
+    src/compositor/MetalBackdropBlur.mm
     src/compositor/CoreTextOverlayRaster.mm
     src/compositor/MetalPixelBufferTextures.mm
     src/compositor/MetalGradePreview.mm
@@ -1060,6 +1063,8 @@ if(BUILD_TESTING)
     tests/SourceGradeIdentityTest.cpp
     tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
+    tests/D3D11BackdropBlurTest.cpp
+    tests/GraphicsBackdropTest.cpp
     tests/D3D11GraphicsReferenceTest.cpp
     tests/D2DCurveFlatteningTest.cpp
     tests/DirectorTest.cpp
@@ -1175,6 +1180,9 @@ if(BUILD_TESTING)
     target_sources(corevideo-native-tests PRIVATE tests/GraphicsParityImageApple.mm tests/MetalGraphicsParityTest.mm)
     set_source_files_properties(tests/GraphicsParityImageApple.mm tests/MetalGraphicsParityTest.mm
       PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # P9 true backdrop blur: the Metal pass against the shared CPU reference.
+    target_sources(corevideo-native-tests PRIVATE tests/MetalBackdropBlurTest.mm)
+    set_source_files_properties(tests/MetalBackdropBlurTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     # Zero-copy IOSurface media frames into the Metal compositor (N4).
     target_sources(corevideo-native-tests PRIVATE tests/MetalZeroCopyTest.mm tests/MetalEncoderExportTest.mm)
     set_source_files_properties(tests/MetalZeroCopyTest.mm tests/MetalEncoderExportTest.mm
