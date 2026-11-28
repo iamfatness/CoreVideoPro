@@ -29,9 +29,24 @@ public sealed partial class StudioViewModel
         return new() {Rules=rules,SourceTexts=texts};
     }
     public GraphicsWorkspaceSession GraphicsWorkspace => _graphicsWorkspace ??= CreateGraphicsWorkspace();
-    public GraphicsWorkspaceLibrary GraphicsLibrary => _graphicsLibrary ??= new(new GraphicsDocumentStore(
-        Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH") ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoreVideoPro", "graphics", "default.json")), GraphicsWorkspace);
+    public GraphicsWorkspaceLibrary GraphicsLibrary => _graphicsLibrary ??= CreateGraphicsLibrary();
+
+    private GraphicsWorkspaceLibrary CreateGraphicsLibrary()
+    {
+        var documentPath = Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoreVideoPro", "graphics", "default.json");
+        var library = new GraphicsWorkspaceLibrary(new GraphicsDocumentStore(documentPath), GraphicsWorkspace);
+        // Graphics styles slice 1: the app default palette lives beside the show document and is
+        // seeded once from the legacy brand kit (a never-edited kit seeds the stock look).
+        library.UsePaletteDefaults(new GraphicsPaletteDefaultsStore(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(documentPath))!, "palette-default.json")), () => {
+            var kit = BrandKit; var stock = CoreVideoPro.WinUI.Models.ProductionCatalog.BrandKit;
+            var unedited = string.Equals(kit.BrandColor, stock.BrandColor, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(kit.AccentColor, stock.AccentColor, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(kit.BackgroundColor, stock.BackgroundColor, StringComparison.OrdinalIgnoreCase);
+            return GraphicsPaletteMigration.FromBrandKit(kit.BrandColor, kit.AccentColor, kit.BackgroundColor, unedited);
+        });
+        return library;
+    }
 
     private GraphicsWorkspaceSession CreateGraphicsWorkspace()
     {

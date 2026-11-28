@@ -166,7 +166,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         if (_session?.Preview is not { } draft) { _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _editor.SetNativeUnavailable("Open a design to preview it."); return; }
         if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _editor.SetNativeUnavailable(invalid); return; }
         if (!_suspended && _attached?.IsOverlaysTab == true) {
-            var preview = draft.ForPreview(_session.PreviewPlay);
+            var preview = draft.ForPreview(_session.PreviewPlay, _session.Palette);
             // Authoring observations and the session's paired notifications can repeat the same draft.
             // Reissuing it would reset the native playback clock before a cycle could finish.
             if (_lastPreview is not { } last || !SamePreview(last, preview)) {
@@ -177,8 +177,9 @@ public sealed partial class GraphicsDesignerControl : UserControl
         } else { _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; }
     }
     private static bool SamePreview(NativeGraphicsPreview left, NativeGraphicsPreview right) =>
-        left with { Fields = default, Style = default } == right with { Fields = default, Style = default } &&
-        JsonElement.DeepEquals(left.Fields, right.Fields) && JsonElement.DeepEquals(left.Style, right.Style);
+        left with { Fields = default, Style = default, Palette = null } == right with { Fields = default, Style = default, Palette = null } &&
+        JsonElement.DeepEquals(left.Fields, right.Fields) && JsonElement.DeepEquals(left.Style, right.Style) &&
+        GraphicsPalette.SameResolved(left.Palette, right.Palette);
 
     private void OnEditorProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {

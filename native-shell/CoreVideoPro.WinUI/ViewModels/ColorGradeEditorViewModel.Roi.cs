@@ -13,9 +13,10 @@ public sealed partial class ColorGradeEditorViewModel
         var previous = _lowerThirdPreview?.Graphics;
         var next = preview.Graphics;
         if (previous is not null && next is not null &&
-            previous with { Fields = default, Style = default } == next with { Fields = default, Style = default } &&
+            previous with { Fields = default, Style = default, Palette = null } == next with { Fields = default, Style = default, Palette = null } &&
             System.Text.Json.JsonElement.DeepEquals(previous.Fields, next.Fields) &&
-            System.Text.Json.JsonElement.DeepEquals(previous.Style, next.Style))
+            System.Text.Json.JsonElement.DeepEquals(previous.Style, next.Style) &&
+            GraphicsPalette.SameResolved(previous.Palette, next.Palette))
             return;
 
         _lowerThirdPreview = preview;

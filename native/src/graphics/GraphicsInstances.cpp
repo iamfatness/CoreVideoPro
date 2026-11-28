@@ -99,9 +99,9 @@ bool GraphicsInstances::validId(const std::string& value) {
 std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPreview(const Json& draft, bool* busy) {
   if (busy) *busy = false;
   updateTemplates();
-  if (!draft.isObject() || draft.asObject().size() > 9) return {};
+  if (!draft.isObject() || draft.asObject().size() > 10) return {};
   for (const auto& [key, _] : draft.asObject())
-    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement" && key != "scratch" && key != "image" && key != "play") return {};
+    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement" && key != "scratch" && key != "image" && key != "play" && key != "palette") return {};
   if (const auto* play = draft.get("play"); play && !play->isNull()) {
     if (!play->isObject() || play->asObject().size() != 2) return {};
     const auto mode = play->getString("mode");
@@ -178,6 +178,12 @@ bool GraphicsInstances::layered(const Revision& revision) {
 }
 
 bool GraphicsInstances::readRevision(const Json& request, Revision& revision) {
+  // The resolved show palette (row override -> show palette) replaces the whole
+  // map; null clears it. Compatibility looks keep drawing from their appearance.
+  if (const auto* palette = request.get("palette")) {
+    if (!graphicsPaletteValid(*palette)) return false;
+    revision.palette = revision.definition && palette->isObject() && !palette->asObject().empty() ? *palette : Json{};
+  }
   if(const auto* image=request.get("image")) {
     if(image->isNull()) {revision.image.reset();revision.imageReference=Json{};}
     else {
@@ -278,6 +284,8 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
       {"templateFields", revision.templateFields}};
   // Whole-graphic opacity must fade a flattened raster. Its lease cannot adopt an atlas.
   if (wholeGraphicMotion) content["wholeGraphicMotion"] = true;
+  // Absent for a revision without a palette, so pre-palette identities are unchanged.
+  if (!revision.palette.isNull()) content["palette"] = revision.palette;
   const auto serialized = Json(std::move(content)).stringify();
   revision.contentHash = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size());
   if (revision.definition) {
@@ -285,11 +293,7 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
     const auto alpha = unsigned(std::lround(a.backgroundOpacity * 255)); static constexpr char hex[] = "0123456789ABCDEF";
     const auto background = a.backgroundColor + hex[alpha >> 4] + hex[alpha & 15];
     auto input = std::make_shared<GraphicsTemplateInput>(); input->definition = revision.definition; input->logo = revision.image; input->fields = revision.templateFields; input->placement=revision.placement;
-    input->brand = Json::Object{{"brand.primary", background}, {"brand.onPrimary", a.nameColor},
-        {"brand.onPrimaryMuted", a.titleColor}, {"brand.fontBody", a.fontFamily},
-        {"brand.secondary", a.titleColor}, {"brand.accent", a.accentColor},
-        {"brand.background", a.backgroundColor}, {"brand.foreground", a.nameColor}, {"brand.fontHeading", a.fontFamily},
-        {"brand.logo", revision.definition->assets().count("logo") ? "logo" : ""}};
+    input->brand = graphicsBrand(a, background, revision.definition->assets().count("logo") != 0, revision.palette);
     input->wholeGraphicMotion = wholeGraphicMotion;
     revision.templateInput = std::move(input);
   }
@@ -357,8 +361,8 @@ bool GraphicsInstances::apply(const Json& command) {
   // Bound before serializing a dedup fingerprint, and refuse unsupported knobs.
   static const std::set<std::string> common{"schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision"};
   static const std::map<std::string, std::set<std::string>> actionKeys{
-      {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"}},
-      {"graphics-instance-update", {"label", "rackOrder", "templateVersion", "sourceId", "fields", "style", "target", "animations", "binding", "placement", "image"}},
+      {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "palette", "animations", "binding", "placement", "image"}},
+      {"graphics-instance-update", {"label", "rackOrder", "templateVersion", "sourceId", "fields", "style", "palette", "target", "animations", "binding", "placement", "image"}},
       {"graphics-instance-cue", {"rideTake", "cueOwner"}}, {"graphics-instance-trigger", {"action", "target", "cueOwner"}},
       {"graphics-clock-control", {"action","configuration","expectedClockRevision"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
@@ -383,6 +387,7 @@ bool GraphicsInstances::apply(const Json& command) {
       if (!value.isString() || value.asString().size() > 2048 || value.asString().find('\0') != std::string::npos)
         return finish(requestId, false, "graphics-package-root-invalid");
     } else if(key=="image") {if(!value.isNull() && (!value.isObject() || value.asObject().size()!=3)) return finish(requestId,false,"invalid-graphics-image");}
+    else if (key == "palette") {if (!graphicsPaletteValid(value)) return finish(requestId, false, "invalid-graphics-palette");}
     else if (key == "configuration") {
       if(type=="graphics-automation-configure") {std::vector<GraphicsAutomation::Rule> rules;Json texts;std::string error;if(!GraphicsAutomation::readConfiguration(value,rules,texts,error)) return finish(requestId,false,error);}
       else {GraphicsClockConfig config;if(!GraphicsClockConfig::read(value,config)) return finish(requestId,false,"invalid-clock-configuration");}
@@ -656,7 +661,7 @@ bool GraphicsInstances::apply(const Json& command) {
         a.accentColor == b.accentColor && a.nameSize == b.nameSize && a.titleSize == b.titleSize &&
         a.backgroundOpacity == b.backgroundOpacity && a.padding == b.padding && a.width == b.width &&
         a.cornerRadius == b.cornerRadius && a.safeOffsetX == b.safeOffsetX && a.safeOffsetY == b.safeOffsetY &&
-        a.logoScale == b.logoScale && a.showLogo == b.showLogo;
+        a.logoScale == b.logoScale && a.showLogo == b.showLogo && revision.palette.stringify() == old.palette.stringify();
     const bool sameBinding = revision.binding.has_value() == old.binding.has_value() &&
         (!revision.binding || GraphicsSourceCatalog::same(*revision.binding, *old.binding));
     if (revision.imageReference.stringify()==old.imageReference.stringify() && revision.name == old.name && revision.title == old.title && revision.sourceId == old.sourceId && sameStyle && sameBinding &&
@@ -1340,6 +1345,7 @@ void GraphicsInstances::publish() {
       {"cuePending", instance.pendingCue != nullptr}, {"cueOwner", instance.cueOwner}, {"cuePreparation", instance.cuePreparation}, {"cueWarning", instance.cueWarning},
       {"cueFields", instance.cue ? (instance.cue->definition ? instance.cue->templateFields : Json{Json::Object{{"name", instance.cue->name}, {"title", instance.cue->title}}}) : Json{}},
       {"cueStyle", instance.cue ? styleState(instance.cue->appearance) : Json{}},
+      {"cuePalette", instance.cue ? instance.cue->palette : Json{}},
       {"cueBinding", instance.cue && instance.cue->binding ? contracts::toJson(*instance.cue->binding) : Json{}},
       {"cueAnimations", instance.cue ? Json{Json::Object{{"in", instance.cue->entrance.json()}, {"out", instance.cue->exit.json()}}} : Json{}},
       {"cueResource", resourceState(instance.cueResource)},
@@ -1354,7 +1360,7 @@ void GraphicsInstances::publish() {
       {"programBinding", instance.program && instance.program->binding ? contracts::toJson(*instance.program->binding) : Json{}},
       {"image",instance.draft->imageReference},{"cueImage",instance.cue?instance.cue->imageReference:Json{}},{"programImage",instance.program?instance.program->imageReference:Json{}},
       {"fields", instance.draft->definition ? instance.draft->templateFields : Json{Json::Object{{"name", instance.draft->name}, {"title", instance.draft->title}}}},
-      {"style", styleState(a)},
+      {"style", styleState(a)}, {"palette", instance.draft->palette},
       {"placement",instance.draft->placement ? instance.draft->placement->json() : Json{}},
       {"programPlacement",instance.program && instance.program->placement ? instance.program->placement->json() : Json{}},
       {"cuePlacement",instance.cue && instance.cue->placement ? instance.cue->placement->json() : Json{}},
@@ -1362,7 +1368,8 @@ void GraphicsInstances::publish() {
       {"programAnimations", instance.program ? Json{Json::Object{{"in", instance.program->entrance.json()}, {"out", instance.program->exit.json()}, {"layers", instance.program->layerMotion}}} : Json{}},
       {"programSourceId", instance.program ? instance.program->sourceId : ""},
       {"programFields", instance.program ? (instance.program->definition ? instance.program->templateFields : Json{Json::Object{{"name", instance.program->name}, {"title", instance.program->title}}}) : Json{}},
-      {"programStyle", instance.program ? styleState(instance.program->appearance) : Json{}}});
+      {"programStyle", instance.program ? styleState(instance.program->appearance) : Json{}},
+      {"programPalette", instance.program ? instance.program->palette : Json{}}});
   }
   const auto budget = GraphicsResourceBudget::process().counters();
   Json::Array operations;for(const auto& operation:operations_) operations.push_back(operation.result);

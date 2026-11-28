@@ -50,6 +50,10 @@ public sealed record GraphicsPlaylistRow
     /// applied to the native clock when the row's instance is created or its settings change.
     /// Null = the template's own default.</summary>
     public NativeGraphicsClockConfiguration? Clock { get; init; }
+    /// <summary>Per-row colour overrides (graphics styles slice 1): token -> #RRGGBBAA, laid over the
+    /// show palette for a declarative graphic. Null = the row follows the show palette.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? BrandOverrides { get; init; }
     [JsonIgnore] public bool HasVariants => Variants.Count > 0;
     public static bool ValidVariants(IReadOnlyList<GraphicsPlaylistVariant>? variants) => variants is not null && variants.Count <= 64 &&
         variants.All(v => v is { IsValid: true }) && variants.Select(v => v.Id).Distinct(StringComparer.Ordinal).Count() == variants.Count;
@@ -71,7 +75,8 @@ public sealed record GraphicsPlaylistRow
         SourceMappings is { Count: <= 30 } && SourceMappings.All(mapping => ValidVariableId(mapping.Key) && mapping.Value is not null && ValidVariableId(mapping.Value)) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
         (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&
-        (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64));
+        (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64)) &&
+        GraphicsPalette.ValidOverrides(BrandOverrides);
 }
 
 /// <summary>One line of a row's names list. <see cref="Id"/> is stable across edits so an

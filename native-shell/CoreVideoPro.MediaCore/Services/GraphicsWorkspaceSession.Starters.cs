@@ -38,7 +38,7 @@ public sealed partial class GraphicsWorkspaceSession
             var id = "graphic-" + Guid.NewGuid().ToString("N");
             if (!await Send("graphics.instance.create", new() { ["instanceId"] = id, ["templateId"] = draft.TemplateId,
                 ["templateVersion"] = draft.TemplateVersion, ["scope"] = "global", ["fields"] = draft.Fields,
-                ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image }, cancellation)) {
+                ["style"] = draft.StyleWire(), ["palette"] = draft.PaletteWire(Palette), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image }, cancellation)) {
                 Status = $"Added {added.Count} of four hidden graphics before the operation stopped: {Status}. Nothing was shown; existing graphics were kept.";
                 return false;
             }

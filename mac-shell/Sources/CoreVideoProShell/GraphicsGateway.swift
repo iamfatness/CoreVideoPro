@@ -123,9 +123,9 @@ enum GraphicsCommandRequest {
         "graphics.automation.configure": ["configuration", "expectedAutomationRevision"],
         "graphics.automation.control": ["action", "mode", "expectedAutomationRevision", "expectedActivationRevision"],
         "graphics.authority.set": ["family", "authority"],
-        "graphics.instance.create": ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style",
+        "graphics.instance.create": ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "palette",
                                      "animations", "binding", "placement", "image"],
-        "graphics.instance.update": ["label", "rackOrder", "templateVersion", "target", "sourceId", "fields", "style",
+        "graphics.instance.update": ["label", "rackOrder", "templateVersion", "target", "sourceId", "fields", "style", "palette",
                                      "animations", "binding", "placement", "image"],
         "graphics.instance.cue": ["rideTake", "cueOwner"],
         "graphics.instance.trigger": ["action", "target", "cueOwner"],
@@ -139,7 +139,7 @@ enum GraphicsCommandRequest {
     static let common: Set<String> = ["schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision"]
     private static let integerFields: Set<String> = ["rackOrder", "schemaVersion", "expectedRevision", "expectedClockRevision",
                                                      "expectedAutomationRevision", "expectedActivationRevision", "templateVersion"]
-    private static let objectFields: Set<String> = ["fields", "style", "animations", "binding", "placement", "configuration", "image"]
+    private static let objectFields: Set<String> = ["fields", "style", "palette", "animations", "binding", "placement", "configuration", "image"]
 
     struct Built { var wire: JSONObject; var requestId: String; var clientId: String }
     struct Refusal: Error, Equatable { var error: String; var requestId: String }
@@ -196,6 +196,12 @@ enum GraphicsCommandRequest {
                 let cap = name == "packagePath" || name == "packageRoot" ? 2048 : 256
                 guard let string = value as? String, string.utf8.count <= cap, !string.contains("\u{0}") else { return refuse() }
             }
+        }
+        // The resolved show palette (graphics styles slice 1, GraphicsCommandRequest.ValidPalette).
+        if let palette = body["palette"], !(palette is NSNull) {
+            guard let map = palette as? JSONObject,
+                  map.allSatisfy({ GraphicsPalette.tokens.contains($0.key) && GraphicsPalette.isColor($0.value as? String) })
+            else { return refuse("invalid-graphics-palette") }
         }
         if let owner = body["cueOwner"] {
             guard let owner = owner as? String, validId(owner),

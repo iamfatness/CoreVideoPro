@@ -55,6 +55,7 @@ class GraphicsInstances {
     std::shared_ptr<const GraphicsTemplate> definition;
     std::shared_ptr<const GraphicsTemplateInput> templateInput;
     rpc::Json templateFields,imageReference;
+    rpc::Json palette; // resolved show palette (token -> #RRGGBBAA); null = none
     std::shared_ptr<const GraphicsAsset> image;
     std::optional<GraphicsPlacement> placement;
     bool fieldsReady = false;

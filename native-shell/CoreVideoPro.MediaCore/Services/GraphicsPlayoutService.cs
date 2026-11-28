@@ -363,11 +363,14 @@ public sealed partial class GraphicsPlayoutService
         var motion = row.Motion is { } rowMotion ? rowMotion with { Layers = "whole" } :
             GraphicsDesignIds.IsDesignTemplateId(templateId) ? installed.Animations with { Layers = "own" } : Motion;
         var placement = row.Placement ?? installed.DefaultPlacement;
-        var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, placement, Image: row.Image);
+        var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, placement, Image: row.Image) { BrandOverrides = row.BrandOverrides };
+        // Row override -> show palette (graphics styles slice 1). Compatibility looks keep their appearance.
+        var palette = declarative ? draft.PaletteWire(_library.EffectivePalette) : null;
         if (state.Instances.FirstOrDefault(i => i.InstanceId == id) is not { } existing) {
             var body = new Dictionary<string, object?> {
                 ["instanceId"] = id, ["templateId"] = templateId, ["templateVersion"] = version, ["scope"] = "global", ["sceneId"] = "",
                 ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = motion, ["placement"] = placement, ["image"] = row.Image };
+            if (palette is not null) body["palette"] = palette;
             if (identity is not null) body["binding"] = identity;
             var created = await Send("graphics.instance.create", body, cancellation);
             if (!created.Accepted) return created;
@@ -378,13 +381,15 @@ public sealed partial class GraphicsPlayoutService
         await ConfigureClock(row, existing, cancellation);
         // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
         var designChanged = existing.TemplateVersion != version || existing.Animations != motion;
-        if (!designChanged && SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
+        var paletteChanged = declarative && !GraphicsPalette.SameResolved(GraphicsPalette.FromWire(existing.Palette), palette);
+        if (!designChanged && !paletteChanged && SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
             return new() { Accepted = true, InstanceId = id, CurrentRevision = existing.Revision, Reason = "Ready." };
         var update = new Dictionary<string, object?> { ["instanceId"] = id, ["expectedRevision"] = existing.Revision, ["target"] = "cue", ["fields"] = fields };
         if (designChanged) {
             update["templateVersion"] = version;
             update["animations"] = motion;
         }
+        if (paletteChanged) update["palette"] = palette;
         if (identity is not null) update["binding"] = identity;
         var updated = await Send("graphics.instance.update", update, cancellation);
         if (!updated.Accepted) return updated;

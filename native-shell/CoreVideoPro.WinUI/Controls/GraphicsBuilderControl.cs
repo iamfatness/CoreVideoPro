@@ -215,7 +215,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return; }
         if (!_suspended && _attached?.IsOverlaysTab == true) {
             // The core renders the private draft onto preview:lower-third; the lease pulls that surface into the canvas.
-            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()), continuous: _canvas.IsDragging);
+            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview(null, _session.Palette)), continuous: _canvas.IsDragging);
             _previewOwner ??= _attached.CreateAppearancePreview(_editor);
         } else { _previewOwner?.Dispose(); _previewOwner = null; }
     }
@@ -268,7 +268,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         } finally { _loading = false; }
         if (kind.Id != GraphicsBuilder.SponsorKindId && _session.State?.Templates.FirstOrDefault(t => t.TemplateId == row.TemplateId && t.TemplateVersion == row.TemplateVersion) is { } template && !_session.Busy) {
             _session.Browse(template);
-            if (_session.Draft is { } draft) _session.Edit(draft with { Fields = GraphicsBuilder.FieldsElement(row), Style = row.Style, Image = row.Image, Placement = row.Placement ?? template.DefaultPlacement });
+            if (_session.Draft is { } draft) _session.Edit(draft with { Fields = GraphicsBuilder.FieldsElement(row), Style = row.Style, BrandOverrides = row.BrandOverrides, Image = row.Image, Placement = row.Placement ?? template.DefaultPlacement });
         }
         if (_attached is { } studio && studio.GraphicsDesignRowId == rowId) studio.GraphicsDesignRowId = "";
         _formSignature = ""; _looksSignature = ""; RefreshAll();
@@ -405,11 +405,19 @@ public sealed partial class GraphicsBuilderControl : UserControl
             var swatches = new Grid { ColumnSpacing = 8, RowSpacing = 6 };
             swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             swatches.RowDefinitions.Add(new() { Height = GridLength.Auto }); swatches.RowDefinitions.Add(new() { Height = GridLength.Auto });
-            var cells = new[] { Swatch("Accent", s => s.AccentColor, (s, c) => s with { AccentColor = c }), Swatch("Background", s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }),
-                Swatch("Name", s => s.NameColor, (s, c) => s with { NameColor = c }), Swatch("Second line", s => s.TitleColor, (s, c) => s with { TitleColor = c }) };
+            var cells = new[] { Swatch("Accent", GraphicsPalette.Accent, s => s.AccentColor, (s, c) => s with { AccentColor = c }), Swatch("Background", GraphicsPalette.Primary, s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }),
+                Swatch("Name", GraphicsPalette.OnPrimary, s => s.NameColor, (s, c) => s with { NameColor = c }), Swatch("Second line", GraphicsPalette.OnPrimaryMuted, s => s.TitleColor, (s, c) => s with { TitleColor = c }) };
             for (var i = 0; i < cells.Length; i++) { cells[i].HorizontalAlignment = HorizontalAlignment.Stretch; Grid.SetColumn(cells[i], i % 2); Grid.SetRow(cells[i], i / 2); swatches.Children.Add(cells[i]); }
             _colors.Children.Add(swatches);
-            var brand = StudioBrushes.ChipButton("Use brand kit colors"); brand.Click += (_, _) => ApplyBrandKit(); _colors.Children.Add(brand);
+            // Declarative looks follow the show palette; a swatch here is a per-graphic override (graphics styles slice 1).
+            // Compatibility looks still draw from their own appearance and keep the brand kit shortcut.
+            if (draft.Declarative) {
+                var follow = StudioBrushes.ChipButton("Use show palette"); follow.Click += (_, _) => { _session?.ClearBrandOverrides(); _dirty = true; RefreshColorSwatches(); RefreshSaveButton(); };
+                ToolTipService.SetToolTip(follow, "Drop this graphic's own colours so it follows Graphics → Design → Palette");
+                _colors.Children.Add(follow);
+            } else {
+                var brand = StudioBrushes.ChipButton("Use brand kit colors"); brand.Click += (_, _) => ApplyBrandKit(); _colors.Children.Add(brand);
+            }
         } finally { _loading = false; }
     }
 
@@ -457,11 +465,24 @@ public sealed partial class GraphicsBuilderControl : UserControl
 
     private void Set(string field, JsonElement value) { if (_session is { Busy: false }) { _session.SetField(field, value); _dirty = true; RefreshSaveButton(); } }
 
-    private FrameworkElement Swatch(string label, Func<LowerThirdAppearance, string> read, Func<LowerThirdAppearance, string, LowerThirdAppearance> update)
+    private FrameworkElement Swatch(string label, string token, Func<LowerThirdAppearance, string> read, Func<LowerThirdAppearance, string, LowerThirdAppearance> update)
     {
-        var current = _session?.Draft?.Style is { } style ? read(style) : "";
-        var swatch = SwatchButton(label, current, hex => { if (_session?.Draft is { } d) { _session.SetStyle(update(d.Style, hex)); _dirty = true; RefreshSaveButton(); } });
-        swatch.Tag = (Func<string>)(() => _session?.Draft?.Style is { } s ? read(s) : ""); return swatch;
+        // A declarative draft shows (and overrides) its resolved palette colour; the alpha of the
+        // plate token is kept from the palette because this picker is opaque (CvColorField is slice 2).
+        string Current() {
+            if (_session?.Draft is not { } d) return "";
+            if (d.Declarative && d.PaletteWire(_session.Palette) is { } resolved && resolved.TryGetValue(token, out var value)) return value[..7];
+            return read(d.Style);
+        }
+        var swatch = SwatchButton(label, Current(), hex => {
+            if (_session?.Draft is not { } d) return;
+            if (d.Declarative && GraphicsPalette.TryNormalize(hex, out var opaque)) {
+                var alpha = d.PaletteWire(_session.Palette) is { } resolved && resolved.TryGetValue(token, out var was) ? was[7..] : "FF";
+                _session.SetBrandOverride(token, opaque[..7] + alpha);
+            } else _session.SetStyle(update(d.Style, hex));
+            _dirty = true; RefreshSaveButton();
+        });
+        swatch.Tag = (Func<string>)Current; return swatch;
     }
     private void RefreshColorSwatches()
     {

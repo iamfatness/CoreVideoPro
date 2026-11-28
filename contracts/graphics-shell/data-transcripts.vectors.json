@@ -980,7 +980,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -1430,7 +1434,11 @@
                     "table-row-5": "[\"5\",\"Dingoes\",\"7\"]"
                   },
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -2391,7 +2399,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -3358,7 +3370,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -3800,7 +3816,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -4761,7 +4781,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -5729,7 +5753,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -6697,7 +6725,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -7139,7 +7171,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -7558,7 +7594,11 @@
                     "programSourceId": "",
                     "programFields": null,
                     "programStyle": null,
-                    "programAnimations": null
+                    "programAnimations": null,
+                    "palette": null,
+                    "cuePalette": null,
+                    "programPalette": null,
+                    "rideTake": true
                   }
                 ],
                 "operations": [],
@@ -7976,7 +8016,11 @@
                     "programSourceId": "",
                     "programFields": null,
                     "programStyle": null,
-                    "programAnimations": null
+                    "programAnimations": null,
+                    "palette": null,
+                    "cuePalette": null,
+                    "programPalette": null,
+                    "rideTake": true
                   }
                 ],
                 "operations": [],
@@ -8402,7 +8446,11 @@
                       "table-row-5": "[\"5\",\"Dingoes\",\"7\"]"
                     },
                     "programStyle": null,
-                    "programAnimations": null
+                    "programAnimations": null,
+                    "palette": null,
+                    "cuePalette": null,
+                    "programPalette": null,
+                    "rideTake": true
                   }
                 ],
                 "operations": [],
@@ -9364,7 +9412,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -9806,7 +9858,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -10225,7 +10281,11 @@
                     "programSourceId": "",
                     "programFields": null,
                     "programStyle": null,
-                    "programAnimations": null
+                    "programAnimations": null,
+                    "palette": null,
+                    "cuePalette": null,
+                    "programPalette": null,
+                    "rideTake": true
                   }
                 ],
                 "operations": [],
@@ -11457,7 +11517,17 @@
                   "y": 0,
                   "scale": 1
                 },
-                "image": null
+                "image": null,
+                "palette": {
+                  "brand.primary": "#0C1118E6",
+                  "brand.secondary": "#E1E9F2FF",
+                  "brand.accent": "#44C1A1FF",
+                  "brand.surface": "#172433B3",
+                  "brand.onPrimary": "#F4F7FAFF",
+                  "brand.onSecondary": "#111111FF",
+                  "brand.onAccent": "#111111FF",
+                  "brand.onPrimaryMuted": "#44C1A1FF"
+                }
               }
             },
             "nodeAfter": {
@@ -11563,7 +11633,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -11988,7 +12062,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -12419,7 +12497,11 @@
                     "crawl-revision": "1"
                   },
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -13381,7 +13463,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -13812,7 +13898,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -14774,7 +14864,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -15205,7 +15299,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -16167,7 +16265,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -16598,7 +16700,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -18433,7 +18539,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -19402,7 +19512,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -19838,7 +19952,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -20800,7 +20918,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -21237,7 +21359,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],
@@ -22199,7 +22325,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -23168,7 +23298,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -24136,7 +24270,11 @@
               "programSourceId": "",
               "programFields": null,
               "programStyle": null,
-              "programAnimations": null
+              "programAnimations": null,
+              "palette": null,
+              "cuePalette": null,
+              "programPalette": null,
+              "rideTake": true
             }
           ],
           "operations": [],
@@ -24573,7 +24711,11 @@
                   "programSourceId": "",
                   "programFields": null,
                   "programStyle": null,
-                  "programAnimations": null
+                  "programAnimations": null,
+                  "palette": null,
+                  "cuePalette": null,
+                  "programPalette": null,
+                  "rideTake": true
                 }
               ],
               "operations": [],

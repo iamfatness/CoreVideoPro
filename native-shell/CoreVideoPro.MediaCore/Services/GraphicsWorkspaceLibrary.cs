@@ -21,7 +21,9 @@ public sealed partial class GraphicsWorkspaceLibrary
     public Task LoadAsync() => _load ??= LoadCore();
     private async Task LoadCore()
     {
-        var result = await _store.LoadAsync(); Document = result.Document; ReadOnly = result.ReadOnly; Status = result.Status; Changed?.Invoke(this, EventArgs.Empty);
+        var result = await _store.LoadAsync(); ReadOnly = result.ReadOnly; Status = result.Status;
+        Document = await AdoptPaletteAsync(result.Document); _session.SetPalette(EffectivePalette);
+        Changed?.Invoke(this, EventArgs.Empty);
     }
     public async Task<bool> SaveCueAsync(string name,JsonElement? sourceOverrides=null,JsonElement? brand=null)
     {
@@ -226,7 +228,7 @@ public sealed partial class GraphicsWorkspaceLibrary
         if (Busy) return Fail("A graphics save is in progress. Wait for completion before another edit.");
         document = PruneTemplates(document);
         Busy = true; Changed?.Invoke(this, EventArgs.Empty);
-        try { await _store.SaveAsync(document, cancellation); Document = document; Status = success; Changed?.Invoke(this, EventArgs.Empty); return true; }
+        try { await _store.SaveAsync(document, cancellation); Document = document; _session.SetPalette(EffectivePalette); Status = success; Changed?.Invoke(this, EventArgs.Empty); return true; }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message); }
         finally { Busy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }

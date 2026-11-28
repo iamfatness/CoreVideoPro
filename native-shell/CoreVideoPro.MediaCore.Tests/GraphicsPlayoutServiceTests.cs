@@ -67,14 +67,17 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
                 var binding = input.TryGetProperty("binding", out var b) && b.ValueKind == JsonValueKind.Object ? JsonSerializer.Deserialize<SourceInstanceIdentity>(b, Json) : null;
                 _state = _state with { Instances = [.. _state.Instances, new() { InstanceId = id, Revision = 1, TemplateId = input.GetProperty("templateId").GetString()!, TemplateVersion = input.GetProperty("templateVersion").GetInt32(), Scope = "global",
                     Animations = JsonSerializer.Deserialize<NativeGraphicsAnimations>(input.GetProperty("animations"), Json)!,
-                    Fields = JsonSerializer.Deserialize<NativeGraphicsFields>(input.GetProperty("fields"), Json)!, Binding = binding, SourceId = binding?.SourceId ?? "" }] };
+                    Fields = JsonSerializer.Deserialize<NativeGraphicsFields>(input.GetProperty("fields"), Json)!, Binding = binding, SourceId = binding?.SourceId ?? "",
+                    // The core echoes the resolved show palette it accepted (graphics styles slice 1).
+                    Palette = input.TryGetProperty("palette", out var createdPalette) && createdPalette.ValueKind == JsonValueKind.Object ? createdPalette.Clone() : null }] };
                 break;
             case "graphics.instance.update":
                 revision = _state.Instances.Single(i => i.InstanceId == id).Revision + 1;
                 _state = _state with { Instances = Map(i => i with { Revision = revision, Fields = JsonSerializer.Deserialize<NativeGraphicsFields>(input.GetProperty("fields"), Json)!,
                     ProgramRevision = input.GetProperty("target").GetString() == "program" ? revision : i.ProgramRevision,
                     TemplateVersion = input.TryGetProperty("templateVersion", out var version) ? version.GetInt32() : i.TemplateVersion,
-                    Animations = input.TryGetProperty("animations", out var animations) ? JsonSerializer.Deserialize<NativeGraphicsAnimations>(animations, Json)! : i.Animations }) };
+                    Animations = input.TryGetProperty("animations", out var animations) ? JsonSerializer.Deserialize<NativeGraphicsAnimations>(animations, Json)! : i.Animations,
+                    Palette = input.TryGetProperty("palette", out var palette) ? (palette.ValueKind == JsonValueKind.Object ? palette.Clone() : null) : i.Palette }) };
                 break;
             case "graphics.instance.cue":
                 var expected = input.GetProperty("expectedRevision").GetInt64();
