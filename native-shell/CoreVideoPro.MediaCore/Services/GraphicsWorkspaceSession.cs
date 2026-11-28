@@ -275,6 +275,8 @@ public sealed partial class GraphicsWorkspaceSession
     }
     public void SetPlacement(NativeGraphicsPlacement? placement) { if (Draft is not null && (placement is null || placement.IsValid)) Edit(Draft with { Placement = placement }); }
     public void SetStyle(LowerThirdAppearance style) { if (Draft is not null && style.IsValid) Edit(Draft with { Style = style }); }
+    /// <summary>The draft's motion as the private preview plays it (Builder Play in / Play out, slice 11).</summary>
+    public void SetAnimations(NativeGraphicsAnimations animations) { if (Draft is not null && GraphicsPlaylistRow.ValidMotion(animations) && Draft.Animations != animations) Edit(Draft with { Animations = animations }); }
     public void BeginGesture() { if (!Busy) _gesture ??= Draft; }
     public void EndGesture() { if (_gesture is { } before && Draft is { } after && !Same(before, after)) PushUndo(before); _gesture = null; }
     public void CancelGesture() { if (_gesture is { } before) { Draft = before; _gesture = null; StopOneShotPreview(); NotifyPreview(); } }
@@ -503,6 +505,10 @@ public sealed partial class GraphicsWorkspaceSession
         finally {ImportBusy=false;Changed?.Invoke(this,EventArgs.Empty);}
     }
     public Task<bool> RefreshCatalogAsync(CancellationToken cancellation = default) => Run(() => Send("graphics.template.list", new() {["includeThumbnails"]=true}, cancellation));
+    /// <summary>Lists the catalog with thumbnails rendered in <paramref name="palette"/> (graphics styles slice 11):
+    /// the Builder's style cards show every look in the show's own colours. A new palette re-renders them.</summary>
+    public Task<bool> RefreshCatalogAsync(IReadOnlyDictionary<string, string>? palette, CancellationToken cancellation = default) =>
+        Run(() => Send("graphics.template.list", palette is { Count: > 0 } ? new() {["includeThumbnails"]=true, ["palette"]=palette} : new() {["includeThumbnails"]=true}, cancellation));
     public Task<bool> RestoreAsync(GraphicsSavedCue cue, CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity? binding = null, CancellationToken cancellation = default) => Run(async () => {
         if (cue.Draft is not { } draft) { Status = "Saved cue has no valid draft."; return false; }
         if (cue.SourceId.Length != 0 && binding is null) { Status = "Choose the current source explicitly before restoring this bound cue."; return false; }

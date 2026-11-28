@@ -88,7 +88,7 @@ public static class GraphicsCommandRequest
         ["graphics.instance.cue"] = ["rideTake", "cueOwner"], ["graphics.instance.trigger"] = ["action", "target", "cueOwner"],
         ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
-        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails"],
+        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails", "palette"],
         ["graphics.template.remove"] = ["templateId", "templateVersion"]
     };
     private static readonly HashSet<string> Common = new(StringComparer.Ordinal)
@@ -328,6 +328,11 @@ public static class GraphicsCommandRequest
             if (phase.Name == "layers")
             {
                 if (phase.Value.ValueKind != JsonValueKind.String || phase.Value.GetString() is not ("own" or "whole")) return false;
+                continue;
+            }
+            if (phase.Name == "speed")
+            {
+                if (!phase.Value.TryGetDouble(out var speed) || !GraphicsPlaylistRow.ValidSpeed(speed)) return false;
                 continue;
             }
             if (phase.Name is not ("in" or "out") || phase.Value.ValueKind != JsonValueKind.Object) return false;

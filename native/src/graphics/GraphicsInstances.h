@@ -33,6 +33,10 @@ class GraphicsInstances {
                           const std::vector<modules::VideoFrame>& frames = {},
                           const std::function<std::string_view(const std::string&)>& captureLabel = {});
   const rpc::Json& snapshot() const { return snapshot_; }
+  // Built-in style packs into the catalog (graphics styles slice 11), queued
+  // on the template worker. The production core calls this once at startup;
+  // tests opt in, so their catalogs stay exactly the curated set.
+  bool loadBuiltInPacks(const std::string& dir) { return templates_.loadBuiltInPacks(dir); }
   bool hasCue() const;
   // Take: every cued instance whose cue is ready and opted in (rideTake) goes
   // to Program from its cue and leaves Preview. Rehearsal cues stay put.
@@ -50,6 +54,9 @@ class GraphicsInstances {
     compositor::LowerThirdAppearance appearance;
     GraphicsTransition entrance, exit;
     std::string layerMotion = "own";
+    // animations.speed (graphics styles slice 11): plays in, out and layer
+    // motion this many times as fast. 1 = as authored; never in contentHash.
+    double speed = 1;
     std::optional<contracts::SourceInstanceIdentity> binding;
     std::array<uint8_t, 32> contentHash{};
     std::shared_ptr<const GraphicsTemplate> definition;

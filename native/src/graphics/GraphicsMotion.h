@@ -158,7 +158,11 @@ GraphicsMotionState previewMotion(const std::string& mode, double elapsedMs, dou
 
 class GraphicsLayerClock {
  public:
-  void configure(double inMs, double outMs);
+  // inMs/outMs are authored (template) time. speed > 1 plays the same motion
+  // faster: state() still reports elapsed in template time, so sampling is
+  // unchanged, while the wall-clock entrance lasts inMs / speed. Loops keep
+  // wall-clock time.
+  void configure(double inMs, double outMs, double speed = 1);
   void show(double nowMs);
   void hide(double nowMs);
   void clear();
@@ -169,7 +173,7 @@ class GraphicsLayerClock {
   enum class Mode { Hidden, In, OnAir, Out };
   Mode mode_ = Mode::Hidden;
   int direction_ = 1;
-  double anchorMs_ = 0, anchorPos_ = 0, inMs_ = 0, outMs_ = 0, loopAnchorMs_ = 0;
+  double anchorMs_ = 0, anchorPos_ = 0, inMs_ = 0, outMs_ = 0, loopAnchorMs_ = 0, speed_ = 1;
   double position(double nowMs) const;
   void anchor(Mode mode, int direction, double nowMs, double position);
 };

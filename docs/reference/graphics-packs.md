@@ -58,12 +58,34 @@ queued job: the worker runs the full lint, then validates every listed template 
 package root, and publishes all of them or none. Failure reasons: `graphics-pack-invalid` (lint; the
 install row's `detail` names the first problem) or the loader/registry reason of the first failing
 template (`detail`: `template N: ...`). Install rows of pack jobs carry `packRoot`. Library limits are
-unchanged: 16 imported versions, 256 KiB of documents (a full launch set of seven packs will not fit;
-slice 10/11 must decide how built-in packs enter the catalog).
+unchanged: 16 imported versions, 256 KiB of documents.
 
-Built-in packs are **not** auto-installed into the catalog at startup (that would change every
-catalog and spend library slots). Their fonts are available at once; their templates install
-through the command. The shell gateway (`GraphicsCommandGateway`) does not expose `packRoot` yet.
+**Built-in packs enter the catalog as built-ins (slice 11).** The production core calls
+`MediaCore::loadBuiltInGraphicsPacks(graphicsPacksDirectory())` once at startup
+(`GraphicsTemplateRegistry::loadBuiltInPacks`): one worker job, never blocking startup, lints every
+pack folder and publishes each passing pack's templates with `pack: {id, name, genre}` and
+`builtIn: true`. They do not count toward the 16 versions or 256 KiB, cannot be removed
+(`template-built-in`) and never appear in `templateInstalls`. A pack that fails the lint or the
+loader publishes nothing and is listed in the graphics snapshot's `templatePacks` as `invalid` with
+its first problem; the others load. An identical operator import of the same version becomes the
+built-in one. Tests and other `MediaCore` hosts load no packs unless they call it, so their catalogs
+stay the curated set. The Builder (`graphics-playout.md`, "Style packs in the Builder") is the
+shell surface; the gateway still does not expose `packRoot`.
+
+Why built-ins and not install-on-pick (considered in slice 11): installing a pack template only
+when the operator picks its card, through the 16-version library and `GraphicsDesignEviction`, would
+(a) leave the style strip without live thumbnails for packs not yet installed. The spec requires
+every card to be core-rendered in the show palette, and thumbnails render only from catalog
+definitions. (b) It would let a saved show row's pack template be evicted, so a row could stop
+resolving after a restart or after other imports. (c) It would spend operator library slots on data
+that ships with the app. Built-in pack templates are immutable app data, exactly like the curated
+looks, so they take the curated looks' path. Nothing about the imported limits changed: 16 versions
+and 256 KiB still apply to operator imports and designs, and
+`GraphicsBuiltInPacks.BuiltInPacksNeverSpendTheImportedLibrarysSlots` proves the 11th import fits
+and the 12th is refused with packs loaded. Preparation admission (`GraphicsResourceBudget`) is
+untouched: a catalog definition prepares nothing until an instance or preview uses it. The cost is
+memory for the definitions (documents plus at most 2 MB of PNG assets per pack) and, once the
+Builder asks, one 320×180 thumbnail per template.
 
 ## Fonts (P8)
 

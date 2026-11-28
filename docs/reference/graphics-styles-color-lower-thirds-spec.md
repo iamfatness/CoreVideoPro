@@ -373,7 +373,9 @@ Each slice states its platforms. **W** = Windows, **M** = Mac, **C** = shared co
 
 Status: slice 1 is implemented on Windows and as a Mac model (see
 [graphics playout: Show palette](graphics-playout.md#show-palette-graphics-styles-slice-1)).
-Owner acceptance 2 (section 9) has not been performed. Slice 2 is implemented on
+Owner acceptance 2 (section 9) has not been performed. Slice 11 (the Builder reshaped around
+packs) is implemented on Windows: [graphics playout: Style packs in the Builder](graphics-playout.md#style-packs-in-the-builder-graphics-styles-slice-11).
+Owner acceptance 1 (a News lower third on air in under 2 minutes) has not been performed. Slice 2 is implemented on
 Windows (`CvColorField`, see
 [graphics playout: One colour field](graphics-playout.md#one-colour-field-graphics-styles-slice-2));
 the Mac `ColorField` is not built. Slice 3 is implemented for Program on

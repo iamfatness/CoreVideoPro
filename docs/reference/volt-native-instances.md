@@ -175,6 +175,16 @@ previous definition; an omitted property within a supplied phase uses the V1
 default (none/left/0/linear). The three compatibility templates default to cuts.
 Definitions remain part of the private revision until explicitly adopted.
 
+`animations.speed` (graphics styles slice 11, the Builder's motion speed) is an
+optional number in 0.25..4, default 1. It plays the whole-graphic in/out
+(`GraphicsTransition::scaled`) and layered motion (`GraphicsLayerClock`, which
+reports elapsed in authored time) that many times as fast; loops keep wall-clock
+time. The private preview's Play in / Play out scales its play clock the same
+way (`GradePreviewDemand::playSpeed`). Speed is not part of the content hash (no
+re-raster); a speed-only update is still a new revision. Snapshots report
+`speed` in `animations`, `programAnimations` and `cueAnimations` only when it is
+not 1, so every pre-speed observation is unchanged.
+
 Update requires `expectedRevision` and an explicit `target:cue|program`. A cue
 target edits the private revision; the separate Cue action accepts that exact
 revision for Preview when preparation completes. Later private edits cannot
@@ -384,7 +394,7 @@ Undo. The same 10 Hz preview coordinator coalesces canvas edits and inspector ed
 
 ## Catalog, compatibility and operator arbitration
 
-`graphics.template.list` accepts `includeThumbnails:true`. This is explicit worker demand, not work performed by reading a snapshot. The catalog publishes bounded 320×180 PNGs made by the same native DirectWrite/D2D/WIC renderer; thumbnails are labeled reference appearances rather than current Program. Card and compact views share the same catalog and selection. Invalid PNG dimensions/encoding are refused before shell decoding.
+`graphics.template.list` accepts `includeThumbnails:true`. This is explicit worker demand, not work performed by reading a snapshot. With an optional `palette` (token → `#RRGGBBAA`, validated like the instance palette) declarative thumbnails render in that palette (graphics styles slice 11); a different palette re-renders them and bumps `templateThumbnailPalette.revision`, and each declarative thumbnail carries the `paletteRevision` it was drawn under (compatibility presets ignore the palette and carry none). The catalog publishes bounded 320×180 PNGs made by the same native DirectWrite/D2D/WIC renderer; thumbnails are labeled reference appearances rather than current Program. Card and compact views share the same catalog and selection. Invalid PNG dimensions/encoding are refused before shell decoding.
 
 Compatibility appearances can refer to a verified `image:{templateId,templateVersion,assetId}`. Neither the renderer nor a cue interprets this as a path. Explicit image import stages content-addressed inert assets and submits the ordinary native package validator. Package export copies the exact installed declaration and verified asset bytes into an atomic ZIP/`.cvgraphics` result. Scratch declarations remain private until explicit import/version installation.
 

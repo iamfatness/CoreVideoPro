@@ -71,7 +71,8 @@ public static partial class GraphicsBuilder
     /// shot layouts that name it survive) and its chosen image path.</summary>
     public static GraphicsPlaylistRow RowFrom(GraphicsBuilderKind kind, NativeGraphicsTemplate template, NativeGraphicsDraft draft,
         string name, string hotkey, int playOutAfterMs, bool followSources, IReadOnlyList<GraphicsPlaylistRow> rows, GraphicsPlaylistRow? existing = null,
-        NativeGraphicsAnimations? motion = null, IReadOnlyList<GraphicsPlaylistVariant>? variants = null, NativeGraphicsClockConfiguration? clock = null)
+        NativeGraphicsAnimations? motion = null, IReadOnlyList<GraphicsPlaylistVariant>? variants = null, NativeGraphicsClockConfiguration? clock = null,
+        double? motionSpeed = null)
     {
         var list = variants ?? [];
         if (list.Count > 0) followSources = false; // a names list is the binding
@@ -90,6 +91,7 @@ public static partial class GraphicsBuilder
             Fields = fields, Style = draft.Style, BrandOverrides = draft.Declarative ? draft.BrandOverrides : null, Image = draft.Image, ImagePath = existing?.ImagePath,
             SourceMappings = existing?.SourceMappings.Where(mapping => template.Fields.Any(field => field.Id == mapping.Key && GraphicsMappedValues.Eligible(field))).ToDictionary(StringComparer.Ordinal) ?? new(StringComparer.Ordinal),
             FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock, Motion = motion, Variants = list,
+            MotionSpeed = motionSpeed is { } speed && speed != 1 && GraphicsPlaylistRow.ValidSpeed(speed) ? speed : null,
             Placement = draft.Placement is { IsValid: true } p && !PlacementEquals(p, template.DefaultPlacement) ? p : null,
             Clock = hasClock && clock is { IsValid: true } ? clock : null,
         };

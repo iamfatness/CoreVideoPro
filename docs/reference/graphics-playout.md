@@ -11,7 +11,8 @@ The compiled layout probe's PNGs include the opaque Studio backdrop so
 translucent Fluent controls remain readable without depending on a viewer's
 alpha handling. The builder is captured before a look is selected and with a
 populated private fixture, including the scrolled lower inspector at 1360×768
-and 1600×900. Fixed Save actions must fit the full captured page. Inspect the
+and 1600×900, and with a style pack look (`graphics-builder-pack-*.png`,
+slice 11). Fixed Save actions must fit the full captured page. Inspect the
 images as well as the geometry report; these captures do not include native
 video pixels or establish installed preview behavior. See
 [Studio layout qualification](studio-layout-fit.md#opaque-review-images-1135).
@@ -80,12 +81,18 @@ numbered steps left to right:
    the row kind it saves as (a lower third saves as a Guest row when "Names from
    Sources" is on, otherwise as a fixed-text Title-kind row; a clock template turns
    the row clock on).
-2. **Pick a look**: every installed template of that family, newest version of
-   each, with the core's native thumbnail. Your own designs are not repeated
+2. **Pick a style**: a style strip (the installed style packs in launch order,
+   plus **Classic** for every look that is not in a pack) and the chosen style's
+   looks of that family as cards, newest version of each, each card a thumbnail
+   the core renders in the current show palette (see
+   [Style packs in the Builder](#style-packs-in-the-builder-graphics-styles-slice-11)).
+   Your own designs are not repeated
    here; they are listed once, under Your designs (#1087 N3). A sponsor card is an image you choose
    instead (PNG/JPG, full frame), pinned through `AssignPlaylistImageAsync`.
+   The kind tiles are one line each (the description is the tooltip) so the
+   strip is in view at 1360×768.
 3. **Preview**: the workspace session's private draft on the native authoring
-   canvas. The 16:9 picture fits the available center panel while the look shelf and form scroll independently. Add to playlist stays visible below the form. It is never on air.
+   canvas, with **▶ Play in**, **▶ Play out** and **⟲ Loop** in its header. The 16:9 picture fits the available center panel while the look shelf and form scroll independently. Save to show and Save & Cue stay visible below the form. It is never on air.
 4. **Fill it in**: the template's own fields (text, choices, numbers, colors,
    bundled images), a logo slot with "Use the brand kit logo", and four color
    swatches (accent, background, name, second line) with "Use brand kit colors".
@@ -99,12 +106,16 @@ numbered steps left to right:
    template default and is sent with the instance ("Template default" clears it).
    **Text** offers a typeface (safe Windows families only; a package font shows
    as unset and is left alone) and name / second-line sizes, written to the
-   row's style.
+   row's style. A style pack look replaces the four swatches, the nine anchors
+   and the motion list with the pack knobs (next section).
 5. **Save to playlist**: name, hotkey (defaults to the lowest free F-key; taken
-   keys say who owns them), hides after (stays / 8 s / 15 s), then **Add to
-   playlist** or, for a row opened from Operate or the "Your graphics" chips,
-   **Save changes** (the id is kept so shot layouts still find it). "Open in
-   Operate →" appears after a save.
+   keys say who owns them), hides after (stays / 8 s / 15 s), then **Save to
+   show** (the November 1 quick path's old "Add to playlist") or, for a row opened from Operate or the "Your graphics" chips,
+   **Save changes** (the id is kept so shot layouts still find it). **Save &
+   Cue** saves the same way, then cues the row on Preview
+   (`GraphicsPlayoutActions.ResolveEntry` + `GraphicsPlayoutService.ToPreviewAsync`;
+   a Guest row cues the current Program subject's entry, and says so when no guest
+   is assigned). Program never changes there. "Open in Operate →" appears after a save.
 
 The builder's header has two more entries (top right):
 
@@ -264,6 +275,92 @@ input injection.
   - **Pick from source…** is not built: sources have no CPU thumbnail; their
     previews are GPU shared textures.
   - There is no control-API action and no Mac eyedropper.
+
+## Style packs in the Builder (graphics styles slice 11)
+
+Spec: [graphics styles](graphics-styles-color-lower-thirds-spec.md) section 5 and
+8 row 11. Pack format, lint and fonts: [graphics-packs.md](graphics-packs.md).
+The five steps stay the quick path (November 1 ruling); step 2 becomes the style
+strip and a pack look brings the pack knobs. Code: `GraphicsBuilder.Packs.cs`
+(pure, unit-tested in `GraphicsBuilderPacksTests`) and
+`GraphicsBuilderControl.Packs.cs`.
+
+- **Built-in packs in the catalog.** The production core
+  (`main.cpp` → `MediaCore::loadBuiltInGraphicsPacks`) queues one template-worker
+  job at startup that lints every folder under `graphicsPacksDirectory()` and
+  publishes each passing pack's templates as **built-in** catalog rows with
+  `pack: {id, name, genre}` and `builtIn: true`. They never spend the imported
+  library's 16 versions or 256 KiB and cannot be removed (`template-built-in`).
+  A pack with any lint or loader problem publishes nothing; `templatePacks` in
+  the graphics snapshot lists every pack as `ready` or `invalid` with its first
+  problem, and the Builder names invalid ones under the cards. Tests and other
+  `MediaCore` hosts do not load packs unless they call it.
+- **Style strip.** `GraphicsBuilder.PacksFor(kind, state)`: installed packs with
+  at least one look of that family, in launch order (News, Sports, Worship,
+  Corporate, Esports, Talk, Minimal, then any other genre), labelled by the part
+  of the pack name before the colon. **Classic** lists every other look. A look
+  chosen elsewhere (a reopened row, the probe) brings its style with it. A new
+  lower third starts on the first pack's two-line look.
+- **Live thumbnails, never static art.** The Builder lists the catalog with
+  `graphics.template.list {includeThumbnails, palette}` where `palette` is the
+  resolved show palette (`GraphicsPalette.Resolve()`), keyed on core epoch and
+  palette, so a palette change (Palette flyout, "change for the whole show" from
+  a colour field) re-lists. The core re-renders every declarative thumbnail in
+  the new palette (`renderGraphicsThumbnail(id, definition, palette)`), bumps
+  `templateThumbnailPalette.revision` and stamps each thumbnail with the
+  `paletteRevision` it was drawn under; a render overtaken by a newer palette is
+  dropped. `GraphicsBuilder.ThumbnailCurrent` decides whether a card is current;
+  until it is, the card keeps the old image dimmed and says "Recolouring in your
+  show palette…". Compatibility presets ignore the palette.
+- **Colours by role.** A pack look shows one `CvColorField` per palette colour
+  role it draws with (`GraphicsBuilder.ColourRoles`: its `brandTokens` plus every
+  `{"token": ...}` in its layers, labelled Plate, Second plate, Accent, Surface,
+  Name text, Second line text, Title text, Tag text, Team A/B). Linked to the
+  token; editing asks whole show (writes the palette) or detach (a row override),
+  exactly as slice 2. **Use show palette** clears overrides.
+- **Position, safe area, size.** Position **Left / Centre / Right** and Size
+  **S / M / L** (0.85 / 1 / 1.15) replace the nine anchors and the scale slider.
+  `PlaceInSafeArea` puts a lower third on the band's bottom edge (y 1000;
+  band y 820–1000) at the graphics-safe left or right edge (x 96 / 1824) or
+  centred; other families keep their default row and take the safe edge. With
+  **Safe area 90 %** on (default) the scaled box is kept inside graphics-safe
+  (x 96–1824, y 54–1026; scale shrinks first if it cannot fit); a drag that
+  leaves it is pulled back when the drag ends, and Save clamps the stored
+  placement. Full-width bars (bounds 1920 wide: the News ticker and title) run
+  edge to edge by design and are never snapped. Placement follows the compositor rule (the anchor point of the box
+  sits at the frame's anchor point plus x, y).
+- **Motion and speed.** A pack look's Motion list starts with **Pack default**
+  (the row's `motion` stays null and the instance plays the pack's own authored
+  layered motion, `layers: "own"`), then Fade, Cut and the slides. **Speed** is
+  0.5× / 0.75× / 1.0× / 1.5× / 2.0×, saved as the row's `motionSpeed` (omitted at 1)
+  and sent as the core's `animations.speed`
+  ([native instances](volt-native-instances.md)). `GraphicsBuilder.EffectiveMotion`
+  is shared by playout and the Builder preview, so Play in shows what Show will
+  play. Playout now also gives a pack look with no row motion its own motion
+  instead of the playout default fade (as designs already were).
+- **Optional elements.** Second line and Tag switch to the sibling look in the
+  same pack (`GraphicsBuilder.Sibling`: one-line, two-line, name + tag lower
+  thirds; a tag rides with the second line), carrying every typed text field
+  across (`CarryFields`). Logo stays the existing logo slot for looks that have
+  one. Anything else: **Open in Designer**.
+- **Private preview.** Play in / Play out / Loop set the draft's animations to
+  `EffectiveMotion` and use the existing private preview play
+  (`GraphicsWorkspaceSession.PlayPreview`, the Designer's lease); nothing is
+  created in the core.
+- **Variants.** **+ Add speaker** appends the name, title (and tag, in a `tag`
+  column) typed above as one more line of the row's names list (#1079): one
+  design, one row, the hotkey steps through the speakers. The speakers show
+  under the list.
+- **Layout qualification.** The compiled Graphics probe adds two News-shaped
+  pack looks to its fixture and checks, at 1360×768, 1600×900 and 1080p: News
+  selected with its 2 cards, preview at least 630 / 840 / 950 px wide, 5 colour
+  roles inside the inspector, Position / Size / Safe area, optional elements,
+  Pack default motion, Add speaker, and Play in / Play out / Loop / Save to show /
+  Save & Cue on the captured page (`graphics-builder-pack-*.png`). It renders no
+  native pixels (the probe has no core), so its cards say "preparing".
+- **Not done here.** The Mac Builder (slice 13, blocked on the Metal private
+  preview); pack default palettes as a third resolution layer (the show palette
+  always carries every required token); a per-pack "apply this pack's palette".
 
 ## Local data crawls
 
