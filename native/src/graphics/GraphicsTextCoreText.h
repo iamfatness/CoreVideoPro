@@ -49,8 +49,10 @@ std::string bundledGraphicsFontsSummary();
 
 // +1 reference. Nearest real face of `family` to the CSS-style `weight`
 // (400 regular, 500 medium, 600 semibold, 700 bold); Core Text never
-// synthesizes bold.
-CTFontRef createGraphicsFont(const std::string& family, int weight, double size);
+// synthesizes bold. `italic` takes the family's italic face of that weight
+// (CTFontCreateCopyWithSymbolicTraits); a family with none stays upright
+// (DirectWrite would synthesize an oblique: packs ship their italic faces).
+CTFontRef createGraphicsFont(const std::string& family, int weight, double size, bool italic = false);
 
 struct GraphicsTextLine {
   CTLineRef line = nullptr;  // owned by GraphicsTextLayout
@@ -63,10 +65,13 @@ struct GraphicsTextLine {
 // most that many lines; when text remains after the last kept line, that line
 // is rebuilt from the remaining text and truncated at the end with "…" to
 // `truncateWidth` (also applied to a single unwrapped line wider than it).
+// `kern` > or < 0 adds that many points after every character
+// (kCTKernAttributeName; DirectWrite's trailing character spacing). The
+// ellipsis token is never spaced, as DirectWrite's trimming sign is not.
 class GraphicsTextLayout {
  public:
   GraphicsTextLayout(const std::string& text, CTFontRef font, CGColorRef color, double wrapWidth, bool wrap,
-                     int maxLines, double truncateWidth);
+                     int maxLines, double truncateWidth, double kern = 0);
   ~GraphicsTextLayout();
   GraphicsTextLayout(const GraphicsTextLayout&) = delete;
   GraphicsTextLayout& operator=(const GraphicsTextLayout&) = delete;
@@ -85,7 +90,7 @@ struct GraphicsTextSize { double width = 0; unsigned lines = 1; };
 // family, the same line breaking as the raster, width including trailing
 // whitespace (DirectWrite's widthIncludingTrailingWhitespace).
 GraphicsTextSize measureGraphicsText(const std::string& text, const std::string& family, double size, int weight,
-                                     double wrapWidth, bool wrap);
+                                     double wrapWidth, bool wrap, double kern = 0, bool italic = false);
 
 }  // namespace corevideo::graphics
 

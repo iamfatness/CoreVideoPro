@@ -31,6 +31,13 @@ struct GraphicsPrimitive {
   bool gradient = false, verticalGradient = false;
   int unit = -1;
   int fontWeight = 400, maxLines = 1;
+  // Text style (graphics styles P1). letterSpacing is extra advance after
+  // every character in template px (the document's em value times the
+  // resolved font size); italic selects the family's italic face. A
+  // textTransform is applied to `text` by the shared layout, before
+  // measurement, so both rasters draw the same characters.
+  double letterSpacing = 0;
+  bool italic = false;
   std::optional<GraphicsTextOutline> outline;
   std::optional<GraphicsTextShadow> shadow;
   std::shared_ptr<const GraphicsAsset> image;
@@ -93,4 +100,8 @@ struct GraphicsTemplateInput {
 // units wide. Capped at the 256 MiB cache budget. The worker charges the
 // actual atlas against the process budget after layout.
 uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, int height);
+// A text node's textTransform ("uppercase" | "lowercase"; anything else returns
+// `text` unchanged). Simple one-to-one case mapping, identical on every
+// platform; the layout applies it before measuring (graphics styles P1).
+std::string transformGraphicsText(const std::string& text, const std::string& transform);
 } // namespace corevideo::graphics

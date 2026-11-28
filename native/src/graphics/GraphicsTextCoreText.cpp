@@ -144,7 +144,7 @@ CGFloat weightTrait(int weight) {
   return CGFloat(table.back().second);
 }
 
-CFAttributedStringRef createAttributed(const std::string& text, CTFontRef font, CGColorRef color) {
+CFAttributedStringRef createAttributed(const std::string& text, CTFontRef font, CGColorRef color, double kern = 0) {
   CFStringRef string = createCfString(text);
   if (!string) {  // invalid UTF-8: lossy ASCII copy rather than nothing
     std::string ascii = text;
@@ -152,12 +152,16 @@ CFAttributedStringRef createAttributed(const std::string& text, CTFontRef font, 
     string = createCfString(ascii);
   }
   if (!string) return nullptr;
-  const void* keys[2] = {kCTFontAttributeName, color ? kCTForegroundColorAttributeName : kCTForegroundColorFromContextAttributeName};
-  const void* values[2] = {font, color ? static_cast<const void*>(color) : static_cast<const void*>(kCFBooleanTrue)};
-  CFDictionaryRef attributes = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2,
+  const CGFloat kernValue = CGFloat(kern);
+  CFNumberRef kernNumber = kern != 0 ? CFNumberCreate(kCFAllocatorDefault, kCFNumberCGFloatType, &kernValue) : nullptr;
+  const void* keys[3] = {kCTFontAttributeName, color ? kCTForegroundColorAttributeName : kCTForegroundColorFromContextAttributeName,
+                         kCTKernAttributeName};
+  const void* values[3] = {font, color ? static_cast<const void*>(color) : static_cast<const void*>(kCFBooleanTrue), kernNumber};
+  CFDictionaryRef attributes = CFDictionaryCreate(kCFAllocatorDefault, keys, values, kernNumber ? 3 : 2,
                                                   &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
   CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, string, attributes);
   CFRelease(attributes);
+  if (kernNumber) CFRelease(kernNumber);
   CFRelease(string);
   return attributed;
 }
@@ -215,7 +219,7 @@ std::string graphicsFontSubstitutionWarning(const std::string& requested, const 
   return "Font " + requested + " is not installed on this Mac; using " + resolved + ".";
 }
 
-CTFontRef createGraphicsFont(const std::string& family, int weight, double size) {
+CTFontRef createGraphicsFont(const std::string& family, int weight, double size, bool italic) {
   ensureRegistered();
   CFStringRef name = createCfString(family.empty() ? std::string(kFallbackFontFamily) : family);
   if (!name) name = createCfString(kFallbackFontFamily);
@@ -241,13 +245,20 @@ CTFontRef createGraphicsFont(const std::string& family, int weight, double size)
   CFRelease(traits);
   CFRelease(weightNumber);
   CFRelease(name);
+  if (italic && font) {
+    CTFontRef slanted = CTFontCreateCopyWithSymbolicTraits(font, 0, nullptr, kCTFontItalicTrait, kCTFontItalicTrait);
+    if (slanted) {
+      CFRelease(font);
+      font = slanted;
+    }
+  }
   return font;
 }
 
 GraphicsTextLayout::GraphicsTextLayout(const std::string& text, CTFontRef font, CGColorRef color, double wrapWidth,
-                                       bool wrap, int maxLines, double truncateWidth) {
+                                       bool wrap, int maxLines, double truncateWidth, double kern) {
   if (text.empty() || !font) return;
-  CFAttributedStringRef attributed = createAttributed(text, font, color);
+  CFAttributedStringRef attributed = createAttributed(text, font, color, kern);
   if (!attributed) return;
   if (!wrap) {
     CTLineRef line = CTLineCreateWithAttributedString(attributed);
@@ -305,12 +316,12 @@ double GraphicsTextLayout::widestLine() const {
 }
 
 GraphicsTextSize measureGraphicsText(const std::string& text, const std::string& family, double size, int weight,
-                                     double wrapWidth, bool wrap) {
+                                     double wrapWidth, bool wrap, double kern, bool italic) {
   if (text.empty()) return {0, 1};
   const auto resolved = resolveGraphicsFontFamily(family);
-  CTFontRef font = createGraphicsFont(resolved.family, resolved.weight ? resolved.weight : weight, size);
+  CTFontRef font = createGraphicsFont(resolved.family, resolved.weight ? resolved.weight : weight, size, italic);
   if (!font) return {0, 1};
-  GraphicsTextLayout layout(text, font, nullptr, wrapWidth, wrap, 0, 0);
+  GraphicsTextLayout layout(text, font, nullptr, wrapWidth, wrap, 0, 0, kern);
   CFRelease(font);
   return {layout.widestLine(), std::max(1u, layout.totalLines())};
 }

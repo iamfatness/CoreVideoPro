@@ -166,6 +166,12 @@
    "width": 1600,
    "height": 180,
    "textTolerance": 2
+  },
+  {
+   "name": "text-style-tracking-italic-caps",
+   "source": "manifest:text-style-tracking-italic-caps.json",
+   "fields": {},
+   "brand": {}
   }
  ]
 }

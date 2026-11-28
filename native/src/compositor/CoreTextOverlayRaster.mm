@@ -394,7 +394,7 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
   if (resolved.substituted && warning.empty())
     warning = graphics::graphicsFontSubstitutionWarning(p.font, resolved.family);
   CfRef<CTFontRef> font(graphics::createGraphicsFont(resolved.family, resolved.weight ? resolved.weight : p.fontWeight,
-                                                     p.fontSize));
+                                                     p.fontSize, p.italic));
   if (!font) return false;
   const auto& b = p.box;
   const double lineHeight = p.fontSize * p.lineHeight;
@@ -402,7 +402,7 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
   const bool wrap = p.overflow == "wrap-then-ellipsis";
   const int visible = wrap ? std::max(1, int(std::floor(layoutHeight / lineHeight + 1e-9))) : 1;
   const auto color = colorFromArgb(p.color, space);
-  graphics::GraphicsTextLayout text(p.text, font.get(), color.get(), b.width, wrap, visible, b.width);
+  graphics::GraphicsTextLayout text(p.text, font.get(), color.get(), b.width, wrap, visible, b.width, p.letterSpacing);
   const double flush = p.align == "center" ? 0.5 : p.align == "right" ? 1.0 : 0.0;
   auto lineX = [&](const graphics::GraphicsTextLine& line) {
     return b.x + flush * (b.width - (line.width - line.trailingWhitespace));
