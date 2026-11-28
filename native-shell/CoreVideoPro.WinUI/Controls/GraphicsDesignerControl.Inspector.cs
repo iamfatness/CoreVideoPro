@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -146,7 +147,9 @@ public sealed partial class GraphicsDesignerControl
         _layerBody.Children.Add(font);
         _layerBody.Children.Add(Number("Font size", 1, Math.Clamp(layer.Height, 1, 512), layer.FontSize,
             value => SetNumbers(layer.Id, new Dictionary<string, double> { ["fontSize"] = value })));
-        _layerBody.Children.Add(ColourChoice("Colour", "color", layer.ColourChoice, layer.Id));
+        var textColour = ColourChoice("Colour", "color", layer.ColourChoice, layer.Id);
+        textColour.CheckContext = new GraphicsColorCheckContext { TextSizePx = layer.FontSize };
+        _layerBody.Children.Add(textColour);
     }
 
     private void BuildText(GraphicsLayerInspection layer, IReadOnlyList<NativeGraphicsTemplateField> fields)
@@ -189,6 +192,7 @@ public sealed partial class GraphicsDesignerControl
         weight.SelectionChanged += (_, _) => { if (!_loading && weight.SelectedValue is string w && int.TryParse(w, out var value) && value != CurrentInspection()?.FontWeight) SetNumbers(id, new Dictionary<string, double> { ["fontWeight"] = value }); };
         _inspectorRefresh.Add(l => Select(weight, l.FontWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         var colour = ColourChoice("Colour", "color", layer.ColourChoice, id);
+        colour.CheckContext = new GraphicsColorCheckContext { TextSizePx = layer.FontSize };
         var lines = Choice("Lines", GraphicsDesignerChoices.Lines.Select(n => (n.ToString(System.Globalization.CultureInfo.InvariantCulture), n.ToString(System.Globalization.CultureInfo.InvariantCulture))).ToList(), layer.MaxLines.ToString(System.Globalization.CultureInfo.InvariantCulture));
         lines.SelectionChanged += (_, _) => { if (!_loading && lines.SelectedValue is string n && int.TryParse(n, out var value) && value != CurrentInspection()?.MaxLines) SetNumbers(id, new Dictionary<string, double> { ["maxLines"] = value }); };
         _inspectorRefresh.Add(l => Select(lines, l.MaxLines.ToString(System.Globalization.CultureInfo.InvariantCulture)));
@@ -269,27 +273,29 @@ public sealed partial class GraphicsDesignerControl
         return box;
     }
 
-    /// <summary>Brand colours plus the layer's own #hex (appended); type a #RRGGBB to use another colour.</summary>
-    private ComboBox ColourChoice(string header, string property, string current, string id)
+    /// <summary>The shared colour field (graphics styles slice 2): link a brand token, or detach to a literal
+    /// #RRGGBB / #RRGGBBAA. Changing a linked show-palette colour can change it for the whole show.</summary>
+    private CvColorField ColourChoice(string header, string property, string current, string id)
     {
-        IReadOnlyList<(string Id, string Label)> choices = current.Length > 0 && GraphicsDesignerChoices.Colours.All(c => c.Id != current)
-            ? [.. GraphicsDesignerChoices.Colours, (current, current)] : GraphicsDesignerChoices.Colours;
-        var box = Choice(header, choices, current);
-        box.IsEditable = true; box.PlaceholderText = current.Length == 0 ? "Follows a variable" : "#RRGGBB";
-        ToolTipService.SetToolTip(box, "Choose a brand colour or type a colour like #FF8800.");
-        void Reset() { var label = choices.FirstOrDefault(c => c.Id == current).Label; box.Text = label ?? ""; }
-        box.SelectionChanged += (_, _) => {
-            if (_loading || box.SelectedValue is not string value || value == current) return;
-            AfterSelectionChanged(() => { if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, value))) Reset(); });
-        };
-        box.TextSubmitted += (_, e) => {
-            var typed = e.Text.Trim(); var match = choices.FirstOrDefault(c => c.Label == typed || c.Id == typed);
-            e.Handled = true;
-            if (match.Id is { } known) { if (known != current) AfterSelectionChanged(() => { if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, known))) Reset(); }); return; }
-            // A refusal ("orange") leaves the layer's colour; show that colour again rather than the rejected text.
-            AfterSelectionChanged(() => { if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, typed))) Reset(); });
-        };
-        return box;
+        var field = new CvColorField { Header = current.Length == 0 ? header + " (follows a variable)" : header, Tokens = GraphicsDesignerChoices.Colours,
+            AllowWholeShowChange = GraphicsPalette.Tokens.Contains(current, StringComparer.Ordinal), HorizontalAlignment = HorizontalAlignment.Stretch };
+        if (current.Length > 0) field.SetValue(current);
+        field.CheckContext = property == "fill" ? new GraphicsColorCheckContext { LargeArea = true } : GraphicsColorCheckContext.None;
+        AutomationProperties.SetName(field, header); _inspectorInputs.Add(field);
+        field.Committed += (_, commit) => AfterSelectionChanged(() => {
+            if (commit.WholeShow && commit.Token is { } token && _attached is { } studio) { _ = ChangeShowColourAsync(studio, token, commit.Value); return; }
+            var choice = commit.Token ?? commit.Value;
+            if (choice != current && !Apply(s => GraphicsDesignerModel.SetColour(s, id, property, choice)) && current.Length > 0) field.SetValue(current);
+        });
+        return field;
+    }
+    /// <summary>"Change for the whole show": saves the show palette, then recolours Cue and Preview (Program waits for Update on air).</summary>
+    private static async Task ChangeShowColourAsync(StudioViewModel studio, string token, string value)
+    {
+        try {
+            if (await studio.GraphicsLibrary.SavePaletteAsync(studio.GraphicsLibrary.EffectivePalette.With(token, value)))
+                await studio.GraphicsPlayout.RefreshPaletteAsync();
+        } catch (Exception ex) when (ex is InvalidOperationException or IOException) { /* The library and playout report their own status. */ }
     }
 
     private NumberBox Number(string header, double min, double max, double value, Action<double> commit)

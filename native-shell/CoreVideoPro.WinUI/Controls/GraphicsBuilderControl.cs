@@ -380,7 +380,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         RefreshPlacementControls(); RefreshTypographyControls();
         _typeBlock.Visibility = kind.Id == GraphicsBuilder.SponsorKindId ? Visibility.Collapsed : Visibility.Visible;
         if (signature == _formSignature) { RefreshColorSwatches(); return; }
-        _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _loading = true;
+        _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _colorRefresh.Clear(); _loading = true;
         try {
             if (kind.Id == GraphicsBuilder.SponsorKindId) { _fields.Children.Add(Note("Nothing to fill in: the image is the graphic. Give it a name and a hotkey below.")); return; }
             if (draft is null || template is null) { _fields.Children.Add(Note("Pick a look to fill it in.")); return; }
@@ -443,7 +443,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
             }
             case "color": {
                 var current = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
-                return SwatchButton(label, current, hex => Set(field.Id, JsonSerializer.SerializeToElement(hex)));
+                return SwatchButton(label, current, field.MaxLength != 7, hex => Set(field.Id, JsonSerializer.SerializeToElement(hex)));
             }
             case "image": {
                 var ids = new List<string>(); if (!field.Required) ids.Add("");
@@ -465,44 +465,59 @@ public sealed partial class GraphicsBuilderControl : UserControl
 
     private void Set(string field, JsonElement value) { if (_session is { Busy: false }) { _session.SetField(field, value); _dirty = true; RefreshSaveButton(); } }
 
+    /// <summary>One COLORS role as a <see cref="CvColorField"/>. A declarative draft shows its resolved palette
+    /// colour linked to the role's token; editing asks "whole show" (saves the palette) or "detach just this"
+    /// (a per-graphic override). A compatibility look edits its opaque appearance colour.</summary>
     private FrameworkElement Swatch(string label, string token, Func<LowerThirdAppearance, string> read, Func<LowerThirdAppearance, string, LowerThirdAppearance> update)
     {
-        // A declarative draft shows (and overrides) its resolved palette colour; the alpha of the
-        // plate token is kept from the palette because this picker is opaque (CvColorField is slice 2).
-        string Current() {
-            if (_session?.Draft is not { } d) return "";
-            if (d.Declarative && d.PaletteWire(_session.Palette) is { } resolved && resolved.TryGetValue(token, out var value)) return value[..7];
-            return read(d.Style);
-        }
-        var swatch = SwatchButton(label, Current(), hex => {
+        var field = new CvColorField { Header = label, HorizontalAlignment = HorizontalAlignment.Stretch };
+        void Show() {
             if (_session?.Draft is not { } d) return;
-            if (d.Declarative && GraphicsPalette.TryNormalize(hex, out var opaque)) {
-                var alpha = d.PaletteWire(_session.Palette) is { } resolved && resolved.TryGetValue(token, out var was) ? was[7..] : "FF";
-                _session.SetBrandOverride(token, opaque[..7] + alpha);
-            } else _session.SetStyle(update(d.Style, hex));
-            _dirty = true; RefreshSaveButton();
-        });
-        swatch.Tag = (Func<string>)Current; return swatch;
+            var resolved = d.PaletteWire(_session.Palette);
+            if (d.Declarative && resolved is not null && resolved.TryGetValue(token, out var value)) {
+                field.AllowAlpha = true; field.Tokens = [(token, token)];
+                var linked = d.BrandOverrides?.ContainsKey(token) != true;
+                field.SetValue(linked ? token : value, value);
+            } else { field.AllowAlpha = false; field.Tokens = []; field.SetValue(read(d.Style)); }
+            field.CheckContext = CheckFor(token, d, resolved);
+        }
+        field.Committed += async (_, commit) => {
+            if (_session?.Draft is not { } d) return;
+            if (!d.Declarative) _session.SetStyle(update(d.Style, commit.Value));
+            else if (commit.WholeShow && commit.Token is { } shown && _attached is { } studio) {
+                try {
+                    if (await studio.GraphicsLibrary.SavePaletteAsync(studio.GraphicsLibrary.EffectivePalette.With(shown, commit.Value)))
+                        await studio.GraphicsPlayout.RefreshPaletteAsync();
+                    _status.Text = studio.GraphicsLibrary.Status;
+                } catch (Exception ex) when (ex is InvalidOperationException or IOException) { _status.Text = "The palette was not saved: " + ex.Message; }
+            }
+            else if (commit.Token is not null) _session.SetBrandOverride(token, null);
+            else _session.SetBrandOverride(token, commit.Value);
+            _dirty = true; RefreshSaveButton(); Show();
+        };
+        _colorRefresh.Add(Show); Show();
+        return field;
     }
-    private void RefreshColorSwatches()
+    /// <summary>What each role is checked against (spec 4.2): the two text roles against the plate at their own size,
+    /// the plate as a large area under its name text.</summary>
+    private static GraphicsColorCheckContext CheckFor(string token, NativeGraphicsDraft draft, IReadOnlyDictionary<string, string>? resolved)
     {
-        foreach (var panel in _colors.Children.OfType<Grid>())
-            foreach (var swatch in panel.Children.OfType<Button>())
-                if (swatch.Tag is Func<string> read && swatch.Content is StackPanel body && body.Children.OfType<Border>().FirstOrDefault() is { } chip && HexColor.TryParse(read(), out var color))
-                    chip.Background = new SolidColorBrush(color);
+        string Plate() => resolved?.GetValueOrDefault(GraphicsPalette.Primary) ?? draft.Style.BackgroundColor;
+        return token switch {
+            GraphicsPalette.OnPrimary => new() { TextOnPlate = Plate(), TextSizePx = draft.Style.NameSize },
+            GraphicsPalette.OnPrimaryMuted => new() { TextOnPlate = Plate(), TextSizePx = draft.Style.TitleSize },
+            GraphicsPalette.Primary => new() { LargeArea = true, TextOnThis = resolved?.GetValueOrDefault(GraphicsPalette.OnPrimary) ?? draft.Style.NameColor },
+            _ => GraphicsColorCheckContext.None
+        };
     }
-    private static Button SwatchButton(string label, string hex, Action<string> commit)
+    private readonly List<Action> _colorRefresh = [];
+    private void RefreshColorSwatches() { foreach (var refresh in _colorRefresh) refresh(); }
+    private static CvColorField SwatchButton(string label, string hex, bool alpha, Action<string> commit)
     {
-        var chip = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1),
-            Background = HexColor.TryParse(hex, out var color) ? new SolidColorBrush(color) : StudioBrushes.Field };
-        var body = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        body.Children.Add(chip); body.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = StudioBrushes.Text, VerticalAlignment = VerticalAlignment.Center });
-        var button = StudioBrushes.GhostButton(""); button.Content = body; button.Padding = new Thickness(8, 4, 10, 4);
-        var picker = new ColorPicker { IsAlphaEnabled = false, IsMoreButtonVisible = true, IsHexInputVisible = true, Color = color };
-        var flyout = new Flyout { Content = picker, Placement = FlyoutPlacementMode.Bottom };
-        picker.ColorChanged += (_, e) => { chip.Background = new SolidColorBrush(e.NewColor); commit(HexColor.ToHex(e.NewColor)); };
-        button.Flyout = flyout;
-        return button;
+        var field = new CvColorField { Header = label, AllowAlpha = alpha, HorizontalAlignment = HorizontalAlignment.Stretch };
+        field.SetValue(hex);
+        field.Committed += (_, c) => commit(c.Value);
+        return field;
     }
     private void ApplyBrandKit()
     {

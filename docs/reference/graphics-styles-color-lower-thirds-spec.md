@@ -368,7 +368,10 @@ Each slice states its platforms. **W** = Windows, **M** = Mac, **C** = shared co
 
 Status: slice 1 is implemented on Windows and as a Mac model (see
 [graphics playout: Show palette](graphics-playout.md#show-palette-graphics-styles-slice-1)).
-Owner acceptance 2 (section 9) has not been performed.
+Owner acceptance 2 (section 9) has not been performed. Slice 2 is implemented on
+Windows (`CvColorField`, see
+[graphics playout: One colour field](graphics-playout.md#one-colour-field-graphics-styles-slice-2));
+the Mac `ColorField` is not built.
 
 Owner-visible milestones:
 - **After slice 3:** one picker everywhere, colours set once.

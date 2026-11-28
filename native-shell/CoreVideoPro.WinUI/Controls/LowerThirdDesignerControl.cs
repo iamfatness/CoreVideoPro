@@ -17,12 +17,12 @@ public sealed class LowerThirdDesignerControl : UserControl
     private readonly ComboBox _preset=new() { Header="Starter look",ItemsSource=new[] { "compact-solid","minimal-accent","broadcast" } };
     private readonly ComboBox _saved=new() { Header="Saved looks" };
     private readonly ComboBox _anchor=new() { Header="Anchor",ItemsSource=LowerThirdLayoutHelper.LowerThirdPositionOptions };
-    private readonly TextBox _font=new() { Header="Font family" },_nameColor=new() { Header="Name color (#RRGGBB)" },_titleColor=new() { Header="Title color (#RRGGBB)" },_presetName=new() { Header="Save look as" };
-    private readonly TextBox _backgroundColor=new() { Header="Background color (#RRGGBB)" },_accentColor=new() { Header="Accent color (#RRGGBB)" };
-    private readonly ColorPicker _backgroundPicker=new() { IsAlphaEnabled=false },_accentPicker=new() { IsAlphaEnabled=false };
+    private readonly TextBox _font=new() { Header="Font family" },_presetName=new() { Header="Save look as" };
+    // The shared colour field (graphics styles slice 2); the legacy look stores opaque #RRGGBB.
+    private readonly CvColorField _nameColor=new() { Header="Name color",AllowAlpha=false },_titleColor=new() { Header="Title color",AllowAlpha=false };
+    private readonly CvColorField _backgroundColor=new() { Header="Background color",AllowAlpha=false },_accentColor=new() { Header="Accent color",AllowAlpha=false };
     private readonly CheckBox _logo=new() { Content="Show source logo" };
     private readonly ToggleSwitch _compare=new() { Header="Compare applied look (preview only)" };
-    private readonly ColorPicker _namePicker=new() { IsAlphaEnabled=false },_titlePicker=new() { IsAlphaEnabled=false };
     private readonly TextBlock _status=new() { Text="Draft — Apply look updates the live lower third.",TextWrapping=TextWrapping.Wrap,FontSize=11 };
     private readonly VideoSurfaceHost _preview=new() { Height=220 };
     private readonly TextBlock _previewStatus=new() { FontSize=11,TextWrapping=TextWrapping.Wrap };
@@ -52,10 +52,8 @@ public sealed class LowerThirdDesignerControl : UserControl
         Add(typography,"TitleSize","Title size",12,80,28,1,"px",v=>_draft with { TitleSize=v });
         typography.Children.Add(new TextBlock { Text="Sizes reference a 1080-line canvas. Long names are trimmed; source text is edited in Sources.",TextWrapping=TextWrapping.Wrap,FontSize=11 });
         var colors=Section(root,"Colors and plate");
-        colors.Children.Add(_nameColor);colors.Children.Add(_titleColor);
-        colors.Children.Add(new Expander { Header="Choose name color",Content=_namePicker });colors.Children.Add(new Expander { Header="Choose title color",Content=_titlePicker });
-        colors.Children.Add(_backgroundColor);colors.Children.Add(new Expander {Header="Choose background color",Content=_backgroundPicker});
-        colors.Children.Add(_accentColor);colors.Children.Add(new Expander {Header="Choose accent color",Content=_accentPicker});
+        colors.Children.Add(_nameColor);colors.Children.Add(_titleColor);colors.Children.Add(_backgroundColor);colors.Children.Add(_accentColor);
+        _backgroundColor.CheckContext=new GraphicsColorCheckContext { LargeArea=true };
         Add(colors,"BackgroundOpacity","Background opacity",0,1,.9,.01,"%",v=>_draft with { BackgroundOpacity=v },100);
         Add(colors,"Padding","Padding",0,64,20,1,"px",v=>_draft with { Padding=v });
         Add(colors,"CornerRadius","Corners",0,60,8,1,"px",v=>_draft with { CornerRadius=v });
@@ -76,14 +74,13 @@ public sealed class LowerThirdDesignerControl : UserControl
             if(Studio.Overlays.SaveAppearancePreset(copy,look)) {_saved.ItemsSource=Studio.Overlays.LowerThirdPresets.Keys.ToArray();_saved.SelectedItem=copy;_presetName.Text=copy;}
         } };
         _compare.Toggled+=(_,_)=> { UpdatePreview();_status.Text=_compare.IsOn?"Previewing the applied look; draft retained.":"Previewing draft — Apply look sends it live."; };
-        _namePicker.ColorChanged+=(_,e)=> {if (!_loading) {_nameColor.Text=HexColor.ToHex(e.NewColor);Edit(_draft with {NameColor=_nameColor.Text});}};
-        _titlePicker.ColorChanged+=(_,e)=> {if (!_loading) {_titleColor.Text=HexColor.ToHex(e.NewColor);Edit(_draft with {TitleColor=_titleColor.Text});}};
-        _backgroundPicker.ColorChanged+=(_,e)=> {if (!_loading) {_backgroundColor.Text=HexColor.ToHex(e.NewColor);Edit(_draft with {BackgroundColor=_backgroundColor.Text});}};
-        _accentPicker.ColorChanged+=(_,e)=> {if (!_loading) {_accentColor.Text=HexColor.ToHex(e.NewColor);Edit(_draft with {AccentColor=_accentColor.Text});}};
+        _nameColor.Committed+=(_,c)=> {if (!_loading) {Edit(_draft with {NameColor=c.Value});UpdateColorChecks();}};
+        _titleColor.Committed+=(_,c)=> {if (!_loading) {Edit(_draft with {TitleColor=c.Value});UpdateColorChecks();}};
+        _backgroundColor.Committed+=(_,c)=> {if (!_loading) {Edit(_draft with {BackgroundColor=c.Value});UpdateColorChecks();}};
+        _accentColor.Committed+=(_,c)=> {if (!_loading) {Edit(_draft with {AccentColor=c.Value});UpdateColorChecks();}};
         _preset.SelectionChanged+=(_,_)=> { if (!_loading && _preset.SelectedItem is string id) SetDraft(LowerThirdAppearance.FromPreset(id)); };
         _saved.SelectionChanged+=(_,_)=> { if (!_loading && _saved.SelectedItem is string name && Studio?.Overlays.LowerThirdPresets.TryGetValue(name,out var look)==true) SetDraft(look); };
-        _font.LostFocus+=(_,_)=>CommitText();_nameColor.LostFocus+=(_,_)=>CommitText();_titleColor.LostFocus+=(_,_)=>CommitText();
-        _backgroundColor.LostFocus+=(_,_)=>CommitText();_accentColor.LostFocus+=(_,_)=>CommitText();
+        _font.LostFocus+=(_,_)=>CommitText();
         _logo.Checked+=(_,_)=> { if (!_loading) Edit(_draft with { ShowLogo=true }); };_logo.Unchecked+=(_,_)=> { if (!_loading) Edit(_draft with { ShowLogo=false }); };
         Loaded+=(_,_)=> { LoadDraft();if (_previewActive) StartPreview(); };
         Unloaded+=(_,_)=>DeactivatePreview();
@@ -113,27 +110,23 @@ public sealed class LowerThirdDesignerControl : UserControl
     {
         _loading=true;_draft=draft;
         try { foreach (var p in _values) p.Value.Value=(double)typeof(LowerThirdAppearance).GetProperty(p.Key)!.GetValue(draft)!;
-            _preset.SelectedItem=draft.Preset;_anchor.SelectedItem=draft.Anchor;_font.Text=draft.FontFamily;_nameColor.Text=draft.NameColor;_titleColor.Text=draft.TitleColor;_logo.IsChecked=draft.ShowLogo;
-            _namePicker.Color=HexColor.ParseOrDefault(draft.NameColor,Windows.UI.Color.FromArgb(255,244,247,250));_titlePicker.Color=HexColor.ParseOrDefault(draft.TitleColor,Windows.UI.Color.FromArgb(255,68,193,161));
-            _backgroundColor.Text=draft.BackgroundColor;_accentColor.Text=draft.AccentColor;
-            _backgroundPicker.Color=HexColor.ParseOrDefault(draft.BackgroundColor,Windows.UI.Color.FromArgb(255,12,17,24));_accentPicker.Color=HexColor.ParseOrDefault(draft.AccentColor,Windows.UI.Color.FromArgb(255,68,193,161)); }
+            _preset.SelectedItem=draft.Preset;_anchor.SelectedItem=draft.Anchor;_font.Text=draft.FontFamily;_nameColor.SetValue(draft.NameColor);_titleColor.SetValue(draft.TitleColor);_logo.IsChecked=draft.ShowLogo;
+            _backgroundColor.SetValue(draft.BackgroundColor);_accentColor.SetValue(draft.AccentColor);UpdateColorChecks(); }
         finally { _loading=false; }
         UpdatePreview();_status.Text="Draft — Apply look updates the live lower third.";
+    }
+    /// <summary>Name and title text are judged against the plate at their own sizes (spec 4.2), non-blocking.</summary>
+    private void UpdateColorChecks()
+    {
+        _nameColor.CheckContext=new GraphicsColorCheckContext { TextOnPlate=_draft.BackgroundColor,TextSizePx=_draft.NameSize };
+        _titleColor.CheckContext=new GraphicsColorCheckContext { TextOnPlate=_draft.BackgroundColor,TextSizePx=_draft.TitleSize };
+        _backgroundColor.CheckContext=new GraphicsColorCheckContext { LargeArea=true,TextOnThis=_draft.NameColor };
     }
     private void Edit(LowerThirdAppearance draft) { if (!draft.IsValid) return;_draft=draft;UpdatePreview();_status.Text="Draft — Apply look updates the live lower third."; }
     private bool CommitText()
     {
-        var draft=_draft with { FontFamily=_font.Text.Trim(),NameColor=_nameColor.Text.Trim(),TitleColor=_titleColor.Text.Trim(),BackgroundColor=_backgroundColor.Text.Trim(),AccentColor=_accentColor.Text.Trim() };
-        if (draft.IsValid) {
-            _loading=true;
-            try {
-                _namePicker.Color=HexColor.ParseOrDefault(draft.NameColor,_namePicker.Color);
-                _titlePicker.Color=HexColor.ParseOrDefault(draft.TitleColor,_titlePicker.Color);
-                _backgroundPicker.Color=HexColor.ParseOrDefault(draft.BackgroundColor,_backgroundPicker.Color);
-                _accentPicker.Color=HexColor.ParseOrDefault(draft.AccentColor,_accentPicker.Color);
-            } finally { _loading=false; }
-            Edit(draft);return true;
-        }
+        var draft=_draft with { FontFamily=_font.Text.Trim(),NameColor=_nameColor.Literal,TitleColor=_titleColor.Literal,BackgroundColor=_backgroundColor.Literal,AccentColor=_accentColor.Literal };
+        if (draft.IsValid) { Edit(draft);return true; }
         _status.Text="Enter a font family and six-digit hex colors. Previous valid draft retained.";return false;
     }
     private void StartPreview()

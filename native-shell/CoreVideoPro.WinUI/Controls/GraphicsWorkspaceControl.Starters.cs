@@ -16,7 +16,8 @@ public sealed partial class GraphicsWorkspaceControl
     private readonly TextBlock _starterNotice = Copy("");
     private readonly TextBlock _starterFeedback = Copy("");
     private readonly StackPanel _starterBrandTools = new() { Orientation=Orientation.Horizontal, Spacing=8, Visibility=Visibility.Collapsed };
-    private readonly TextBox _starterBrandAccent = new() { Header="Brand color", Width=100, MaxLength=7 };
+    // The shared colour field (graphics styles slice 2); the starter accent is an opaque #RRGGBB.
+    private readonly CvColorField _starterBrandAccent = new() { Header="Brand color", AllowAlpha=false, MinWidth=180 };
     private readonly TextBlock _starterHeading = new() { FontSize = 16, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _assignmentHelp = Copy("");
     private readonly List<Button> _starterChoices = [];
@@ -53,13 +54,8 @@ public sealed partial class GraphicsWorkspaceControl
         _addStarter = ChromeButton("Save graphics only");
         _addStarter.Click += async (_, _) => await AddStarterToShowAsync(); _starterBanner.Children.Add(_addStarter);
         _starterBrandTools.Children.Add(_starterBrandAccent);
-        _starterBrandAccent.TextChanged += (_,_) => ApplyValidStarterBranding();
-        var color = ChromeButton("Pick color…"); color.VerticalAlignment=VerticalAlignment.Bottom;
-        var picker = new ColorPicker { IsAlphaEnabled=false, Color=Windows.UI.Color.FromArgb(255,68,193,161), MaxWidth=300 };
-        picker.ColorChanged += (_, e) => { if (!_starterAdding) _starterBrandAccent.Text=$"#{e.NewColor.R:X2}{e.NewColor.G:X2}{e.NewColor.B:X2}"; };
-        color.Flyout=new Flyout {Content=picker};
-        color.Flyout.Opening+=(_,_)=>{var hex=_starterBrandAccent.Text.Trim();if(hex.Length==7 && hex[0]=='#' && hex.Skip(1).All(Uri.IsHexDigit))picker.Color=Windows.UI.Color.FromArgb(255,Convert.ToByte(hex.Substring(1,2),16),Convert.ToByte(hex.Substring(3,2),16),Convert.ToByte(hex.Substring(5,2),16));};
-        _starterBrandTools.Children.Add(color);
+        _starterBrandAccent.SetValue("#44C1A1");
+        _starterBrandAccent.Committed += (_,_) => { if (!_starterAdding) ApplyValidStarterBranding(); };
         var logo = ChromeButton("Use my logo…"); logo.VerticalAlignment=VerticalAlignment.Bottom; logo.Click+=async(_,_)=>await PickStarterLogoAsync(); _starterBrandTools.Children.Add(logo);
         Grid.SetRow(_starterBanner, 0); // Inserted by the workspace's preview header, below its title.
         _starterGraphics.SelectionChanged += (_, _) => {
@@ -112,7 +108,7 @@ public sealed partial class GraphicsWorkspaceControl
             _starterFeedback.Text = "";
             var loading = _loading; _loading = true;
             try {
-                _starterBrandAccent.Text=starter.Accent;
+                _starterBrandAccent.SetValue(starter.Accent);
                 _starterGraphics.Items.Clear();
                 foreach(var graphic in _starterDrafts) {
                     var row=new StackPanel {Spacing=3}; row.Children.Add(new TextBlock {Text=graphic.Name,TextWrapping=TextWrapping.Wrap});
@@ -212,14 +208,14 @@ public sealed partial class GraphicsWorkspaceControl
     {
         if (_session is null || _activeStarter is null || _starterAdding || _starterLogoImporting) return;
         RememberStarterEdits();
-        try {_starterDrafts=GraphicsShowStarters.WithAccentColor(_starterDrafts,_starterBrandAccent.Text.Trim());}
+        try {_starterDrafts=GraphicsShowStarters.WithAccentColor(_starterDrafts,_starterBrandAccent.Literal);}
         catch(InvalidOperationException ex) {_starterFeedback.Text=ex.Message;RefreshStarterChrome();return;}
         _session.PreviewStarter(_starterDrafts[_starterPreviewIndex]); _starterFeedback.Text="Private preview updated."; RefreshStarterChrome();
     }
 
     private void ApplyValidStarterBranding()
     {
-        var color=_starterBrandAccent.Text.Trim();
+        var color=_starterBrandAccent.Literal;
         if(!_loading && color.Length==7 && color[0]=='#' && color.Skip(1).All(Uri.IsHexDigit)) ApplyStarterBranding();
     }
 

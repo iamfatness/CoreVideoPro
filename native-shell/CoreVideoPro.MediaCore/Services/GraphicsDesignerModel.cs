@@ -15,7 +15,9 @@ public sealed record GraphicsLayerInspection(string Id,string Kind,string Label,
 public static class GraphicsDesignerChoices
 {
     public static IReadOnlyList<(string Id,string Label)> Colours { get; } = [("brand.primary","Brand · plate"),("brand.accent","Brand · accent"),("brand.background","Brand · background"),
-        ("brand.foreground","Brand · foreground"),("brand.secondary","Brand · secondary"),("brand.onPrimary","Brand · ink"),("brand.onPrimaryMuted","Brand · ink muted")];
+        ("brand.foreground","Brand · foreground"),("brand.secondary","Brand · secondary"),("brand.onPrimary","Brand · ink"),("brand.onPrimaryMuted","Brand · ink muted"),
+        // Show palette tokens (graphics styles slice 1).
+        ("brand.surface","Brand · surface"),("brand.onSecondary","Brand · ink on secondary"),("brand.onAccent","Brand · ink on accent"),("brand.teamA","Brand · team A"),("brand.teamB","Brand · team B")];
     public static IReadOnlyList<(string Id,string Label)> Fonts { get; } =
         [("brand.fontHeading","Brand heading"),("brand.fontBody","Brand body"),.. GraphicsBuilder.TypefaceChoices.Select(f=>(f,f))];
     public static IReadOnlyList<(int Id,string Label)> Weights { get; } = [(400,"Regular"),(500,"Medium"),(600,"Semibold"),(700,"Bold")];

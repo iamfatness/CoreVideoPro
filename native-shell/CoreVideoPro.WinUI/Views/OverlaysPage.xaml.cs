@@ -37,7 +37,12 @@ public sealed partial class OverlaysPage : UserControl
         if (ReferenceEquals(_boundViewModel, next)) return;
         if (_boundViewModel is not null) _boundViewModel.PropertyChanged -= OnViewModelPropertyChanged;
         _boundViewModel = next;
-        if (_boundViewModel is not null) _boundViewModel.PropertyChanged += OnViewModelPropertyChanged;
+        if (_boundViewModel is not null) {
+            _boundViewModel.PropertyChanged += OnViewModelPropertyChanged;
+            // Every colour field's palette swatches show this show's resolved palette (graphics styles slice 2).
+            var studio = _boundViewModel;
+            Controls.CvColorField.PaletteProvider = () => studio.GraphicsLibrary.EffectivePalette.Resolve();
+        }
     }
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
