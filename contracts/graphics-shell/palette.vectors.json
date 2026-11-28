@@ -1,0 +1,658 @@
+{
+  "area": "palette",
+  "description": "GraphicsPalette.Resolve / IsValid / TryNormalize / Contrast and GraphicsPaletteMigration (graphics styles slice 1).",
+  "generatedBy": "native-shell/CoreVideoPro.MediaCore.Tests/GraphicsShellVectorTests.cs",
+  "rows": [
+    {
+      "id": "resolve-default",
+      "operation": "resolve",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        },
+        "rowOverrides": null
+      },
+      "expected": {
+        "brand.accent": "#44C1A1FF",
+        "brand.onAccent": "#111111FF",
+        "brand.onPrimary": "#FFFFFFFF",
+        "brand.onPrimaryMuted": "#E1E9F2FF",
+        "brand.onSecondary": "#111111FF",
+        "brand.primary": "#172433E6",
+        "brand.secondary": "#E1E9F2FF",
+        "brand.surface": "#172433B3"
+      }
+    },
+    {
+      "id": "resolve-light-plate-pinned-team",
+      "operation": "resolve",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#F5F5F5FF",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "#123456FF",
+            "brand.onAccent": "auto",
+            "brand.teamA": "#C8102EFF"
+          }
+        },
+        "rowOverrides": null
+      },
+      "expected": {
+        "brand.accent": "#44C1A1FF",
+        "brand.onAccent": "#111111FF",
+        "brand.onPrimary": "#111111FF",
+        "brand.onPrimaryMuted": "#3A4350FF",
+        "brand.onSecondary": "#123456FF",
+        "brand.primary": "#F5F5F5FF",
+        "brand.secondary": "#E1E9F2FF",
+        "brand.surface": "#172433B3",
+        "brand.teamA": "#C8102EFF"
+      }
+    },
+    {
+      "id": "resolve-row-override-wins",
+      "operation": "resolve",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#F5F5F5FF",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "#123456FF",
+            "brand.onAccent": "auto",
+            "brand.teamA": "#C8102EFF"
+          }
+        },
+        "rowOverrides": {
+          "brand.onAccent": "#ABCDEF80",
+          "brand.primary": "#000000FF",
+          "brand.teamB": "#003087FF"
+        }
+      },
+      "expected": {
+        "brand.accent": "#44C1A1FF",
+        "brand.onAccent": "#ABCDEF80",
+        "brand.onPrimary": "#FFFFFFFF",
+        "brand.onPrimaryMuted": "#E1E9F2FF",
+        "brand.onSecondary": "#123456FF",
+        "brand.primary": "#000000FF",
+        "brand.secondary": "#E1E9F2FF",
+        "brand.surface": "#172433B3",
+        "brand.teamA": "#C8102EFF",
+        "brand.teamB": "#003087FF"
+      }
+    },
+    {
+      "id": "resolve-brand-kit",
+      "operation": "resolve",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#0B1F3AE6",
+            "brand.secondary": "#13315CFF",
+            "brand.accent": "#E63946FF",
+            "brand.surface": "#0B1F3AB3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        },
+        "rowOverrides": null
+      },
+      "expected": {
+        "brand.accent": "#E63946FF",
+        "brand.onAccent": "#111111FF",
+        "brand.onPrimary": "#FFFFFFFF",
+        "brand.onPrimaryMuted": "#E1E9F2FF",
+        "brand.onSecondary": "#FFFFFFFF",
+        "brand.primary": "#0B1F3AE6",
+        "brand.secondary": "#13315CFF",
+        "brand.surface": "#0B1F3AB3"
+      }
+    },
+    {
+      "id": "resolve-lowercase-override",
+      "operation": "resolve",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        },
+        "rowOverrides": {
+          "brand.accent": "#e63946ff"
+        }
+      },
+      "expected": {
+        "brand.accent": "#E63946FF",
+        "brand.onAccent": "#111111FF",
+        "brand.onPrimary": "#FFFFFFFF",
+        "brand.onPrimaryMuted": "#E1E9F2FF",
+        "brand.onSecondary": "#111111FF",
+        "brand.primary": "#172433E6",
+        "brand.secondary": "#E1E9F2FF",
+        "brand.surface": "#172433B3"
+      }
+    },
+    {
+      "id": "valid-default",
+      "operation": "validate",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "valid-with-team",
+      "operation": "validate",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#F5F5F5FF",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "#123456FF",
+            "brand.onAccent": "auto",
+            "brand.teamA": "#C8102EFF"
+          }
+        }
+      },
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "id": "invalid-missing-required",
+      "operation": "validate",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#FFFFFFFF"
+          }
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "invalid-auto-plate",
+      "operation": "validate",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "auto",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "invalid-six-digit",
+      "operation": "validate",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#FFFFFF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "invalid-unknown-token",
+      "operation": "validate",
+      "input": {
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto",
+            "brand.logo": "#FFFFFFFF"
+          }
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "invalid-version",
+      "operation": "validate",
+      "input": {
+        "palette": {
+          "version": 2,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "id": "normalize-abc",
+      "operation": "normalize",
+      "input": {
+        "text": "#abc"
+      },
+      "expected": {
+        "value": "#AABBCCFF"
+      }
+    },
+    {
+      "id": "normalize-e63946",
+      "operation": "normalize",
+      "input": {
+        "text": "e63946"
+      },
+      "expected": {
+        "value": "#E63946FF"
+      }
+    },
+    {
+      "id": "normalize-0a0f18b3",
+      "operation": "normalize",
+      "input": {
+        "text": "#0A0F18B3"
+      },
+      "expected": {
+        "value": "#0A0F18B3"
+      }
+    },
+    {
+      "id": "normalize-empty",
+      "operation": "normalize",
+      "input": {
+        "text": ""
+      },
+      "expected": {
+        "value": null
+      }
+    },
+    {
+      "id": "normalize-12345",
+      "operation": "normalize",
+      "input": {
+        "text": "#12345"
+      },
+      "expected": {
+        "value": null
+      }
+    },
+    {
+      "id": "normalize-gggggg",
+      "operation": "normalize",
+      "input": {
+        "text": "#GGGGGG"
+      },
+      "expected": {
+        "value": null
+      }
+    },
+    {
+      "id": "normalize-navy",
+      "operation": "normalize",
+      "input": {
+        "text": "navy"
+      },
+      "expected": {
+        "value": null
+      }
+    },
+    {
+      "id": "normalize-ffffff",
+      "operation": "normalize",
+      "input": {
+        "text": " #FfFfFf "
+      },
+      "expected": {
+        "value": "#FFFFFFFF"
+      }
+    },
+    {
+      "id": "contrast-000000-ffffff",
+      "operation": "contrast",
+      "input": {
+        "a": "#000000FF",
+        "b": "#FFFFFFFF"
+      },
+      "expected": {
+        "ratio": 21
+      }
+    },
+    {
+      "id": "contrast-172433-ffffff",
+      "operation": "contrast",
+      "input": {
+        "a": "#172433E6",
+        "b": "#FFFFFFFF"
+      },
+      "expected": {
+        "ratio": 15.711678
+      }
+    },
+    {
+      "id": "contrast-44c1a1-111111",
+      "operation": "contrast",
+      "input": {
+        "a": "#44C1A1FF",
+        "b": "#111111FF"
+      },
+      "expected": {
+        "ratio": 8.442002
+      }
+    },
+    {
+      "id": "brand-kit-stock",
+      "operation": "fromBrandKit",
+      "input": {
+        "brandColor": "#44c1a1",
+        "accentColor": "#f0a85c",
+        "backgroundColor": "#0c1118",
+        "stock": true
+      },
+      "expected": {
+        "version": 1,
+        "colors": {
+          "brand.primary": "#172433E6",
+          "brand.secondary": "#E1E9F2FF",
+          "brand.accent": "#44C1A1FF",
+          "brand.surface": "#172433B3",
+          "brand.onPrimary": "auto",
+          "brand.onPrimaryMuted": "auto",
+          "brand.onSecondary": "auto",
+          "brand.onAccent": "auto"
+        }
+      }
+    },
+    {
+      "id": "brand-kit-edited",
+      "operation": "fromBrandKit",
+      "input": {
+        "brandColor": "#13315C",
+        "accentColor": "#E63946",
+        "backgroundColor": "#0B1F3A",
+        "stock": false
+      },
+      "expected": {
+        "version": 1,
+        "colors": {
+          "brand.primary": "#0B1F3AE6",
+          "brand.secondary": "#13315CFF",
+          "brand.accent": "#E63946FF",
+          "brand.surface": "#0B1F3AB3",
+          "brand.onPrimary": "auto",
+          "brand.onPrimaryMuted": "auto",
+          "brand.onSecondary": "auto",
+          "brand.onAccent": "auto"
+        }
+      }
+    },
+    {
+      "id": "migrate-stock-row-follows",
+      "operation": "migrateRow",
+      "input": {
+        "templateId": "centered-title",
+        "style": {
+          "version": 1,
+          "preset": "compact-solid",
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameSize": 42,
+          "titleSize": 28,
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#44C1A1",
+          "backgroundOpacity": 0.9,
+          "padding": 20,
+          "width": 0.6,
+          "cornerRadius": 8,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06,
+          "showLogo": true,
+          "logoScale": 1,
+          "isValid": true
+        },
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "brandOverrides": null
+      }
+    },
+    {
+      "id": "migrate-custom-row-keeps-colours",
+      "operation": "migrateRow",
+      "input": {
+        "templateId": "centered-title",
+        "style": {
+          "version": 1,
+          "preset": "compact-solid",
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameSize": 42,
+          "titleSize": 28,
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#E63946",
+          "backgroundOpacity": 0.5,
+          "padding": 20,
+          "width": 0.6,
+          "cornerRadius": 8,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06,
+          "showLogo": true,
+          "logoScale": 1,
+          "isValid": true
+        },
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "brandOverrides": {
+          "brand.accent": "#E63946FF",
+          "brand.primary": "#17243380"
+        }
+      }
+    },
+    {
+      "id": "migrate-against-brand-kit",
+      "operation": "migrateRow",
+      "input": {
+        "templateId": "logo-accent",
+        "style": {
+          "version": 1,
+          "preset": "compact-solid",
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameSize": 42,
+          "titleSize": 28,
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#44C1A1",
+          "backgroundOpacity": 0.9,
+          "padding": 20,
+          "width": 0.6,
+          "cornerRadius": 8,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06,
+          "showLogo": true,
+          "logoScale": 1,
+          "isValid": true
+        },
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#0B1F3AE6",
+            "brand.secondary": "#13315CFF",
+            "brand.accent": "#E63946FF",
+            "brand.surface": "#0B1F3AB3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "brandOverrides": {
+          "brand.accent": "#44C1A1FF",
+          "brand.primary": "#172433E6"
+        }
+      }
+    },
+    {
+      "id": "migrate-compatibility-untouched",
+      "operation": "migrateRow",
+      "input": {
+        "templateId": "compact-solid",
+        "style": {
+          "version": 1,
+          "preset": "compact-solid",
+          "anchor": "lower-left",
+          "fontFamily": "Segoe UI",
+          "nameSize": 42,
+          "titleSize": 28,
+          "nameColor": "#FFFFFF",
+          "titleColor": "#E1E9F2",
+          "backgroundColor": "#172433",
+          "accentColor": "#E63946",
+          "backgroundOpacity": 0.9,
+          "padding": 20,
+          "width": 0.6,
+          "cornerRadius": 8,
+          "safeOffsetX": 0.05,
+          "safeOffsetY": 0.06,
+          "showLogo": true,
+          "logoScale": 1,
+          "isValid": true
+        },
+        "palette": {
+          "version": 1,
+          "colors": {
+            "brand.primary": "#172433E6",
+            "brand.secondary": "#E1E9F2FF",
+            "brand.accent": "#44C1A1FF",
+            "brand.surface": "#172433B3",
+            "brand.onPrimary": "auto",
+            "brand.onPrimaryMuted": "auto",
+            "brand.onSecondary": "auto",
+            "brand.onAccent": "auto"
+          }
+        }
+      },
+      "expected": {
+        "brandOverrides": null
+      }
+    }
+  ]
+}

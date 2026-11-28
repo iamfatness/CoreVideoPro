@@ -124,6 +124,65 @@ holds the private preview lease at a time (`GraphicsDesignSurfaces`). The pure d
 upsert order) are unit-tested; the control is `GraphicsBuilderControl`, hosted by
 `OverlaysPage` beside the workspace and the playlist.
 
+## Show palette (graphics styles slice 1)
+
+Spec: [graphics styles, colour system and packs](graphics-styles-color-lower-thirds-spec.md)
+sections 4.1 and 10 (owner rulings 2026-11-27).
+
+- **Where.** Graphics → Design → **Palette** (an expander above the builder;
+  `GraphicsPaletteControl`). Tokens: `brand.primary`, `brand.secondary`,
+  `brand.accent`, `brand.surface`, `brand.onPrimary`, `brand.onPrimaryMuted`,
+  `brand.onSecondary`, `brand.onAccent`, optional `brand.teamA` / `brand.teamB`.
+  Values are `#RRGGBBAA`. The four on-colours may be `auto` (white or `#111111`,
+  whichever contrasts more with the resolved plate; the second line on a dark
+  plate is `#E1E9F2`). The editor uses the stock WinUI `ColorPicker` with alpha;
+  `CvColorField` replaces it in slice 2.
+- **Storage.** `palette` on the show document (`GraphicsShowDocument.Palette`,
+  additive in schema 3, omitted when null) as `{version:1, colors:{token:value}}`.
+  The app default for new shows is `palette-default.json` beside the show
+  document (`GraphicsPaletteDefaultsStore`), seeded once from the legacy brand
+  kit: a never-edited kit seeds the stock look (`#172433` plate at 90 %, white
+  name, `#E1E9F2` second line, `#44C1A1` accent); an edited kit maps Background
+  to primary (90 %) and surface (70 %), Brand to secondary, Accent to accent.
+  `brand.secondary` defaults to `#E1E9F2`, its pre-palette value, so a template
+  that already used it draws unchanged.
+- **Resolution.** Row override (`GraphicsPlaylistRow.BrandOverrides`, also on the
+  draft) → show palette → pack default. The shell resolves the first two
+  (`GraphicsPalette.Resolve`) and sends the map as `palette` on
+  `graphics.instance.create` / `update` and on the private authoring preview. The
+  core lays it over the row-appearance derivation (`graphicsBrand` in
+  `GraphicsCompatibility.h`), which stands in for the pack default until packs
+  ship; `brand.background` / `brand.foreground` follow the palette's primary and
+  onPrimary when set. Compatibility looks (`compact-solid`, `minimal-accent`,
+  `broadcast`) ignore the palette and keep reading their appearance. The core
+  reports `palette`, `cuePalette` and `programPalette` per instance and refuses a
+  malformed map with `invalid-graphics-palette`.
+- **Live re-theme.** Saving the palette re-cues every ordinary playlist cue whose
+  `cuePalette` differs (`GraphicsPlayoutService.RefreshPaletteAsync`), so Preview
+  recolours at once. Program never changes there. The palette surface shows
+  "N graphics on air use an older palette — Update on air" when native
+  `programPalette` differs from what a playlist row would get now; the button
+  sends `graphics.instance.update target=program` with only the palette. A
+  graphic whose draft has moved past Program (a newer cue with other edits) is
+  skipped and named: Show it from Preview instead. Layout-owned cues, Design and
+  automation instances are not re-themed; they take the palette on their next
+  Show.
+- **Builder.** For a declarative look the four COLORS swatches show the resolved
+  palette colour and write a per-graphic override (the plate's alpha is kept);
+  **Use show palette** clears the overrides. Compatibility looks keep **Use brand
+  kit colors**. The legacy brand kit's colour editors are replaced by a link to
+  the Palette.
+- **Migration.** A show written before the palette loads on the app default, in
+  memory, and each declarative row keeps every appearance colour that differs
+  from that palette as a row override, so nothing already built changes colour.
+  The next save of anything persists it. The Mac applies the same rule on read
+  (`GraphicsDocument.resolvedPalette(for:)`) and never rewrites the file.
+- **Mac.** Model only: `GraphicsPalette.swift` parses, validates, resolves and
+  round-trips the same section, and Mac playout sends the same resolved map.
+  `contracts/graphics-shell/palette.vectors.json` (written by
+  `GraphicsShellVectorTests.PaletteVectors`) pins both. There is no Mac palette
+  UI yet.
+
 ## Local data crawls
 
 From Graphics → Design, select **Data crawl…** and open a local CSV or JSON file.
@@ -639,6 +698,7 @@ makes the Take carry them:
 | Motion | `GraphicsDesignerControl.Motion*.cs`, `GraphicsTemplateEditor.Motion.cs`, `GraphicsMotionModel.cs`; native units, phase clock and atlas layout in `GraphicsMotion.*`, drawn by the Windows D3D11 compositor |
 | UI | `Controls/GraphicsOnAirStripControl.cs`, `Controls/GraphicsPlayoutControl.cs` (full and `Compact`), `Views/OverlaysPage.xaml` (toggle), `Views/StudioWorkspace.xaml` (strip + compact playlist), `Services/GraphicsHotkeyRouter.cs` |
 | Core | `native/src/graphics/GraphicsInstances.*` (`rideTake`, `promoteCuedForTake`, `uncue`), `native/src/core/MediaCore.cpp` (`beginTakeTransition`) |
+| Show palette | `MediaCore/Models/GraphicsPalette.cs` (model, resolve, migration), `GraphicsWorkspaceLibrary.Palette.cs` (app default, save), `GraphicsPlayoutService.Palette.cs` (re-cue, Update on air), `WinUI/Controls/GraphicsPaletteControl.cs`; core `graphicsBrand` in `native/src/graphics/GraphicsCompatibility.h`; Mac `GraphicsPalette.swift` |
 
 Entries are binding-shaped: a row's `Fields` are the template's variables and a
 guest entry is `Bindings` of those variables to a source (today `name` and

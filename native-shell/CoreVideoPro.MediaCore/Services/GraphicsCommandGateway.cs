@@ -83,8 +83,8 @@ public static class GraphicsCommandRequest
     {
         ["graphics.automation.configure"] = ["configuration","expectedAutomationRevision"], ["graphics.automation.control"] = ["action","mode","expectedAutomationRevision","expectedActivationRevision"],
         ["graphics.authority.set"] = ["family", "authority"],
-        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
-        ["graphics.instance.update"] = ["label","rackOrder","templateVersion", "target", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
+        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "palette", "animations", "binding", "placement", "image"],
+        ["graphics.instance.update"] = ["label","rackOrder","templateVersion", "target", "sourceId", "fields", "style", "palette", "animations", "binding", "placement", "image"],
         ["graphics.instance.cue"] = ["rideTake", "cueOwner"], ["graphics.instance.trigger"] = ["action", "target", "cueOwner"],
         ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
@@ -122,7 +122,7 @@ public static class GraphicsCommandRequest
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
                 if(property.Name is "includeThumbnails" or "rideTake") {if(property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;continue;}
-                if (property.Name is "fields" or "style" or "animations" or "binding" or "placement" or "configuration" or "image") continue;
+                if (property.Name is "fields" or "style" or "palette" or "animations" or "binding" or "placement" or "configuration" or "image") continue;
                 if (property.Name == "manifest")
                 {
                     if (property.Value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(property.Value.GetString()) ||
@@ -216,6 +216,7 @@ public static class GraphicsCommandRequest
                     placement.Deserialize<NativeGraphicsPlacement>(JsonOptions)?.IsValid != true) return false;
             }
             if (body.TryGetProperty("animations", out var animations) && !ValidAnimations(animations)) return false;
+            if (body.TryGetProperty("palette", out var palette) && !ValidPalette(palette)) { error = "invalid-graphics-palette"; return false; }
             if (body.TryGetProperty("fields", out var fields))
             {
                 if (fields.ValueKind != JsonValueKind.Object) return false;
@@ -304,6 +305,17 @@ public static class GraphicsCommandRequest
                 foreach(var property in text.Value.EnumerateObject().Where(p=>p.Name!="binding")) if(property.Value.ValueKind!=JsonValueKind.String || Encoding.UTF8.GetByteCount(property.Value.GetString()!)>(property.Name=="name"?256:512) || (property.Name=="name"&&property.Value.GetString()=="")) return false;
             }
         }
+        return true;
+    }
+    /// <summary>The resolved show palette: null, or known colour tokens to #RRGGBBAA (graphics styles slice 1).</summary>
+    internal static bool ValidPalette(JsonElement palette)
+    {
+        if (palette.ValueKind == JsonValueKind.Null) return true;
+        if (palette.ValueKind != JsonValueKind.Object) return false;
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var token in palette.EnumerateObject())
+            if (!names.Add(token.Name) || !GraphicsPalette.Tokens.Contains(token.Name, StringComparer.Ordinal) ||
+                token.Value.ValueKind != JsonValueKind.String || !GraphicsPalette.IsColor(token.Value.GetString())) return false;
         return true;
     }
     private static bool ValidAnimations(JsonElement animations)

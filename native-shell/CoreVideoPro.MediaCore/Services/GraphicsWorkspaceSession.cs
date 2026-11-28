@@ -37,6 +37,26 @@ public sealed partial class GraphicsWorkspaceSession
     public event EventHandler<string>? EditRefused;
     private void RefuseEdit(string message) { Status=message; Changed?.Invoke(this,EventArgs.Empty); EditRefused?.Invoke(this,message); }
     public NativeGraphicsState? State { get; private set; }
+    /// <summary>The show palette every declarative draft resolves against (graphics styles slice 1).
+    /// Set by <see cref="GraphicsWorkspaceLibrary"/>; changing it refreshes the private preview only.</summary>
+    public GraphicsPalette? Palette { get; private set; }
+    public void SetPalette(GraphicsPalette? palette)
+    {
+        if (palette == Palette || (palette is not null && Palette is not null && GraphicsPalette.SameResolved(palette.Resolve(), Palette.Resolve()) &&
+            palette.Colors.Count == Palette.Colors.Count && palette.Colors.All(p => Palette.Colors.TryGetValue(p.Key, out var v) && v == p.Value))) return;
+        Palette = palette; PreviewChanged?.Invoke(this, EventArgs.Empty);
+    }
+    /// <summary>The private preview for the current draft, resolved against the show palette.</summary>
+    public NativeGraphicsPreview? PreviewFor(NativeGraphicsDraft? draft, NativeGraphicsPreviewPlay? play = null) => draft?.ForPreview(play, Palette);
+    /// <summary>Set (value) or clear (null) one colour override on the draft. Empty map = follow the palette.</summary>
+    public void SetBrandOverride(string token, string? value)
+    {
+        if (Draft is null || !GraphicsPalette.Tokens.Contains(token, StringComparer.Ordinal) || (value is not null && !GraphicsPalette.IsColor(value))) return;
+        var map = (Draft.BrandOverrides ?? new Dictionary<string, string>()).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        if (value is null) map.Remove(token); else map[token] = value.ToUpperInvariant();
+        Edit(Draft with { BrandOverrides = map.Count == 0 ? null : map });
+    }
+    public void ClearBrandOverrides() { if (Draft?.BrandOverrides is not null) Edit(Draft with { BrandOverrides = null }); }
     public string SelectedId { get; private set; } = "";
     public string SelectedLayerId { get; private set; } = "";
     public void SelectLayer(string id) { if(Busy || id==SelectedLayerId) return;EndGesture();SelectedLayerId=id;Changed?.Invoke(this,EventArgs.Empty); }
@@ -333,7 +353,7 @@ public sealed partial class GraphicsWorkspaceSession
             var draft = Selected is null && Draft?.TemplateId == template.TemplateId && Draft.TemplateVersion == template.TemplateVersion ? Draft : NewDraft(template);
             var id = "graphic-" + Guid.NewGuid().ToString("N");
             if (!await Send("graphics.instance.create", new() { ["instanceId"] = id, ["templateId"] = template.TemplateId,
-                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image, ["binding"] = draft.Binding }, cancellation)) return false;
+                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["palette"] = draft.PaletteWire(Palette), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image, ["binding"] = draft.Binding }, cancellation)) return false;
             // Selection here is deliberate operator intent, not metadata refresh.
             Busy = false; Select(id); Busy = true; if(draft.Scratch is not null) {Draft=draft;NotifyPreview();} return true;
         });
@@ -488,7 +508,7 @@ public sealed partial class GraphicsWorkspaceSession
         if (cue.SourceId.Length != 0 && binding is null) { Status = "Choose the current source explicitly before restoring this bound cue."; return false; }
         var id = "graphic-" + Guid.NewGuid().ToString("N");
         var body = new Dictionary<string, object?> { ["instanceId"] = id, ["templateId"] = draft.TemplateId, ["templateVersion"] = draft.TemplateVersion,
-            ["scope"] = cue.Scope, ["sceneId"] = cue.SceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image };
+            ["scope"] = cue.Scope, ["sceneId"] = cue.SceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["palette"] = draft.PaletteWire(Palette), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image };
         if (binding is not null) body["binding"] = binding;
         if (!await Send("graphics.instance.create", body, cancellation)) return false;
         Busy = false; Select(id); Busy = true;
@@ -509,7 +529,7 @@ public sealed partial class GraphicsWorkspaceSession
         if(draft.Scratch is not null) { Status="Save the edited template as an immutable version before Cue or Update."; return false; }
         var fields = selected.Clock is null ? draft.Fields : JsonSerializer.SerializeToElement(draft.Fields.EnumerateObject().Where(p=>p.Name!="time").ToDictionary(p=>p.Name,p=>p.Value.Clone()),Json);
         var result = await SendOperation("graphics.instance.update", new() { ["instanceId"] = selected.InstanceId, ["expectedRevision"] = _draftBaseRevision,
-            ["target"] = target, ["templateVersion"] = draft.TemplateVersion, ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image, ["binding"] = draft.Binding }, cancellation);
+            ["target"] = target, ["templateVersion"] = draft.TemplateVersion, ["fields"] = fields, ["style"] = draft.StyleWire(), ["palette"] = draft.PaletteWire(Palette), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image, ["binding"] = draft.Binding }, cancellation);
         if (result is {Accepted:true,CurrentRevision:>0} && result.InstanceId == selected.InstanceId)
             _draftBaseRevision = result.CurrentRevision;
         return result.Accepted;

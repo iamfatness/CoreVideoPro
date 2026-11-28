@@ -33,9 +33,7 @@ ThumbnailInput thumbnailInput(const std::string& id, const std::shared_ptr<const
     if(const auto found=fields.find("name");found!=fields.end() && found->second.isString() && found->second.asString().empty()) fields["name"]="Example guest";
     input->fields=std::move(fields);
     const auto& a=overlay.appearance;
-    input->brand=rpc::Json::Object{{"brand.primary",a.backgroundColor},{"brand.onPrimary",a.nameColor},{"brand.onPrimaryMuted",a.titleColor},
-      {"brand.accent",a.accentColor},{"brand.fontBody",a.fontFamily},{"brand.fontHeading",a.fontFamily},
-      {"brand.secondary",a.titleColor},{"brand.background",a.backgroundColor},{"brand.foreground",a.nameColor},{"brand.logo",definition->assets().count("logo")?"logo":""}};
+    input->brand=graphicsBrand(a,a.backgroundColor,definition->assets().count("logo")!=0);
     overlay.graphicsTemplate=std::move(input);width=definition->width();height=definition->height();
   }
   const double scale=std::min(320./width,180./height);

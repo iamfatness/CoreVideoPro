@@ -57,6 +57,10 @@ public sealed record GraphicsShowDocument
     public IReadOnlyList<GraphicsDataSource> DataSources { get; init; } = [];
     public IReadOnlyList<GraphicsFeedDefinition> Feeds { get; init; } = [];
     public IReadOnlyList<GraphicsSourceColumn> SourceColumns { get; init; } = [];
+    /// <summary>The show palette (graphics styles slice 1). Additive in schema 3; null = a show
+    /// written before the palette, which loads with the app default (see GraphicsWorkspaceLibrary).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GraphicsPalette? Palette { get; init; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
 
@@ -209,6 +213,7 @@ public sealed class GraphicsDocumentStore
                 (source.FeedSequence is not null) != document.Feeds.Any(feed => feed.Id == source.Id && feed.Format == "wss")) ||
             document.DataSources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count() != document.DataSources.Count)
             throw new InvalidDataException("Invalid graphics datasets.");
+        if (document.Palette is { IsValid: false }) throw new InvalidDataException("Invalid graphics palette.");
         if (document.SourceColumns is not { Count: <= GraphicsSourceColumn.MaxColumns } ||
             document.SourceColumns.Any(column => column is null || !column.IsValid()) ||
             document.SourceColumns.Select(column => column.Id).Distinct(StringComparer.Ordinal).Count() != document.SourceColumns.Count)

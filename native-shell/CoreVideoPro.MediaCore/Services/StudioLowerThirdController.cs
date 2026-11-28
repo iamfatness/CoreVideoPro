@@ -105,7 +105,7 @@ public sealed class StudioLowerThirdController
             var created = await Send("graphics.instance.create", epoch, new() {
                 ["instanceId"] = _instanceId, ["templateId"] = draft.TemplateId, ["templateVersion"] = draft.TemplateVersion,
                 ["scope"] = assignment.Cue.Scope, ["sceneId"] = assignment.Cue.SceneId,
-                ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations,
+                ["fields"] = fields, ["style"] = draft.StyleWire(), ["palette"] = draft.PaletteWire(_library.EffectivePalette), ["animations"] = draft.Animations,
                 ["placement"] = draft.Placement, ["image"] = draft.Image, ["binding"] = subject?.Identity
             }, cancellation);
             if (!created.Accepted) return created;

@@ -23,6 +23,7 @@
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
           </Grid.RowDefinitions>
           <Grid ColumnSpacing="12">
@@ -42,13 +43,17 @@
                        Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
           </Grid>
           <controls:GraphicsOnAirStripControl Grid.Row="1" Studio="{x:Bind ViewModel, Mode=OneWay}" />
-          <controls:GraphicsPlayoutControl Grid.Row="2" x:Name="GraphicsPlayout" Studio="{x:Bind ViewModel, Mode=OneWay}"
+          <!-- Graphics styles slice 1: the show palette sits at the top of Design (Visibility set in ApplyGraphicsMode). -->
+          <Expander Grid.Row="2" x:Name="PaletteExpander" Header="Palette" Visibility="Collapsed" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+            <controls:GraphicsPaletteControl x:Name="PaletteEditor" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+          </Expander>
+          <controls:GraphicsPlayoutControl Grid.Row="3" x:Name="GraphicsPlayout" Studio="{x:Bind ViewModel, Mode=OneWay}"
                                            Visibility="{x:Bind ViewModel.IsGraphicsPlayoutMode, Mode=OneWay}" />
-          <controls:GraphicsBuilderControl Grid.Row="2" x:Name="GraphicsBuilder" Studio="{x:Bind ViewModel, Mode=OneWay}"
+          <controls:GraphicsBuilderControl Grid.Row="3" x:Name="GraphicsBuilder" Studio="{x:Bind ViewModel, Mode=OneWay}"
                                            Visibility="{x:Bind ViewModel.IsGraphicsBuilderVisible, Mode=OneWay}" />
-          <controls:GraphicsDesignerControl Grid.Row="2" x:Name="GraphicsDesigner" Studio="{x:Bind ViewModel, Mode=OneWay}"
+          <controls:GraphicsDesignerControl Grid.Row="3" x:Name="GraphicsDesigner" Studio="{x:Bind ViewModel, Mode=OneWay}"
                                             Visibility="{x:Bind ViewModel.IsGraphicsDesignerVisible, Mode=OneWay}" />
-          <controls:GraphicsWorkspaceControl Grid.Row="2" x:Name="GraphicsWorkspace" Studio="{x:Bind ViewModel, Mode=OneWay}" ExistingControlsRequested="OnExistingControlsRequested"
+          <controls:GraphicsWorkspaceControl Grid.Row="3" x:Name="GraphicsWorkspace" Studio="{x:Bind ViewModel, Mode=OneWay}" ExistingControlsRequested="OnExistingControlsRequested"
                                              Visibility="{x:Bind ViewModel.IsGraphicsAdvancedVisible, Mode=OneWay}" />
         </Grid>
       </SplitView.Content>
@@ -298,90 +303,13 @@
                         </Border>
                     </Grid>
 
+                    <!-- Graphics styles slice 1: the legacy brand kit colours became the show palette. -->
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="8">
                             <TextBlock Text="Colors" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-
-                            <Grid ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="92" />
-                                    <ColumnDefinition Width="28" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Primary" VerticalAlignment="Center" FontSize="12" />
-                                <Border Grid.Column="1" Width="24" Height="24" CornerRadius="4"
-                                        Background="{x:Bind ViewModel.Overlays.BrandPrimarySwatch, Mode=OneWay}" />
-                                <TextBox Grid.Column="2"
-                                         Text="{x:Bind ViewModel.Overlays.BrandPrimaryColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         PlaceholderText="#44C1A1" />
-                                <Button Grid.Column="3" Content="Pick" Style="{StaticResource OperatorGhostButton}">
-                                    <Button.Flyout>
-                                        <Flyout>
-                                            <ColorPicker Color="{x:Bind ViewModel.Overlays.BrandPrimaryPickerColor, Mode=TwoWay}"
-                                                         IsAlphaEnabled="False"
-                                                         IsAlphaSliderVisible="False"
-                                                         IsAlphaTextInputVisible="False"
-                                                         IsColorChannelTextInputVisible="False"
-                                                         IsHexInputVisible="False" />
-                                        </Flyout>
-                                    </Button.Flyout>
-                                </Button>
-                            </Grid>
-
-                            <Grid ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="92" />
-                                    <ColumnDefinition Width="28" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Accent" VerticalAlignment="Center" FontSize="12" />
-                                <Border Grid.Column="1" Width="24" Height="24" CornerRadius="4"
-                                        Background="{x:Bind ViewModel.Overlays.BrandAccentSwatch, Mode=OneWay}" />
-                                <TextBox Grid.Column="2"
-                                         Text="{x:Bind ViewModel.Overlays.BrandAccentColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         PlaceholderText="#F0A85C" />
-                                <Button Grid.Column="3" Content="Pick" Style="{StaticResource OperatorGhostButton}">
-                                    <Button.Flyout>
-                                        <Flyout>
-                                            <ColorPicker Color="{x:Bind ViewModel.Overlays.BrandAccentPickerColor, Mode=TwoWay}"
-                                                         IsAlphaEnabled="False"
-                                                         IsAlphaSliderVisible="False"
-                                                         IsAlphaTextInputVisible="False"
-                                                         IsColorChannelTextInputVisible="False"
-                                                         IsHexInputVisible="False" />
-                                        </Flyout>
-                                    </Button.Flyout>
-                                </Button>
-                            </Grid>
-
-                            <Grid ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="92" />
-                                    <ColumnDefinition Width="28" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Background" VerticalAlignment="Center" FontSize="12" />
-                                <Border Grid.Column="1" Width="24" Height="24" CornerRadius="4"
-                                        Background="{x:Bind ViewModel.Overlays.BrandBackgroundSwatch, Mode=OneWay}" />
-                                <TextBox Grid.Column="2"
-                                         Text="{x:Bind ViewModel.Overlays.BrandBackgroundColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         PlaceholderText="#0C1118" />
-                                <Button Grid.Column="3" Content="Pick" Style="{StaticResource OperatorGhostButton}">
-                                    <Button.Flyout>
-                                        <Flyout>
-                                            <ColorPicker Color="{x:Bind ViewModel.Overlays.BrandBackgroundPickerColor, Mode=TwoWay}"
-                                                         IsAlphaEnabled="False"
-                                                         IsAlphaSliderVisible="False"
-                                                         IsAlphaTextInputVisible="False"
-                                                         IsColorChannelTextInputVisible="False"
-                                                         IsHexInputVisible="False" />
-                                        </Flyout>
-                                    </Button.Flyout>
-                                </Button>
-                            </Grid>
+                            <TextBlock Text="Graphics colours now live in the show palette, so every graphic follows them. Edit them in Graphics, Design, Palette."
+                                       FontSize="12" TextWrapping="WrapWholeWords" />
+                            <Button Content="Open the palette" Style="{StaticResource OperatorGhostButton}" Click="OnOpenPaletteClick" />
                         </StackPanel>
                     </Border>
                 </StackPanel>

@@ -115,6 +115,8 @@ struct GraphicsRow: Equatable, Identifiable {
                   let a = V.string(image, "assetId", ""), (1...64).contains(a.utf16.count) else { return false }
         }
         // dataBinding: only a title row without variants may carry one (contents: the data slice).
+        // brandOverrides (graphics styles slice 1): known tokens to #RRGGBBAA.
+        guard GraphicsPalette.validOverrides(r["brandOverrides"]) else { return false }
         if let binding = r["dataBinding"], !(binding is NSNull) {
             guard let object = binding as? JSONObject, GraphicsDataBinding(json: object)?.isValid == true,
                   kind == title, variants.isEmpty else { return false }
@@ -390,6 +392,10 @@ struct GraphicsDocument: @unchecked Sendable {
               }),
               Set(ids(sources, "id")).count == sources.count
         else { throw fail("Invalid graphics datasets.") }
+        // The show palette (graphics styles slice 1), checked where GraphicsDocumentStore.Validate checks it.
+        if let palette = d["palette"], !(palette is NSNull) {
+            guard let object = palette as? JSONObject, GraphicsPalette(json: object).isValid else { throw fail("Invalid graphics palette.") }
+        }
         let columns = try list("sourceColumns")
         guard columns.count <= 30, columns.allSatisfy({ $0 is JSONObject }), Set(ids(columns, "id")).count == columns.count
         else { throw fail("Invalid graphics Sources columns.") }

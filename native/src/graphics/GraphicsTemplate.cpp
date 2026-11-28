@@ -130,7 +130,10 @@ uint32_t color(const std::string& s) {
   for (size_t i = 1; i < s.size(); ++i) { const char c = s[i]; const int h = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; need(h >= 0, "template-color-required"); n = (n << 4) | h; }
   return s.size() == 7 ? 0xff000000u | n : ((n & 255) << 24) | (n >> 8);
 }
-const std::set<std::string> tokens{"brand.primary", "brand.secondary", "brand.accent", "brand.background", "brand.foreground", "brand.onPrimary", "brand.onPrimaryMuted", "brand.fontHeading", "brand.fontBody", "brand.logo"};
+// The ten original tokens keep their names; the show palette (styles spec 4.1)
+// adds the on-colours, surface and the optional sports team colours.
+const std::set<std::string> tokens{"brand.primary", "brand.secondary", "brand.accent", "brand.background", "brand.foreground", "brand.onPrimary", "brand.onPrimaryMuted", "brand.fontHeading", "brand.fontBody", "brand.logo",
+    "brand.onSecondary", "brand.onAccent", "brand.surface", "brand.teamA", "brand.teamB"};
 Json typedValue(const Json& field, const Json& value) {
   const auto type = field.getString("type");
   if (type == "string" || type == "color" || type == "image") {
@@ -659,7 +662,7 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
       }
     }
     if (!definition->validateFields(definition->defaultFields(), false, error)) throw std::runtime_error(error);
-    const auto* brands = d.get("brandTokens"); need(brands && brands->isArray() && brands->asArray().size() <= 10, "template-brand-limit"); ids.clear();
+    const auto* brands = d.get("brandTokens"); need(brands && brands->isArray() && brands->asArray().size() <= tokens.size(), "template-brand-limit"); ids.clear();
     for (const auto& token : brands->asArray()) need(token.isString() && tokens.count(token.asString()) && ids.insert(token.asString()).second, "template-brand-token");
     const auto* layers = d.get("layers"); need(layers && layers->isArray() && !layers->asArray().empty() && layers->asArray().size() <= 64, "template-layers-limit");
     ids.clear(); std::set<std::string> paths;

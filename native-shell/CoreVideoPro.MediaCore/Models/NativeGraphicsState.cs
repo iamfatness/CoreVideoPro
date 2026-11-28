@@ -165,6 +165,11 @@ public sealed record NativeGraphicsInstance
     public NativeGraphicsFields? ProgramFields { get; init; }
     public LowerThirdAppearance? ProgramStyle { get; init; }
     public NativeGraphicsAnimations? ProgramAnimations { get; init; }
+    /// <summary>Resolved show palette (token -> #RRGGBBAA) of the draft, cue and Program revisions; null = none.</summary>
+    public System.Text.Json.JsonElement? Palette { get; init; }
+    public System.Text.Json.JsonElement? CuePalette { get; init; }
+    public System.Text.Json.JsonElement? ProgramPalette { get; init; }
+    public bool RideTake { get; init; } = true;
 }
 
 public sealed record NativeGraphicsResource

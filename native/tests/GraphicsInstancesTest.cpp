@@ -1628,3 +1628,67 @@ TEST(GraphicsInstances, SinglePassKeepsItsRevisionThroughRestart) {
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"},{"expectedRevision",2}})));
   EXPECT_EQ(2., row(state).getNumber("programRevision"));
 }
+
+// Graphics styles slice 1: the resolved show palette rides a revision, replaces the
+// appearance-derived brand values, and reaches Program only on an explicit update.
+TEST(GraphicsInstances, ShowPaletteResolvesBrandTokensAndReachesProgramOnlyOnExplicitUpdate) {
+  GraphicsInstances state{"test-core"};
+  const auto navy = Json::Object{{"brand.primary", "#0B1F3AE6"}, {"brand.accent", "#E63946FF"}, {"brand.onPrimary", "#FFFFFFFF"}};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create", {{"templateId", "corporate-lower-third"}, {"templateVersion", 1},
+      {"scope", "global"}, {"fields", Json::Object{{"name", "Guest"}, {"title", "Engineer"}}}, {"palette", navy}})));
+  EXPECT_EQ("#0B1F3AE6", row(state).get("palette")->getString("brand.primary"));
+  ready(state, 1); ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
+  CompositorRenderPlan plan; state.append(plan, false); ASSERT_EQ(1u, plan.layers.size());
+  ASSERT_TRUE(plan.layers[0].overlay.graphicsTemplate);
+  const auto brand = plan.layers[0].overlay.graphicsTemplate->brand;
+  EXPECT_EQ("#0B1F3AE6", brand.getString("brand.primary"));
+  EXPECT_EQ("#E63946FF", brand.getString("brand.accent"));
+  // Tokens the palette does not set keep the appearance derivation (the pack default).
+  EXPECT_EQ(row(state).get("style")->getString("nameColor"), brand.getString("brand.onSecondary"));
+  EXPECT_EQ(row(state).get("style")->getString("fontFamily"), brand.getString("brand.fontBody"));
+  // The legacy aliases follow the palette's primary plate and its text.
+  EXPECT_EQ("#0B1F3A", brand.getString("brand.background"));
+  EXPECT_EQ("#FFFFFFFF", brand.getString("brand.foreground"));
+  EXPECT_EQ("#E63946FF", row(state).get("programPalette")->getString("brand.accent"));
+
+  // A palette edit on the cue copy leaves Program on the palette it showed with.
+  auto gold = navy; gold["brand.accent"] = "#D4A017FF";
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"target", "cue"}, {"palette", gold}})));
+  ready(state, 2);
+  plan = {}; state.append(plan, false); ASSERT_EQ(1u, plan.layers.size());
+  EXPECT_EQ("#E63946FF", plan.layers[0].overlay.graphicsTemplate->brand.getString("brand.accent"));
+  EXPECT_EQ("#E63946FF", row(state).get("programPalette")->getString("brand.accent"));
+  EXPECT_EQ("#D4A017FF", row(state).get("palette")->getString("brand.accent"));
+  // The same palette again is a no-op, not a new revision.
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"expectedRevision", 2}, {"target", "cue"}, {"palette", gold}})));
+  EXPECT_EQ(2., row(state).getNumber("revision"));
+  // Update on air: the explicit Program update adopts the prepared revision.
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"expectedRevision", 2}, {"target", "program"}, {"palette", gold}})));
+  ready(state, 2);
+  plan = {}; state.append(plan, false); ASSERT_EQ(1u, plan.layers.size());
+  EXPECT_EQ("#D4A017FF", plan.layers[0].overlay.graphicsTemplate->brand.getString("brand.accent"));
+  EXPECT_EQ("#D4A017FF", row(state).get("programPalette")->getString("brand.accent"));
+
+  // Unknown tokens, opaque 6-digit values and non-strings are refused atomically.
+  for (const auto& bad : {Json(Json::Object{{"brand.logo", "#FFFFFFFF"}}), Json(Json::Object{{"brand.accent", "#FFFFFF"}}),
+           Json(Json::Object{{"brand.accent", 1}}), Json(std::string("navy"))}) {
+    EXPECT_FALSE(state.apply(request("graphics-instance-update", {{"expectedRevision", 2}, {"target", "cue"}, {"palette", bad}})));
+    EXPECT_EQ("invalid-graphics-palette", state.snapshot().get("lastResult")->getString("reason"));
+  }
+  // Null clears the palette back to the appearance derivation.
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"expectedRevision", 2}, {"target", "cue"}, {"palette", Json{}}})));
+  EXPECT_TRUE(row(state).get("palette")->isNull());
+}
+
+TEST(GraphicsInstances, CompatibilityLooksKeepTheirAppearanceAndPreviewHonoursThePalette) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create", {{"templateId", "compact-solid"}, {"templateVersion", 1},
+      {"scope", "global"}, {"fields", Json::Object{{"name", "Guest"}}}, {"palette", Json::Object{{"brand.accent", "#E63946FF"}}}})));
+  EXPECT_TRUE(row(state).get("palette")->isNull());
+  const auto preview = state.authoringPreview(Json::Object{{"templateId", "corporate-lower-third"}, {"templateVersion", 1},
+      {"fields", Json::Object{{"name", "Guest"}}}, {"palette", Json::Object{{"brand.primary", "#13315CFF"}}}});
+  ASSERT_TRUE(preview); ASSERT_TRUE(preview->graphicsTemplate);
+  EXPECT_EQ("#13315CFF", preview->graphicsTemplate->brand.getString("brand.primary"));
+  EXPECT_FALSE(state.authoringPreview(Json::Object{{"templateId", "corporate-lower-third"}, {"templateVersion", 1},
+      {"palette", Json::Object{{"brand.primary", "navy"}}}}));
+}

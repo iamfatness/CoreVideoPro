@@ -22,12 +22,24 @@ public sealed record NativeGraphicsDraft(string TemplateId, int TemplateVersion,
         return System.Text.Json.JsonSerializer.SerializeToElement(style.EnumerateObject().Where(p => consumed.Contains(p.Name))
             .ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal), options);
     }
-    public NativeGraphicsPreview ForPreview(NativeGraphicsPreviewPlay? play = null) => new(TemplateId, TemplateVersion, Fields, StyleWire(), Animations, Placement, Scratch, Image, play);
+    /// <summary>Per-graphic colour overrides laid over the show palette (graphics styles slice 1). Null = follow the palette.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? BrandOverrides { get; init; }
+    /// <summary>The resolved palette this draft sends (row override -> show palette), or null for a
+    /// compatibility look, which keeps drawing from its appearance.</summary>
+    public IReadOnlyDictionary<string, string>? PaletteWire(GraphicsPalette? palette) =>
+        Declarative && palette is not null ? palette.Resolve(BrandOverrides) : null;
+    public NativeGraphicsPreview ForPreview(NativeGraphicsPreviewPlay? play = null, GraphicsPalette? palette = null) =>
+        new(TemplateId, TemplateVersion, Fields, StyleWire(), Animations, Placement, Scratch, Image, play) { Palette = PaletteWire(palette) };
 }
 public sealed record NativeGraphicsPreviewPlay(string Mode, int Token);
 
 public sealed record NativeGraphicsPreview(string TemplateId, int TemplateVersion,
-    System.Text.Json.JsonElement Fields, System.Text.Json.JsonElement Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null, NativeGraphicsImageReference? Image = null, NativeGraphicsPreviewPlay? Play = null);
+    System.Text.Json.JsonElement Fields, System.Text.Json.JsonElement Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null, NativeGraphicsImageReference? Image = null, NativeGraphicsPreviewPlay? Play = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? Palette { get; init; }
+}
 
 public sealed record NativeGraphicsPlacement
 {

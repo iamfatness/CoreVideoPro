@@ -130,6 +130,10 @@ struct GraphicsInstance {
     /// The instance's live clock (NativeGraphicsClock), nil when its template has none.
     var clock: GraphicsInstanceClock?
     var clockRequestedConfiguration: JSONObject?
+    /// Resolved show palettes of the draft, cue and Program revisions (graphics styles slice 1).
+    var palette: [String: String]?
+    var cuePalette: [String: String]?
+    var programPalette: [String: String]?
 
     /// On Program: an accepted Program revision that is not hidden or building
     /// out (GraphicsPlayoutService.IsOnProgram, :96).
@@ -198,6 +202,9 @@ struct GraphicsState {
         i.revision = GraphicsJSON.int(json["revision"])
         i.programRevision = GraphicsJSON.int(json["programRevision"])
         i.cueRevision = GraphicsJSON.int(json["cueRevision"])
+        i.palette = GraphicsPalette.fromWire(json["palette"])
+        i.cuePalette = GraphicsPalette.fromWire(json["cuePalette"])
+        i.programPalette = GraphicsPalette.fromWire(json["programPalette"])
         i.cueOwner = GraphicsJSON.string(json["cueOwner"])
         i.cuePending = GraphicsJSON.bool(json["cuePending"])
         i.cuePreparation = GraphicsJSON.string(json["cuePreparation"], default: "unprepared")

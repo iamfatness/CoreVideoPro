@@ -366,6 +366,10 @@ Each slice states its platforms. **W** = Windows, **M** = Mac, **C** = shared co
 | 13 | Mac Builder (SwiftUI) on the same pack/palette model | M | 2, 10, 12 | L |
 | 14 | Import-from-logo palette; pack import/export (`.cvpack`) | W + M | 10 | M |
 
+Status: slice 1 is implemented on Windows and as a Mac model (see
+[graphics playout: Show palette](graphics-playout.md#show-palette-graphics-styles-slice-1)).
+Owner acceptance 2 (section 9) has not been performed.
+
 Owner-visible milestones:
 - **After slice 3:** one picker everywhere, colours set once.
 - **After slice 11:** all seven packs on Windows.

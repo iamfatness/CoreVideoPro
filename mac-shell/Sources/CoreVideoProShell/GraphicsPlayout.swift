@@ -274,11 +274,14 @@ final class GraphicsPlayout {
         else if Self.isDesignTemplateId(templateId), var own = installed.animations { own["layers"] = "own"; motion = Self.normalizedMotion(own) }
         else { motion = Self.defaultMotion }
         let placement: Any = (row.placement ?? installed.defaultPlacement).map { $0 as Any } ?? NSNull()
+        // Row override -> show palette (graphics styles slice 1); compatibility looks keep their appearance.
+        let palette = declarative && GraphicsPaletteMigration.declarative(templateId) ? document().resolvedPalette(for: row) : nil
         guard let existing = state.instance(id) else {
             var body: JSONObject = ["instanceId": id, "templateId": templateId, "templateVersion": version, "scope": "global", "sceneId": "",
                                     "fields": values, "style": GraphicsStyleWire.wire(row.style, declarative: !Self.curated(templateId)),
                                     "animations": motion, "placement": placement, "image": image ?? NSNull()]
             if let identity { body["binding"] = identity.json }
+            if let palette { body["palette"] = palette }
             var created = try await send("graphics.instance.create", body)
             guard created.accepted else { return created }
             guard created.currentRevision >= 1, created.instanceId == id else { return refuse("The native create result has no matching revision identity.") }
@@ -291,11 +294,13 @@ final class GraphicsPlayout {
         try await configureClock(row, existing)
         // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
         let designChanged = existing.templateVersion != version || !Self.sameMotion(existing.animations, motion)
-        if !designChanged && Self.sameFields(existing.fields, values) && (identity == nil || existing.binding == identity) {
+        let paletteChanged = declarative && !GraphicsPalette.sameResolved(existing.palette, palette)
+        if !designChanged && !paletteChanged && Self.sameFields(existing.fields, values) && (identity == nil || existing.binding == identity) {
             return GraphicsOperationResult(instanceId: id, currentRevision: existing.revision, accepted: true, reason: "Ready.")
         }
         var update: JSONObject = ["instanceId": id, "expectedRevision": existing.revision, "target": "cue", "fields": values]
         if designChanged { update["templateVersion"] = version; update["animations"] = motion }
+        if paletteChanged { update["palette"] = palette.map { $0 as Any } ?? NSNull() }
         if let identity { update["binding"] = identity.json }
         var updated = try await send("graphics.instance.update", update)
         guard updated.accepted else { return updated }
