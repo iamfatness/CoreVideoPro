@@ -833,6 +833,10 @@ std::shared_ptr<const graphics::GraphicsRunLayout> CoreTextOverlayRaster::active
   return activeLease_ && activeLease_->asset ? activeLease_->asset->runs : nullptr;
 }
 
+std::shared_ptr<const graphics::GraphicsBackdropSet> CoreTextOverlayRaster::activeBackdrops() const {
+  return activeLease_ && activeLease_->asset ? activeLease_->asset->backdrops : nullptr;
+}
+
 std::shared_ptr<const graphics::GraphicsPreparedResource> CoreTextOverlayRaster::preparedResource() {
   if (!activeLease_ || !activeLease_->asset || std::string_view(lastState_) != "ready") return {};
   if (activeResource_) return activeResource_;
@@ -1056,7 +1060,12 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     context = CfRef<CGContextRef>();
     image = ImageInput{};
     images.clear();
+    // P9: glass plates travel with the prepared raster (BackdropBlur.h); a
+    // layered-motion atlas keeps the drawing they sample their motion from.
+    std::shared_ptr<graphics::GraphicsBackdropSet> backdrops =
+        templated && !request.thumbnail ? graphics::collectBackdrops(drawing) : nullptr;
     if (runs) runs->drawing = std::make_shared<const graphics::GraphicsDrawing>(std::move(drawing));
+    if (backdrops && runs) backdrops->motion = runs->drawing;
 
     if (request.strictResources && !complete)
       return {{}, 0, warning.empty() ? "Graphics resources could not be prepared completely." : warning};
@@ -1101,6 +1110,7 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     entry->budget = budget;
     entry->texture = texture;
     entry->runs = std::move(runs);
+    entry->backdrops = std::move(backdrops);
     // Drop the CPU copy before returning its admission charge.
     std::vector<uint8_t>().swap(pixels);
     budget->finishPreparation();

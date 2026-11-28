@@ -787,6 +787,10 @@ std::shared_ptr<const graphics::GraphicsRunLayout> CompositorOverlayRaster::acti
   return activeLease_ && activeLease_->asset ? activeLease_->asset->runs : nullptr;
 }
 
+std::shared_ptr<const graphics::GraphicsBackdropSet> CompositorOverlayRaster::activeBackdrops() const {
+  return activeLease_ && activeLease_->asset ? activeLease_->asset->backdrops : nullptr;
+}
+
 std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaster::preparedResource() {
   if (!activeLease_ || !activeLease_->asset || std::string_view(lastState_) != "ready") return {};
   if (activeResource_) return activeResource_;
@@ -916,6 +920,8 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
   bool resourcesComplete = true;
   if (overlay.graphicsTemplate) {
+    // P9: glass plates travel with the prepared raster (BackdropBlur.h).
+    auto backdrops = request.thumbnail ? nullptr : graphics::collectBackdrops(drawing);
     if (runs) {
       for (size_t i = 0; i < runs->runs.size(); ++i) {
         const auto& run = runs->runs[i];
@@ -925,10 +931,12 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
             float(slice.x - run.source.x * scale), float(slice.y - run.source.y * scale)) && resourcesComplete;
       }
       runs->drawing = std::make_shared<const graphics::GraphicsDrawing>(std::move(drawing));
+      if (backdrops) backdrops->motion = runs->drawing;
       entry->runs = std::move(runs);
     } else {
       resourcesComplete = drawTemplate(d2dTarget.get(), drawing, scale, images, 0, drawing.primitives.size());
     }
+    entry->backdrops = std::move(backdrops);
   } else {
   ComPtrLite<ID2D1RoundedRectangleGeometry> rounded;
   bool clipped=false;

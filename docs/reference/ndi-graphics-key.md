@@ -15,6 +15,10 @@ tests and this page share). Video layers never reach the key. Legacy scene overl
 without a native instance (old lower-third assets, captions) stay Program-only until
 they are migrated to instances.
 
+Glass plates (true backdrop blur, `backdrop-blur.md`) carry only their fill on the key:
+the blur is of Program pixels the downstream mixer does not have, so the key pass skips
+it (`backdropsEnabled_`). A glass look keyed downstream needs the receiver's own blur.
+
 ## How it is produced
 
 - **Plan flag.** MediaCore sets `CompositorRenderPlan::graphicsKeyReadback` only while

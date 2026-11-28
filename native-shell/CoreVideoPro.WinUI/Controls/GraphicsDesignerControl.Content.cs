@@ -11,7 +11,7 @@ public sealed partial class GraphicsDesignerControl
 {
     private static string ContentSignature(JsonElement node)
     {
-        var properties = new[] { "stroke", "strokeWidth", "diagonal", "outline", "shadow", "minFontSize", "minWidth", "maxWidth", "speed", "gap", "direction", "mode" };
+        var properties = new[] { "stroke", "strokeWidth", "diagonal", "outline", "shadow", "minFontSize", "minWidth", "maxWidth", "speed", "gap", "direction", "mode", "backdrop" };
         return string.Join('|', properties.Select(name => ReadProperty(node, name).ToString())) + IsAutoWidth(node);
     }
 
@@ -29,6 +29,7 @@ public sealed partial class GraphicsDesignerControl
     private void AddContentControls(GraphicsLayerInspection layer, JsonElement node)
     {
         if (layer.Kind is "Shape" or "Ellipse" or "Line") BuildStrokeControls(layer, node);
+        if (layer.Kind == "Shape") BuildGlassControls(layer, node);
         if (layer.Kind is "Shape" or "Group") BuildSizingControls(layer, node);
         if (layer.Kind is "Text" or "Clock") BuildTextEffects(layer, node);
     }
@@ -52,6 +53,23 @@ public sealed partial class GraphicsDesignerControl
         AddContentApply(panel, "Apply stroke", () => Apply(s => GraphicsTemplateEditor.SetStroke(s, layer.Id,
             stroke.Literal, width.Value, direction?.SelectedIndex == 1 ? "up" : "down")));
         _layerBody.Children.Add(new Expander { Header = "Shape stroke", Content = panel, HorizontalAlignment = HorizontalAlignment.Stretch });
+    }
+
+    /// <summary>P9 glass: the compositor blurs and tints the picture behind this plate (true backdrop
+    /// blur, no frosted stand-in). Sits with the plate's other fill controls.</summary>
+    private void BuildGlassControls(GraphicsLayerInspection layer, JsonElement node)
+    {
+        var backdrop = ReadProperty(node, "backdrop");
+        var enabled = new CheckBox { Content = "Glass (blur what is behind)", IsChecked = backdrop.ValueKind == JsonValueKind.Object };
+        AutomationProperties.SetName(enabled, "Glass (blur what is behind)");
+        _inspectorInputs.Add(enabled);
+        var blur = ContentNumber("Glass blur (px at 1080p)", GraphicsTemplateEditor.BackdropBlurMinimum,
+            GraphicsTemplateEditor.BackdropBlurMaximum, ReadNumber(backdrop, "blur", 32));
+        var tint = ContentText("Glass tint", ReadString(backdrop, "tint", "#0A0F1866"));
+        var panel = ContentOptions(enabled, blur, tint, Note("Blur costs GPU time on every output. Up to four glass plates per graphic."));
+        AddContentApply(panel, "Apply glass", () => Apply(s => GraphicsTemplateEditor.SetBackdrop(s, layer.Id,
+            enabled.IsChecked == true, blur.Value, tint.Literal)));
+        _layerBody.Children.Add(new Expander { Header = "Glass", Content = panel, HorizontalAlignment = HorizontalAlignment.Stretch });
     }
 
     private void BuildSizingControls(GraphicsLayerInspection layer, JsonElement node)

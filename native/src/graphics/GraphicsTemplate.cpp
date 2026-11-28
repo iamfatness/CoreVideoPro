@@ -622,7 +622,7 @@ class Layout {
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
     std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations", "loop"};
     if (type == "group") allowed.insert({"children", "flow", "gap", "padding", "minWidth", "maxWidth"});
-    else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth", "shape", "points", "skewX", "shadow"});
+    else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth", "shape", "points", "skewX", "shadow", "backdrop"});
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth", "shadow"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize", "letterSpacing", "fontStyle", "textTransform", "stagger"});
@@ -717,6 +717,21 @@ class Layout {
         p.shadowClip = intersect(clip, {p.box.x + s.dx - extent, p.box.y + s.dy - extent,
             p.box.width + 2 * extent, p.box.height + 2 * extent});
         p.shapeShadow = s;
+      }
+      if (const auto* backdrop = node.get("backdrop")) {
+        need(backdrop->isObject(), "template-backdrop");
+        keys(*backdrop, {"blur", "tint"});
+        need(backdrop->get("blur") != nullptr, "template-backdrop");
+        // The compositor masks glass to the plate's rounded rectangle. A polygon
+        // or skewed plate (P3) would show blur outside its outline, so it is
+        // refused rather than drawn wrong.
+        need(p.polygon.empty(), "template-backdrop-shape");
+        // Counted in validate mode too, so load() refuses a template over budget.
+        need(++backdrops_ <= kGraphicsBackdropMaxPlates, "template-backdrop-limit");
+        GraphicsBackdrop glass;
+        glass.blur = quantity(*backdrop, "blur", kGraphicsBackdropBlurMin, kGraphicsBackdropBlurMax);
+        glass.tint = backdrop->get("tint") ? color(resolve(backdrop->get("tint"), "color").asString()) : 0u;
+        p.backdrop = glass;
       }
     } else if (type == "image") {
       const auto source = resolve(node.get("asset"), "image"); need(source.isString(), "template-image-reference");
@@ -874,6 +889,7 @@ class Layout {
   bool hasUnanimatedLayer_ = false;
   bool hasTable_ = false, hasCrawl_ = false;
   size_t layerUnits_ = 0;
+  size_t backdrops_ = 0;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace
@@ -1102,6 +1118,20 @@ std::array<double, 4> linearGradientLine(const GraphicsGradient& gradient, const
   const double half = (std::fabs(b.width * dx) + std::fabs(b.height * dy)) / 2;
   const double cx = b.x + b.width / 2, cy = b.y + b.height / 2;
   return {cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half};
+}
+std::shared_ptr<GraphicsBackdropSet> collectBackdrops(const GraphicsDrawing& drawing) {
+  std::shared_ptr<GraphicsBackdropSet> set;
+  for (const auto& p : drawing.primitives) {
+    if (!p.backdrop || p.crawlStart) continue;
+    if (!set) {
+      set = std::make_shared<GraphicsBackdropSet>();
+      set->width = drawing.width; set->height = drawing.height;
+      set->plates.reserve(kGraphicsBackdropMaxPlates);
+    }
+    if (set->plates.size() >= kGraphicsBackdropMaxPlates) break;
+    set->plates.push_back({p.box, p.clip, p.cornerRadius, p.opacity, p.backdrop->blur, p.backdrop->tint, p.unit});
+  }
+  return set;
 }
 uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, int height) {
   const uint64_t raster = uint64_t(std::max(width, 0)) * uint64_t(std::max(height, 0)) * 8;

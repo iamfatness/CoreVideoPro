@@ -88,6 +88,29 @@ public static partial class GraphicsTemplateEditor
         return Commit(scratch, root);
     }
 
+    /// <summary>P9 glass: true backdrop blur of the Program behind a plate, done by the compositor
+    /// (docs/reference/backdrop-blur.md). Limits mirror the native schema: blur 1-64 px at 1080p,
+    /// tint #RRGGBB or #RRGGBBAA, at most four glass plates per template (the native load enforces it).</summary>
+    public static NativeGraphicsScratch SetBackdrop(NativeGraphicsScratch scratch, string id, bool enabled,
+        double blur, string tint)
+    {
+        var root = Read(scratch);
+        var node = EditableContent(root, id).Node;
+        if (TypeOf(node) != "rect") throw new InvalidDataException("Select a shape (plate).");
+        if (!enabled)
+        {
+            node.Remove("backdrop");
+            return Commit(scratch, root);
+        }
+        if (node["skewX"] is not null || (node["shape"] is JsonValue shape && shape.TryGetValue<string>(out var kind) && kind == "polygon"))
+            throw new InvalidDataException("Glass needs a rectangular plate; remove the skew or polygon first.");
+        InRange(blur, BackdropBlurMinimum, BackdropBlurMaximum, "Glass blur");
+        node["backdrop"] = new JsonObject { ["blur"] = Number(blur), ["tint"] = ContentColour(tint) };
+        return Commit(scratch, root);
+    }
+
+    public const double BackdropBlurMinimum = 1, BackdropBlurMaximum = 64;
+
     private static Place EditableContent(JsonObject root, string id)
     {
         var place = Find(Places(root), id);

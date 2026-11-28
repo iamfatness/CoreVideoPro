@@ -25,4 +25,19 @@ public sealed class GraphicsTemplateEditorContentTests
         Assert.Equal(5, GraphicsTemplateEditor.Layer(scratch, "name-label").GetProperty("shadow").GetProperty("blur").GetInt32());
         Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetAutoWidth(scratch, "plate", true, 500, 100));
     }
+
+    [Fact]
+    public void GlassWritesTheNativeBackdropOnAPlateAndRemovesIt()
+    {
+        var scratch = GraphicsTemplateEditor.SetBackdrop(Seed(), "plate", true, 32, "#0A0F1866");
+        var backdrop = GraphicsTemplateEditor.Layer(scratch, "plate").GetProperty("backdrop");
+        Assert.Equal(32, backdrop.GetProperty("blur").GetDouble());
+        Assert.Equal("#0A0F1866", backdrop.GetProperty("tint").GetString());
+        scratch = GraphicsTemplateEditor.SetBackdrop(scratch, "plate", false, 32, "#0A0F1866");
+        Assert.False(GraphicsTemplateEditor.Layer(scratch, "plate").TryGetProperty("backdrop", out _));
+        Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetBackdrop(Seed(), "plate", true, 0, "#000000"));
+        Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetBackdrop(Seed(), "plate", true, 65, "#000000"));
+        Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetBackdrop(Seed(), "plate", true, 16, "dark"));
+        Assert.Throws<InvalidDataException>(() => GraphicsTemplateEditor.SetBackdrop(Seed(), "name-label", true, 16, "#000000"));
+    }
 }

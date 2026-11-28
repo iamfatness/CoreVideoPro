@@ -316,6 +316,10 @@ jobs:
         run: cmake --build native/build-metal
       - name: Metal compositor tests
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='MetalCompositor.*'
+      # P9 glass parity is judged against the shared CPU reference; its own step
+      # so the [backdrop-parity] lines show in the log (ctest prints failures only).
+      - name: Metal backdrop blur tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='MetalBackdropBlur*'
       - name: AVFoundation encoder tests
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='AvfEncoderRecording.*'
       - name: CoreAudio adapter tests

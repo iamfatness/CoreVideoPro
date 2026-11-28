@@ -224,6 +224,7 @@ phrase they quote.
 | [`docs/reference/ohg-show-engine-host.md`](docs/reference/ohg-show-engine-host.md) | the OHG show engine, `show-engine/`, its host process |
 | [`docs/reference/operator-stutter-snapshot-apply.md`](docs/reference/operator-stutter-snapshot-apply.md) | shell lag/stutter, snapshot apply cost |
 | [`docs/reference/output-supervisor.md`](docs/reference/output-supervisor.md) | stream/record destinations, restarts, the output supervisor |
+| [`docs/reference/backdrop-blur.md`](docs/reference/backdrop-blur.md) | glass plates (P9 true backdrop blur): `backdrop: {blur, tint}` on a template rect, the compositor pass on D3D11 and Metal, the shared kernel and CPU reference that judge parity, scratch reservation, the measured GPU cost and what is unverified |
 | [`docs/reference/ndi-graphics-key.md`](docs/reference/ndi-graphics-key.md) | the NDI graphics key (fill+key): graphics-only composite, straight alpha, `ndi-graphics` sender, `transport.ndi.graphicsKey.set`; NDI output is its own on/off (`transport.ndi.set`/`toggle`), independent of Streaming; see [`stream-destination-control.md`](docs/reference/stream-destination-control.md) |
 | [`docs/reference/performance-profiling.md`](docs/reference/performance-profiling.md) | measuring lag/stutter/crash: PresentMon, perf.log, dumps |
 | [`docs/reference/redesign-video-delivery-audit.md`](docs/reference/redesign-video-delivery-audit.md) | UI-independent video, blocked-UI probes and combined workload qualification |

@@ -44,6 +44,7 @@
 #include "graphics/GraphicsMotion.h"
 #include "graphics/GraphicsPreparedResource.h"
 #include "graphics/GraphicsResourceBudget.h"
+#include "graphics/GraphicsTemplate.h"
 #include "graphics/PreparationCache.h"
 #include "modules/Interfaces.h"
 
@@ -52,6 +53,7 @@ namespace corevideo::modules {
 class CoreTextOverlayRaster {
   struct MetalRasterTex {
     std::shared_ptr<const graphics::GraphicsRunLayout> runs;
+    std::shared_ptr<const graphics::GraphicsBackdropSet> backdrops;  // P9 glass plates
     // Declared first so the texture releases before its budget charge.
     std::shared_ptr<graphics::GraphicsResourceBudget::Lease> budget;
     id<MTLTexture> texture = nil;
@@ -100,6 +102,8 @@ class CoreTextOverlayRaster {
   // Atlas runs (crawls, layered motion) for the last call's prepared raster;
   // null for a single-image raster.
   std::shared_ptr<const graphics::GraphicsRunLayout> activeRuns() const;
+  // P9 glass plates of the last call's prepared raster; null when it has none.
+  std::shared_ptr<const graphics::GraphicsBackdropSet> activeBackdrops() const;
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource();
   // Surface parity with the D3D raster. A Metal command buffer retains the
   // textures bound to it, so there is no GPU read fence to refuse; never called.

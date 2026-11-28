@@ -62,6 +62,7 @@
 #include "modules/ProgramFramePreview.h"
 #include "compositor/MetalPixelBufferTextures.h"
 #include "compositor/MetalCompositorLibrary.h"
+#include "compositor/MetalBackdropBlur.h"  // P9 true backdrop blur ("glass")
 
 // Tiles N1 seam (MetalTilesPixels.ABrokenEffectStillCompilesACleanLibrary):
 // the library compile + clean-shader fallback, callable from a test.
@@ -173,6 +174,10 @@ class MetalCompositor final : public ICompositor {
     }
     targetWidth_ = program_.width;
     targetHeight_ = program_.height;
+    // P9 glass scratch is reserved with the Program target (reuses what it
+    // has; allocates only on a size change), never by a glass graphic on air.
+    if (backdropBlur_.ready()) backdropBlur_.reserve(device_, targetWidth_, targetHeight_);
+    backdropFailedThisFrame_ = false;
     // The LIGHT display tick (skipCpuReadback) does NO readbacks and NO GPU
     // wait — an 8MB full-res readback under coreMutex at 60fps held the lock
     // at ~86%+ duty and starved every RPC request (sampled root cause of the
@@ -187,6 +192,8 @@ class MetalCompositor final : public ICompositor {
     traceFrame_ = nullptr;
     // Same frame warnings as D3D11CompositorAdapter::render: an overlay still
     // preparing (or failed) is named on the Program frame and degrades health.
+    if (backdropFailedThisFrame_) frame.warnings.push_back("graphics-backdrop-unavailable");
+    backdropFailedThisFrame_ = false;
     if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
     if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
     if (!frame.warnings.empty()) frame.health = "degraded";
@@ -427,6 +434,11 @@ class MetalCompositor final : public ICompositor {
     samplerDesc.tAddressMode = MTLSamplerAddressModeClampToEdge;
     sampler_ = [device_ newSamplerStateWithDescriptor:samplerDesc];
     pipelineReady_ = true;
+    // P9 glass: compiled once with the pipeline. A failure leaves Program
+    // working; a glass plate then degrades its frame with a named warning.
+    std::string backdropError;
+    if (!backdropBlur_.initialize(device_, backdropError))
+      ::corevideo::core::nativeLogf("[backdrop] glass pass unavailable: %s\n", backdropError.c_str());
     return true;
   }
 
@@ -1069,10 +1081,16 @@ class MetalCompositor final : public ICompositor {
       pass.colorAttachments[0].clearColor = MTLClearColorMake(0.047, 0.067, 0.094, 1.0);
       id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
       graphicsSourceDrawCount_ = 0;  // the bound-source record is per pass
+      // P9 glass splits the pass (drawBackdrops): it needs the command buffer
+      // and the target, and may hand back a fresh encoder.
+      passCommandBuffer_ = commandBuffer;
+      passTarget_ = target.texture;
       const auto layers = resolveLayers(deterministicPlan, frames);
       for (const auto& layer : layers) {
         drawLayer(encoder, layer, deterministicPlan);
       }
+      passCommandBuffer_ = nil;
+      passTarget_ = nil;
       [encoder endEncoding];
       // Bounded in-flight pacing (classic triple buffering): the light 60fps
       // display tick must not CPU-block (a ~26ms wait held coreMutex at ~99%
@@ -1526,7 +1544,9 @@ class MetalCompositor final : public ICompositor {
 
   // ── layer draw ─────────────────────────────────────────────────────────────
 
-  void drawLayer(id<MTLRenderCommandEncoder> encoder,
+  // `encoder` is a reference: a glass plate (drawBackdrops) ends it and
+  // replaces it with a fresh encoder on the same target.
+  void drawLayer(id<MTLRenderCommandEncoder> __strong& encoder,
                  const ResolvedLayer& layer,
                  const CompositorRenderPlan& renderPlan) {
     const compositor::LayerRect rect{layer.plan.rect.x, layer.plan.rect.y, layer.plan.rect.width,
@@ -1711,7 +1731,7 @@ class MetalCompositor final : public ICompositor {
 
   // Returns true when a prepared raster was composited (the draw-submitted
   // fact). Mirrors D3D11CompositorAdapter::drawOverlayLayer.
-  bool drawOverlayLayer(id<MTLRenderCommandEncoder> encoder,
+  bool drawOverlayLayer(id<MTLRenderCommandEncoder> __strong& encoder,
                         const ResolvedLayer& layer,
                         const CompositorRenderPlan& renderPlan,
                         const compositor::LayerRect& rect,
@@ -1777,6 +1797,14 @@ class MetalCompositor final : public ICompositor {
       return false;
     }
 
+    // P9 glass: blur the Program already beneath each plate before any of the
+    // graphic's own pixels land on it (D3D11CompositorAdapter parity). Read
+    // the plate list now: it belongs to the raster adopted above.
+    if (overlayTex && !overlay.holdLastRaster) {
+      if (const auto backdrops = overlayRaster_.activeBackdrops())
+        drawBackdrops(encoder, *backdrops, overlay, animated, clip, alpha);
+    }
+
     // Brand band quad: only when the raster does not paint the band itself
     // (an appearance-styled lower third paints its own rounded band). Drawing
     // both doubled the band and showed the quad round the rounded corners.
@@ -1805,6 +1833,35 @@ class MetalCompositor final : public ICompositor {
     }
     resetScissor(encoder);
     return composited;
+  }
+
+  // P9 true backdrop blur (compositor/BackdropBlur.h, MetalBackdropBlur): the
+  // twin of D3D11CompositorAdapter::drawBackdrops. Metal cannot read the
+  // attachment it renders to, so the pass ends `encoder`, encodes the blur and
+  // composite, and continues in a fresh encoder that loads the target.
+  void drawBackdrops(id<MTLRenderCommandEncoder> __strong& encoder, const graphics::GraphicsBackdropSet& backdrops,
+                     const CompositorOverlayContent& overlay, const compositor::LayerRect& animated,
+                     const compositor::LayerRect& clip, float alpha) {
+    if (backdrops.plates.empty() || !passCommandBuffer_ || !passTarget_) return;
+    const auto state = overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
+    bool split = false;
+    for (const auto& plate : backdrops.plates) {
+      compositor::BackdropDraw draw;
+      if (!compositor::resolveBackdropDraw(plate, backdrops, state, animated, clip, alpha, targetWidth_, targetHeight_, draw))
+        continue;
+      if (!split) { [encoder endEncoding]; encoder = nil; split = true; }
+      // Grows only for a secondary target larger than Program (once).
+      const bool ok = backdropBlur_.ready() && backdropBlur_.reserve(device_, targetWidth_, targetHeight_) &&
+          backdropBlur_.apply(passCommandBuffer_, passTarget_, draw);
+      if (!ok) backdropFailedThisFrame_ = true;
+    }
+    if (!split) return;
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = passTarget_;
+    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    encoder = [passCommandBuffer_ renderCommandEncoderWithDescriptor:pass];
+    resetScissor(encoder);
   }
 
   // Spec 5.8: an atlas raster draws each run from its slice. Motion and crawl
@@ -2013,6 +2070,10 @@ class MetalCompositor final : public ICompositor {
   // Last member: its preparation worker joins first on destruction. It holds
   // its own strong device reference per request, so device_ order is moot.
   CoreTextOverlayRaster overlayRaster_;
+  MetalBackdropBlur backdropBlur_;
+  bool backdropFailedThisFrame_ = false;
+  id<MTLCommandBuffer> passCommandBuffer_ = nil;  // set only inside renderPassInto
+  id<MTLTexture> passTarget_ = nil;
 };
 
 }  // namespace
