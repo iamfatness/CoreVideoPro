@@ -70,12 +70,34 @@ IDWriteFontCollection* buildPackCollection(size_t& faces) {
     core::nativeLogf("graphics pack fonts: font set builder unavailable; pack fonts will substitute\n");
     return nullptr;
   }
+  // Each face is added under the family, weight and style its pack.json
+  // declares, not the names inside the file. Upstream names are not uniform
+  // within one family: Barlow Semi Condensed Regular and Bold carry the
+  // typographic family "Barlow" (semi-condensed stretch) while its SemiBold
+  // carries "Barlow Semi Condensed", so neither DirectWrite family model put
+  // the three faces in one family and every weight drew the SemiBold (slice
+  // 10 parity). Declared properties make the pack manifest the single source
+  // of truth, which is also how the Mac raster resolves pack faces. Stretch is
+  // normal: templates have no stretch and request DWRITE_FONT_STRETCH_NORMAL.
+  IDWriteFontSetBuilder* propertyBuilder = builder.get();
   for (const auto& font : fonts) {
     if (!font.present) continue;
     const auto path = widen(font.path);
+    const auto family = widen(font.family);
+    const auto weight = std::to_wstring(font.weight);
     ComPtrLite<IDWriteFontFile> file;
-    if (path.empty() || FAILED(factory->CreateFontFileReference(path.c_str(), nullptr, file.put())) ||
-        FAILED(builder1->AddFontFile(file.get()))) {
+    ComPtrLite<IDWriteFontFaceReference> face;
+    const DWRITE_FONT_PROPERTY properties[] = {
+        {DWRITE_FONT_PROPERTY_ID_WEIGHT_STRETCH_STYLE_FAMILY_NAME, family.c_str(), L"en-us"},
+        {DWRITE_FONT_PROPERTY_ID_TYPOGRAPHIC_FAMILY_NAME, family.c_str(), L"en-us"},
+        {DWRITE_FONT_PROPERTY_ID_WIN32_FAMILY_NAME, family.c_str(), L"en-us"},
+        {DWRITE_FONT_PROPERTY_ID_WEIGHT, weight.c_str(), L""},
+        {DWRITE_FONT_PROPERTY_ID_STRETCH, L"5", L""},
+        {DWRITE_FONT_PROPERTY_ID_STYLE, font.italic ? L"2" : L"0", L""},
+    };
+    if (path.empty() || family.empty() || FAILED(factory->CreateFontFileReference(path.c_str(), nullptr, file.put())) ||
+        FAILED(factory->CreateFontFaceReference(file.get(), 0, DWRITE_FONT_SIMULATIONS_NONE, face.put())) ||
+        FAILED(propertyBuilder->AddFontFaceReference(face.get(), properties, UINT32(std::size(properties))))) {
       core::nativeLogf("graphics pack fonts: could not load %s (pack %s)\n", font.path.c_str(), font.packId.c_str());
       continue;
     }
