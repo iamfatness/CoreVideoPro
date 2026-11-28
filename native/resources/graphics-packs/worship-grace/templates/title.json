@@ -1,0 +1,194 @@
+{
+ "schemaVersion": 1,
+ "templateId": "worship-grace-title",
+ "templateVersion": 1,
+ "name": "Worship Grace full-width title",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1920,
+  "height": 300
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "heading",
+   "type": "string",
+   "default": "Sunday Gathering",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "subtitle",
+   "type": "string",
+   "default": "Welcome home",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "wash",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 300,
+   "fill": {
+    "type": "linear",
+    "angle": 180,
+    "stops": [
+     {
+      "color": {
+       "token": "brand.surface"
+      },
+      "offset": 0
+     },
+     {
+      "color": {
+       "token": "brand.primary"
+      },
+      "offset": 0.55
+     },
+     {
+      "color": {
+       "token": "brand.primary"
+      },
+      "offset": 1
+     }
+    ]
+   }
+  },
+  {
+   "id": "heading-text",
+   "type": "text",
+   "x": 160,
+   "y": 70,
+   "width": 1600,
+   "height": 110,
+   "text": {
+    "field": "heading"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 92,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 860,
+   "y": 192,
+   "width": 200,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 0,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "subtitle-text",
+   "type": "text",
+   "x": 160,
+   "y": 208,
+   "width": 1600,
+   "height": 56,
+   "text": {
+    "field": "subtitle"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 40,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 300,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 800,
+   "easing": "ease-in-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 560,
+   "easing": "ease-in-out"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "worship-grace",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

@@ -1,0 +1,234 @@
+{
+ "schemaVersion": 1,
+ "templateId": "news-signal-title",
+ "templateVersion": 1,
+ "name": "News Signal full-width title",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1920,
+  "height": 180
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onSecondary",
+  "brand.primary",
+  "brand.secondary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "heading",
+   "type": "string",
+   "default": "Election Night Special",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "subtitle",
+   "type": "string",
+   "default": "Results as they come in",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 124,
+   "fill": {
+    "type": "linear",
+    "angle": 180,
+    "stops": [
+     {
+      "token": "brand.primary"
+     },
+     {
+      "token": "brand.surface"
+     }
+    ]
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "expo-out",
+     "direction": "left",
+     "feather": 32
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 280,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 32
+    }
+   }
+  },
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 0,
+   "y": 124,
+   "width": 1920,
+   "height": 6,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 100,
+     "durationMs": 400,
+     "easing": "expo-out",
+     "direction": "left",
+     "feather": 32
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 280,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 32
+    }
+   }
+  },
+  {
+   "id": "sub-bar",
+   "type": "rect",
+   "x": 0,
+   "y": 130,
+   "width": 1920,
+   "height": 50,
+   "fill": {
+    "token": "brand.secondary"
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 200,
+     "durationMs": 400,
+     "easing": "expo-out",
+     "direction": "left",
+     "feather": 32
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 280,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 32
+    }
+   }
+  },
+  {
+   "id": "heading-text",
+   "type": "text",
+   "x": 96,
+   "y": 22,
+   "width": 1728,
+   "height": 84,
+   "text": {
+    "field": "heading"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 68,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.02,
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 250,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 12
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 140,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "subtitle-text",
+   "type": "text",
+   "x": 96,
+   "y": 134,
+   "width": 1728,
+   "height": 42,
+   "text": {
+    "field": "subtitle"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 32,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 350,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 12
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 140,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "news-signal",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

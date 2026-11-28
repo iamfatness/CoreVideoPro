@@ -1,0 +1,197 @@
+{
+ "schemaVersion": 1,
+ "templateId": "worship-grace-scripture",
+ "templateVersion": 1,
+ "name": "Worship Grace scripture",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1600,
+  "height": 360
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "verse",
+   "type": "string",
+   "default": "The Lord is my shepherd; I shall not want. He makes me lie down in green pastures. He leads me beside still waters.",
+   "bindable": true,
+   "maxLength": 1024,
+   "required": true
+  },
+  {
+   "id": "reference",
+   "type": "string",
+   "default": "Psalm 23:1-2",
+   "bindable": true,
+   "maxLength": 64
+  }
+ ],
+ "layers": [
+  {
+   "id": "wash",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1600,
+   "height": 360,
+   "fill": {
+    "type": "radial",
+    "stops": [
+     {
+      "color": {
+       "token": "brand.primary"
+      },
+      "offset": 0
+     },
+     {
+      "color": {
+       "token": "brand.primary"
+      },
+      "offset": 0.6
+     },
+     {
+      "color": {
+       "token": "brand.surface"
+      },
+      "offset": 1
+     }
+    ]
+   }
+  },
+  {
+   "id": "verse-text",
+   "type": "text",
+   "x": 120,
+   "y": 48,
+   "width": 1360,
+   "height": 220,
+   "text": {
+    "field": "verse"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 52,
+   "fontWeight": 400,
+   "lineHeight": 1.3,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 3,
+   "overflow": "wrap-then-ellipsis",
+   "stagger": {
+    "by": "line",
+    "ms": 150
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 740,
+   "y": 286,
+   "width": 120,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 0,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "reference-text",
+   "type": "text",
+   "x": 120,
+   "y": 298,
+   "width": 1360,
+   "height": 40,
+   "text": {
+    "field": "reference"
+   },
+   "font": "Montserrat",
+   "fontSize": 26,
+   "fontWeight": 500,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.16,
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 300,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 800,
+   "easing": "ease-in-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 560,
+   "easing": "ease-in-out"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "worship-grace",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

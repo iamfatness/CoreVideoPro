@@ -1,0 +1,275 @@
+{
+ "schemaVersion": 1,
+ "templateId": "corporate-clarity-webinar-title",
+ "templateVersion": 1,
+ "name": "Corporate Clarity webinar title card",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1496,
+  "height": 516
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onAccent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "kicker",
+   "type": "string",
+   "default": "Webinar",
+   "bindable": true,
+   "maxLength": 48
+  },
+  {
+   "id": "heading",
+   "type": "string",
+   "default": "Scaling Support Without Burnout",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "presenter",
+   "type": "string",
+   "default": "Ada Otieno, Head of Engineering",
+   "bindable": true,
+   "maxLength": 256
+  },
+  {
+   "id": "date",
+   "type": "string",
+   "default": "Thursday 4 December, 16:00 GMT",
+   "bindable": true,
+   "maxLength": 96
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 48,
+   "y": 48,
+   "width": 1400,
+   "height": 420,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 8,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "dx": 0,
+    "dy": 8,
+    "blur": 24,
+    "spread": 0
+   }
+  },
+  {
+   "id": "band",
+   "type": "rect",
+   "x": 48,
+   "y": 48,
+   "width": 1400,
+   "height": 420,
+   "fill": {
+    "type": "linear",
+    "angle": 135,
+    "stops": [
+     {
+      "token": "brand.accent"
+     },
+     {
+      "token": "brand.primary"
+     },
+     {
+      "token": "brand.primary"
+     }
+    ]
+   },
+   "cornerRadius": 8,
+   "opacity": 0.25
+  },
+  {
+   "id": "kicker-plate",
+   "type": "rect",
+   "x": 128,
+   "y": 112,
+   "width": 180,
+   "height": 40,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "cornerRadius": 20
+  },
+  {
+   "id": "kicker-text",
+   "type": "text",
+   "x": 128,
+   "y": 116,
+   "width": 180,
+   "height": 32,
+   "text": {
+    "field": "kicker"
+   },
+   "font": "Montserrat",
+   "fontSize": 20,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onAccent"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.1
+  },
+  {
+   "id": "heading-text",
+   "type": "text",
+   "x": 128,
+   "y": 176,
+   "width": 1240,
+   "height": 160,
+   "text": {
+    "field": "heading"
+   },
+   "font": "Montserrat",
+   "fontSize": 60,
+   "fontWeight": 600,
+   "lineHeight": 1.15,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 2,
+   "overflow": "wrap-then-ellipsis",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 8
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "presenter-text",
+   "type": "text",
+   "x": 128,
+   "y": 352,
+   "width": 1240,
+   "height": 44,
+   "text": {
+    "field": "presenter"
+   },
+   "font": "Montserrat",
+   "fontSize": 30,
+   "fontWeight": 500,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "stagger": {
+    "by": "word",
+    "ms": 80
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 230,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 8
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "date-text",
+   "type": "text",
+   "x": 128,
+   "y": 400,
+   "width": 1240,
+   "height": 40,
+   "text": {
+    "field": "date"
+   },
+   "font": "Montserrat",
+   "fontSize": 26,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "stagger": {
+    "by": "word",
+    "ms": 80
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 310,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 8
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 450,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 300,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "corporate-clarity",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

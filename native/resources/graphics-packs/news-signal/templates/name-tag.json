@@ -1,0 +1,339 @@
+{
+ "schemaVersion": 1,
+ "templateId": "news-signal-name-tag",
+ "templateVersion": 1,
+ "name": "News Signal name with tag",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1080,
+  "height": 150
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onAccent",
+  "brand.onPrimary",
+  "brand.onSecondary",
+  "brand.primary",
+  "brand.secondary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Ada Otieno",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "title",
+   "type": "string",
+   "default": "Chief Political Correspondent",
+   "bindable": true,
+   "maxLength": 512
+  },
+  {
+   "id": "tag",
+   "type": "string",
+   "default": "LIVE",
+   "bindable": true,
+   "maxLength": 32
+  }
+ ],
+ "layers": [
+  {
+   "id": "strip",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 10,
+   "height": 150,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "wipe",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "expo-out",
+     "direction": "down"
+    },
+    "out": {
+     "type": "wipe",
+     "startMs": 0,
+     "durationMs": 140,
+     "easing": "ease-in",
+     "direction": "down"
+    }
+   }
+  },
+  {
+   "id": "name-bar",
+   "type": "rect",
+   "x": 10,
+   "y": 0,
+   "width": 1070,
+   "height": 92,
+   "fill": {
+    "type": "linear",
+    "angle": 180,
+    "stops": [
+     {
+      "token": "brand.primary"
+     },
+     {
+      "token": "brand.surface"
+     }
+    ]
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 150,
+     "durationMs": 400,
+     "easing": "expo-out",
+     "direction": "left",
+     "feather": 24
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 280,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 24
+    }
+   },
+   "loop": {
+    "type": "sweep",
+    "periodMs": 8000,
+    "durationMs": 900,
+    "direction": "left"
+   }
+  },
+  {
+   "id": "highlight",
+   "type": "rect",
+   "x": 10,
+   "y": 0,
+   "width": 1070,
+   "height": 2,
+   "fill": "#FFFFFF33",
+   "fixed": true,
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 150,
+     "durationMs": 400,
+     "easing": "expo-out",
+     "direction": "left",
+     "feather": 24
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 280,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 24
+    }
+   }
+  },
+  {
+   "id": "title-bar",
+   "type": "rect",
+   "x": 10,
+   "y": 92,
+   "width": 860,
+   "height": 58,
+   "fill": {
+    "token": "brand.secondary"
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 250,
+     "durationMs": 400,
+     "easing": "expo-out",
+     "direction": "left",
+     "feather": 24
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 280,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 24
+    }
+   }
+  },
+  {
+   "id": "tag-plate",
+   "type": "rect",
+   "x": 900,
+   "y": 92,
+   "width": 180,
+   "height": 58,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 350,
+     "durationMs": 300,
+     "easing": "expo-out",
+     "direction": "left",
+     "feather": 16
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 16
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 38,
+   "y": 14,
+   "width": 1020,
+   "height": 62,
+   "text": {
+    "field": "name"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 50,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 250,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 12
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 140,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "title-text",
+   "type": "text",
+   "x": 38,
+   "y": 100,
+   "width": 840,
+   "height": 42,
+   "text": {
+    "field": "title"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 32,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 350,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 12
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 140,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "tag-text",
+   "type": "text",
+   "x": 900,
+   "y": 102,
+   "width": 180,
+   "height": 40,
+   "text": {
+    "field": "tag"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 30,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onAccent"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.06,
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 350,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 12
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 140,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "news-signal",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

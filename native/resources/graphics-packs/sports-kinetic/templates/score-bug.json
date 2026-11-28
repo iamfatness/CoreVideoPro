@@ -1,0 +1,282 @@
+{
+ "schemaVersion": 1,
+ "templateId": "sports-kinetic-score-bug",
+ "templateVersion": 1,
+ "name": "Sports Kinetic score bug",
+ "family": "bug",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 620,
+  "height": 72
+ },
+ "brandTokens": [
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.onSecondary",
+  "brand.primary",
+  "brand.surface",
+  "brand.teamA",
+  "brand.teamB"
+ ],
+ "fields": [
+  {
+   "id": "team-a",
+   "type": "string",
+   "default": "CITY",
+   "bindable": true,
+   "maxLength": 8,
+   "required": true
+  },
+  {
+   "id": "score-a",
+   "type": "string",
+   "default": "2",
+   "bindable": true,
+   "maxLength": 4
+  },
+  {
+   "id": "team-b",
+   "type": "string",
+   "default": "ROVERS",
+   "bindable": true,
+   "maxLength": 8,
+   "required": true
+  },
+  {
+   "id": "score-b",
+   "type": "string",
+   "default": "1",
+   "bindable": true,
+   "maxLength": 4
+  },
+  {
+   "id": "clock",
+   "type": "string",
+   "default": "67:12",
+   "bindable": true,
+   "maxLength": 12
+  },
+  {
+   "id": "period",
+   "type": "string",
+   "default": "2ND",
+   "bindable": true,
+   "maxLength": 8
+  }
+ ],
+ "layers": [
+  {
+   "id": "team-a-plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 170,
+   "height": 72,
+   "fill": {
+    "token": "brand.teamA"
+   }
+  },
+  {
+   "id": "score-plate",
+   "type": "rect",
+   "x": 170,
+   "y": 0,
+   "width": 140,
+   "height": 72,
+   "fill": {
+    "token": "brand.surface"
+   }
+  },
+  {
+   "id": "team-b-plate",
+   "type": "rect",
+   "x": 310,
+   "y": 0,
+   "width": 170,
+   "height": 72,
+   "fill": {
+    "token": "brand.teamB"
+   }
+  },
+  {
+   "id": "clock-plate",
+   "type": "rect",
+   "x": 480,
+   "y": 0,
+   "width": 140,
+   "height": 72,
+   "fill": {
+    "token": "brand.primary"
+   }
+  },
+  {
+   "id": "team-a-text",
+   "type": "text",
+   "x": 0,
+   "y": 8,
+   "width": 170,
+   "height": 56,
+   "text": {
+    "field": "team-a"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 44,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01
+  },
+  {
+   "id": "score-a-text",
+   "type": "text",
+   "x": 170,
+   "y": 4,
+   "width": 70,
+   "height": 64,
+   "text": {
+    "field": "score-a"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 54,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01
+  },
+  {
+   "id": "score-b-text",
+   "type": "text",
+   "x": 240,
+   "y": 4,
+   "width": 70,
+   "height": 64,
+   "text": {
+    "field": "score-b"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 54,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01
+  },
+  {
+   "id": "team-b-text",
+   "type": "text",
+   "x": 310,
+   "y": 8,
+   "width": 170,
+   "height": 56,
+   "text": {
+    "field": "team-b"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 44,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01
+  },
+  {
+   "id": "clock-text",
+   "type": "text",
+   "x": 480,
+   "y": 2,
+   "width": 140,
+   "height": 44,
+   "text": {
+    "field": "clock"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 36,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01
+  },
+  {
+   "id": "period-text",
+   "type": "text",
+   "x": 480,
+   "y": 40,
+   "width": 140,
+   "height": 30,
+   "text": {
+    "field": "period"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 24,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "upper-left",
+  "x": 64,
+  "y": 48,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "sports-kinetic",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

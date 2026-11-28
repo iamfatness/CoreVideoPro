@@ -1,0 +1,48 @@
+{
+ "id": "corporate-clarity",
+ "name": "Corporate: Clarity",
+ "genre": "corporate",
+ "version": "1.0.0",
+ "palettes": [
+  "palettes/clarity-blue.json",
+  "palettes/graphite.json",
+  "palettes/forest.json"
+ ],
+ "fonts": [
+  {
+   "family": "Montserrat",
+   "file": "fonts/Montserrat-Regular.ttf",
+   "weight": 400,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Montserrat",
+   "file": "fonts/Montserrat-Medium.ttf",
+   "weight": 500,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Montserrat",
+   "file": "fonts/Montserrat-SemiBold.ttf",
+   "weight": 600,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  }
+ ],
+ "templates": [
+  "templates/lower-third.json",
+  "templates/lower-third-2-line.json",
+  "templates/name-tag.json",
+  "templates/title.json",
+  "templates/bug.json",
+  "templates/webinar-title.json",
+  "templates/speaker-company.json"
+ ],
+ "metadata": {
+  "status": "Wave 1 (graphics styles slice 10).",
+  "defaultPalette": "palettes/clarity-blue.json",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

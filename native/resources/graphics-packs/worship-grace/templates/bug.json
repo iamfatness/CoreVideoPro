@@ -1,0 +1,94 @@
+{
+ "schemaVersion": 1,
+ "templateId": "worship-grace-bug",
+ "templateVersion": 1,
+ "name": "Worship Grace corner bug",
+ "family": "bug",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 360,
+  "height": 84
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "channel",
+   "type": "string",
+   "default": "Grace Church",
+   "bindable": true,
+   "maxLength": 48,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 0,
+   "y": 70,
+   "width": 120,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   }
+  },
+  {
+   "id": "channel-text",
+   "type": "text",
+   "x": 0,
+   "y": 10,
+   "width": 360,
+   "height": 56,
+   "text": {
+    "field": "channel"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 44,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "shadow": {
+    "color": {
+     "token": "brand.primary"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 800,
+   "easing": "ease-in-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 560,
+   "easing": "ease-in-out"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "upper-right",
+  "x": -64,
+  "y": 48,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "worship-grace",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

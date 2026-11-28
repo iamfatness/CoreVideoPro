@@ -1,20 +1,49 @@
 {
-  "id": "news-signal",
-  "name": "News: Signal",
-  "genre": "news",
-  "version": "0.1.0",
-  "palettes": ["palettes/navy-red.json"],
-  "fonts": [
-    {
-      "family": "Barlow Semi Condensed",
-      "file": "fonts/BarlowSemiCondensed-SemiBold.ttf",
-      "weight": 600,
-      "style": "normal",
-      "fallback": "Segoe UI"
-    }
-  ],
-  "templates": ["templates/anchor.json"],
-  "metadata": {
-    "status": "First piece of the News pack (graphics styles slice 7): one template, one palette, one font. Slice 10 completes it."
+ "id": "news-signal",
+ "name": "News: Signal",
+ "genre": "news",
+ "version": "1.0.0",
+ "palettes": [
+  "palettes/navy-red.json",
+  "palettes/charcoal-gold.json",
+  "palettes/white-blue.json"
+ ],
+ "fonts": [
+  {
+   "family": "Barlow Semi Condensed",
+   "file": "fonts/BarlowSemiCondensed-Regular.ttf",
+   "weight": 400,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Barlow Semi Condensed",
+   "file": "fonts/BarlowSemiCondensed-SemiBold.ttf",
+   "weight": 600,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Barlow Semi Condensed",
+   "file": "fonts/BarlowSemiCondensed-Bold.ttf",
+   "weight": 700,
+   "style": "normal",
+   "fallback": "Segoe UI"
   }
+ ],
+ "templates": [
+  "templates/anchor.json",
+  "templates/lower-third.json",
+  "templates/lower-third-2-line.json",
+  "templates/name-tag.json",
+  "templates/title.json",
+  "templates/bug.json",
+  "templates/clock-bug.json",
+  "templates/ticker.json"
+ ],
+ "metadata": {
+  "status": "Wave 1 (graphics styles slice 10).",
+  "defaultPalette": "palettes/navy-red.json",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
 }

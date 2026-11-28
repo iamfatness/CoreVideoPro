@@ -1,0 +1,149 @@
+{
+ "schemaVersion": 1,
+ "templateId": "worship-grace-lyrics",
+ "templateVersion": 1,
+ "name": "Worship Grace lyrics",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1600,
+  "height": 200
+ },
+ "brandTokens": [
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "line-1",
+   "type": "string",
+   "default": "How great is our God, sing with me",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "line-2",
+   "type": "string",
+   "default": "How great is our God, all will see",
+   "bindable": true,
+   "maxLength": 256
+  }
+ ],
+ "layers": [
+  {
+   "id": "line-1-text",
+   "type": "text",
+   "x": 0,
+   "y": 20,
+   "width": 1600,
+   "height": 76,
+   "text": {
+    "field": "line-1"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 60,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "shadow": {
+    "color": {
+     "token": "brand.primary"
+    },
+    "x": 0,
+    "y": 3,
+    "blur": 8
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 0,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "line-2-text",
+   "type": "text",
+   "x": 0,
+   "y": 104,
+   "width": 1600,
+   "height": 76,
+   "text": {
+    "field": "line-2"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 60,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "shadow": {
+    "color": {
+     "token": "brand.primary"
+    },
+    "x": 0,
+    "y": 3,
+    "blur": 8
+   },
+   "collapseWhenEmpty": true,
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 800,
+   "easing": "ease-in-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 560,
+   "easing": "ease-in-out"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-center",
+  "x": 0,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "worship-grace",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

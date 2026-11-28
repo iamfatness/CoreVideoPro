@@ -1,0 +1,285 @@
+{
+ "schemaVersion": 1,
+ "templateId": "sports-kinetic-title",
+ "templateVersion": 1,
+ "name": "Sports Kinetic full-width title",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1920,
+  "height": 200
+ },
+ "brandTokens": [
+  "brand.onPrimary",
+  "brand.onSecondary",
+  "brand.surface",
+  "brand.teamA"
+ ],
+ "fields": [
+  {
+   "id": "heading",
+   "type": "string",
+   "default": "Championship Final",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "subtitle",
+   "type": "string",
+   "default": "Live from City Stadium",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 0,
+   "y": 20,
+   "width": 1920,
+   "height": 130,
+   "fill": {
+    "token": "brand.teamA"
+   },
+   "animations": {
+    "in": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 250,
+     "easing": "expo-out",
+     "direction": "left",
+     "distance": 160
+    },
+    "out": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 180,
+     "easing": "ease-in",
+     "direction": "left",
+     "distance": 160
+    }
+   }
+  },
+  {
+   "id": "sub-plate",
+   "type": "rect",
+   "x": 360,
+   "y": 150,
+   "width": 1200,
+   "height": 50,
+   "fill": {
+    "token": "brand.surface"
+   },
+   "skewX": -12,
+   "animations": {
+    "in": {
+     "type": "slide",
+     "startMs": 60,
+     "durationMs": 250,
+     "easing": "expo-out",
+     "direction": "left",
+     "distance": 160
+    },
+    "out": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 180,
+     "easing": "ease-in",
+     "direction": "left",
+     "distance": 160
+    }
+   }
+  },
+  {
+   "id": "speed-lines",
+   "type": "group",
+   "x": 0,
+   "y": 0,
+   "width": 1820,
+   "height": 150,
+   "children": [
+    {
+     "id": "speed-0",
+     "type": "line",
+     "x": 1400,
+     "y": 20,
+     "width": 65,
+     "height": 130,
+     "diagonal": "up",
+     "stroke": "#FFFFFFFF",
+     "strokeWidth": 3,
+     "opacity": 0.15,
+     "fixed": true
+    },
+    {
+     "id": "speed-1",
+     "type": "line",
+     "x": 1470,
+     "y": 20,
+     "width": 65,
+     "height": 130,
+     "diagonal": "up",
+     "stroke": "#FFFFFFFF",
+     "strokeWidth": 3,
+     "opacity": 0.15,
+     "fixed": true
+    },
+    {
+     "id": "speed-2",
+     "type": "line",
+     "x": 1540,
+     "y": 20,
+     "width": 65,
+     "height": 130,
+     "diagonal": "up",
+     "stroke": "#FFFFFFFF",
+     "strokeWidth": 3,
+     "opacity": 0.15,
+     "fixed": true
+    },
+    {
+     "id": "speed-3",
+     "type": "line",
+     "x": 1610,
+     "y": 20,
+     "width": 65,
+     "height": 130,
+     "diagonal": "up",
+     "stroke": "#FFFFFFFF",
+     "strokeWidth": 3,
+     "opacity": 0.15,
+     "fixed": true
+    },
+    {
+     "id": "speed-4",
+     "type": "line",
+     "x": 1680,
+     "y": 20,
+     "width": 65,
+     "height": 130,
+     "diagonal": "up",
+     "stroke": "#FFFFFFFF",
+     "strokeWidth": 3,
+     "opacity": 0.15,
+     "fixed": true
+    },
+    {
+     "id": "speed-5",
+     "type": "line",
+     "x": 1750,
+     "y": 20,
+     "width": 65,
+     "height": 130,
+     "diagonal": "up",
+     "stroke": "#FFFFFFFF",
+     "strokeWidth": 3,
+     "opacity": 0.15,
+     "fixed": true
+    }
+   ]
+  },
+  {
+   "id": "heading-text",
+   "type": "text",
+   "x": 96,
+   "y": 30,
+   "width": 1728,
+   "height": 110,
+   "text": {
+    "field": "heading"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 96,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.0,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "subtitle-text",
+   "type": "text",
+   "x": 400,
+   "y": 154,
+   "width": 1120,
+   "height": 42,
+   "text": {
+    "field": "subtitle"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 32,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "sports-kinetic",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

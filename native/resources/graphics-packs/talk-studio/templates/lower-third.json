@@ -1,0 +1,112 @@
+{
+ "schemaVersion": 1,
+ "templateId": "talk-studio-lower-third",
+ "templateVersion": 1,
+ "name": "Talk Studio lower third",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 84
+ },
+ "brandTokens": [
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Ada Otieno",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "name-pill",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 900,
+   "height": 84,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 42.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 40,
+   "y": 14,
+   "width": 820,
+   "height": 56,
+   "text": {
+    "field": "name"
+   },
+   "font": "Poppins",
+   "fontSize": 40,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 90,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "talk-studio",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

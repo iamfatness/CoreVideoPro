@@ -1,0 +1,12 @@
+{
+ "brand.primary": "#14171CFF",
+ "brand.secondary": "#2A2F38FF",
+ "brand.accent": "#FFC72CFF",
+ "brand.surface": "#101216F2",
+ "brand.onPrimary": "#FFFFFFFF",
+ "brand.onPrimaryMuted": "#D8DCE3FF",
+ "brand.onSecondary": "#FFFFFFFF",
+ "brand.onAccent": "#101216FF",
+ "brand.teamA": "#C8102EFF",
+ "brand.teamB": "#1D428AFF"
+}

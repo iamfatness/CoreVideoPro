@@ -1,0 +1,94 @@
+{
+ "schemaVersion": 1,
+ "templateId": "minimal-line-bug",
+ "templateVersion": 1,
+ "name": "Minimal Line corner bug",
+ "family": "bug",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 260,
+  "height": 70
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "channel",
+   "type": "string",
+   "default": "Line",
+   "bindable": true,
+   "maxLength": 24,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "channel-text",
+   "type": "text",
+   "x": 0,
+   "y": 4,
+   "width": 260,
+   "height": 52,
+   "text": {
+    "field": "channel"
+   },
+   "font": "Inter",
+   "fontSize": 40,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "right",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   }
+  },
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 140,
+   "y": 62,
+   "width": 120,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "upper-right",
+  "x": -64,
+  "y": 48,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "minimal-line",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

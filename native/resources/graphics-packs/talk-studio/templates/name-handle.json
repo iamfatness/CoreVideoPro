@@ -1,0 +1,252 @@
+{
+ "schemaVersion": 1,
+ "templateId": "talk-studio-name-handle",
+ "templateVersion": 1,
+ "name": "Talk Studio guest with handle",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 140
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onAccent",
+  "brand.onPrimary",
+  "brand.onSecondary",
+  "brand.primary",
+  "brand.secondary"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Ada Otieno",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "title",
+   "type": "string",
+   "default": "Author, The Long Signal",
+   "bindable": true,
+   "maxLength": 512
+  },
+  {
+   "id": "handle",
+   "type": "string",
+   "default": "@adaotieno",
+   "bindable": true,
+   "maxLength": 64
+  }
+ ],
+ "layers": [
+  {
+   "id": "name-pill",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 900,
+   "height": 84,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 42.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "role-pill",
+   "type": "rect",
+   "x": 40,
+   "y": 88,
+   "width": 520,
+   "height": 52,
+   "fill": {
+    "token": "brand.secondary"
+   },
+   "cornerRadius": 26.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 90,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "handle-pill",
+   "type": "rect",
+   "x": 570,
+   "y": 88,
+   "width": 290,
+   "height": 52,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "cornerRadius": 26.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 180,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 40,
+   "y": 14,
+   "width": 820,
+   "height": 56,
+   "text": {
+    "field": "name"
+   },
+   "font": "Poppins",
+   "fontSize": 40,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 90,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "title-text",
+   "type": "text",
+   "x": 70,
+   "y": 96,
+   "width": 470,
+   "height": 36,
+   "text": {
+    "field": "title"
+   },
+   "font": "Poppins",
+   "fontSize": 24,
+   "fontWeight": 500,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 180,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "handle-text",
+   "type": "text",
+   "x": 590,
+   "y": 96,
+   "width": 250,
+   "height": 36,
+   "text": {
+    "field": "handle"
+   },
+   "font": "Poppins",
+   "fontSize": 24,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onAccent"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 270,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "talk-studio",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

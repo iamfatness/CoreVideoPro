@@ -1,0 +1,242 @@
+{
+ "schemaVersion": 1,
+ "templateId": "minimal-line-name-tag",
+ "templateVersion": 1,
+ "name": "Minimal Line name with tag",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1000,
+  "height": 130
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Ada Otieno",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "title",
+   "type": "string",
+   "default": "Head of Engineering",
+   "bindable": true,
+   "maxLength": 512
+  },
+  {
+   "id": "tag",
+   "type": "string",
+   "default": "Guest",
+   "bindable": true,
+   "maxLength": 24
+  }
+ ],
+ "layers": [
+  {
+   "id": "tag-text",
+   "type": "text",
+   "x": 0,
+   "y": 0,
+   "width": 400,
+   "height": 30,
+   "text": {
+    "field": "tag"
+   },
+   "font": "Inter",
+   "fontSize": 18,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.3,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 0,
+   "y": 26,
+   "width": 1000,
+   "height": 66,
+   "text": {
+    "field": "name"
+   },
+   "font": "Inter",
+   "fontSize": 52,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "letterSpacing": -0.01,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 100,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  },
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 0,
+   "y": 98,
+   "width": 480,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  },
+  {
+   "id": "title-text",
+   "type": "text",
+   "x": 0,
+   "y": 106,
+   "width": 1000,
+   "height": 24,
+   "text": {
+    "field": "title"
+   },
+   "font": "Inter",
+   "fontSize": 18,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.24,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 200,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "minimal-line",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

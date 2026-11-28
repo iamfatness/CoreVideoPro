@@ -1,0 +1,139 @@
+{
+ "schemaVersion": 1,
+ "templateId": "news-signal-bug",
+ "templateVersion": 1,
+ "name": "News Signal corner bug",
+ "family": "bug",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 300,
+  "height": 72
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onAccent",
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "channel",
+   "type": "string",
+   "default": "NEWS 24",
+   "bindable": true,
+   "maxLength": 32,
+   "required": true
+  },
+  {
+   "id": "tag",
+   "type": "string",
+   "default": "LIVE",
+   "bindable": true,
+   "maxLength": 32
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 300,
+   "height": 72,
+   "fill": {
+    "token": "brand.primary"
+   }
+  },
+  {
+   "id": "tag-plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 104,
+   "height": 72,
+   "fill": {
+    "token": "brand.accent"
+   }
+  },
+  {
+   "id": "dot",
+   "type": "ellipse",
+   "x": 12,
+   "y": 29,
+   "width": 14,
+   "height": 14,
+   "fill": "#FFFFFFFF",
+   "fixed": true
+  },
+  {
+   "id": "tag-text",
+   "type": "text",
+   "x": 32,
+   "y": 16,
+   "width": 68,
+   "height": 40,
+   "text": {
+    "field": "tag"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 28,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onAccent"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase"
+  },
+  {
+   "id": "channel-text",
+   "type": "text",
+   "x": 116,
+   "y": 14,
+   "width": 172,
+   "height": 44,
+   "text": {
+    "field": "channel"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 34,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.04
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "upper-right",
+  "x": -64,
+  "y": 48,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "news-signal",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

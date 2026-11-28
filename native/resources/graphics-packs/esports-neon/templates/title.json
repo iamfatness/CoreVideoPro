@@ -1,0 +1,336 @@
+{
+ "schemaVersion": 1,
+ "templateId": "esports-neon-title",
+ "templateVersion": 1,
+ "name": "Esports Neon full-width title",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1848,
+  "height": 268
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "heading",
+   "type": "string",
+   "default": "Grand Final",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "subtitle",
+   "type": "string",
+   "default": "Vertex vs Halcyon  |  Best of five",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "frame",
+   "type": "rect",
+   "x": 24,
+   "y": 24,
+   "width": 1800,
+   "height": 220,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "shape": "polygon",
+   "points": [
+    [
+     0.0367,
+     0
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     0.7
+    ],
+    [
+     0.9633,
+     1
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     0.3
+    ]
+   ],
+   "shadow": {
+    "color": {
+     "token": "brand.accent"
+    },
+    "blur": 14,
+    "spread": 1
+   },
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "scanlines",
+   "type": "group",
+   "x": 44,
+   "y": 38,
+   "width": 1760,
+   "height": 192,
+   "children": [
+    {
+     "id": "scan-0",
+     "type": "rect",
+     "x": 0,
+     "y": 0,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-1",
+     "type": "rect",
+     "x": 0,
+     "y": 19,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-2",
+     "type": "rect",
+     "x": 0,
+     "y": 38,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-3",
+     "type": "rect",
+     "x": 0,
+     "y": 58,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-4",
+     "type": "rect",
+     "x": 0,
+     "y": 77,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-5",
+     "type": "rect",
+     "x": 0,
+     "y": 96,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-6",
+     "type": "rect",
+     "x": 0,
+     "y": 115,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-7",
+     "type": "rect",
+     "x": 0,
+     "y": 134,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-8",
+     "type": "rect",
+     "x": 0,
+     "y": 154,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-9",
+     "type": "rect",
+     "x": 0,
+     "y": 173,
+     "width": 1760,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    }
+   ],
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 80,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "heading-text",
+   "type": "text",
+   "x": 84,
+   "y": 54,
+   "width": 1680,
+   "height": 110,
+   "text": {
+    "field": "heading"
+   },
+   "font": "Chakra Petch",
+   "fontSize": 92,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.12,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "subtitle-text",
+   "type": "text",
+   "x": 84,
+   "y": 170,
+   "width": 1680,
+   "height": 48,
+   "text": {
+    "field": "subtitle"
+   },
+   "font": "Chakra Petch",
+   "fontSize": 32,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.08,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 180,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "esports-neon",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

@@ -1,0 +1,129 @@
+{
+ "schemaVersion": 1,
+ "templateId": "minimal-line-lower-third",
+ "templateVersion": 1,
+ "name": "Minimal Line single-line name",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1000,
+  "height": 90
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Ada Otieno",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 0,
+   "y": 84,
+   "width": 480,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 0,
+   "y": 10,
+   "width": 1000,
+   "height": 66,
+   "text": {
+    "field": "name"
+   },
+   "font": "Inter",
+   "fontSize": 52,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "letterSpacing": -0.01,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 100,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "minimal-line",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

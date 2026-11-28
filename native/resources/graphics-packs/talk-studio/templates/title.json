@@ -1,0 +1,182 @@
+{
+ "schemaVersion": 1,
+ "templateId": "talk-studio-title",
+ "templateVersion": 1,
+ "name": "Talk Studio full-width title",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1600,
+  "height": 240
+ },
+ "brandTokens": [
+  "brand.onPrimary",
+  "brand.onSecondary",
+  "brand.primary",
+  "brand.secondary"
+ ],
+ "fields": [
+  {
+   "id": "heading",
+   "type": "string",
+   "default": "The Late Conversation",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "subtitle",
+   "type": "string",
+   "default": "Tonight: stories that stay with you",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1600,
+   "height": 150,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 75.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "sub-pill",
+   "type": "rect",
+   "x": 300,
+   "y": 160,
+   "width": 1000,
+   "height": 72,
+   "fill": {
+    "token": "brand.secondary"
+   },
+   "cornerRadius": 36.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 90,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "heading-text",
+   "type": "text",
+   "x": 80,
+   "y": 30,
+   "width": 1440,
+   "height": 90,
+   "text": {
+    "field": "heading"
+   },
+   "font": "Poppins",
+   "fontSize": 68,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 90,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "subtitle-text",
+   "type": "text",
+   "x": 320,
+   "y": 174,
+   "width": 960,
+   "height": 44,
+   "text": {
+    "field": "subtitle"
+   },
+   "font": "Poppins",
+   "fontSize": 30,
+   "fontWeight": 500,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 180,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "talk-studio",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

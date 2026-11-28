@@ -1,0 +1,274 @@
+{
+ "schemaVersion": 1,
+ "templateId": "sports-kinetic-name-tag",
+ "templateVersion": 1,
+ "name": "Sports Kinetic name with number",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1000,
+  "height": 120
+ },
+ "brandTokens": [
+  "brand.onPrimary",
+  "brand.onSecondary",
+  "brand.secondary",
+  "brand.surface",
+  "brand.teamA"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Marcus Reyes",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "title",
+   "type": "string",
+   "default": "Forward  |  #9",
+   "bindable": true,
+   "maxLength": 512
+  },
+  {
+   "id": "number",
+   "type": "string",
+   "default": "9",
+   "bindable": true,
+   "maxLength": 4
+  }
+ ],
+ "layers": [
+  {
+   "id": "number-block",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 150,
+   "height": 120,
+   "fill": {
+    "token": "brand.surface"
+   },
+   "skewX": 12,
+   "animations": {
+    "in": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 250,
+     "easing": "expo-out",
+     "direction": "left",
+     "distance": 160
+    },
+    "out": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 180,
+     "easing": "ease-in",
+     "direction": "left",
+     "distance": 160
+    }
+   }
+  },
+  {
+   "id": "name-plate",
+   "type": "rect",
+   "x": 130,
+   "y": 0,
+   "width": 870,
+   "height": 76,
+   "fill": {
+    "token": "brand.teamA"
+   },
+   "skewX": 12,
+   "animations": {
+    "in": {
+     "type": "slide",
+     "startMs": 60,
+     "durationMs": 250,
+     "easing": "expo-out",
+     "direction": "left",
+     "distance": 160
+    },
+    "out": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 180,
+     "easing": "ease-in",
+     "direction": "left",
+     "distance": 160
+    }
+   }
+  },
+  {
+   "id": "title-plate",
+   "type": "rect",
+   "x": 120,
+   "y": 80,
+   "width": 600,
+   "height": 40,
+   "fill": {
+    "token": "brand.secondary"
+   },
+   "skewX": 12,
+   "animations": {
+    "in": {
+     "type": "slide",
+     "startMs": 120,
+     "durationMs": 250,
+     "easing": "expo-out",
+     "direction": "left",
+     "distance": 160
+    },
+    "out": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 180,
+     "easing": "ease-in",
+     "direction": "left",
+     "distance": 160
+    }
+   }
+  },
+  {
+   "id": "number-text",
+   "type": "text",
+   "x": 0,
+   "y": 10,
+   "width": 150,
+   "height": 100,
+   "text": {
+    "field": "number"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 88,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 180,
+   "y": 6,
+   "width": 780,
+   "height": 64,
+   "text": {
+    "field": "name"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 54,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 280,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "title-text",
+   "type": "text",
+   "x": 160,
+   "y": 82,
+   "width": 540,
+   "height": 36,
+   "text": {
+    "field": "title"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 28,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "sports-kinetic",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

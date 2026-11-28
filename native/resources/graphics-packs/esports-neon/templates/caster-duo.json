@@ -1,0 +1,389 @@
+{
+ "schemaVersion": 1,
+ "templateId": "esports-neon-caster-duo",
+ "templateVersion": 1,
+ "name": "Esports Neon caster duo",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1548,
+  "height": 168
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "caster-1",
+   "type": "string",
+   "default": "SABLE",
+   "bindable": true,
+   "maxLength": 64,
+   "required": true
+  },
+  {
+   "id": "handle-1",
+   "type": "string",
+   "default": "@sablecasts",
+   "bindable": true,
+   "maxLength": 64
+  },
+  {
+   "id": "caster-2",
+   "type": "string",
+   "default": "RIOT GRRL",
+   "bindable": true,
+   "maxLength": 64
+  },
+  {
+   "id": "handle-2",
+   "type": "string",
+   "default": "@riotgrrl",
+   "bindable": true,
+   "maxLength": 64
+  }
+ ],
+ "layers": [
+  {
+   "id": "frame-1",
+   "type": "rect",
+   "x": 24,
+   "y": 24,
+   "width": 720,
+   "height": 120,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "shape": "polygon",
+   "points": [
+    [
+     0.05,
+     0
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     0.7
+    ],
+    [
+     0.95,
+     1
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     0.3
+    ]
+   ],
+   "shadow": {
+    "color": {
+     "token": "brand.accent"
+    },
+    "blur": 14,
+    "spread": 1
+   },
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "frame-2",
+   "type": "rect",
+   "x": 804,
+   "y": 24,
+   "width": 720,
+   "height": 120,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "shape": "polygon",
+   "points": [
+    [
+     0.05,
+     0
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     0.7
+    ],
+    [
+     0.95,
+     1
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     0.3
+    ]
+   ],
+   "shadow": {
+    "color": {
+     "token": "brand.accent"
+    },
+    "blur": 14,
+    "spread": 1
+   },
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 60,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "bar-1",
+   "type": "rect",
+   "x": 48,
+   "y": 46,
+   "width": 6,
+   "height": 76,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 160,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "bar-2",
+   "type": "rect",
+   "x": 828,
+   "y": 46,
+   "width": 6,
+   "height": 76,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 160,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "caster-1-text",
+   "type": "text",
+   "x": 74,
+   "y": 36,
+   "width": 640,
+   "height": 60,
+   "text": {
+    "field": "caster-1"
+   },
+   "font": "Chakra Petch",
+   "fontSize": 48,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.08,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "handle-1-text",
+   "type": "text",
+   "x": 74,
+   "y": 94,
+   "width": 640,
+   "height": 36,
+   "text": {
+    "field": "handle-1"
+   },
+   "font": "Chakra Petch",
+   "fontSize": 26,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "none",
+   "letterSpacing": 0.02,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "caster-2-text",
+   "type": "text",
+   "x": 854,
+   "y": 36,
+   "width": 640,
+   "height": 60,
+   "text": {
+    "field": "caster-2"
+   },
+   "font": "Chakra Petch",
+   "fontSize": 48,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.08,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "handle-2-text",
+   "type": "text",
+   "x": 854,
+   "y": 94,
+   "width": 640,
+   "height": 36,
+   "text": {
+    "field": "handle-2"
+   },
+   "font": "Chakra Petch",
+   "fontSize": 26,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "none",
+   "letterSpacing": 0.02,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 180,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-center",
+  "x": 0,
+  "y": -40,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "esports-neon",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

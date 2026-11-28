@@ -1,0 +1,48 @@
+{
+ "id": "esports-neon",
+ "name": "Esports: Neon",
+ "genre": "esports",
+ "version": "1.0.0",
+ "palettes": [
+  "palettes/neon-cyan.json",
+  "palettes/toxic.json",
+  "palettes/magenta.json"
+ ],
+ "fonts": [
+  {
+   "family": "Chakra Petch",
+   "file": "fonts/ChakraPetch-Regular.ttf",
+   "weight": 400,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Chakra Petch",
+   "file": "fonts/ChakraPetch-SemiBold.ttf",
+   "weight": 600,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Chakra Petch",
+   "file": "fonts/ChakraPetch-Bold.ttf",
+   "weight": 700,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  }
+ ],
+ "templates": [
+  "templates/lower-third.json",
+  "templates/lower-third-2-line.json",
+  "templates/name-tag.json",
+  "templates/title.json",
+  "templates/bug.json",
+  "templates/player-card.json",
+  "templates/caster-duo.json"
+ ],
+ "metadata": {
+  "status": "Wave 1 (graphics styles slice 10).",
+  "defaultPalette": "palettes/neon-cyan.json",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

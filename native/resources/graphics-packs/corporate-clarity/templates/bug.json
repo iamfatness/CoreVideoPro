@@ -1,0 +1,108 @@
+{
+ "schemaVersion": 1,
+ "templateId": "corporate-clarity-bug",
+ "templateVersion": 1,
+ "name": "Corporate Clarity corner bug",
+ "family": "bug",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 376,
+  "height": 168
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "channel",
+   "type": "string",
+   "default": "Northwind",
+   "bindable": true,
+   "maxLength": 32,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 48,
+   "y": 48,
+   "width": 280,
+   "height": 72,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 8,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "dx": 0,
+    "dy": 8,
+    "blur": 24,
+    "spread": 0
+   }
+  },
+  {
+   "id": "strip",
+   "type": "rect",
+   "x": 64,
+   "y": 66,
+   "width": 6,
+   "height": 36,
+   "fill": {
+    "token": "brand.accent"
+   }
+  },
+  {
+   "id": "channel-text",
+   "type": "text",
+   "x": 84,
+   "y": 62,
+   "width": 230,
+   "height": 44,
+   "text": {
+    "field": "channel"
+   },
+   "font": "Montserrat",
+   "fontSize": 30,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis"
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 450,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 300,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "upper-right",
+  "x": -16,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "corporate-clarity",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}
