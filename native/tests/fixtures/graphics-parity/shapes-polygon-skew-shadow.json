@@ -1,0 +1,82 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-shapes-styles",
+ "templateVersion": 1,
+ "name": "p-shapes-styles",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 300
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "skew",
+   "type": "rect",
+   "x": 40,
+   "y": 30,
+   "width": 400,
+   "height": 80,
+   "skewX": 12,
+   "fill": "#E0302AFF",
+   "shadow": { "color": "#000000A0", "dx": 6, "dy": 8, "blur": 10 }
+  },
+  {
+   "id": "hud",
+   "type": "rect",
+   "x": 480,
+   "y": 30,
+   "width": 380,
+   "height": 80,
+   "shape": "polygon",
+   "points": [[0.05, 0], [1, 0], [1, 0.7], [0.95, 1], [0, 1], [0, 0.3]],
+   "fill": { "type": "linear", "angle": 90, "stops": ["#101820FF", "#203040FF"] },
+   "shadow": { "color": "#44C1A1FF", "blur": 16, "spread": 2 }
+  },
+  {
+   "id": "card",
+   "type": "rect",
+   "x": 40,
+   "y": 160,
+   "width": 400,
+   "height": 100,
+   "cornerRadius": 16,
+   "fill": "#FFFFFFFF",
+   "shadow": { "color": "#00000080", "dy": 10, "blur": 24, "spread": 4 }
+  },
+  {
+   "id": "dot",
+   "type": "ellipse",
+   "x": 520,
+   "y": 170,
+   "width": 120,
+   "height": 80,
+   "fill": "#F5B700FF",
+   "opacity": 0.8,
+   "shadow": { "color": "#F5B700C0", "blur": 12 }
+  },
+  {
+   "id": "neg-skew",
+   "type": "rect",
+   "x": 680,
+   "y": 170,
+   "width": 180,
+   "height": 80,
+   "skewX": -20,
+   "fill": "#2050A0FF"
+  }
+ ]
+}

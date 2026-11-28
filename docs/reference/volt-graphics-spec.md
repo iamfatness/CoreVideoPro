@@ -235,7 +235,11 @@ V1 rectangles allow a solid color/brand token or a two-stop linear gradient
 (graphics styles P2 extends rect and ellipse fills to `{"type":"linear"|"radial",
 "angle":deg (CSS, linear only, default 180), "center":[x,y] (box units, radial only),
 "stops":[...]}` with 2-8 stops, each a colour or `{"color", "offset"}`; the V1
-`{"stops","direction"}` form still parses, as 90 or 180 degrees);
+`{"stops","direction"}` form still parses, as 90 or 180 degrees; P3 adds
+`"shape":"polygon"` with 3-16 `points` in box units, or `skewX` in degrees
+(-60 to 60), on rects without a corner radius or stroke; P4 adds
+`"shadow":{"color","dx","dy","blur","spread"}` on rects and ellipses, with dx and
+dy -256 to 256, blur and spread 0 to 64, and glow as a shadow at 0,0);
 opacity is 0–1 and corner radius is clamped to half the resolved smaller edge.
 Colors use `#RRGGBB` or `#RRGGBBAA`, resolved as SDR sRGB before the backend's
 documented blend conversion. Images use a package-local asset ID or a declared

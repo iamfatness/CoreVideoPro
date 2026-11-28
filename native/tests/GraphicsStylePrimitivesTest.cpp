@@ -216,4 +216,260 @@ TEST(GraphicsStylePrimitives, GradientLimitsAreEnforced) {
   EXPECT_EQ("template-color-required", resolveOne(rect(M{{"type", "linear"}, {"stops", Json::Array{"red", "#000000"}}}), drawing));
 }
 
+// ── P3: polygon and skewed plates ────────────────────────────────────────────
+
+M plate(M extra) {
+  M node = rect("#FFFFFF");
+  for (auto& [key, value] : extra) node[key] = value;
+  return node;
+}
+
+TEST(GraphicsStylePrimitives, PolygonPointsAreBoxUnitsResolvedToTemplateUnits) {
+  GraphicsDrawing drawing;
+  ASSERT_EQ("", resolveOne(plate({{"shape", "polygon"},
+                                  {"points", Json::Array{Json::Array{0, 0}, Json::Array{1, 0}, Json::Array{0.5, 1}}}}),
+                           drawing));
+  const auto& p = drawing.primitives[0];
+  EXPECT_EQ("rect", p.type);
+  ASSERT_EQ(3u, p.polygon.size());
+  EXPECT_EQ(100.0, p.polygon[0].x); EXPECT_EQ(20.0, p.polygon[0].y);
+  EXPECT_EQ(500.0, p.polygon[1].x); EXPECT_EQ(20.0, p.polygon[1].y);
+  EXPECT_EQ(300.0, p.polygon[2].x); EXPECT_EQ(120.0, p.polygon[2].y);
+  // A plain rect has no outline.
+  ASSERT_EQ("", resolveOne(plate({}), drawing));
+  EXPECT_TRUE(drawing.primitives[0].polygon.empty());
+}
+
+TEST(GraphicsStylePrimitives, SkewXIsAParallelogramInsideTheBox) {
+  GraphicsDrawing drawing;
+  ASSERT_EQ("", resolveOne(plate({{"skewX", 45}}), drawing));  // tan 45 * 100 = 100 px lean
+  auto points = drawing.primitives[0].polygon;
+  ASSERT_EQ(4u, points.size());
+  EXPECT_NEAR(200, points[0].x, 1e-9); EXPECT_EQ(20.0, points[0].y);   // top-left leans right
+  EXPECT_NEAR(500, points[1].x, 1e-9);
+  EXPECT_NEAR(400, points[2].x, 1e-9); EXPECT_EQ(120.0, points[2].y);  // bottom-right pulls in
+  EXPECT_NEAR(100, points[3].x, 1e-9);
+  ASSERT_EQ("", resolveOne(plate({{"skewX", -45}}), drawing));
+  points = drawing.primitives[0].polygon;
+  EXPECT_NEAR(100, points[0].x, 1e-9);
+  EXPECT_NEAR(400, points[1].x, 1e-9);
+  EXPECT_NEAR(500, points[2].x, 1e-9);
+  EXPECT_NEAR(200, points[3].x, 1e-9);
+  ASSERT_EQ("", resolveOne(plate({{"skewX", 0}}), drawing));
+  EXPECT_TRUE(drawing.primitives[0].polygon.empty());
+}
+
+TEST(GraphicsStylePrimitives, PolygonAndSkewLimitsAreEnforced) {
+  GraphicsDrawing drawing;
+  Json::Array sixteen, seventeen;
+  for (int i = 0; i < 16; ++i) sixteen.push_back(Json::Array{double(i % 2), double(i) / 15});
+  seventeen = sixteen;
+  seventeen.push_back(Json::Array{0.5, 0.5});
+  EXPECT_EQ("", resolveOne(plate({{"shape", "polygon"}, {"points", sixteen}}), drawing));
+  EXPECT_EQ("template-polygon-points", resolveOne(plate({{"shape", "polygon"}, {"points", seventeen}}), drawing));
+  EXPECT_EQ("template-polygon-points", resolveOne(plate({{"shape", "polygon"},
+      {"points", Json::Array{Json::Array{0, 0}, Json::Array{1, 0}}}}), drawing));
+  EXPECT_EQ("template-polygon-points", resolveOne(plate({{"shape", "polygon"},
+      {"points", Json::Array{Json::Array{0, 0}, Json::Array{1, 0}, Json::Array{1.5, 1}}}}), drawing));
+  EXPECT_EQ("template-polygon-points", resolveOne(plate({{"shape", "polygon"},
+      {"points", Json::Array{Json::Array{0, 0}, Json::Array{1, 0}, Json::Array{1}}}}), drawing));
+  EXPECT_EQ("template-polygon-points", resolveOne(plate({{"shape", "polygon"}}), drawing));
+  EXPECT_EQ("template-polygon-points", resolveOne(plate({{"points", sixteen}}), drawing));  // points need the shape
+  EXPECT_EQ("template-shape", resolveOne(plate({{"shape", "star"}}), drawing));
+  EXPECT_EQ("template-shape-skew", resolveOne(plate({{"shape", "polygon"}, {"points", sixteen}, {"skewX", 10}}), drawing));
+  EXPECT_EQ("template-geometry-or-number", resolveOne(plate({{"skewX", 61}}), drawing));
+  // tan 60 * 100 = 173 px fits a 400 px box; a 150 px box does not.
+  EXPECT_EQ("", resolveOne(plate({{"skewX", 60}}), drawing));
+  EXPECT_EQ("template-shape-skew", resolveOne(plate({{"skewX", 60}, {"width", 150}}), drawing));
+  EXPECT_EQ("template-shape-polygon-style", resolveOne(plate({{"skewX", 10}, {"cornerRadius", 4}}), drawing));
+  EXPECT_EQ("template-shape-polygon-style",
+            resolveOne(plate({{"skewX", 10}, {"stroke", "#000000"}, {"strokeWidth", 2}}), drawing));
+  const M ellipse{{"id", "e"}, {"type", "ellipse"}, {"x", 0}, {"y", 0}, {"width", 50}, {"height", 50},
+                  {"fill", "#FFFFFF"}, {"skewX", 10}};
+  EXPECT_EQ("unsupported-template-property", resolveOne(ellipse, drawing));
+}
+
+// ── P4: shape drop shadow and glow ───────────────────────────────────────────
+
+TEST(GraphicsStylePrimitives, ShapeShadowResolvesWithItsClipOutsideTheBox) {
+  GraphicsDrawing drawing;
+  ASSERT_EQ("", resolveOne(plate({{"shadow", M{{"color", "#00000080"}, {"dx", 4}, {"dy", 6}, {"blur", 8}, {"spread", 2}}}}),
+                           drawing));
+  const auto& p = drawing.primitives[0];
+  ASSERT_TRUE(p.shapeShadow);
+  EXPECT_EQ(0x80000000u, p.shapeShadow->color);
+  EXPECT_EQ(4.0, p.shapeShadow->dx);
+  EXPECT_EQ(6.0, p.shapeShadow->dy);
+  EXPECT_EQ(8.0, p.shapeShadow->blur);
+  EXPECT_EQ(2.0, p.shapeShadow->spread);
+  // Extent = spread + 2 * blur + 1 = 19 around the shifted box, inside the 800x200 root.
+  EXPECT_EQ(100.0 + 4 - 19, p.shadowClip.x);
+  EXPECT_EQ(20.0 + 6 - 19, p.shadowClip.y);
+  EXPECT_EQ(400.0 + 38, p.shadowClip.width);
+  EXPECT_EQ(100.0 + 38, p.shadowClip.height);
+  // The shape's own clip is unchanged.
+  EXPECT_EQ(100.0, p.clip.x);
+  EXPECT_EQ(400.0, p.clip.width);
+  // Glow: a shadow with no offset, here on an ellipse; defaults are 0.
+  const M glow{{"id", "e"}, {"type", "ellipse"}, {"x", 0}, {"y", 0}, {"width", 50}, {"height", 50},
+               {"fill", "#FFFFFF"}, {"shadow", M{{"color", "#44C1A1"}, {"blur", 12}}}};
+  ASSERT_EQ("", resolveOne(glow, drawing));
+  const auto& e = drawing.primitives[0];
+  EXPECT_EQ(0.0, e.shapeShadow->dx);
+  EXPECT_EQ(0.0, e.shapeShadow->spread);
+  EXPECT_EQ(0.0, e.shadowClip.x);  // clamped to the root
+}
+
+TEST(GraphicsStylePrimitives, AnAtlasSliceHoldsTheShadowNotJustTheBox) {
+  GraphicsDrawing drawing;
+  ASSERT_EQ("", resolveOne(plate({{"shadow", M{{"color", "#000000"}, {"dy", 10}, {"blur", 8}}},
+                                  {"animations", M{{"in", M{{"type", "fade"}, {"durationMs", 200}}}}}}), drawing));
+  const auto runs = corevideo::graphics::planRuns(drawing);
+  ASSERT_EQ(1u, runs.size());
+  const auto& clip = drawing.primitives[0].shadowClip;
+  EXPECT_EQ(clip.x, runs[0].source.x);
+  EXPECT_EQ(clip.y, runs[0].source.y);
+  EXPECT_EQ(clip.width, runs[0].source.width);
+  EXPECT_EQ(clip.height, runs[0].source.height);
+  EXPECT_LT(runs[0].source.x, drawing.primitives[0].box.x);
+}
+
+TEST(GraphicsStylePrimitives, ShapeShadowLimitsAreEnforced) {
+  GraphicsDrawing drawing;
+  const auto with = [&](M shadow) { return resolveOne(plate({{"shadow", std::move(shadow)}}), drawing); };
+  EXPECT_EQ("", with(M{{"color", "#000000"}, {"dx", -256}, {"dy", 256}, {"blur", 64}, {"spread", 64}}));
+  EXPECT_EQ("template-geometry-or-number", with(M{{"color", "#000000"}, {"dx", 257}}));
+  EXPECT_EQ("template-geometry-or-number", with(M{{"color", "#000000"}, {"blur", 64.5}}));
+  EXPECT_EQ("template-geometry-or-number", with(M{{"color", "#000000"}, {"blur", -1}}));
+  EXPECT_EQ("template-geometry-or-number", with(M{{"color", "#000000"}, {"spread", -1}}));
+  EXPECT_EQ("template-geometry-or-number", with(M{{"color", "#000000"}, {"spread", 65}}));
+  EXPECT_EQ("template-property-required", with(M{{"blur", 4}}));
+  EXPECT_EQ("unsupported-template-property", with(M{{"color", "#000000"}, {"x", 4}}));
+}
+
+}  // namespace
+
+// ── ShapeShadowRaster: the shared shadow pixels ──────────────────────────────
+
+#include "compositor/ShapeShadowRaster.h"
+
+namespace {
+namespace shadows = corevideo::compositor::shapeshadow;
+
+TEST(ShapeShadowRaster, CoverageIsExactAreaForAxisAlignedAndSlantedEdges) {
+  // A 2.5 x 1.5 px rect at (0.25, 0.5): corner pixel areas are exact.
+  const auto area = [](const std::vector<uint32_t>& values) {
+    std::vector<double> out;
+    for (const auto v : values) out.push_back(v / 65535.0);
+    return out;
+  };
+  const auto c = area(shadows::polygonCoverage({{0.25, 0.5}, {2.75, 0.5}, {2.75, 2}, {0.25, 2}}, 0, 0, 4, 3));
+  EXPECT_NEAR(0.75 * 0.5, c[0], 2e-5);
+  EXPECT_NEAR(0.5, c[1], 2e-5);
+  EXPECT_NEAR(0.75 * 0.5, c[2], 2e-5);
+  EXPECT_NEAR(0.0, c[3], 2e-5);
+  EXPECT_NEAR(0.75, c[4], 2e-5);
+  EXPECT_NEAR(1.0, c[5], 2e-5);
+  EXPECT_NEAR(0.0, c[8], 2e-5);
+  // A right triangle across a 4x4 buffer: half of every diagonal pixel, and
+  // the total equals the area (8), whichever way it winds.
+  for (const bool clockwise : {true, false}) {
+    std::vector<shadows::Point> triangle{{0, 0}, {4, 4}, {0, 4}};
+    if (!clockwise) std::swap(triangle[0], triangle[2]);
+    const auto t = area(shadows::polygonCoverage(triangle, 0, 0, 4, 4));
+    double total = 0;
+    for (const auto v : t) total += v;
+    EXPECT_NEAR(8.0, total, 1e-3);
+    EXPECT_NEAR(0.5, t[0], 2e-5);
+    EXPECT_NEAR(1.0, t[4], 2e-5);
+    EXPECT_NEAR(0.0, t[1], 2e-5);
+  }
+  // A buffer offset into the shape, with the shape running off every side.
+  const auto inside = area(shadows::polygonCoverage({{-10, -10}, {10, -10}, {10, 10}, {-10, 10}}, 2, 3, 3, 3));
+  for (const auto v : inside) EXPECT_NEAR(1.0, v, 2e-5);
+}
+
+TEST(ShapeShadowRaster, BoxRadiusFollowsTheCssBlurRadius) {
+  EXPECT_EQ(0, shadows::boxRadius(0));
+  EXPECT_EQ(0, shadows::boxRadius(1));    // w = 1.41
+  EXPECT_EQ(4, shadows::boxRadius(8));    // w = 8.06
+  EXPECT_EQ(12, shadows::boxRadius(24));  // w = 24.02
+  EXPECT_EQ(32, shadows::boxRadius(64));
+}
+
+TEST(ShapeShadowRaster, BlurConservesCoverageAndGlowIsSymmetric) {
+  shadows::Outline square;
+  square.x = 30; square.y = 30; square.width = 40; square.height = 40;
+  const auto glow = shadows::rasterize(square, 0xff000000u, 0, 0, 8, 0, 1, 0, 0, 100, 100, 1, 0, 0, 100, 100);
+  ASSERT_EQ(100, glow.width);
+  ASSERT_EQ(100, glow.height);
+  double total = 0;
+  for (size_t i = 3; i < glow.bgra.size(); i += 4) total += glow.bgra[i];
+  EXPECT_NEAR(1600.0 * 255, total, 1600.0 * 255 * 0.01);  // the blur spreads, never adds or loses
+  const auto at = [&](int x, int y) { return int(glow.bgra[(size_t(y) * 100 + size_t(x)) * 4 + 3]); };
+  EXPECT_EQ(at(25, 50), at(74, 50));  // mirror images across the square's centre line
+  EXPECT_EQ(at(50, 25), at(50, 74));
+  EXPECT_EQ(255, at(50, 50));          // more than 3k = 12 px inside stays solid
+  EXPECT_LT(at(30, 50), 255);          // the edge is soft
+  EXPECT_GT(at(23, 50), 0);            // the blur reaches 3k = 12 px past the edge
+  EXPECT_EQ(0, at(17, 50));
+  // An offset moves the same picture by whole pixels.
+  const auto moved = shadows::rasterize(square, 0xff000000u, 5, -3, 8, 0, 1, 0, 0, 100, 100, 1, 0, 0, 100, 100);
+  EXPECT_EQ(at(25, 50), int(moved.bgra[(size_t(47) * 100 + 30) * 4 + 3]));
+}
+
+TEST(ShapeShadowRaster, ColourAlphaOpacityAndClipShapeTheComposite) {
+  shadows::Outline square;
+  square.x = 10; square.y = 10; square.width = 20; square.height = 20;
+  // Premultiplied: half-alpha red at opacity 0.5 is alpha 64, red 64.
+  const auto tinted = shadows::rasterize(square, 0x80ff0000u, 0, 0, 0, 0, 0.5, 0, 0, 40, 40, 1, 0, 0, 40, 40);
+  const uint8_t* px = tinted.bgra.data() + (size_t(20) * 40 + 20) * 4;
+  EXPECT_EQ(0, px[0]);
+  EXPECT_EQ(0, px[1]);
+  EXPECT_EQ(64, px[2]);
+  EXPECT_EQ(64, px[3]);
+  // The composite is the clip in device pixels (scale 2, offset 3), rounded out, on the target.
+  const auto clipped = shadows::rasterize(square, 0xff000000u, 0, 0, 4, 2, 1, 5.25, 5, 10, 10, 2, 3, 0, 30, 100);
+  EXPECT_EQ(13, clipped.x);  // floor(5.25 * 2 + 3)
+  EXPECT_EQ(10, clipped.y);
+  EXPECT_EQ(30 - 13, clipped.width);  // ceil(15.25 * 2 + 3) = 34, cut at the 30 px target
+  EXPECT_EQ(20, clipped.height);
+  // Nothing to draw: transparent colour, zero opacity or an empty clip.
+  EXPECT_EQ(0, shadows::rasterize(square, 0x00ffffffu, 0, 0, 4, 0, 1, 0, 0, 40, 40, 1, 0, 0, 40, 40).width);
+  EXPECT_EQ(0, shadows::rasterize(square, 0xff000000u, 0, 0, 4, 0, 0, 0, 0, 40, 40, 1, 0, 0, 40, 40).width);
+  EXPECT_EQ(0, shadows::rasterize(square, 0xff000000u, 0, 0, 4, 0, 1, 0, 0, 0, 40, 1, 0, 0, 40, 40).width);
+  // A buffer past 4096 x 4096 px is refused, never allocated.
+  const auto huge = shadows::rasterize(square, 0xff000000u, 0, 0, 64, 0, 1, 0, 0, 8192, 8192, 1, 0, 0, 8192, 8192);
+  EXPECT_TRUE(huge.refused);
+  EXPECT_TRUE(huge.bgra.empty());
+}
+
+TEST(ShapeShadowRaster, SpreadGrowsEveryOutlineKind) {
+  shadows::Outline rect;
+  rect.x = 10; rect.y = 10; rect.width = 20; rect.height = 10;
+  auto grown = shadows::shadowPolygon(rect, 0, 0, 3, 0.25);
+  ASSERT_EQ(4u, grown.size());
+  EXPECT_EQ(7.0, grown[0].x); EXPECT_EQ(7.0, grown[0].y);
+  EXPECT_EQ(33.0, grown[2].x); EXPECT_EQ(23.0, grown[2].y);
+  // A polygon's mitred offset: the square's corners move out diagonally by spread * sqrt 2.
+  shadows::Outline square;
+  square.kind = shadows::Outline::Kind::Polygon;
+  square.points = {{0, 0}, {10, 0}, {10, 10}, {0, 10}};
+  grown = shadows::shadowPolygon(square, 1, 2, 2, 0.25);
+  ASSERT_EQ(4u, grown.size());
+  EXPECT_NEAR(-1, grown[0].x, 1e-9); EXPECT_NEAR(0, grown[0].y, 1e-9);
+  EXPECT_NEAR(13, grown[2].x, 1e-9); EXPECT_NEAR(14, grown[2].y, 1e-9);
+  // Counter-clockwise gives the same outward offset.
+  square.points = {{0, 0}, {0, 10}, {10, 10}, {10, 0}};
+  grown = shadows::shadowPolygon(square, 0, 0, 2, 0.25);
+  EXPECT_NEAR(-2, grown[0].x, 1e-9); EXPECT_NEAR(-2, grown[0].y, 1e-9);
+  // A needle-sharp corner past the miter limit is bevelled, not spiked.
+  shadows::Outline needle;
+  needle.kind = shadows::Outline::Kind::Polygon;
+  needle.points = {{0, 0}, {100, 1}, {0, 2}};
+  grown = shadows::shadowPolygon(needle, 0, 0, 1, 0.25);
+  EXPECT_EQ(4u, grown.size());
+  for (const auto& p : grown) EXPECT_LT(p.x, 102.0);
+}
+
 }  // namespace

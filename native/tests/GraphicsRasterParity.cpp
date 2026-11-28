@@ -197,6 +197,9 @@ Json layoutSummary(const GraphicsDrawing& drawing, double scale, bool atlas) {
         {"color", double(p.color)}, {"strokeWidth", p.strokeWidth * scale},
         {"effects", (p.outline ? p.outline->width : 0.0) * scale + (p.shadow ? (std::abs(p.shadow->x) + std::abs(p.shadow->y) + 2 * p.shadow->blur) : 0.0) * scale}};
     if (p.crawlStart) row["crawlStart"] = *p.crawlStart * scale;
+    // A shape shadow (styles P4) paints its clip, outside the box: judged as
+    // its own geometry region so the blur model is held to tier 1 too.
+    if (p.shapeShadow) row["shadow"] = box(p.shadowClip, scale, offset[i].first, offset[i].second);
     primitives.push_back(std::move(row));
   }
   Json::Object summary{{"width", drawing.width * scale}, {"height", drawing.height * scale}, {"scale", scale},
@@ -234,6 +237,14 @@ std::vector<ParityRegion> regionsFromLayout(const Json& summary) {
       }
     } else {
       r.grow = 2 + std::ceil(row.getNumber("strokeWidth"));
+    }
+    if (const auto* shadowBox = row.get("shadow")) {
+      ParityRegion shadow;
+      shadow.id = r.id + ".shadow";
+      const auto s = readBox(shadowBox);
+      shadow.x = s.x; shadow.y = s.y; shadow.width = s.width; shadow.height = s.height;
+      shadow.colorArgb = r.colorArgb;
+      out.push_back(std::move(shadow));
     }
     out.push_back(std::move(r));
   }

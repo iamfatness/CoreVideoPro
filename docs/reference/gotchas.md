@@ -36,6 +36,16 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   N stops with D2D's defaults (gamma 2.2, clamp), which `CGGradient` with both extend options matches.
   Radial is an ellipse of half the box: `CreateRadialGradientBrush(centre, 0 offset, w/2, h/2)` on
   Windows, a circle of radius w/2 under a `(1, h/w)` CTM scale on the Mac.
+  Polygon and skew plates (P3) reach both rasters as `GraphicsPrimitive::polygon` (skewX is
+  turned into its parallelogram by the shared layout). The D2D path geometry is set to
+  `D2D1_FILL_MODE_WINDING` because `CGContextFillPath` fills non-zero; D2D's default is alternate.
+  Shape shadows and glow (P4) are never drawn by either platform's effects: the WIC target has no
+  Shadow effect and `CGContextSetShadowWithColor` is a true Gaussian. `ShapeShadowRaster.h` computes
+  the finished premultiplied pixels in plain C++ (exact-area polygon coverage of D2D's flattened
+  outline, three integer box-blur passes per axis, k from `w = sqrt(b^2 + 1)`), and each raster only
+  composites them 1:1 in device pixels inside `shadowClip`. The shadow paints outside the box, so
+  `planRuns` adds `shadowClip` to the run's source or an atlas slice would cut it off, and the parity
+  layout judges `shadowClip` as its own tier 1 region (`<id>.shadow`).
 - **WIC never reports a corrupt PNG pixel stream (2026-11-27).** For a bad zlib header,
   a malformed deflate block, a truncated IDAT or a wrong Adler-32, the PNG decoder's
   `CopyPixels`, and therefore `CreateBitmapFromWicBitmap`, return `S_OK` with zeroed pixels.
