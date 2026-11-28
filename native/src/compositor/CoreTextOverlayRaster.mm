@@ -602,24 +602,40 @@ bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::Graphi
       CGContextRestoreGState(cg);
       continue;
     }
-    // Fill: solid colour, or a two-stop linear gradient across the box.
+    // Fill: solid colour, or a gradient (graphics styles P2): N stops, linear
+    // along graphics::linearGradientLine or radial (an ellipse half the box,
+    // drawn as a circle under a y scale), clamped past both ends as D2D's
+    // default extend mode is.
     auto fillShape = [&](CGPathRef shape) {
       if (!shape) return;
       if (p.gradient) {
         CGContextSaveGState(cg);
         CGContextAddPath(cg, shape);
         CGContextClip(cg);
-        const CGFloat components[8] = {
-            CGFloat((p.color >> 16) & 0xff) / 255, CGFloat((p.color >> 8) & 0xff) / 255, CGFloat(p.color & 0xff) / 255,
-            CGFloat((p.color >> 24) & 0xff) / 255, CGFloat((p.endColor >> 16) & 0xff) / 255,
-            CGFloat((p.endColor >> 8) & 0xff) / 255, CGFloat(p.endColor & 0xff) / 255,
-            CGFloat((p.endColor >> 24) & 0xff) / 255};
-        const CGFloat locations[2] = {0, 1};
-        CfRef<CGGradientRef> gradient(CGGradientCreateWithColorComponents(space, components, locations, 2));
-        const CGPoint start = CGPointMake(b.x, b.y);
-        const CGPoint end = CGPointMake(b.x + (p.verticalGradient ? 0 : b.width), b.y + (p.verticalGradient ? b.height : 0));
-        CGContextDrawLinearGradient(cg, gradient.get(), start, end,
-                                    kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+        const auto& stops = p.gradient->stops;
+        const size_t count = std::min<size_t>(stops.size(), 8);
+        CGFloat components[32], locations[8];
+        for (size_t s = 0; s < count; ++s) {
+          const uint32_t c = stops[s].color;
+          components[s * 4 + 0] = CGFloat((c >> 16) & 0xff) / 255;
+          components[s * 4 + 1] = CGFloat((c >> 8) & 0xff) / 255;
+          components[s * 4 + 2] = CGFloat(c & 0xff) / 255;
+          components[s * 4 + 3] = CGFloat((c >> 24) & 0xff) / 255;
+          locations[s] = CGFloat(stops[s].offset);
+        }
+        CfRef<CGGradientRef> gradient(CGGradientCreateWithColorComponents(space, components, locations, count));
+        const auto extend = kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation;
+        if (p.gradient->radial) {
+          const double rx = b.width / 2, ry = b.height / 2;
+          if (rx > 0 && ry > 0) {
+            CGContextTranslateCTM(cg, CGFloat(b.x + b.width * p.gradient->centerX), CGFloat(b.y + b.height * p.gradient->centerY));
+            CGContextScaleCTM(cg, 1, CGFloat(ry / rx));
+            CGContextDrawRadialGradient(cg, gradient.get(), CGPointZero, 0, CGPointZero, CGFloat(rx), extend);
+          }
+        } else {
+          const auto line = graphics::linearGradientLine(*p.gradient, b);
+          CGContextDrawLinearGradient(cg, gradient.get(), CGPointMake(line[0], line[1]), CGPointMake(line[2], line[3]), extend);
+        }
         CGContextRestoreGState(cg);
       } else {
         setFillArgb(cg, space, p.color);

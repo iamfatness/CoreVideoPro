@@ -14,6 +14,17 @@ namespace corevideo::graphics {
 class GraphicsTemplateDraft;
 struct GraphicsTextOutline { uint32_t color; double width; };
 struct GraphicsTextShadow { uint32_t color; double x, y, blur; };
+// A rect/ellipse fill gradient (graphics styles P2). Linear: CSS angle in
+// degrees (90 = left to right, 180 = top to bottom), the gradient line through
+// the box centre long enough that the corners project to 0 and 1. Radial: an
+// ellipse with radii half the box, centred at (centerX, centerY) in box units.
+// 2..8 stops, offsets non-decreasing in 0..1, straight ARGB colours.
+struct GraphicsGradientStop { double offset; uint32_t color; };
+struct GraphicsGradient {
+  bool radial = false;
+  double angle = 90, centerX = 0.5, centerY = 0.5;
+  std::vector<GraphicsGradientStop> stops;
+};
 struct GraphicsCrawlGeometry {
   GraphicsBox window, clip;
   double speed = 120, passWidth = 0;
@@ -23,12 +34,12 @@ struct GraphicsPrimitive {
   std::optional<double> crawlStart;
   std::string id, type, text, font, align, overflow;
   GraphicsBox box, clip;
-  uint32_t color = 0xffffffff, endColor = 0xffffffff;
+  uint32_t color = 0xffffffff;  // a gradient's first stop
   double opacity = 1, cornerRadius = 0, fontSize = 28, lineHeight = 1.2;
   uint32_t strokeColor = 0;
   double strokeWidth = 0;
   bool lineRises = false;
-  bool gradient = false, verticalGradient = false;
+  std::optional<GraphicsGradient> gradient;
   int unit = -1;
   int fontWeight = 400, maxLines = 1;
   // Text style (graphics styles P1). letterSpacing is extra advance after
@@ -100,6 +111,12 @@ struct GraphicsTemplateInput {
 // units wide. Capped at the 256 MiB cache budget. The worker charges the
 // actual atlas against the process budget after layout.
 uint64_t overlayAdmissionBytes(const GraphicsTemplateInput* input, int width, int height);
+// The start and end points {x0, y0, x1, y1} of a linear gradient across `box`
+// (graphics styles P2), shared by both rasters. 90 and 180 degrees are the V1
+// horizontal and vertical forms, from the box's top-left corner exactly as V1
+// drew them; any other angle runs through the box centre, long enough that
+// the far corners project to 0 and 1 (CSS linear-gradient geometry).
+std::array<double, 4> linearGradientLine(const GraphicsGradient& gradient, const GraphicsBox& box);
 // A text node's textTransform ("uppercase" | "lowercase"; anything else returns
 // `text` unchanged). Simple one-to-one case mapping, identical on every
 // platform; the layout applies it before measuring (graphics styles P1).

@@ -31,6 +31,11 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   Neither spaces the ellipsis. Italic is `DWRITE_FONT_STYLE_ITALIC` and
   `CTFontCreateCopyWithSymbolicTraits(kCTFontItalicTrait)`; a family with no italic face is
   synthesized oblique on Windows and stays upright on the Mac, so packs ship their italic faces.
+  Gradients (P2): both rasters take the line from `graphics::linearGradientLine` (CSS angle; 90 and
+  180 return the V1 top-left points verbatim, so V1 horizontal/vertical output is byte-identical) and
+  N stops with D2D's defaults (gamma 2.2, clamp), which `CGGradient` with both extend options matches.
+  Radial is an ellipse of half the box: `CreateRadialGradientBrush(centre, 0 offset, w/2, h/2)` on
+  Windows, a circle of radius w/2 under a `(1, h/w)` CTM scale on the Mac.
 - **WIC never reports a corrupt PNG pixel stream (2026-11-27).** For a bad zlib header,
   a malformed deflate block, a truncated IDAT or a wrong Adler-32, the PNG decoder's
   `CopyPixels`, and therefore `CreateBitmapFromWicBitmap`, return `S_OK` with zeroed pixels.

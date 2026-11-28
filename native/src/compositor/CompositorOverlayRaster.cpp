@@ -563,14 +563,28 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
     }
     ComPtrLite<ID2D1SolidColorBrush> solid;
     ComPtrLite<ID2D1LinearGradientBrush> gradient;
+    ComPtrLite<ID2D1RadialGradientBrush> radial;
     ID2D1Brush* brush = nullptr;
     if (p.gradient) {
-      const D2D1_GRADIENT_STOP stops[] = {{0.f, d2dColorFromArgb(p.color)}, {1.f, d2dColorFromArgb(p.endColor)}};
+      // Graphics styles P2: N stops (gamma 2.2, clamp: D2D's defaults, which
+      // CoreTextOverlayRaster's CGGradient matches).
+      D2D1_GRADIENT_STOP stops[8];
+      const auto count = std::min<size_t>(p.gradient->stops.size(), 8);
+      for (size_t s = 0; s < count; ++s)
+        stops[s] = {float(p.gradient->stops[s].offset), d2dColorFromArgb(p.gradient->stops[s].color)};
       ComPtrLite<ID2D1GradientStopCollection> collection;
-      if (SUCCEEDED(target->CreateGradientStopCollection(stops, 2, collection.put())) &&
-          SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(
-              D2D1::Point2F(float(b.x), float(b.y)), D2D1::Point2F(float(b.x + (p.verticalGradient ? 0 : b.width)),
-              float(b.y + (p.verticalGradient ? b.height : 0)))), collection.get(), gradient.put()))) brush = gradient.get();
+      if (SUCCEEDED(target->CreateGradientStopCollection(stops, UINT32(count), collection.put()))) {
+        if (p.gradient->radial) {
+          const auto centre = D2D1::Point2F(float(b.x + b.width * p.gradient->centerX), float(b.y + b.height * p.gradient->centerY));
+          if (SUCCEEDED(target->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(centre, D2D1::Point2F(0, 0),
+                  float(b.width / 2), float(b.height / 2)), collection.get(), radial.put()))) brush = radial.get();
+        } else {
+          const auto line = graphics::linearGradientLine(*p.gradient, b);
+          if (SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(
+                  D2D1::Point2F(float(line[0]), float(line[1])), D2D1::Point2F(float(line[2]), float(line[3]))),
+                  collection.get(), gradient.put()))) brush = gradient.get();
+        }
+      }
     } else if (SUCCEEDED(target->CreateSolidColorBrush(d2dColorFromArgb(p.color), solid.put()))) brush = solid.get();
     if (!brush) complete = false;
     else {
