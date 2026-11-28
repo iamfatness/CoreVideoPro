@@ -1,5 +1,6 @@
 #include "graphics/GraphicsTextCoreText.h"
 #include "core/BoundedAsyncLog.h"
+#include "graphics/GraphicsPack.h"
 
 #if defined(__APPLE__)
 
@@ -13,6 +14,7 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string_view>
 
 namespace corevideo::graphics {
@@ -92,6 +94,38 @@ void registerBundledFonts() {
 
 void ensureRegistered() { std::call_once(gRegisterOnce, registerBundledFonts); }
 
+// Pack fonts (graphics styles P8): every present font file a pack under
+// graphicsPacksDirectory() declares, registered with process scope exactly as
+// the bundled faces are. Keyed on the pack registry's generation; a file is
+// registered once per process. Returns the generation registered.
+std::mutex gPackMutex;
+uint64_t gPackGeneration = 0;
+std::set<std::string> gPackPaths;
+uint64_t ensurePackFontsRegistered() {
+  const auto generation = graphicsPackFontsGeneration();
+  std::lock_guard lock(gPackMutex);
+  if (gPackGeneration == generation) return generation;
+  gPackGeneration = generation;
+  size_t faces = 0;
+  for (const auto& font : graphicsPackFonts()) {
+    if (!font.present) continue;
+    if (!gPackPaths.insert(font.path).second) { ++faces; continue; }
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+        kCFAllocatorDefault, reinterpret_cast<const UInt8*>(font.path.c_str()), CFIndex(font.path.size()), false);
+    if (!url) continue;
+    CFErrorRef error = nullptr;
+    if (CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &error)) ++faces;
+    else if (error) {
+      if (CFErrorGetCode(error) == kCTFontManagerErrorAlreadyRegistered) ++faces;
+      else core::nativeLogf("graphics pack fonts: could not register %s (pack %s)\n", font.path.c_str(), font.packId.c_str());
+      CFRelease(error);
+    }
+    CFRelease(url);
+  }
+  if (faces) core::nativeLogf("graphics pack fonts: registered %zu faces from %s\n", faces, graphicsPacksDirectory().c_str());
+  return generation;
+}
+
 bool familyInstalledUncached(const std::string& family) {
   CFStringRef name = createCfString(family);
   if (!name) return false;
@@ -117,10 +151,13 @@ bool familyInstalledUncached(const std::string& family) {
 bool familyInstalled(const std::string& family) {
   if (family.empty() || family.size() > 256) return false;
   ensureRegistered();
+  const auto generation = ensurePackFontsRegistered();
   static std::mutex mutex;
   static std::map<std::string, bool> known;
+  static uint64_t knownGeneration = 0;
   {
     std::lock_guard lock(mutex);
+    if (knownGeneration != generation) { known.clear(); knownGeneration = generation; }
     if (const auto found = known.find(family); found != known.end()) return found->second;
   }
   const bool installed = familyInstalledUncached(family);
@@ -212,11 +249,29 @@ ResolvedFontFamily resolveGraphicsFontFamily(const std::string& requested) {
     if (equalsIgnoringCase(row.requested, requested) && familyInstalled(std::string(row.macFamily)))
       return {std::string(row.macFamily), true, true, row.weight};
   }
+  // A pack font whose file is missing or did not register: the font's declared
+  // fallback (through the table above) with a warning, never a failure on air.
+  // Strict pack-font mode leaves it unavailable (tests).
+  if (const auto declared = graphicsPackFontDeclaration(requested)) {
+    const auto fallback = graphicsPackFontFallback(*declared);
+    if (!graphicsPackFontsStrict() && !equalsIgnoringCase(fallback, requested) && !graphicsPackFontDeclaration(fallback)) {
+      const auto substitute = resolveGraphicsFontFamily(fallback);
+      if (substitute.available) return {substitute.family, true, true, substitute.weight};
+    }
+  }
   return {kFallbackFontFamily, false, false, 0};
 }
 
 std::string graphicsFontSubstitutionWarning(const std::string& requested, const std::string& resolved) {
+  if (const auto declared = graphicsPackFontDeclaration(requested); declared && !familyInstalled(requested))
+    return graphicsPackFontSubstitutionWarning(requested, declared->packId, resolved);
   return "Font " + requested + " is not installed on this Mac; using " + resolved + ".";
+}
+
+std::string graphicsFontUnavailableMessage(const std::string& requested) {
+  if (const auto declared = graphicsPackFontDeclaration(requested); declared && graphicsPackFontsStrict())
+    return graphicsPackFontMissingError(requested, declared->packId);
+  return "Requested graphics font is unavailable: " + requested;
 }
 
 CTFontRef createGraphicsFont(const std::string& family, int weight, double size, bool italic) {

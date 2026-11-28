@@ -7078,6 +7078,12 @@ enum CoreLaunchEnvironment {
         } else if let fonts = paths.graphicsFontsDirectory {
             env["COREVIDEO_GRAPHICS_FONTS_DIR"] = fonts
         }
+        // Graphics style packs (pack fonts, templates): same installed-layout rule.
+        if let override = processEnvironment["COREVIDEO_GRAPHICS_PACKS_DIR"], !override.isEmpty {
+            env["COREVIDEO_GRAPHICS_PACKS_DIR"] = override
+        } else if let packs = paths.graphicsPacksDirectory {
+            env["COREVIDEO_GRAPHICS_PACKS_DIR"] = packs
+        }
         // Streaming helpers (mac streaming Phase 2): the same pkg layout means
         // nothing sits beside the core, so name the bundle's corevideo-child-guard
         // and the directory of its LGPL ffmpeg (an operator's own
@@ -7099,6 +7105,9 @@ enum ShellPaths {
         /// looks beside its own executable, which the pkg-installed copy in
         /// /Library has not got, so the launch names this folder explicitly.
         var graphicsFontsDirectory: String?
+        /// The app's built-in graphics style packs (packs/<id>/, graphics styles
+        /// 6.2): the same pkg layout rule as the fonts, so the launch names it.
+        var graphicsPacksDirectory: String?
         /// corevideo-child-guard and the directory holding the bundled ffmpeg,
         /// in the app's Resources (mac streaming Phase 2). The pkg runs the core
         /// from /Library/Application Support, where neither sits beside it.
@@ -7155,6 +7164,7 @@ enum ShellPaths {
             FileManager.default.isExecutableFile(atPath: $0)
         }
         paths.graphicsFontsDirectory = graphicsFontsDirectory(bundleResources: bundleResources, repoRoot: repoRoot())
+        paths.graphicsPacksDirectory = graphicsPacksDirectory(bundleResources: bundleResources, repoRoot: repoRoot())
         var helpers = streamingHelpers(resources: bundleResources) {
             FileManager.default.isExecutableFile(atPath: $0)
         }
@@ -7171,6 +7181,14 @@ enum ShellPaths {
     /// The app's GraphicsFonts folder, else a dev build's (run-mac-shell.sh).
     static func graphicsFontsDirectory(bundleResources: String, repoRoot: String) -> String? {
         [bundleResources + "/GraphicsFonts", repoRoot + "/native/build-metal/GraphicsFonts"].first {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: $0, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+    }
+
+    /// The app's packs folder, else a dev build's (CMake copies packs/ there).
+    static func graphicsPacksDirectory(bundleResources: String, repoRoot: String) -> String? {
+        [bundleResources + "/packs", repoRoot + "/native/build-metal/packs"].first {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: $0, isDirectory: &isDirectory) && isDirectory.boolValue
         }

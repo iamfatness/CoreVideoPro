@@ -301,6 +301,9 @@ Rules:
 - Each template has a **parity fixture**. The pack builds into the golden suite, so a pack can't ship
   if it renders differently on Mac and Windows beyond tolerance.
 - Packs are core data. The Windows and Mac shells get them with no shell code.
+- **Built (slice 7, 2026-11-28):** format, lint, `graphics-template-install {packRoot}`, P8 private
+  font collection on Windows, Mac pack-font registration and the first News piece. How it works and
+  what is still open: `docs/reference/graphics-packs.md`.
 
 ### 6.3 The launch packs
 

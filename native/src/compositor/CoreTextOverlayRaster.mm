@@ -389,7 +389,7 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
                       std::string& warning) {
   const auto resolved = graphics::resolveGraphicsFontFamily(p.font);
   if (!resolved.available) {
-    warning = "Requested graphics font is unavailable: " + p.font;
+    warning = graphics::graphicsFontUnavailableMessage(p.font);
     return false;
   }
   if (resolved.substituted && warning.empty())

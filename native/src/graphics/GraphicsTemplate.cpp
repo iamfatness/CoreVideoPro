@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <dwrite_1.h>
 #include "compositor/ComPtrLite.h"
+#include "graphics/GraphicsFontsDirectWrite.h"
 #elif !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL
 #include "graphics/GraphicsTextCoreText.h"
 #endif
@@ -255,12 +256,16 @@ TextSize measureText(const std::string& text, const std::string& font, double si
   thread_local ComPtrLite<IDWriteFactory> factory;
   if (!factory) DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
       reinterpret_cast<IUnknown**>(factory.put()));
-  const auto family = widen(font), value = widen(text);
+  // The raster's own resolution (system, pack collection, missing pack font's
+  // fallback), so layout measures the face that draws. Unresolved families
+  // keep DirectWrite's system default, as before packs.
+  auto resolved = resolveDirectWriteGraphicsFont(factory.get(), font);
+  const auto family = resolved.available() ? resolved.family : widen(font), value = widen(text);
   ComPtrLite<IDWriteTextFormat> format;
   ComPtrLite<IDWriteTextLayout> layout;
   DWRITE_TEXT_METRICS metrics{};
   if (factory && !family.empty() && !value.empty() &&
-      SUCCEEDED(factory->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT(weight),
+      SUCCEEDED(factory->CreateTextFormat(family.c_str(), resolved.collection.get(), DWRITE_FONT_WEIGHT(weight),
           style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
           float(size), L"", format.put())) &&
       SUCCEEDED(format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP)) &&
@@ -620,7 +625,9 @@ class Layout {
   bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}, int unit = -1, double plateWidth = 0, bool fitChildren = false) {
     need(depth <= 8 && ++nodes_ <= 64, "template-layer-limit");
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
-    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations", "loop"};
+    // "fixed": true marks a pack layer's raw hex colours as deliberate (a white
+    // LIVE dot); only the pack lint reads it (GraphicsPack.cpp), drawing ignores it.
+    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations", "loop", "fixed"};
     if (type == "group") allowed.insert({"children", "flow", "gap", "padding", "minWidth", "maxWidth"});
     else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth", "shape", "points", "skewX", "shadow", "backdrop"});
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth", "shadow"});

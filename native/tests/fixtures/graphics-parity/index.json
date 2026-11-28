@@ -191,6 +191,20 @@
    "source": "manifest:shapes-polygon-skew-shadow.json",
    "fields": {},
    "brand": {}
+  },
+  {
+   "name": "pack-news-signal-anchor",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/anchor.json",
+   "fields": {
+    "name": "Jordan Ellis",
+    "title": "Senior Correspondent"
+   },
+   "brand": {
+    "brand.primary": "#0B1F3A",
+    "brand.secondary": "#13315C",
+    "brand.accent": "#E63946",
+    "brand.onPrimary": "#FFFFFF"
+   }
   }
  ]
 }

@@ -6,9 +6,11 @@
 // and CoreTextOverlayRaster's drawing cannot disagree.
 //
 // Font policy (owner decision 2026-11-21): resolution order is (1) the family
-// installed in the system or process-registered collection, (2) the fixed
-// substitution table (Segoe UI -> bundled Selawik; Bahnschrift, Cambria,
-// Consolas -> system families), (3) unavailable. A TABLE substitution warns and
+// installed in the system or process-registered collection (bundled faces and
+// every pack font, GraphicsPack.h), (2) the fixed substitution table (Segoe UI
+// -> bundled Selawik; Bahnschrift, Cambria, Consolas -> system families),
+// (3) a pack-declared family whose file is missing: its fallback with a
+// warning, unless strict pack-font mode, (4) unavailable. A TABLE substitution warns and
 // never fails, strict mode included. Core Text's own automatic fallback is never
 // used for the primary family, so a document always resolves the same way.
 //
@@ -38,7 +40,12 @@ struct ResolvedFontFamily {
 };
 
 ResolvedFontFamily resolveGraphicsFontFamily(const std::string& requested);
+// A pack font (GraphicsPack.h) that is missing words the warning with its pack.
 std::string graphicsFontSubstitutionWarning(const std::string& requested, const std::string& resolved);
+// The preparation failure for an unavailable family: "Requested graphics font
+// is unavailable: <family>", or graphicsPackFontMissingError for a missing pack
+// font in strict pack-font mode.
+std::string graphicsFontUnavailableMessage(const std::string& requested);
 std::string graphicsFontsDirectory();
 size_t registeredBundledGraphicsFonts();
 // "graphics fonts: registered N faces from <dir>", or "graphics fonts: none

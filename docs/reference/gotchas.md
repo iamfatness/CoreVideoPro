@@ -54,6 +54,12 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   composites them 1:1 in device pixels inside `shadowClip`. The shadow paints outside the box, so
   `planRuns` adds `shadowClip` to the run's source or an atlas slice would cut it off, and the parity
   layout judges `shadowClip` as its own tier 1 region (`<id>.shadow`).
+  Pack fonts (graphics styles P8, 2026-11-28): graphics text resolves a family through ONE function
+  per platform (`resolveDirectWriteGraphicsFont` / `resolveGraphicsFontFamily`), used by measurement
+  AND the raster. Never call `CreateTextFormat(family, nullptr, ...)` for graphics text again: a pack
+  font is only in the private collection, so a null (system) collection measures a fallback face
+  while the raster draws the pack face and every line break moves. System families still resolve
+  from the system collection first, so existing graphics are unchanged. See `graphics-packs.md`.
 - **WIC never reports a corrupt PNG pixel stream (2026-11-27).** For a bad zlib header,
   a malformed deflate block, a truncated IDAT or a wrong Adler-32, the PNG decoder's
   `CopyPixels`, and therefore `CreateBitmapFromWicBitmap`, return `S_OK` with zeroed pixels.
