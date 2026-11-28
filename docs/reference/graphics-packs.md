@@ -24,10 +24,9 @@ packs/<id>/
   `brand.accent`, `brand.onPrimary`, `brand.onSecondary`, `brand.onAccent`, `brand.surface`);
   `brand.teamA`/`brand.teamB` and the older colour tokens (`brand.onPrimaryMuted`, `brand.background`,
   `brand.foreground`) are optional. Values are exactly `#RRGGBBAA`.
-- Templates may only use template tokens that exist on `main` today. Until slice 1 (#1271) adds
-  `brand.onSecondary`/`onAccent`/`surface` to the template token set, a pack template cannot reference
-  them (the loader refuses the template). The News anchor therefore uses `brand.onPrimary` for its
-  title; switch to `brand.onSecondary` when slice 1 merges.
+- Templates may only use template tokens that exist on `main`. Slice 1 (#1271) added
+  `brand.onSecondary`/`onAccent`/`surface`; the News anchor's title on the secondary bar uses
+  `brand.onSecondary`.
 - Packs are core data: no shell code. Built-in packs ride beside the core in `packs/`.
 
 ## The pack lint (CI)

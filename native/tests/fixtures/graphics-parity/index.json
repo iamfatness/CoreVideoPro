@@ -203,7 +203,8 @@
     "brand.primary": "#0B1F3A",
     "brand.secondary": "#13315C",
     "brand.accent": "#E63946",
-    "brand.onPrimary": "#FFFFFF"
+    "brand.onPrimary": "#FFFFFF",
+    "brand.onSecondary": "#D8E2F0"
    }
   },
   {
