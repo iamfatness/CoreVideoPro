@@ -1,0 +1,149 @@
+{
+ "schemaVersion": 1,
+ "templateId": "worship-grace-lower-third",
+ "templateVersion": 1,
+ "name": "Worship Grace lower third",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1200,
+  "height": 140
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Pastor Grace Mwangi",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "wash",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1200,
+   "height": 140,
+   "fill": {
+    "type": "linear",
+    "angle": 180,
+    "stops": [
+     {
+      "color": {
+       "token": "brand.surface"
+      },
+      "offset": 0
+     },
+     {
+      "color": {
+       "token": "brand.primary"
+      },
+      "offset": 0.55
+     },
+     {
+      "color": {
+       "token": "brand.primary"
+      },
+      "offset": 1
+     }
+    ]
+   }
+  },
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 80,
+   "y": 104,
+   "width": 360,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 0,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 80,
+   "y": 30,
+   "width": 1040,
+   "height": 70,
+   "text": {
+    "field": "name"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 56,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 800,
+   "easing": "ease-in-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 560,
+   "easing": "ease-in-out"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "worship-grace",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

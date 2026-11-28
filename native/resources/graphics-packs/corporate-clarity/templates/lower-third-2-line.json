@@ -1,0 +1,177 @@
+{
+ "schemaVersion": 1,
+ "templateId": "corporate-clarity-lower-third-2-line",
+ "templateVersion": 1,
+ "name": "Corporate Clarity two-line",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1076,
+  "height": 226
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Ada Otieno",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "title",
+   "type": "string",
+   "default": "Head of Engineering, Northwind",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 48,
+   "y": 48,
+   "width": 980,
+   "height": 130,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 8,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "dx": 0,
+    "dy": 8,
+    "blur": 24,
+    "spread": 0
+   }
+  },
+  {
+   "id": "strip",
+   "type": "rect",
+   "x": 72,
+   "y": 70,
+   "width": 6,
+   "height": 86,
+   "fill": {
+    "token": "brand.accent"
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 100,
+   "y": 64,
+   "width": 900,
+   "height": 56,
+   "text": {
+    "field": "name"
+   },
+   "font": "Montserrat",
+   "fontSize": 42,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "stagger": {
+    "by": "word",
+    "ms": 80
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 8
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "title-text",
+   "type": "text",
+   "x": 100,
+   "y": 122,
+   "width": 900,
+   "height": 38,
+   "text": {
+    "field": "title"
+   },
+   "font": "Montserrat",
+   "fontSize": 26,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "collapseWhenEmpty": true,
+   "stagger": {
+    "by": "word",
+    "ms": 80
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 230,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 8
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "slide",
+   "direction": "left",
+   "durationMs": 450,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 300,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 48,
+  "y": -16,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "corporate-clarity",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

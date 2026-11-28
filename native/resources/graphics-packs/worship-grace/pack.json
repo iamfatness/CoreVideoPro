@@ -1,0 +1,63 @@
+{
+ "id": "worship-grace",
+ "name": "Worship: Grace",
+ "genre": "worship",
+ "version": "1.0.0",
+ "palettes": [
+  "palettes/warm.json",
+  "palettes/midnight.json",
+  "palettes/light.json"
+ ],
+ "fonts": [
+  {
+   "family": "Cormorant Garamond",
+   "file": "fonts/CormorantGaramond-Regular.ttf",
+   "weight": 400,
+   "style": "normal",
+   "fallback": "Georgia"
+  },
+  {
+   "family": "Cormorant Garamond",
+   "file": "fonts/CormorantGaramond-Italic.ttf",
+   "weight": 400,
+   "style": "italic",
+   "fallback": "Georgia"
+  },
+  {
+   "family": "Cormorant Garamond",
+   "file": "fonts/CormorantGaramond-SemiBold.ttf",
+   "weight": 600,
+   "style": "normal",
+   "fallback": "Georgia"
+  },
+  {
+   "family": "Montserrat",
+   "file": "fonts/Montserrat-Regular.ttf",
+   "weight": 400,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Montserrat",
+   "file": "fonts/Montserrat-Medium.ttf",
+   "weight": 500,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  }
+ ],
+ "templates": [
+  "templates/lower-third.json",
+  "templates/lower-third-2-line.json",
+  "templates/name-tag.json",
+  "templates/title.json",
+  "templates/bug.json",
+  "templates/scripture.json",
+  "templates/lyrics.json",
+  "templates/glass-lower-third.json"
+ ],
+ "metadata": {
+  "status": "Wave 1 (graphics styles slice 10).",
+  "defaultPalette": "palettes/warm.json",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

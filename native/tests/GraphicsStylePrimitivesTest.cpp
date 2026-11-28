@@ -216,6 +216,25 @@ TEST(GraphicsStylePrimitives, GradientLimitsAreEnforced) {
   EXPECT_EQ("template-color-required", resolveOne(rect(M{{"type", "linear"}, {"stops", Json::Array{"red", "#000000"}}}), drawing));
 }
 
+// A crawl sets its own weight (slice 10 ticker skins); 400 when absent.
+TEST(GraphicsStylePrimitives, CrawlTakesATextWeight) {
+  const auto crawl = [](Json weight) {
+    std::string error;
+    M node{{"id", "c"}, {"type", "crawl"}, {"x", 0}, {"y", 0}, {"width", 700}, {"height", 50},
+           {"items", M{{"field", "items"}}}, {"font", "Arial"}, {"fontSize", 30}, {"color", "#FFFFFF"}};
+    if (!weight.isNull()) node["fontWeight"] = weight;
+    auto doc = Json::parse(document(Json::Array{Json(node)}))->asObject();
+    doc["fields"] = Json::Array{M{{"id", "items"}, {"type", "string"}, {"default", "[\"One\",\"Two\"]"}, {"maxLength", 4096}}};
+    const auto definition = GraphicsTemplate::load(Json(doc).stringify(), error);
+    GraphicsDrawing drawing;
+    if (!definition || !definition->resolve(definition->defaultFields(), M{}, drawing, error)) return std::make_pair(error, 0);
+    return std::make_pair(std::string(), drawing.primitives.front().fontWeight);
+  };
+  EXPECT_EQ(400, crawl(Json()).second);
+  EXPECT_EQ(600, crawl(Json(600)).second);
+  EXPECT_EQ("template-font-weight", crawl(Json(450)).first);
+}
+
 // ── P3: polygon and skewed plates ────────────────────────────────────────────
 
 M plate(M extra) {

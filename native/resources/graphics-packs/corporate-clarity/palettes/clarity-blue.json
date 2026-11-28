@@ -1,0 +1,10 @@
+{
+ "brand.primary": "#FFFFFFFF",
+ "brand.secondary": "#1F4E8CFF",
+ "brand.accent": "#1F6FEBFF",
+ "brand.surface": "#0B1F3A40",
+ "brand.onPrimary": "#14213DFF",
+ "brand.onPrimaryMuted": "#5A6578FF",
+ "brand.onSecondary": "#FFFFFFFF",
+ "brand.onAccent": "#FFFFFFFF"
+}

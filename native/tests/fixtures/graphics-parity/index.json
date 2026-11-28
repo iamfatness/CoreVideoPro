@@ -203,8 +203,602 @@
     "brand.primary": "#0B1F3A",
     "brand.secondary": "#13315C",
     "brand.accent": "#E63946",
-    "brand.onPrimary": "#FFFFFF"
+    "brand.onPrimary": "#FFFFFF",
+    "brand.onSecondary": "#D8E2F0"
    }
+  },
+  {
+   "name": "pack-news-signal-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0B1F3AFF",
+    "brand.accent": "#E63946FF",
+    "brand.surface": "#0A0F18B3",
+    "brand.onPrimary": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-news-signal-lower-third-2-line",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/lower-third-2-line.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0B1F3AFF",
+    "brand.secondary": "#13315CFF",
+    "brand.accent": "#E63946FF",
+    "brand.surface": "#0A0F18B3",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#D8E2F0FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-news-signal-name-tag",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/name-tag.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0B1F3AFF",
+    "brand.secondary": "#13315CFF",
+    "brand.accent": "#E63946FF",
+    "brand.surface": "#0A0F18B3",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#D8E2F0FF",
+    "brand.onAccent": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-news-signal-title",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/title.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0B1F3AFF",
+    "brand.secondary": "#13315CFF",
+    "brand.accent": "#E63946FF",
+    "brand.surface": "#0A0F18B3",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#D8E2F0FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-news-signal-bug",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/bug.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0B1F3AFF",
+    "brand.accent": "#E63946FF",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onAccent": "#FFFFFFFF"
+   }
+  },
+  {
+   "name": "pack-news-signal-clock-bug",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/clock-bug.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0B1F3AFF",
+    "brand.accent": "#E63946FF",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onPrimaryMuted": "#C9D3E2FF"
+   }
+  },
+  {
+   "name": "pack-news-signal-ticker",
+   "source": "manifest:../../../resources/graphics-packs/news-signal/templates/ticker.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#E63946FF",
+    "brand.surface": "#0A0F18B3",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onAccent": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-sports-kinetic-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/sports-kinetic/templates/lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.surface": "#101216F2",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.teamA": "#C8102EFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-sports-kinetic-lower-third-2-line",
+   "source": "manifest:../../../resources/graphics-packs/sports-kinetic/templates/lower-third-2-line.json",
+   "fields": {},
+   "brand": {
+    "brand.surface": "#101216F2",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#FFFFFFFF",
+    "brand.teamA": "#C8102EFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-sports-kinetic-name-tag",
+   "source": "manifest:../../../resources/graphics-packs/sports-kinetic/templates/name-tag.json",
+   "fields": {},
+   "brand": {
+    "brand.secondary": "#2A2F38FF",
+    "brand.surface": "#101216F2",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#FFFFFFFF",
+    "brand.teamA": "#C8102EFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-sports-kinetic-title",
+   "source": "manifest:../../../resources/graphics-packs/sports-kinetic/templates/title.json",
+   "fields": {},
+   "brand": {
+    "brand.surface": "#101216F2",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#FFFFFFFF",
+    "brand.teamA": "#C8102EFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-sports-kinetic-bug",
+   "source": "manifest:../../../resources/graphics-packs/sports-kinetic/templates/bug.json",
+   "fields": {},
+   "brand": {
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.teamA": "#C8102EFF"
+   }
+  },
+  {
+   "name": "pack-sports-kinetic-score-bug",
+   "source": "manifest:../../../resources/graphics-packs/sports-kinetic/templates/score-bug.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#14171CFF",
+    "brand.surface": "#101216F2",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onPrimaryMuted": "#D8DCE3FF",
+    "brand.onSecondary": "#FFFFFFFF",
+    "brand.teamA": "#C8102EFF",
+    "brand.teamB": "#1D428AFF"
+   }
+  },
+  {
+   "name": "pack-sports-kinetic-stat-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/sports-kinetic/templates/stat-lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#FFC72CFF",
+    "brand.surface": "#101216F2",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#FFFFFFFF",
+    "brand.teamA": "#C8102EFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.surface": "#2B1A1200",
+    "brand.onPrimary": "#FFF8EEFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-lower-third-2-line",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/lower-third-2-line.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.surface": "#2B1A1200",
+    "brand.onPrimary": "#FFF8EEFF",
+    "brand.onPrimaryMuted": "#E8D9C3FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-name-tag",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/name-tag.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.surface": "#2B1A1200",
+    "brand.onPrimary": "#FFF8EEFF",
+    "brand.onPrimaryMuted": "#E8D9C3FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-title",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/title.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.surface": "#2B1A1200",
+    "brand.onPrimary": "#FFF8EEFF",
+    "brand.onPrimaryMuted": "#E8D9C3FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-bug",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/bug.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.onPrimary": "#FFF8EEFF"
+   }
+  },
+  {
+   "name": "pack-worship-grace-scripture",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/scripture.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.surface": "#2B1A1200",
+    "brand.onPrimary": "#FFF8EEFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-lyrics",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/lyrics.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.onPrimary": "#FFF8EEFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-lower-third-2-line",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/lower-third-2-line.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF",
+    "brand.onPrimaryMuted": "#5A6578FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-name-tag",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/name-tag.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF",
+    "brand.onPrimaryMuted": "#5A6578FF",
+    "brand.onAccent": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-title",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/title.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF",
+    "brand.onPrimaryMuted": "#5A6578FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-bug",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/bug.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF"
+   }
+  },
+  {
+   "name": "pack-corporate-clarity-webinar-title",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/webinar-title.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF",
+    "brand.onPrimaryMuted": "#5A6578FF",
+    "brand.onAccent": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-speaker-company",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/speaker-company.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.secondary": "#1F4E8CFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF",
+    "brand.onPrimaryMuted": "#5A6578FF",
+    "brand.onSecondary": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-esports-neon-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/esports-neon/templates/lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0A0D14F2",
+    "brand.accent": "#22E5FFFF",
+    "brand.onPrimary": "#F2F7FFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-esports-neon-lower-third-2-line",
+   "source": "manifest:../../../resources/graphics-packs/esports-neon/templates/lower-third-2-line.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0A0D14F2",
+    "brand.accent": "#22E5FFFF",
+    "brand.onPrimary": "#F2F7FFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-esports-neon-name-tag",
+   "source": "manifest:../../../resources/graphics-packs/esports-neon/templates/name-tag.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0A0D14F2",
+    "brand.accent": "#22E5FFFF",
+    "brand.onPrimary": "#F2F7FFFF",
+    "brand.onAccent": "#05070BFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-esports-neon-title",
+   "source": "manifest:../../../resources/graphics-packs/esports-neon/templates/title.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0A0D14F2",
+    "brand.accent": "#22E5FFFF",
+    "brand.onPrimary": "#F2F7FFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-esports-neon-bug",
+   "source": "manifest:../../../resources/graphics-packs/esports-neon/templates/bug.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0A0D14F2",
+    "brand.accent": "#22E5FFFF",
+    "brand.onPrimary": "#F2F7FFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-esports-neon-player-card",
+   "source": "manifest:../../../resources/graphics-packs/esports-neon/templates/player-card.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0A0D14F2",
+    "brand.accent": "#22E5FFFF",
+    "brand.onPrimary": "#F2F7FFFF",
+    "brand.onPrimaryMuted": "#9AA7BDFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-esports-neon-caster-duo",
+   "source": "manifest:../../../resources/graphics-packs/esports-neon/templates/caster-duo.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#0A0D14F2",
+    "brand.accent": "#22E5FFFF",
+    "brand.onPrimary": "#F2F7FFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-talk-studio-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/talk-studio/templates/lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#1E1B2EFF",
+    "brand.onPrimary": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-talk-studio-lower-third-2-line",
+   "source": "manifest:../../../resources/graphics-packs/talk-studio/templates/lower-third-2-line.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#1E1B2EFF",
+    "brand.secondary": "#FF6F59FF",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-talk-studio-name-handle",
+   "source": "manifest:../../../resources/graphics-packs/talk-studio/templates/name-handle.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#1E1B2EFF",
+    "brand.secondary": "#FF6F59FF",
+    "brand.accent": "#FFD166FF",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#FFFFFFFF",
+    "brand.onAccent": "#1E1B2EFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-talk-studio-title",
+   "source": "manifest:../../../resources/graphics-packs/talk-studio/templates/title.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#1E1B2EFF",
+    "brand.secondary": "#FF6F59FF",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onSecondary": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-talk-studio-bug",
+   "source": "manifest:../../../resources/graphics-packs/talk-studio/templates/bug.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#1E1B2EFF",
+    "brand.accent": "#FFD166FF",
+    "brand.onPrimary": "#FFFFFFFF"
+   }
+  },
+  {
+   "name": "pack-talk-studio-up-next",
+   "source": "manifest:../../../resources/graphics-packs/talk-studio/templates/up-next.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#1E1B2EFF",
+    "brand.accent": "#FFD166FF",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onPrimaryMuted": "#C9C5DAFF",
+    "brand.onAccent": "#1E1B2EFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-minimal-line-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/minimal-line/templates/lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#FFFFFFFF",
+    "brand.surface": "#00000099",
+    "brand.onPrimary": "#FFFFFFFF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-minimal-line-lower-third-2-line",
+   "source": "manifest:../../../resources/graphics-packs/minimal-line/templates/lower-third-2-line.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#FFFFFFFF",
+    "brand.surface": "#00000099",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onPrimaryMuted": "#D9D9D9FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-minimal-line-name-tag",
+   "source": "manifest:../../../resources/graphics-packs/minimal-line/templates/name-tag.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#FFFFFFFF",
+    "brand.surface": "#00000099",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onPrimaryMuted": "#D9D9D9FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-minimal-line-title",
+   "source": "manifest:../../../resources/graphics-packs/minimal-line/templates/title.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#FFFFFFFF",
+    "brand.surface": "#00000099",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onPrimaryMuted": "#D9D9D9FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-minimal-line-bug",
+   "source": "manifest:../../../resources/graphics-packs/minimal-line/templates/bug.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#FFFFFFFF",
+    "brand.surface": "#00000099",
+    "brand.onPrimary": "#FFFFFFFF"
+   }
+  },
+  {
+   "name": "pack-minimal-line-quote",
+   "source": "manifest:../../../resources/graphics-packs/minimal-line/templates/quote.json",
+   "fields": {},
+   "brand": {
+    "brand.accent": "#FFFFFFFF",
+    "brand.surface": "#00000099",
+    "brand.onPrimary": "#FFFFFFFF",
+    "brand.onPrimaryMuted": "#D9D9D9FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-glass-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/glass-lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.surface": "#2B1A1200",
+    "brand.onPrimary": "#FFF8EEFF",
+    "brand.onPrimaryMuted": "#E8D9C3FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-glass-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/glass-lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF",
+    "brand.onPrimaryMuted": "#5A6578FF"
+   },
+   "atlas": true
   }
  ]
 }

@@ -1,0 +1,273 @@
+{
+ "schemaVersion": 1,
+ "templateId": "esports-neon-lower-third",
+ "templateVersion": 1,
+ "name": "Esports Neon lower third",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 948,
+  "height": 144
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "NOVA",
+   "bindable": true,
+   "maxLength": 64,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "frame",
+   "type": "rect",
+   "x": 24,
+   "y": 24,
+   "width": 900,
+   "height": 96,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "shape": "polygon",
+   "points": [
+    [
+     0.0256,
+     0
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     0.76
+    ],
+    [
+     0.9744,
+     1
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     0,
+     0.24
+    ]
+   ],
+   "shadow": {
+    "color": {
+     "token": "brand.accent"
+    },
+    "blur": 14,
+    "spread": 1
+   },
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "scanlines",
+   "type": "group",
+   "x": 34,
+   "y": 32,
+   "width": 880,
+   "height": 80,
+   "children": [
+    {
+     "id": "scan-0",
+     "type": "rect",
+     "x": 0,
+     "y": 0,
+     "width": 880,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-1",
+     "type": "rect",
+     "x": 0,
+     "y": 13,
+     "width": 880,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-2",
+     "type": "rect",
+     "x": 0,
+     "y": 27,
+     "width": 880,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-3",
+     "type": "rect",
+     "x": 0,
+     "y": 40,
+     "width": 880,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-4",
+     "type": "rect",
+     "x": 0,
+     "y": 53,
+     "width": 880,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    },
+    {
+     "id": "scan-5",
+     "type": "rect",
+     "x": 0,
+     "y": 67,
+     "width": 880,
+     "height": 1,
+     "fill": {
+      "token": "brand.onPrimary"
+     },
+     "opacity": 0.07
+    }
+   ],
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 80,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "accent-bar",
+   "type": "rect",
+   "x": 48,
+   "y": 44,
+   "width": 6,
+   "height": 56,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "loop": {
+    "type": "pulse",
+    "periodMs": 1600
+   },
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 160,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 74,
+   "y": 40,
+   "width": 820,
+   "height": 64,
+   "text": {
+    "field": "name"
+   },
+   "font": "Chakra Petch",
+   "fontSize": 52,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.08,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 180,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 72,
+  "y": -40,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "esports-neon",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

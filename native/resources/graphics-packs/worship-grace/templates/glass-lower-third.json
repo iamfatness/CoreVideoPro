@@ -1,0 +1,191 @@
+{
+ "schemaVersion": 1,
+ "templateId": "worship-grace-glass-lower-third",
+ "templateVersion": 1,
+ "name": "Worship Grace glass lower third",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1100,
+  "height": 170
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Pastor Grace Mwangi",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "title",
+   "type": "string",
+   "default": "Lead Pastor",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "glass",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1100,
+   "height": 170,
+   "fill": {
+    "token": "brand.surface"
+   },
+   "cornerRadius": 16,
+   "backdrop": {
+    "blur": 24
+   }
+  },
+  {
+   "id": "veil",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1100,
+   "height": 170,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 16,
+   "opacity": 0.4
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 48,
+   "y": 22,
+   "width": 1004,
+   "height": 70,
+   "text": {
+    "field": "name"
+   },
+   "font": "Cormorant Garamond",
+   "fontSize": 56,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 48,
+   "y": 100,
+   "width": 300,
+   "height": 2,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 0,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  },
+  {
+   "id": "title-text",
+   "type": "text",
+   "x": 48,
+   "y": 114,
+   "width": 1004,
+   "height": 38,
+   "text": {
+    "field": "title"
+   },
+   "font": "Montserrat",
+   "fontSize": 26,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.12,
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 300,
+     "durationMs": 800,
+     "easing": "ease-in-out",
+     "distance": 6
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-in-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 800,
+   "easing": "ease-in-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 560,
+   "easing": "ease-in-out"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "worship-grace",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

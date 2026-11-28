@@ -1,0 +1,227 @@
+{
+ "schemaVersion": 1,
+ "templateId": "talk-studio-up-next",
+ "templateVersion": 1,
+ "name": "Talk Studio up next",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1000,
+  "height": 150
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onAccent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "label",
+   "type": "string",
+   "default": "Up next",
+   "bindable": true,
+   "maxLength": 32
+  },
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Dr. Lena Park",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "topic",
+   "type": "string",
+   "default": "Why sleep is the new diet",
+   "bindable": true,
+   "maxLength": 256
+  }
+ ],
+ "layers": [
+  {
+   "id": "label-pill",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 220,
+   "height": 56,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "cornerRadius": 28.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 0,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "name-pill",
+   "type": "rect",
+   "x": 0,
+   "y": 62,
+   "width": 1000,
+   "height": 88,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 44.0,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 90,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "label-text",
+   "type": "text",
+   "x": 0,
+   "y": 10,
+   "width": 220,
+   "height": 36,
+   "text": {
+    "field": "label"
+   },
+   "font": "Poppins",
+   "fontSize": 24,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onAccent"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.08,
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 90,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 40,
+   "y": 70,
+   "width": 560,
+   "height": 56,
+   "text": {
+    "field": "name"
+   },
+   "font": "Poppins",
+   "fontSize": 38,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 180,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "topic-text",
+   "type": "text",
+   "x": 600,
+   "y": 82,
+   "width": 370,
+   "height": 40,
+   "text": {
+    "field": "topic"
+   },
+   "font": "Poppins",
+   "fontSize": 24,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "right",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "animations": {
+    "in": {
+     "type": "pop",
+     "startMs": 180,
+     "durationMs": 400,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "talk-studio",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

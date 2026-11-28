@@ -1,0 +1,186 @@
+{
+ "schemaVersion": 1,
+ "templateId": "minimal-line-quote",
+ "templateVersion": 1,
+ "name": "Minimal Line quote",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1400,
+  "height": 340
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "quote",
+   "type": "string",
+   "default": "Simplicity is not the absence of clutter; it is the presence of clarity.",
+   "bindable": true,
+   "maxLength": 1024,
+   "required": true
+  },
+  {
+   "id": "attribution",
+   "type": "string",
+   "default": "Ada Otieno",
+   "bindable": true,
+   "maxLength": 128
+  }
+ ],
+ "layers": [
+  {
+   "id": "rule",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 2,
+   "height": 340,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  },
+  {
+   "id": "quote-text",
+   "type": "text",
+   "x": 48,
+   "y": 10,
+   "width": 1340,
+   "height": 230,
+   "text": {
+    "field": "quote"
+   },
+   "font": "Inter",
+   "fontSize": 48,
+   "fontWeight": 400,
+   "lineHeight": 1.3,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 3,
+   "overflow": "wrap-then-ellipsis",
+   "fontStyle": "italic",
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 100,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  },
+  {
+   "id": "attribution-text",
+   "type": "text",
+   "x": 48,
+   "y": 274,
+   "width": 1340,
+   "height": 40,
+   "text": {
+    "field": "attribution"
+   },
+   "font": "Inter",
+   "fontSize": 22,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.3,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "x": 0,
+    "y": 2,
+    "blur": 6
+   },
+   "animations": {
+    "in": {
+     "type": "reveal",
+     "startMs": 200,
+     "durationMs": 500,
+     "easing": "quint-out",
+     "direction": "left",
+     "feather": 64
+    },
+    "out": {
+     "type": "reveal",
+     "startMs": 0,
+     "durationMs": 350,
+     "easing": "ease-in",
+     "direction": "left",
+     "feather": 64
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "minimal-line",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

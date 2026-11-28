@@ -372,17 +372,39 @@ constexpr double kWindowsTextGrayscaleContrast = 1.0;
 // form DirectWrite applies to grayscale glyph coverage. Fitted check against
 // the G4 reference (2026-11-27): with k = 1 the text-only fixtures' summed
 // alpha moves from 8-10% under Windows to 2-3.4% under.
-const std::array<uint8_t, 256>& windowsTextCoverageCurve() {
-  static const std::array<uint8_t, 256> curve = [] {
-    std::array<uint8_t, 256> out{};
-    constexpr double k = kWindowsTextGrayscaleContrast;
-    for (int i = 0; i < 256; ++i) {
-      const double a = i / 255.0;
-      out[size_t(i)] = uint8_t(std::lround(255.0 * a * (k + 1) / (a * k + 1)));
+//
+// Very dark text gets a lower k (slice 10, 2026-11-28). D2D's grayscale
+// alpha correction follows the brush: drawn alone on Windows (build 26300,
+// Arial 700 28 px + Georgia 26 px), black glyphs carry 0.876 of the white
+// alpha and #14213D 0.900, which fits k = -0.54 and -0.41 against the white
+// curve. On the parity fixtures, where text sits on an opaque plate, that
+// holds for near-black text (#05070B, #14213D, #1E1B2E on light plates read
+// 8-14% heavy on the Mac with k = 1 and pass with these k), while mid and light
+// text (#5A6578, #D8DCE3 and every earlier fixture) matches k = 1 and reads
+// 8-10% light with k near 0. #5A6578 (luma 0.39) sits between: +8.8% with
+// k = 1 and -9.6% with k = 0 on the webinar card. So k rises from the two
+// measured dark points to 1 at luma 0.45.
+double windowsTextContrastForColor(uint32_t argb) {
+  const double r = ((argb >> 16) & 0xff) / 255.0, g = ((argb >> 8) & 0xff) / 255.0, b = (argb & 0xff) / 255.0;
+  const double luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  constexpr std::array<std::pair<double, double>, 4> points{{
+      {0.0, -0.54}, {0.127, -0.41}, {0.45, kWindowsTextGrayscaleContrast}, {1.0, kWindowsTextGrayscaleContrast}}};
+  for (size_t i = 1; i < points.size(); ++i)
+    if (luma <= points[i].first) {
+      const double t = (luma - points[i - 1].first) / (points[i].first - points[i - 1].first);
+      return points[i - 1].second + t * (points[i].second - points[i - 1].second);
     }
-    return out;
-  }();
-  return curve;
+  return kWindowsTextGrayscaleContrast;
+}
+
+std::array<uint8_t, 256> windowsTextCoverageCurve(uint32_t argb) {
+  std::array<uint8_t, 256> out{};
+  const double k = windowsTextContrastForColor(argb);
+  for (int i = 0; i < 256; ++i) {
+    const double a = i / 255.0;
+    out[size_t(i)] = uint8_t(std::clamp(std::lround(255.0 * a * (k + 1) / (a * k + 1)), 0L, 255L));
+  }
+  return out;
 }
 
 bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::GraphicsPrimitive& p,
@@ -506,7 +528,7 @@ bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::Gr
   CGContextFlush(layer.get());
   auto* pixels = static_cast<uint8_t*>(CGBitmapContextGetData(layer.get()));
   const size_t stride = CGBitmapContextGetBytesPerRow(layer.get());
-  const auto& curve = windowsTextCoverageCurve();
+  const auto curve = windowsTextCoverageCurve(p.color);
   for (size_t y = 0; y < height; ++y) {
     uint8_t* row = pixels + y * stride;
     for (size_t x = 0; x < width; ++x) {

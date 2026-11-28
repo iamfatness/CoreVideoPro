@@ -1,0 +1,176 @@
+{
+ "schemaVersion": 1,
+ "templateId": "corporate-clarity-title",
+ "templateVersion": 1,
+ "name": "Corporate Clarity full-width title",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1696,
+  "height": 316
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onPrimaryMuted",
+  "brand.primary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "heading",
+   "type": "string",
+   "default": "Quarterly All-Hands",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "subtitle",
+   "type": "string",
+   "default": "Product, people and the year ahead",
+   "bindable": true,
+   "maxLength": 512
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 48,
+   "y": 48,
+   "width": 1600,
+   "height": 220,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 8,
+   "shadow": {
+    "color": {
+     "token": "brand.surface"
+    },
+    "dx": 0,
+    "dy": 8,
+    "blur": 24,
+    "spread": 0
+   }
+  },
+  {
+   "id": "strip",
+   "type": "rect",
+   "x": 48,
+   "y": 48,
+   "width": 1600,
+   "height": 8,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "cornerRadius": 4
+  },
+  {
+   "id": "heading-text",
+   "type": "text",
+   "x": 128,
+   "y": 90,
+   "width": 1440,
+   "height": 84,
+   "text": {
+    "field": "heading"
+   },
+   "font": "Montserrat",
+   "fontSize": 64,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "stagger": {
+    "by": "word",
+    "ms": 80
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 150,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 8
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  },
+  {
+   "id": "subtitle-text",
+   "type": "text",
+   "x": 128,
+   "y": 182,
+   "width": 1440,
+   "height": 48,
+   "text": {
+    "field": "subtitle"
+   },
+   "font": "Montserrat",
+   "fontSize": 32,
+   "fontWeight": 400,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimaryMuted"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "stagger": {
+    "by": "word",
+    "ms": 80
+   },
+   "animations": {
+    "in": {
+     "type": "rise",
+     "startMs": 230,
+     "durationMs": 300,
+     "easing": "quint-out",
+     "distance": 8
+    },
+    "out": {
+     "type": "fade",
+     "startMs": 0,
+     "durationMs": 200,
+     "easing": "ease-in"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 450,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 300,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "corporate-clarity",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

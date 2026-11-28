@@ -1,9 +1,10 @@
 {
-  "brand.primary": "#0B1F3AFF",
-  "brand.secondary": "#13315CFF",
-  "brand.accent": "#E63946FF",
-  "brand.onPrimary": "#FFFFFFFF",
-  "brand.onSecondary": "#D8E2F0FF",
-  "brand.onAccent": "#FFFFFFFF",
-  "brand.surface": "#0A0F18B3"
+ "brand.primary": "#0B1F3AFF",
+ "brand.secondary": "#13315CFF",
+ "brand.accent": "#E63946FF",
+ "brand.surface": "#0A0F18B3",
+ "brand.onPrimary": "#FFFFFFFF",
+ "brand.onPrimaryMuted": "#C9D3E2FF",
+ "brand.onSecondary": "#D8E2F0FF",
+ "brand.onAccent": "#FFFFFFFF"
 }

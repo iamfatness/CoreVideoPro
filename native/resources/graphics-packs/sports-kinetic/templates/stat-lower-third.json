@@ -1,0 +1,424 @@
+{
+ "schemaVersion": 1,
+ "templateId": "sports-kinetic-stat-lower-third",
+ "templateVersion": 1,
+ "name": "Sports Kinetic stat lower third",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1100,
+  "height": 150
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.onSecondary",
+  "brand.surface",
+  "brand.teamA"
+ ],
+ "fields": [
+  {
+   "id": "name",
+   "type": "string",
+   "default": "Marcus Reyes",
+   "bindable": true,
+   "maxLength": 256,
+   "required": true
+  },
+  {
+   "id": "stat-1",
+   "type": "string",
+   "default": "24",
+   "bindable": true,
+   "maxLength": 8
+  },
+  {
+   "id": "label-1",
+   "type": "string",
+   "default": "Goals",
+   "bindable": true,
+   "maxLength": 24
+  },
+  {
+   "id": "stat-2",
+   "type": "string",
+   "default": "11",
+   "bindable": true,
+   "maxLength": 8
+  },
+  {
+   "id": "label-2",
+   "type": "string",
+   "default": "Assists",
+   "bindable": true,
+   "maxLength": 24
+  },
+  {
+   "id": "stat-3",
+   "type": "string",
+   "default": "89%",
+   "bindable": true,
+   "maxLength": 8
+  },
+  {
+   "id": "label-3",
+   "type": "string",
+   "default": "Pass accuracy",
+   "bindable": true,
+   "maxLength": 24
+  }
+ ],
+ "layers": [
+  {
+   "id": "name-plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1100,
+   "height": 70,
+   "fill": {
+    "token": "brand.teamA"
+   },
+   "skewX": 12,
+   "animations": {
+    "in": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 250,
+     "easing": "expo-out",
+     "direction": "left",
+     "distance": 160
+    },
+    "out": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 180,
+     "easing": "ease-in",
+     "direction": "left",
+     "distance": 160
+    }
+   }
+  },
+  {
+   "id": "stat-block",
+   "type": "rect",
+   "x": 30,
+   "y": 74,
+   "width": 1040,
+   "height": 76,
+   "fill": {
+    "token": "brand.surface"
+   },
+   "skewX": 12,
+   "animations": {
+    "in": {
+     "type": "slide",
+     "startMs": 60,
+     "durationMs": 250,
+     "easing": "expo-out",
+     "direction": "left",
+     "distance": 160
+    },
+    "out": {
+     "type": "slide",
+     "startMs": 0,
+     "durationMs": 180,
+     "easing": "ease-in",
+     "direction": "left",
+     "distance": 160
+    }
+   }
+  },
+  {
+   "id": "name-text",
+   "type": "text",
+   "x": 40,
+   "y": 6,
+   "width": 1000,
+   "height": 58,
+   "text": {
+    "field": "name"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 50,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 250,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "stat-1-text",
+   "type": "text",
+   "x": 80,
+   "y": 78,
+   "width": 120,
+   "height": 66,
+   "text": {
+    "field": "stat-1"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 56,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "label-1-text",
+   "type": "text",
+   "x": 200,
+   "y": 96,
+   "width": 160,
+   "height": 36,
+   "text": {
+    "field": "label-1"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 28,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "stat-2-text",
+   "type": "text",
+   "x": 400,
+   "y": 78,
+   "width": 120,
+   "height": 66,
+   "text": {
+    "field": "stat-2"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 56,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "label-2-text",
+   "type": "text",
+   "x": 520,
+   "y": 96,
+   "width": 160,
+   "height": 36,
+   "text": {
+    "field": "label-2"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 28,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "stat-3-text",
+   "type": "text",
+   "x": 720,
+   "y": 78,
+   "width": 130,
+   "height": 66,
+   "text": {
+    "field": "stat-3"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 56,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.accent"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  },
+  {
+   "id": "label-3-text",
+   "type": "text",
+   "x": 850,
+   "y": 96,
+   "width": 200,
+   "height": 36,
+   "text": {
+    "field": "label-3"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 28,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onSecondary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01,
+   "animations": {
+    "in": {
+     "type": "cut",
+     "startMs": 310,
+     "durationMs": 0,
+     "easing": "ease-out"
+    },
+    "out": {
+     "type": "cut",
+     "startMs": 0,
+     "durationMs": 0,
+     "easing": "ease-out"
+    }
+   }
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-left",
+  "x": 96,
+  "y": -64,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "sports-kinetic",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

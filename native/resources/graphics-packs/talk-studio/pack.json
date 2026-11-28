@@ -1,0 +1,47 @@
+{
+ "id": "talk-studio",
+ "name": "Talk: Studio",
+ "genre": "talk",
+ "version": "1.0.0",
+ "palettes": [
+  "palettes/studio-coral.json",
+  "palettes/mint.json",
+  "palettes/mono.json"
+ ],
+ "fonts": [
+  {
+   "family": "Poppins",
+   "file": "fonts/Poppins-Regular.ttf",
+   "weight": 400,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Poppins",
+   "file": "fonts/Poppins-Medium.ttf",
+   "weight": 500,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  },
+  {
+   "family": "Poppins",
+   "file": "fonts/Poppins-SemiBold.ttf",
+   "weight": 600,
+   "style": "normal",
+   "fallback": "Segoe UI"
+  }
+ ],
+ "templates": [
+  "templates/lower-third.json",
+  "templates/lower-third-2-line.json",
+  "templates/name-handle.json",
+  "templates/title.json",
+  "templates/bug.json",
+  "templates/up-next.json"
+ ],
+ "metadata": {
+  "status": "Wave 1 (graphics styles slice 10).",
+  "defaultPalette": "palettes/studio-coral.json",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

@@ -119,7 +119,9 @@ struct PackWithoutFont {
     base = fs::temp_directory_path() / ("cvp-pack-font-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(++sequence));
     fs::create_directories(base);
     fs::copy(kShippedPacks / "news-signal", base / "news-signal", fs::copy_options::recursive);
-    fs::remove(base / "news-signal" / "fonts" / "BarlowSemiCondensed-SemiBold.ttf");
+    // Every face of the family: one present face would resolve the family.
+    for (const char* face : {"BarlowSemiCondensed-Regular.ttf", "BarlowSemiCondensed-SemiBold.ttf", "BarlowSemiCondensed-Bold.ttf"})
+      fs::remove(base / "news-signal" / "fonts" / face);
     setGraphicsPacksDirectoryForTesting(utf8(base));
   }
   ~PackWithoutFont() {
@@ -143,7 +145,10 @@ TEST(GraphicsPackFonts, PackFontResolvesFromThePrivateCollection) {
     return;
   }
   ShippedPacks packs;
-  EXPECT_EQ(1u, directWritePackFontFaces());
+  size_t present = 0;
+  for (const auto& font : graphicsPackFonts()) present += font.present ? 1 : 0;
+  EXPECT_GE(present, 3u);
+  EXPECT_EQ(present, directWritePackFontFaces());
   auto f = factory();
   const auto font = resolveDirectWriteGraphicsFont(f.get(), "Barlow Semi Condensed");
   ASSERT_TRUE(font.available()) << font.error;
@@ -204,6 +209,35 @@ TEST(GraphicsPackFonts, StrictPackFontModeFailsAMissingPackFont) {
   const auto failed = prepare(packFontGraphic("STRICT TEST MODE"), true);
   EXPECT_EQ("failed", failed.state);
   EXPECT_EQ("Pack font is missing: Barlow Semi Condensed (pack news-signal)", failed.warning);
+}
+
+// Every face a shipped pack declares is matched by its own weight and style,
+// unsynthesized. Upstream names are not uniform within a family (Barlow Semi
+// Condensed Regular and Bold say typographic family "Barlow", its SemiBold
+// says "Barlow Semi Condensed"), so the collection groups faces by the
+// pack.json declaration; before that, every Barlow weight drew the SemiBold.
+TEST(GraphicsPackFonts, EveryDeclaredFaceMatchesItsOwnWeightAndStyle) {
+  ShippedPacks packs;
+  auto f = factory();
+  size_t checked = 0;
+  for (const auto& declared : graphicsPackFonts()) {
+    if (!declared.present || systemHas(std::wstring(declared.family.begin(), declared.family.end()))) continue;
+    const auto font = resolveDirectWriteGraphicsFont(f.get(), declared.family);
+    ASSERT_TRUE(font.available()) << declared.family << ": " << font.error;
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    ASSERT_TRUE(SUCCEEDED(font.collection->FindFamilyName(font.family.c_str(), &index, &exists)) && exists) << declared.family;
+    ComPtrLite<IDWriteFontFamily> family;
+    ComPtrLite<IDWriteFont> face;
+    ASSERT_TRUE(SUCCEEDED(font.collection->GetFontFamily(index, family.put())));
+    ASSERT_TRUE(SUCCEEDED(family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT(declared.weight), DWRITE_FONT_STRETCH_NORMAL,
+        declared.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, face.put())));
+    EXPECT_EQ(declared.weight, int(face->GetWeight())) << declared.path;
+    EXPECT_EQ(declared.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, face->GetStyle()) << declared.path;
+    EXPECT_EQ(DWRITE_FONT_SIMULATIONS_NONE, face->GetSimulations()) << declared.path;
+    ++checked;
+  }
+  EXPECT_GE(checked, 3u);
 }
 
 TEST(GraphicsPackFonts, AFamilyNoPackDeclaresKeepsTheExistingRule) {

@@ -1,0 +1,99 @@
+{
+ "schemaVersion": 1,
+ "templateId": "talk-studio-bug",
+ "templateVersion": 1,
+ "name": "Talk Studio corner bug",
+ "family": "bug",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 300,
+  "height": 72
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onPrimary",
+  "brand.primary"
+ ],
+ "fields": [
+  {
+   "id": "channel",
+   "type": "string",
+   "default": "Studio Live",
+   "bindable": true,
+   "maxLength": 32,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 300,
+   "height": 72,
+   "fill": {
+    "token": "brand.primary"
+   },
+   "cornerRadius": 36.0
+  },
+  {
+   "id": "dot",
+   "type": "rect",
+   "x": 18,
+   "y": 22,
+   "width": 28,
+   "height": 28,
+   "fill": {
+    "token": "brand.accent"
+   },
+   "cornerRadius": 14.0
+  },
+  {
+   "id": "channel-text",
+   "type": "text",
+   "x": 56,
+   "y": 12,
+   "width": 230,
+   "height": 48,
+   "text": {
+    "field": "channel"
+   },
+   "font": "Poppins",
+   "fontSize": 30,
+   "fontWeight": 600,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "left",
+   "maxLines": 1,
+   "overflow": "ellipsis"
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "upper-right",
+  "x": -64,
+  "y": 48,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "talk-studio",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

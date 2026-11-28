@@ -1,0 +1,126 @@
+{
+ "schemaVersion": 1,
+ "templateId": "news-signal-ticker",
+ "templateVersion": 1,
+ "name": "News Signal ticker",
+ "family": "lower-third",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 1920,
+  "height": 64
+ },
+ "brandTokens": [
+  "brand.accent",
+  "brand.onAccent",
+  "brand.onPrimary",
+  "brand.surface"
+ ],
+ "fields": [
+  {
+   "id": "label",
+   "type": "string",
+   "default": "BREAKING",
+   "bindable": true,
+   "maxLength": 32
+  },
+  {
+   "id": "items",
+   "type": "string",
+   "default": "[\"Polls close in the east at eight\",\"Turnout up on last cycle\",\"Live results all night\"]",
+   "bindable": true,
+   "maxLength": 4096,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "band",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 64,
+   "fill": {
+    "token": "brand.surface"
+   }
+  },
+  {
+   "id": "label-plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 260,
+   "height": 64,
+   "fill": {
+    "token": "brand.accent"
+   }
+  },
+  {
+   "id": "crawl",
+   "type": "crawl",
+   "x": 280,
+   "y": 10,
+   "width": 1620,
+   "height": 44,
+   "items": {
+    "field": "items"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 40,
+   "fontWeight": 600,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "speed": 140,
+   "gap": 96
+  },
+  {
+   "id": "label-text",
+   "type": "text",
+   "x": 0,
+   "y": 12,
+   "width": 260,
+   "height": 40,
+   "text": {
+    "field": "label"
+   },
+   "font": "Barlow Semi Condensed",
+   "fontSize": 32,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onAccent"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.06
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "lower-center",
+  "x": 0,
+  "y": 0,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "news-signal",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}

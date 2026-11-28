@@ -1,0 +1,89 @@
+{
+ "schemaVersion": 1,
+ "templateId": "sports-kinetic-bug",
+ "templateVersion": 1,
+ "name": "Sports Kinetic corner bug",
+ "family": "bug",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 240,
+  "height": 80
+ },
+ "brandTokens": [
+  "brand.onPrimary",
+  "brand.teamA"
+ ],
+ "fields": [
+  {
+   "id": "channel",
+   "type": "string",
+   "default": "LIVE",
+   "bindable": true,
+   "maxLength": 32,
+   "required": true
+  }
+ ],
+ "layers": [
+  {
+   "id": "plate",
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "width": 240,
+   "height": 80,
+   "fill": {
+    "token": "brand.teamA"
+   },
+   "skewX": 12
+  },
+  {
+   "id": "channel-text",
+   "type": "text",
+   "x": 50,
+   "y": 8,
+   "width": 140,
+   "height": 64,
+   "text": {
+    "field": "channel"
+   },
+   "font": "Barlow Condensed",
+   "fontSize": 54,
+   "fontWeight": 700,
+   "lineHeight": 1.2,
+   "color": {
+    "token": "brand.onPrimary"
+   },
+   "align": "center",
+   "maxLines": 1,
+   "overflow": "ellipsis",
+   "fontStyle": "italic",
+   "textTransform": "uppercase",
+   "letterSpacing": -0.01
+  }
+ ],
+ "animations": {
+  "in": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-out"
+  },
+  "out": {
+   "type": "fade",
+   "durationMs": 200,
+   "easing": "ease-in"
+  }
+ },
+ "defaultPlacement": {
+  "anchor": "upper-right",
+  "x": -64,
+  "y": 48,
+  "scale": 1
+ },
+ "metadata": {
+  "pack": "sports-kinetic",
+  "generator": "scripts/graphics/generate-style-packs.py"
+ }
+}
