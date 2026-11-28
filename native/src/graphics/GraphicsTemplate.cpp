@@ -11,7 +11,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <dwrite.h>
+#include <dwrite_1.h>
 #include "compositor/ComPtrLite.h"
 #elif !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL
 #include "graphics/GraphicsTextCoreText.h"
@@ -150,9 +150,96 @@ Json typedValue(const Json& field, const Json& value) {
   return value;
 }
 struct TextSize { double width; unsigned lines; };
+// Text style that changes measurement (graphics styles P1). tracking is the
+// document's letterSpacing in em: tracking * size px after every character.
+struct TextStyle { double tracking = 0; bool italic = false; };
+
+// textTransform (graphics styles P1). Applied here, in the shared layout,
+// before any measurement, so DirectWrite and Core Text receive the same
+// characters. Simple one-to-one case mapping only (Basic Latin, Latin-1,
+// Latin Extended-A, Greek, Cyrillic); a character outside those, or with no
+// single-character counterpart (U+00DF stays U+00DF), is left unchanged.
+// Platform case mapping is deliberately not used: Core Text's full mapping
+// expands U+00DF to "SS" while DirectWrite's LCMapStringEx does not, which
+// would break line breaks and widths between the rasters.
+uint32_t upperCodePoint(uint32_t c) {
+  if (c >= 'a' && c <= 'z') return c - 32;
+  if (c >= 0xe0 && c <= 0xfe && c != 0xf7) return c - 32;
+  if (c == 0xff) return 0x178;
+  if (c >= 0x100 && c <= 0x17f) {
+    if (c == 0x131) return 'I';
+    if (c == 0x17f) return 'S';
+    if (c == 0x138 || c == 0x149) return c;
+    const bool oddUpperBlock = (c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17e);
+    if (oddUpperBlock) return (c & 1) ? c : c - 1;
+    if (c == 0x178) return c;
+    return (c & 1) ? c - 1 : c;
+  }
+  if ((c >= 0x3b1 && c <= 0x3c1) || (c >= 0x3c3 && c <= 0x3cb)) return c - 32;
+  if (c == 0x3c2) return 0x3a3;
+  if (c == 0x3ac) return 0x386;
+  if (c >= 0x3ad && c <= 0x3af) return c - 37;
+  if (c == 0x3cc) return 0x38c;
+  if (c == 0x3cd || c == 0x3ce) return c - 63;
+  if (c >= 0x430 && c <= 0x44f) return c - 32;
+  if (c >= 0x450 && c <= 0x45f) return c - 80;
+  return c;
+}
+uint32_t lowerCodePoint(uint32_t c) {
+  if (c >= 'A' && c <= 'Z') return c + 32;
+  if (c >= 0xc0 && c <= 0xde && c != 0xd7) return c + 32;
+  if (c == 0x178) return 0xff;
+  if (c >= 0x100 && c <= 0x17f) {
+    if (c == 0x130 || c == 0x131 || c == 0x138 || c == 0x149 || c == 0x17f) return c;
+    const bool oddUpperBlock = (c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17e);
+    if (oddUpperBlock) return (c & 1) ? c + 1 : c;
+    return (c & 1) ? c : c + 1;
+  }
+  if ((c >= 0x391 && c <= 0x3a1) || (c >= 0x3a3 && c <= 0x3ab)) return c + 32;
+  if (c == 0x386) return 0x3ac;
+  if (c >= 0x388 && c <= 0x38a) return c + 37;
+  if (c == 0x38c) return 0x3cc;
+  if (c == 0x38e || c == 0x38f) return c + 63;
+  if (c >= 0x410 && c <= 0x42f) return c + 32;
+  if (c >= 0x400 && c <= 0x40f) return c + 80;
+  return c;
+}
+void appendUtf8(std::string& out, uint32_t c) {
+  if (c < 0x80) out += char(c);
+  else if (c < 0x800) { out += char(0xc0 | (c >> 6)); out += char(0x80 | (c & 63)); }
+  else if (c < 0x10000) { out += char(0xe0 | (c >> 12)); out += char(0x80 | ((c >> 6) & 63)); out += char(0x80 | (c & 63)); }
+  else { out += char(0xf0 | (c >> 18)); out += char(0x80 | ((c >> 12) & 63)); out += char(0x80 | ((c >> 6) & 63)); out += char(0x80 | (c & 63)); }
+}
+}  // namespace
+std::string transformGraphicsText(const std::string& text, const std::string& transform) {
+  if (transform != "uppercase" && transform != "lowercase") return text;
+  const bool upper = transform == "uppercase";
+  std::string out;
+  out.reserve(text.size());
+  for (size_t i = 0; i < text.size();) {
+    const auto first = uint8_t(text[i]);
+    const int count = first < 0x80 ? 0 : first >= 0xf0 ? 3 : first >= 0xe0 ? 2 : first >= 0xc0 ? 1 : -1;
+    if (count < 0 || i + size_t(count) >= text.size()) {  // not UTF-8: copy the byte
+      out += text[i++];
+      continue;
+    }
+    uint32_t c = count == 0 ? first : first & (count == 1 ? 31 : count == 2 ? 15 : 7);
+    bool valid = true;
+    for (int j = 1; j <= count; ++j) {
+      const auto next = uint8_t(text[i + size_t(j)]);
+      valid = valid && (next & 0xc0) == 0x80;
+      c = (c << 6) | (next & 63);
+    }
+    if (!valid) { out += text[i++]; continue; }
+    appendUtf8(out, upper ? upperCodePoint(c) : lowerCodePoint(c));
+    i += size_t(count) + 1;
+  }
+  return out;
+}
+namespace {
 
 TextSize measureText(const std::string& text, const std::string& font, double size, int weight,
-    double wrapWidth = 8192, bool wrap = false) {
+    double wrapWidth = 8192, bool wrap = false, TextStyle style = {}) {
   if (text.empty()) return {0, 1};
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
   const auto widen = [](const std::string& value) {
@@ -171,16 +258,27 @@ TextSize measureText(const std::string& text, const std::string& font, double si
   DWRITE_TEXT_METRICS metrics{};
   if (factory && !family.empty() && !value.empty() &&
       SUCCEEDED(factory->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT(weight),
-          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, float(size), L"", format.put())) &&
+          style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+          float(size), L"", format.put())) &&
       SUCCEEDED(format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP)) &&
       SUCCEEDED(factory->CreateTextLayout(value.data(), UINT32(value.size()), format.get(),
-          float(wrapWidth), 8192.f, layout.put())) && SUCCEEDED(layout->GetMetrics(&metrics)))
-    return {metrics.widthIncludingTrailingWhitespace, metrics.lineCount};
+          float(wrapWidth), 8192.f, layout.put()))) {
+    // The raster sets the same spacing (CompositorOverlayRaster.cpp drawTemplate).
+    bool spaced = style.tracking == 0;
+    if (!spaced) {
+      ComPtrLite<IDWriteTextLayout1> layout1;
+      spaced = SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1), reinterpret_cast<void**>(layout1.put()))) &&
+          SUCCEEDED(layout1->SetCharacterSpacing(0.f, float(style.tracking * size), 0.f,
+              DWRITE_TEXT_RANGE{0, UINT32(value.size())}));
+    }
+    if (spaced && SUCCEEDED(layout->GetMetrics(&metrics)))
+      return {metrics.widthIncludingTrailingWhitespace, metrics.lineCount};
+  }
 #elif !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL
   // The Metal twin: Core Text through the same resolver (owner's substitution
   // table, bundled Selawik) and line breaker the CoreTextOverlayRaster draws
   // with, so layout and pixels agree (Metal graphics backend G2).
-  const auto measured = measureGraphicsText(text, font, size, weight, wrapWidth, wrap);
+  const auto measured = measureGraphicsText(text, font, size, weight, wrapWidth, wrap, style.tracking * size, style.italic);
   return {measured.width, measured.lines};
 #else
   (void)font; (void)weight;
@@ -188,7 +286,7 @@ TextSize measureText(const std::string& text, const std::string& font, double si
   // Portable contract validation has no native typography. Keep a bounded
   // estimate for its layout; the Windows renderer measures the shaped runs.
   const auto characters = std::count_if(text.begin(), text.end(), [](unsigned char byte) { return (byte & 0xc0) != 0x80; });
-  const double width = double(characters) * size * .55;
+  const double width = double(characters) * size * (.55 + style.tracking);
   if (!wrap) return {width, 1};
   return {std::min(width, wrapWidth), unsigned(std::max(1., std::ceil(width / wrapWidth)))};
 }
@@ -235,6 +333,21 @@ class Layout {
     return scalar.asNumber();
   }
   static bool autoWidth(const Json& node) { return node.getString("width") == "auto"; }
+  // Text style (graphics styles P1): letterSpacing in em (-0.25..1), fontStyle
+  // normal|italic, textTransform none|uppercase|lowercase.
+  TextStyle textStyle(const Json& node) {
+    TextStyle style;
+    style.tracking = quantity(node, "letterSpacing", -0.25, 1, 0);
+    const auto fontStyle = stringProperty(node, "fontStyle", "normal");
+    need(fontStyle == "normal" || fontStyle == "italic", "template-font-style");
+    style.italic = fontStyle == "italic";
+    return style;
+  }
+  static std::string transformedText(const Json& node, const std::string& text) {
+    const auto transform = stringProperty(node, "textTransform", "none");
+    need(transform == "none" || transform == "uppercase" || transform == "lowercase", "template-text-transform");
+    return transformGraphicsText(text, transform);
+  }
   static bool hasAutoPlate(const Json::Array& nodes) {
     return std::any_of(nodes.begin(), nodes.end(), [](const auto& child) {
       return child.getString("type") == "rect" && autoWidth(child);
@@ -272,11 +385,11 @@ class Layout {
       if (const auto* property = node.get("visible"); property && !resolve(property, "boolean").asBool()) continue;
       auto width = nodeWidth(node, depth, 0);
       if (type == "text") {
-        const auto text = resolve(node.get("text"), "string").asString();
+        const auto text = transformedText(node, resolve(node.get("text"), "string").asString());
         if (text.empty() && boolean(node, "collapseWhenEmpty")) continue;
         const auto font = resolve(node.get("font"), "string").asString();
         width = std::min(width, measureText(text, font, quantity(node, "fontSize", 1, 512, 28),
-            int(quantity(node, "fontWeight", 400, 700, 400))).width);
+            int(quantity(node, "fontWeight", 400, 700, 400)), 8192, false, textStyle(node)).width);
       } else if (type == "image" && boolean(node, "collapseWhenEmpty") &&
           resolve(node.get("asset"), "image").asString().empty()) continue;
       const double step = flow == "horizontal" ? offset + (populated ? gap : 0) : 0;
@@ -410,7 +523,7 @@ class Layout {
     else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth"});
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
-    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize"});
+    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize", "letterSpacing", "fontStyle", "textTransform"});
     else if (type == "crawl") allowed.insert({"items", "font", "fontSize", "color", "speed", "gap", "direction", "mode"});
     else if (type == "table") allowed.insert({"columns", "rows", "rowHeight", "font", "fontSize", "color", "headerFill", "rowFill", "alternateFill"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
@@ -506,7 +619,9 @@ class Layout {
     } else {
       const auto text = resolve(node.get("text"), "string"), font = resolve(node.get("font"), "string");
       need(text.isString() && font.isString() && text.asString().size() <= 4096 && !font.asString().empty() && font.asString().size() <= 128 && utf8(font.asString()), "template-text-or-font");
-      p.text = text.asString(); p.font = font.asString(); p.color = color(resolve(node.get("color"), "color").asString());
+      p.text = transformedText(node, text.asString()); p.font = font.asString(); p.color = color(resolve(node.get("color"), "color").asString());
+      const auto style = textStyle(node);
+      p.italic = style.italic;
       p.fontSize = quantity(node, "fontSize", 1, 512); p.lineHeight = quantity(node, "lineHeight", .5, 3, 1.2);
       const auto weight = quantity(node, "fontWeight", 400, 700, 400); need(weight == 400 || weight == 500 || weight == 600 || weight == 700, "template-font-weight"); p.fontWeight = int(weight);
       const auto lines = quantity(node, "maxLines", 1, 3, 1); need(std::floor(lines) == lines, "template-max-lines"); p.maxLines = int(lines);
@@ -515,7 +630,7 @@ class Layout {
       if (node.get("minFontSize")) {
         const double minimum = std::min(p.fontSize, quantity(node, "minFontSize", 1, 512));
         const auto fits = [&](double size) {
-          const auto measured = measureText(p.text, p.font, size, p.fontWeight, p.box.width, p.overflow == "wrap-then-ellipsis");
+          const auto measured = measureText(p.text, p.font, size, p.fontWeight, p.box.width, p.overflow == "wrap-then-ellipsis", style);
           return measured.width <= p.box.width && measured.lines <= unsigned(p.maxLines) &&
               measured.lines * size * p.lineHeight <= p.box.height;
         };
@@ -529,6 +644,7 @@ class Layout {
           p.fontSize = low;
         }
       }
+      p.letterSpacing = style.tracking * p.fontSize;
       if (const auto* outline = node.get("outline")) {
         keys(*outline, {"color", "width"});
         p.outline = GraphicsTextOutline{color(resolve(outline->get("color"), "color").asString()),

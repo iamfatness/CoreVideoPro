@@ -22,6 +22,15 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   `D2DCurveFlatteningTest` proves point for point against `ID2D1Geometry::Simplify`. The legacy band is
   a rounded layer mask AND a rounded fill on Windows (corner coverage squared); the Mac clips and fills
   the same polygon to match.
+  Text style (graphics styles P1, 2026-11-27): `textTransform` is applied by the shared layout
+  (`transformGraphicsText`, simple one-to-one case mapping) before anything is measured, never by a
+  platform API: Core Text's full mapping turns U+00DF into "SS" and DirectWrite's does not, which
+  would move line breaks. `letterSpacing` is em in the document and px on the primitive (em x the
+  fitted font size); Windows sets it as trailing spacing with `IDWriteTextLayout1::SetCharacterSpacing`
+  on the layout (measurement and raster both), the Mac as `kCTKernAttributeName` on the same runs.
+  Neither spaces the ellipsis. Italic is `DWRITE_FONT_STYLE_ITALIC` and
+  `CTFontCreateCopyWithSymbolicTraits(kCTFontItalicTrait)`; a family with no italic face is
+  synthesized oblique on Windows and stays upright on the Mac, so packs ship their italic faces.
 - **WIC never reports a corrupt PNG pixel stream (2026-11-27).** For a bad zlib header,
   a malformed deflate block, a truncated IDAT or a wrong Adler-32, the PNG decoder's
   `CopyPixels`, and therefore `CreateBitmapFromWicBitmap`, return `S_OK` with zeroed pixels.

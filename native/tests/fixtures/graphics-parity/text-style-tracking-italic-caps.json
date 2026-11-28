@@ -1,0 +1,73 @@
+{
+ "schemaVersion": 1,
+ "templateId": "p-text-style",
+ "templateVersion": 1,
+ "name": "p-text-style",
+ "family": "title",
+ "canvas": {
+  "width": 1920,
+  "height": 1080
+ },
+ "bounds": {
+  "width": 900,
+  "height": 240
+ },
+ "brandTokens": [],
+ "fields": [],
+ "animations": {
+  "in": {
+   "type": "none"
+  },
+  "out": {
+   "type": "none"
+  }
+ },
+ "layers": [
+  {
+   "id": "caps",
+   "type": "text",
+   "x": 20,
+   "y": 10,
+   "width": 860,
+   "height": 64,
+   "text": "Breaking news tonight",
+   "font": "Arial",
+   "fontSize": 44,
+   "fontWeight": 700,
+   "color": "#FFFFFF",
+   "textTransform": "uppercase",
+   "letterSpacing": 0.1
+  },
+  {
+   "id": "italic",
+   "type": "text",
+   "x": 20,
+   "y": 84,
+   "width": 860,
+   "height": 64,
+   "text": "Scripture reading",
+   "font": "Georgia",
+   "fontSize": 44,
+   "color": "#FFFFFF",
+   "align": "center",
+   "fontStyle": "italic"
+  },
+  {
+   "id": "bold-italic",
+   "type": "text",
+   "x": 20,
+   "y": 158,
+   "width": 860,
+   "height": 64,
+   "text": "SPORTS DESK LIVE",
+   "font": "Arial",
+   "fontSize": 40,
+   "fontWeight": 700,
+   "color": "#FFFFFF",
+   "align": "right",
+   "fontStyle": "italic",
+   "textTransform": "lowercase",
+   "letterSpacing": 0.06
+  }
+ ]
+}

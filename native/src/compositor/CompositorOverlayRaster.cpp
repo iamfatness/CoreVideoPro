@@ -591,13 +591,13 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
             stroke.get(), float(p.strokeWidth));
       }
       else if (p.type == "text" && !p.text.empty()) {
-        const auto family = widenUtf8(p.font), text = widenUtf8(p.text);
-        UINT32 fontIndex = 0; BOOL exists = FALSE;
+        const auto family = widenUtf8(p.font), text = widenUtf8(p.text);        UINT32 fontIndex = 0; BOOL exists = FALSE;
         ComPtrLite<IDWriteTextFormat> format;
         ComPtrLite<IDWriteTextLayout> layout;
         const bool ready = SUCCEEDED(fonts->FindFamilyName(family.c_str(), &fontIndex, &exists)) && exists &&
             SUCCEEDED(dwriteFactory_->CreateTextFormat(family.c_str(), fonts.get(), DWRITE_FONT_WEIGHT(p.fontWeight),
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, float(p.fontSize), L"", format.put()));
+                p.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                float(p.fontSize), L"", format.put()));
         if (!ready) { complete = false; workerWarning_ = "Requested graphics font is unavailable: " + p.font; }
         else {
           bool textReady = SUCCEEDED(format->SetTextAlignment(p.align == "center" ? DWRITE_TEXT_ALIGNMENT_CENTER : p.align == "right" ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING)) &&
@@ -612,6 +612,14 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
             textReady = SUCCEEDED(layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineHeight, float(p.fontSize * .8))) &&
                 SUCCEEDED(dwriteFactory_->CreateEllipsisTrimmingSign(format.get(), ellipsis.put())) &&
                 SUCCEEDED(layout->SetTrimming(&trim, ellipsis.get()));
+          }
+          // letterSpacing (graphics styles P1): trailing spacing after every
+          // character, as GraphicsTemplate measured it. Core Text's twin is
+          // kCTKernAttributeName (GraphicsTextLayout).
+          if (textReady && p.letterSpacing != 0) {
+            ComPtrLite<IDWriteTextLayout1> spaced;
+            textReady = SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1), reinterpret_cast<void**>(spaced.put()))) &&
+                SUCCEEDED(spaced->SetCharacterSpacing(0.f, float(p.letterSpacing), 0.f, DWRITE_TEXT_RANGE{0, UINT32(text.size())}));
           }
           if (textReady && (p.outline || p.shadow))
             textReady = drawTextEffects(*d2dFactory_.get(), *target, *layout.get(), p);

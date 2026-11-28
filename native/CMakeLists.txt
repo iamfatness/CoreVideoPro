@@ -966,6 +966,7 @@ if(BUILD_TESTING)
     tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsStylePrimitivesTest.cpp
     tests/GraphicsRasterParity.cpp tests/GraphicsRasterParityTest.cpp
     tests/OverlayRasterFrontHalfTest.cpp
     tests/GraphicsMotionTest.cpp
@@ -1269,6 +1270,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsStylePrimitivesTest.cpp
     tests/GraphicsMotionTest.cpp
     tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsEditorShapesTest.cpp
