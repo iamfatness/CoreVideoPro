@@ -2,6 +2,7 @@
 #include "modules/Sha256.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 
 namespace corevideo::graphics {
 using rpc::Json;
@@ -30,6 +31,7 @@ void GraphicsTemplateDraft::run() {
   for(;;) {
     std::shared_ptr<const Request> request;
     {std::unique_lock lock(mutex_);wake_.wait(lock,[&]{return stopping_||pending_;});if(stopping_) return;request=std::move(pending_);}
+    const auto compileStarted=std::chrono::steady_clock::now();
     auto result=std::make_shared<Publication>(); result->key=request->key;
     if(hex(modules::hashing::sha256(reinterpret_cast<const uint8_t*>(request->manifest.data()),request->manifest.size()))!=request->expectedHash) result->error="private-template-hash-mismatch";
     else {
@@ -59,6 +61,7 @@ void GraphicsTemplateDraft::run() {
         result->layout=Json::Object{{"width",drawing.width},{"height",drawing.height},{"nodes",std::move(nodes)}};
       }
     }
+    result->compileMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-compileStarted).count();
     {std::lock_guard lock(mutex_); if(stopping_) return; if(wanted_==request->key) std::atomic_store(&publication_,std::shared_ptr<const Publication>(std::move(result)));}
   }
 }

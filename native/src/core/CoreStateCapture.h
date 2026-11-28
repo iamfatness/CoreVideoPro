@@ -69,6 +69,8 @@ class CoreStateCapture {
   std::size_t gradeEditorCount_ = 0;
   std::size_t gradeEventBytes_ = 0;
   std::uint64_t gradeEventsRefused_ = 0;
+  GradePreviewController::Stats gradeStats_;
+  double gradeCompileMs_ = 0;
   std::vector<SourceGradeState::Status> sourceGradeStatuses_;
   int previewPlanLayerCount_ = 0;
   bool previewComposite_ = false;

@@ -18,6 +18,7 @@ public sealed class GradePreviewCoordinator : IDisposable
     private Task _inFlight = Task.CompletedTask;
     private volatile bool _disposed;
     private long _lastRevision = -1, _lastSent, _completedRevision = -1;
+    internal GradePreviewTimings Timings { get; }
     private sealed record Draft(long Revision, ColorGrade Grade, bool ScopesEnabled, bool ScopesOriginal, int HistogramMode, int WaveformMode, bool CompareOriginal, int ScopeView, GradeScopeRoi Roi, LowerThirdPreview? LowerThirdPreview, bool ContinuousGraphics);
     public GradePreviewCoordinator(IGradePreviewTransport bridge, ColorGradeEditorViewModel editor, Action<Action> dispatch)
         : this(bridge, editor, dispatch, TimeProvider.System) { }
@@ -26,6 +27,7 @@ public sealed class GradePreviewCoordinator : IDisposable
         Action<Action> dispatch, TimeProvider time)
     {
         _bridge = bridge; _editor = editor; _dispatch = dispatch; _time = time;
+        Timings = new(time);
         _draft = CaptureDraft();
         editor.PreviewRequested += OnDraftChanged;
         bridge.GradePreviewReceived += OnObservation;
@@ -35,6 +37,7 @@ public sealed class GradePreviewCoordinator : IDisposable
     private void OnDraftChanged(object? sender, EventArgs e)
     {
         lock (_gate) _draft = CaptureDraft();
+        Timings.Edited(_editor.Revision);
     }
     private Draft CaptureDraft() => new(_editor.Revision, _editor.CurrentGrade, _editor.AdvancedExpanded && _editor.ScopesEnabled,
         _editor.ScopesOriginal, _editor.HistogramMode, _editor.WaveformMode, _editor.CompareOriginal, _editor.ScopeView, _editor.ScopeRoi, _editor.LowerThirdPreview, _editor.ContinuousGraphicsPreview);
@@ -60,11 +63,14 @@ public sealed class GradePreviewCoordinator : IDisposable
             var wire = new MediaCoreColorGradeWire(draft.Grade.Lut, draft.Grade.Exposure, draft.Grade.Contrast, draft.Grade.Saturation,
                 draft.Grade.Temperature, draft.Grade.Advanced?.Copy(), draft.ScopesEnabled, draft.ScopesOriginal,
                 draft.HistogramMode, draft.WaveformMode, draft.CompareOriginal, draft.ScopeView, draft.Roi, draft.LowerThirdPreview);
+            Timings.Sent(draft.Revision, renew);
             if (renew) await _bridge.RenewGradePreviewAsync(_editor.InstanceId,_editor.SourceId,draft.Revision,wire).ConfigureAwait(false);
             else await _bridge.SetGradePreviewAsync(_editor.InstanceId,_editor.SourceId,draft.Revision,enabled,wire).ConfigureAwait(false);
+            if (!renew) Timings.Acked(draft.Revision);
         }
         catch (Exception ex)
         {
+            Timings.Failed();
             lock (_gate) { if (_lastRevision == draft.Revision) _lastRevision = -1; }
             if (enabled) _dispatch(() => { if (!_disposed && _editor.Revision == draft.Revision) _editor.SetNativeUnavailable(ex.Message); });
         }
@@ -72,6 +78,7 @@ public sealed class GradePreviewCoordinator : IDisposable
     private void OnObservation(GradePreviewObservation observation)
     {
         if (observation.InstanceId != _editor.InstanceId || observation.SourceId != _editor.SourceId) return;
+        Timings.Observed(observation);
         lock (_gate)
         {
             if (observation.Revision == _lastRevision &&

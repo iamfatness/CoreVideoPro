@@ -25,7 +25,8 @@ public static class Program
             var settingsProbe = studioProbe || graphicsProbe || destinationProbe || commsProbe || (args.Length == 2 && args[0] == "--verify-operator-settings");
             var gradeProbe = args.Length == 3 && args[0] == "--verify-source-grade";
             var meterProbe = args.Length == 3 && args[0] == "--verify-audio-meters";
-            if (engineHostStudioProbe || engineHostProbe || runtimeProbe || settingsProbe || gradeProbe || meterProbe || inspectProbe || inspectNativeProbe)
+            var designerPreviewProbe = args.Length == 3 && args[0] == "--verify-designer-preview";
+            if (designerPreviewProbe || engineHostStudioProbe || engineHostProbe || runtimeProbe || settingsProbe || gradeProbe || meterProbe || inspectProbe || inspectNativeProbe)
                 CoreVideoPro.MediaCore.Services.DiagnosticLog.ConfigureVerificationDirectory(
                     Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[^1]))!, "logs"));
             LaunchLog.Write($"base={AppContext.BaseDirectory}");
@@ -33,7 +34,7 @@ public static class Program
             if (meterProbe && probeSeconds is < 5 or > 86400)
                 throw new ArgumentOutOfRangeException(nameof(args), "Meter probe duration must be 5–86400 seconds.");
 #if !COREVIDEO_SELF_CONTAINED
-            var options = engineHostStudioProbe || engineHostProbe || runtimeProbe || meterProbe || settingsProbe || gradeProbe || inspectProbe || inspectNativeProbe ? Bootstrap.InitializeOptions.None : Bootstrap.InitializeOptions.OnNoMatch_ShowUI;
+            var options = designerPreviewProbe || engineHostStudioProbe || engineHostProbe || runtimeProbe || meterProbe || settingsProbe || gradeProbe || inspectProbe || inspectNativeProbe ? Bootstrap.InitializeOptions.None : Bootstrap.InitializeOptions.OnNoMatch_ShowUI;
             if (!Bootstrap.TryInitialize(0x00020004, null, new PackageVersion(), options, out var bootstrapHr))
             {
                 LaunchLog.Write($"Bootstrap.TryInitialize failed hr=0x{bootstrapHr:X8}");
@@ -46,6 +47,12 @@ public static class Program
             if (engineHostProbe)
             {
                 Services.EngineHostCrashProbe.RunAsync(args[1]).GetAwaiter().GetResult();
+                return;
+            }
+
+            if (designerPreviewProbe)
+            {
+                Services.DesignerPreviewProbe.RunAsync(args[1], args[2]).GetAwaiter().GetResult();
                 return;
             }
 

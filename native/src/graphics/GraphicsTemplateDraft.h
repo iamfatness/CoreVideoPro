@@ -11,7 +11,9 @@ namespace corevideo::graphics {
 // immutable installed catalog. New asset bytes use the same verified package loader as installs.
 class GraphicsTemplateDraft {
  public:
-  struct Publication { std::string key,error; std::shared_ptr<const GraphicsTemplate> definition; rpc::Json layout; };
+  // compileMs: wall time of this revision's hash check, parse, asset reuse and
+  // layout on the compiler thread (Designer timing; diagnostics only).
+  struct Publication { std::string key,error; std::shared_ptr<const GraphicsTemplate> definition; rpc::Json layout; double compileMs=0; };
   GraphicsTemplateDraft()=default;
   ~GraphicsTemplateDraft();
   bool submit(std::string manifest,const std::string& expectedHash,std::shared_ptr<const GraphicsTemplate> parent,std::string& key,rpc::Json fields = {},rpc::Json brand = {},std::string packageRoot = {}, bool* busy = nullptr);

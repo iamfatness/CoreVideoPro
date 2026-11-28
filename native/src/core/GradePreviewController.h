@@ -5,6 +5,7 @@
 #include "compositor/ColorGradeParams.h"
 #include "graphics/GraphicsTimeline.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -22,6 +23,29 @@ class GradePreviewController {
   static constexpr auto Lease = std::chrono::seconds(3);
   static constexpr auto Interval = std::chrono::milliseconds(100);
   static constexpr auto PlayInterval = std::chrono::milliseconds(33);
+  // Designer preview timing (perf/designer-live-preview). Always on and fixed
+  // size: counters plus a ring of admitted-to-ready latencies, reduced to
+  // percentiles only when a snapshot asks. Nothing allocates per tick.
+  static constexpr size_t LatencySamples = 64;
+  struct Stats {
+    uint64_t admitted = 0, ready = 0, supersededBeforeReady = 0, coalesced = 0;
+    double admitToReadyP50Ms = 0, admitToReadyP95Ms = 0, admitToReadyMaxMs = 0, lastPrepareMs = 0;
+    size_t samples = 0;
+  };
+  Stats stats() const {
+    Stats result;
+    result.admitted = admitted_; result.ready = readyRevisions_;
+    result.supersededBeforeReady = supersededBeforeReady_; result.coalesced = coalesced_;
+    result.lastPrepareMs = lastPrepareMs_; result.samples = latencyCount_;
+    const size_t n = (std::min)(latencyCount_, LatencySamples);
+    if (n == 0) return result;
+    std::array<double, LatencySamples> sorted{};
+    std::copy(latencies_.begin(), latencies_.begin() + static_cast<std::ptrdiff_t>(n), sorted.begin());
+    std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n));
+    const auto at = [&](double q) { return sorted[(std::min)(n - 1, size_t(q * double(n - 1) + 0.5))]; };
+    result.admitToReadyP50Ms = at(0.5); result.admitToReadyP95Ms = at(0.95); result.admitToReadyMaxMs = sorted[n - 1];
+    return result;
+  }
   bool renew(const rpc::Json& command, Clock::time_point now = Clock::now()) {
     const auto found = active_.find(command.getString("instanceId"));
     if (found == active_.end() || found->second.demand.sourceId != command.getString("sourceId") ||
@@ -114,17 +138,22 @@ class GradePreviewController {
     // Preparation can start a worker and replace its wanted revision. Validate
     // the entire control envelope before those effects; unchanged lease renewals
     // above retain their accepted draft without touching its compiler.
+    double prepareMs = 0;
     if (draftInput) {
+      const auto started = Clock::now();
       auto graphicsDraft = prepareDraft(*draftInput);
+      prepareMs = lastPrepareMs_ = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
       if (!graphicsDraft) return false;
       demand.lowerThirdPreview = std::move(*graphicsDraft);
     }
-    if (found == active_.end()) active_.emplace(id, Entry{std::move(demand), now, now});
+    if (found == active_.end()) found = active_.emplace(id, Entry{std::move(demand), now, now}).first;
     else {
+      if (!found->second.settled) ++supersededBeforeReady_;
       found->second.demand = std::move(demand);
       found->second.playStarted = now;
       found->second.renewed = now;
     }
+    admit(found->second, now, prepareMs);
     return true;
   }
 
@@ -162,8 +191,10 @@ class GradePreviewController {
               surface.demand.sourceId == entry.demand.sourceId && surface.demand.revision == entry.demand.revision; })
           : std::vector<modules::GradePreviewSurface>::const_iterator{};
       if (!result || match == result->gradePreviews.end()) {
-        emit({entry.demand, 0, 0, 0, {}, health.failed ? "unavailable" : "preparing",
-              health.failed ? health.failureReason : "awaiting-native-grade"});
+        const modules::GradePreviewSurface pending{entry.demand, 0, 0, 0, {}, health.failed ? "unavailable" : "preparing",
+              health.failed ? health.failureReason : "awaiting-native-grade"};
+        settle(entry, pending, now);
+        emit(pending, timingJson(entry, result ? result->workMs : 0));
         continue;
       }
       auto surface = *match;
@@ -188,18 +219,27 @@ class GradePreviewController {
           surface.status = "stale"; surface.reason = "source-not-advancing";
         }
       }
-      emit(surface);
+      settle(entry, surface, now);
+      emit(surface, timingJson(entry, result->workMs));
     }
   }
   std::vector<rpc::Json> drain() { auto result = std::move(events_); events_.clear(); eventBytes_ = 0; return result; }
   size_t pendingEventBytes() const { return eventBytes_; }
   uint64_t eventsRefused() const { return eventsRefused_; }
   rpc::Json diagnostics(const modules::ICompositor& compositor) const {
-    return diagnosticsFor(compositor, active_.size(), eventBytes_, eventsRefused_);
+    return diagnosticsFor(compositor, active_.size(), eventBytes_, eventsRefused_, stats());
   }
-  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes = 0, uint64_t eventsRefused = 0) {
+  // `authoring` (Designer timing) is the controller's stats plus the private
+  // template compiler's last compile time, captured under coreMutex.
+  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes = 0, uint64_t eventsRefused = 0,
+                                  const Stats& stats = {}, double lastCompileMs = 0) {
     const auto worker = compositor.gradePreviewDiagnostics();
-    return rpc::Json::Object{{"observationVersion", "grade-preview-v1"},
+    rpc::Json authoring = rpc::Json::Object{{"revisionsAdmitted", double(stats.admitted)}, {"revisionsReady", double(stats.ready)},
+      {"revisionsSupersededBeforeReady", double(stats.supersededBeforeReady)}, {"revisionsCoalesced", double(stats.coalesced)},
+      {"latencySamples", double((std::min)(stats.samples, LatencySamples))},
+      {"admittedToReadyP50Ms", stats.admitToReadyP50Ms}, {"admittedToReadyP95Ms", stats.admitToReadyP95Ms},
+      {"admittedToReadyMaxMs", stats.admitToReadyMaxMs}, {"lastPrepareMs", stats.lastPrepareMs}, {"lastCompileMs", lastCompileMs}};
+    return rpc::Json::Object{{"observationVersion", "grade-preview-v1"}, {"authoring", std::move(authoring)},
       {"supported", compositor.supportsGradePreview()}, {"activeEditors", double(editors)},
       {"editorCapacity", double(Capacity)}, {"leaseMs", 3000}, {"requestedIntervalMs", 100}, {"playIntervalMs", 33},
       {"eventCapacity", double(EventCapacity)}, {"eventByteCapacity", double(EventByteBudget)},
@@ -222,8 +262,35 @@ class GradePreviewController {
     uint64_t scopeEpoch = 0;
     int64_t scopeFrame = 0, scopeExport = -1, scopeCompletionObservedAtMs = 0;
     Clock::time_point scopeAdvanced{};
+    // Designer timing: when the current revision entered the pipeline, what its
+    // draft preparation cost on the command thread, and whether it has settled
+    // (first ready texture or unavailable verdict for this exact revision).
+    Clock::time_point admitted{};
+    double prepareMs = 0, admittedToReadyMs = 0;
+    bool settled = false;
   };
-  bool emit(const modules::GradePreviewSurface& surface) {
+  void admit(Entry& entry, Clock::time_point now, double prepareMs) {
+    entry.admitted = now; entry.prepareMs = prepareMs; entry.admittedToReadyMs = 0; entry.settled = false;
+    ++admitted_;
+  }
+  void settle(Entry& entry, const modules::GradePreviewSurface& surface, Clock::time_point now) {
+    if (entry.settled || surface.demand.revision != entry.demand.revision) return;
+    const bool ready = surface.status == "ready" && surface.texture.width > 0;
+    if (!ready && surface.status != "unavailable") return;
+    entry.settled = true;
+    if (!ready) return;
+    entry.admittedToReadyMs = std::chrono::duration<double, std::milli>(now - entry.admitted).count();
+    latencies_[latencyCount_++ % LatencySamples] = entry.admittedToReadyMs;
+    ++readyRevisions_;
+  }
+  // Per-revision timing rides each authored-canvas observation (three fixed
+  // numeric keys, inside emit's byte bound). Source grade events are unchanged.
+  static rpc::Json timingJson(const Entry& entry, double workerMs) {
+    if (!entry.demand.lowerThirdPreview) return {};
+    return rpc::Json::Object{{"prepareMs", entry.prepareMs}, {"admittedToReadyMs", entry.admittedToReadyMs},
+        {"workerMs", workerMs}};
+  }
+  bool emit(const modules::GradePreviewSurface& surface, rpc::Json timing = {}) {
     // Fixed schema: 16 KiB covers map nodes/keys and fixed diagnostic strings;
     // eight bytes per varying character bounds allocation and JSON escaping.
     size_t bound = 16384;
@@ -243,7 +310,7 @@ class GradePreviewController {
     const auto now = Clock::now();
     const auto age = found!=active_.end() && found->second.observed ? double(std::chrono::duration_cast<std::chrono::milliseconds>(now-found->second.advanced).count()) : 0;
     const auto scopeAge = found!=active_.end() && found->second.scopeObserved ? double(std::chrono::duration_cast<std::chrono::milliseconds>(now-found->second.scopeAdvanced).count()) : 0;
-    events_.emplace_back(rpc::Json::Object{
+    rpc::Json::Object event{
       {"type", "grade-preview"}, {"instanceId", surface.demand.instanceId},
       {"sourceId", surface.demand.sourceId}, {"revision", double(surface.demand.revision)},
       {"sourceEpoch", double(surface.sourceEpoch)}, {"sourceFrameId", double(surface.sourceFrameId)},
@@ -260,7 +327,9 @@ class GradePreviewController {
         {"sampleWidth", st.width>0?256:0}, {"sampleHeight", st.width>0?144:0}, {"sampleCount", st.width>0?scope.roi.sampleCount():0}, {"colorSpace", "rec709-sdr-assumed"},
         {"units", "encoded 0-1; waveform 0-100%; Cb/Cr"},
         {"texture", textureJson(st)}}},
-      {"texture", textureJson(t)}});
+      {"texture", textureJson(t)}};
+    if (!timing.isNull()) event.emplace("timing", std::move(timing));
+    events_.emplace_back(std::move(event));
     eventBytes_ += bound;
     return true;
   }
@@ -278,5 +347,9 @@ class GradePreviewController {
   uint64_t eventsRefused_ = 0;
   Clock::time_point lastTick_{};
   bool submitted_ = false;
+  uint64_t admitted_ = 0, readyRevisions_ = 0, supersededBeforeReady_ = 0, coalesced_ = 0;
+  double lastPrepareMs_ = 0;
+  std::array<double, LatencySamples> latencies_{};
+  size_t latencyCount_ = 0;
 };
 }

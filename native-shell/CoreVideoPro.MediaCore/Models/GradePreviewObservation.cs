@@ -15,6 +15,14 @@ public sealed record GradePreviewObservation
     public string Reason { get; init; } = "";
     public ProgramSharedTexture? Texture { get; init; }
     public GradeScopeObservation? Scopes { get; init; }
+    /// <summary>Designer canvas timing for this revision (authored previews only; diagnostics, never shown as a claim).</summary>
+    public GradePreviewTiming? Timing { get; init; }
+}
+public sealed record GradePreviewTiming
+{
+    public double PrepareMs { get; init; }
+    public double AdmittedToReadyMs { get; init; }
+    public double WorkerMs { get; init; }
 }
 public sealed record GradeScopeObservation
 {
