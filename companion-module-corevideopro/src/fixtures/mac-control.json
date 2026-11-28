@@ -320,7 +320,7 @@
             "Type" : "string"
           },
           {
-            "Description" : "Show Input slot 1-10",
+            "Description" : "Show Input slot 1-16",
             "Name" : "slot",
             "Required" : true,
             "Type" : "int"
@@ -413,12 +413,12 @@
         "Title" : "Take Volt clip"
       },
       {
-        "Description" : "Assign a source to a Show Input slot (1-10).",
+        "Description" : "Assign a source to a Show Input slot (1-16).",
         "Id" : "input.assign",
         "OscAddress" : "\/cvp\/input\/assign",
         "Params" : [
           {
-            "Description" : "1-10",
+            "Description" : "1-16",
             "Name" : "slot",
             "Required" : true,
             "Type" : "int"
@@ -470,7 +470,7 @@
         "OscAddress" : "\/cvp\/input\/name",
         "Params" : [
           {
-            "Description" : "1-10",
+            "Description" : "1-16",
             "Name" : "slot",
             "Required" : true,
             "Type" : "int"
@@ -509,7 +509,7 @@
         "OscAddress" : "\/cvp\/input\/inShow\/set",
         "Params" : [
           {
-            "Description" : "1-10",
+            "Description" : "1-16",
             "Name" : "slot",
             "Required" : true,
             "Type" : "int"
@@ -728,7 +728,7 @@
         "OscAddress" : "\/cvp\/multiview\/tileCount\/set",
         "Params" : [
           {
-            "Description" : "1-10",
+            "Description" : "1-16",
             "Name" : "count",
             "Required" : true,
             "Type" : "int"

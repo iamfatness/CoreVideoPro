@@ -821,7 +821,7 @@ extension ShellTests {
         expectEqual(video(ZoomSourceBudget.resolve(d)), ["t1:preview", "t2:program-tiles"],
                     "\(t).AFixedBusRouteSetsTheFullResolutionPurposeWhateverTierListsTheGuestFirst")
 
-        let members = (0..<10).map { "t\($0)" }
+        let members = (0..<ZoomSourceBudget.maxVideoSubscriptions).map { "t\($0)" }
         func cue(_ cued: Bool) -> I {
             var e = I(); e.participants = people(members + ["cued"])
             e.programTiles = ["members": members.map { "zoom:" + $0 }]
@@ -831,7 +831,7 @@ extension ShellTests {
         let after = ZoomSourceBudget.spineParts(cue(true), names: ["cued": "Cued guest"])
         expectEqual(video(ZoomSourceBudget.resolve(cue(true))), video(ZoomSourceBudget.resolve(cue(false))),
                     "\(t).AtTheCapCueingPreviewNeverTakesVideoFromAProgramGalleryMember: Program unchanged")
-        expectEqual(after.previewNotice, "no video: Cued guest (subscription limit 10)", "\(t).AtTheCap…: the PVW cell names them")
+        expectEqual(after.previewNotice, "no video: Cued guest (subscription limit 8)", "\(t).AtTheCap…: the PVW cell names them")
         expectEqual(after.programNotice, "", "\(t).AtTheCap…: nothing on Program")
 
         var f = I(); f.participants = people(["latched", "walled"], off: ["latched"])
