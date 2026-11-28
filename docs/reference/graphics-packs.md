@@ -152,8 +152,8 @@ template's bounds by their reach, so the bounds never clip them.
 |---|---|---|---|
 | `news-signal` | anchor, lower-third, lower-third-2-line, name-tag, title, bug, clock-bug, ticker | navy-red, charcoal-gold, white-blue | Barlow Semi Condensed 400/600/700 |
 | `sports-kinetic` | lower-third, lower-third-2-line, name-tag, title, bug, score-bug, stat-lower-third | home-red, away-blue, night (team tokens) | Barlow Condensed 400/700, 600i/700i |
-| `worship-grace` | lower-third, lower-third-2-line, name-tag, title, bug, scripture, lyrics | warm, midnight, light | Cormorant Garamond 400/400i/600, Montserrat 400/500 |
-| `corporate-clarity` | lower-third, lower-third-2-line, name-tag, title, bug, webinar-title, speaker-company | clarity-blue, graphite, forest | Montserrat 400/500/600 |
+| `worship-grace` | lower-third, lower-third-2-line, name-tag, title, bug, scripture, lyrics, glass-lower-third | warm, midnight, light | Cormorant Garamond 400/400i/600, Montserrat 400/500 |
+| `corporate-clarity` | lower-third, lower-third-2-line, name-tag, title, bug, webinar-title, speaker-company, glass-lower-third | clarity-blue, graphite, forest | Montserrat 400/500/600 |
 | `esports-neon` | lower-third, lower-third-2-line, name-tag, title, bug, player-card, caster-duo | neon-cyan, toxic, magenta | Chakra Petch 400/600/700 |
 | `talk-studio` | lower-third, lower-third-2-line, name-handle, title, bug, up-next | studio-coral, mint, mono | Poppins 400/500/600 |
 | `minimal-line` | lower-third, lower-third-2-line, name-tag, title, bug, quote | ink, paper, gold | Inter 400/400i/700 |
@@ -162,6 +162,8 @@ Motion uses slice 8: News plates reveal with a feathered edge (expo-out) and the
 the 8 s shine sweep; Corporate text builds word by word (80 ms, quint-out); Worship scripture builds
 line by line (150 ms); the Esports accent and live square pulse; Minimal text is a feathered mask
 reveal (500 ms, quint-out). No curve offers back-out yet, so Sports slams and Talk pops use expo-out
-and the existing pop. Not yet in the packs: Worship's glass plate (P9, true backdrop blur; owner
-ruling: no frosted fallback). Schema weights are 400-700, so the spec's Inter 300 and Montserrat
+and the existing pop. Worship and Corporate each have a `glass-lower-third`: a rounded plate with
+`backdrop` (P9, true backdrop blur) whose fill is the palette surface, under a veil of the primary
+for text contrast. The parity fixture judges the raster (fill and veil); the blur itself is judged by
+the backdrop pass's own CPU-reference tests (`docs/reference/backdrop-blur.md`). Schema weights are 400-700, so the spec's Inter 300 and Montserrat
 Light are 400.

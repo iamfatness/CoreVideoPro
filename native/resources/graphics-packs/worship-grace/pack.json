@@ -52,10 +52,11 @@
   "templates/title.json",
   "templates/bug.json",
   "templates/scripture.json",
-  "templates/lyrics.json"
+  "templates/lyrics.json",
+  "templates/glass-lower-third.json"
  ],
  "metadata": {
-  "status": "Wave 1 (graphics styles slice 10). The glass plate variant needs true backdrop blur (P9, #1270) and is not shipped yet; there is no frosted fallback (owner ruling).",
+  "status": "Wave 1 (graphics styles slice 10).",
   "defaultPalette": "palettes/warm.json",
   "generator": "scripts/graphics/generate-style-packs.py"
  }

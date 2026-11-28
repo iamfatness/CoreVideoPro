@@ -38,7 +38,8 @@
   "templates/title.json",
   "templates/bug.json",
   "templates/webinar-title.json",
-  "templates/speaker-company.json"
+  "templates/speaker-company.json",
+  "templates/glass-lower-third.json"
  ],
  "metadata": {
   "status": "Wave 1 (graphics styles slice 10).",

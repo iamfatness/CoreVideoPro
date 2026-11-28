@@ -17,8 +17,8 @@ Every template stays inside the template limits (64 layers, 32 fields,
 caps (P1), angled/multi-stop/radial gradients (P2), polygon and skew plates
 (P3), shape shadow and glow (P4), and slice 8 motion: feathered reveals,
 line/word builds and looping accents (P5-P7), with the expo-out / quint-out
-pack easings. True backdrop blur (P9, slice 9) is added when it lands; until
-then no template imitates it.
+pack easings, and true backdrop blur (P9: "glass" plates, compositor-blurred
+Program behind a rounded rect; never imitated with a frosted fill).
 """
 import json
 import os
@@ -421,13 +421,23 @@ def worship():
                   shadow={'color': tok('primary'), 'x': 0, 'y': 3, 'blur': 8}), 0),
         rise(text('line-2-text', 0, 104, 1600, 76, fld('line-2'), SERIF, 60, 600, tok('onPrimary'), align='center',
                   shadow={'color': tok('primary'), 'x': 0, 'y': 3, 'blur': 8}, collapseWhenEmpty=True), 150)], LOWER_CENTER, soft_in, soft_out)
+    glass = template(p, 'glass-lower-third', 'Worship Grace glass lower third', 'lower-third', 1100, 170, [name_f, title_f], [
+        # The glass: Program blurred behind a rounded plate whose own fill is the
+        # palette surface (clear in the stock palettes), then a light veil of the
+        # primary for text contrast. Opacity on the plate would dim the glass too.
+        rect('glass', 0, 0, 1100, 170, tok('surface'), cornerRadius=16, backdrop={'blur': 24}),
+        rect('veil', 0, 0, 1100, 170, tok('primary'), cornerRadius=16, opacity=0.35),
+        rise(text('name-text', 48, 22, 1004, 70, fld('name'), SERIF, 56, 600, tok('onPrimary')), 150),
+        rise(rect('rule', 48, 100, 300, 2, tok('accent')), 0),
+        rise(text('title-text', 48, 114, 1004, 38, fld('title'), SANS, 26, 400, tok('onPrimaryMuted'), textTransform='uppercase',
+                  letterSpacing=0.12), 300)], LOWER_LEFT, soft_in, soft_out)
     pack(p, 'Worship: Grace', 'worship',
          [{'family': SERIF, 'fallback': 'Georgia', 'files': ['CormorantGaramond-Regular.ttf', 'CormorantGaramond-Italic.ttf', 'CormorantGaramond-SemiBold.ttf']},
           {'family': SANS, 'files': ['Montserrat-Regular.ttf', 'Montserrat-Medium.ttf']}],
          {'warm': palette('Warm', '#2B1A12E6', '#F3E6D3FF', '#D9A94EFF', '#2B1A1200', '#FFF8EEFF', '#E8D9C3FF', '#2B1A12FF', '#2B1A12FF'),
           'midnight': palette('Midnight', '#0B1230E6', '#DCE3F5FF', '#C9B37AFF', '#0B123000', '#FFFFFFFF', '#C9D2EAFF', '#0B1230FF', '#0B1230FF'),
           'light': palette('Light', '#FBF8F2F2', '#3A3026FF', '#A5782BFF', '#FBF8F200', '#2A221BFF', '#5C5045FF', '#FBF8F2FF', '#FFFFFFFF')},
-         [lt1, lt2, tag, title, bug, scripture, lyrics])
+         [lt1, lt2, tag, title, bug, scripture, lyrics, glass])
 
 
 # ── Corporate: Clarity ──────────────────────────────────────────────────────
@@ -498,12 +508,19 @@ def corporate():
         rect('strip', 324, 22, 6, 86, tok('accent')),
         follow(text('name-text', 352, 16, 720, 56, fld('name'), F, 42, 600, tok('onPrimary')), 150),
         follow(text('role-text', 352, 74, 720, 38, fld('role'), F, 26, 400, tok('onPrimaryMuted')), 230)], LOWER_LEFT, slide_in, fade_out)
+    glass = template(p, 'glass-lower-third', 'Corporate Clarity glass lower third', 'lower-third', 980, 130, [name_f, title_f], [
+        rect('glass', 0, 0, 980, 130, tok('surface'), cornerRadius=8, backdrop={'blur': 32}),
+        rect('veil', 0, 0, 980, 130, tok('primary'), cornerRadius=8, opacity=0.55),
+        rect('strip', 24, 22, 6, 86, tok('accent')),
+        follow(text('name-text', 52, 16, 900, 56, fld('name'), F, 42, 600, tok('onPrimary')), 150),
+        follow(text('title-text', 52, 74, 900, 38, fld('title'), F, 26, 400, tok('onPrimaryMuted'), collapseWhenEmpty=True), 230)],
+        LOWER_LEFT, slide_in, fade_out)
     pack(p, 'Corporate: Clarity', 'corporate',
          [{'family': F, 'files': ['Montserrat-Regular.ttf', 'Montserrat-Medium.ttf', 'Montserrat-SemiBold.ttf']}],
          {'clarity-blue': palette('Clarity Blue', '#FFFFFFFF', '#1F4E8CFF', '#1F6FEBFF', '#0B1F3A40', '#14213DFF', '#5A6578FF', '#FFFFFFFF', '#FFFFFFFF'),
           'graphite': palette('Graphite', '#22262EFF', '#3B82F6FF', '#3B82F6FF', '#00000066', '#FFFFFFFF', '#AEB6C4FF', '#FFFFFFFF', '#FFFFFFFF'),
           'forest': palette('Forest', '#F7F8F5FF', '#1E5B3AFF', '#2E8B57FF', '#0F2A1A40', '#16241BFF', '#55635AFF', '#FFFFFFFF', '#FFFFFFFF')},
-         [lt1, lt2, tag, title, bug, webinar, company])
+         [lt1, lt2, tag, title, bug, webinar, company, glass])
 
 
 # ── Esports: Neon ───────────────────────────────────────────────────────────
@@ -736,10 +753,7 @@ FACES = {'Regular': (400, 'normal'), 'Italic': (400, 'italic'), 'Medium': (500, 
 # Files slice 7 shipped by hand in news-signal: kept as they are, listed first.
 HAND_WRITTEN = {'news-signal': ['templates/anchor.json']}
 
-STATUS = {
-    'worship-grace': 'Wave 1 (graphics styles slice 10). The glass plate variant needs true backdrop blur '
-                     '(P9, #1270) and is not shipped yet; there is no frosted fallback (owner ruling).',
-}
+STATUS = {}
 
 
 def font_entries(groups):

@@ -772,6 +772,32 @@
     "brand.onPrimaryMuted": "#D9D9D9FF"
    },
    "atlas": true
+  },
+  {
+   "name": "pack-worship-grace-glass-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/worship-grace/templates/glass-lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#2B1A12E6",
+    "brand.accent": "#D9A94EFF",
+    "brand.surface": "#2B1A1200",
+    "brand.onPrimary": "#FFF8EEFF",
+    "brand.onPrimaryMuted": "#E8D9C3FF"
+   },
+   "atlas": true
+  },
+  {
+   "name": "pack-corporate-clarity-glass-lower-third",
+   "source": "manifest:../../../resources/graphics-packs/corporate-clarity/templates/glass-lower-third.json",
+   "fields": {},
+   "brand": {
+    "brand.primary": "#FFFFFFFF",
+    "brand.accent": "#1F6FEBFF",
+    "brand.surface": "#0B1F3A40",
+    "brand.onPrimary": "#14213DFF",
+    "brand.onPrimaryMuted": "#5A6578FF"
+   },
+   "atlas": true
   }
  ]
 }
