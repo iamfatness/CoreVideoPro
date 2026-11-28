@@ -1,10 +1,13 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -25,6 +28,8 @@ public sealed class CvColorField : UserControl
 {
     /// <summary>The resolved show palette (token -> #RRGGBBAA) the swatch row offers. Set once by the shell.</summary>
     public static Func<IReadOnlyDictionary<string, string>>? PaletteProvider { get; set; }
+    /// <summary>The eyedropper's core sampler (graphics styles slice 3). Null hides "Pick from Program".</summary>
+    public static IColourSampler? Sampler { get; set; }
 
     private readonly TextBlock _header = new() { FontSize = 12, Visibility = Visibility.Collapsed };
     private readonly Border _chip = new() { Width = 22, Height = 22, CornerRadius = new CornerRadius(4), BorderThickness = new Thickness(1) };
@@ -42,6 +47,11 @@ public sealed class CvColorField : UserControl
     private readonly StackPanel _linkChoice = new() { Spacing = 6, Visibility = Visibility.Collapsed };
     private readonly TextBlock _linkText = new() { FontSize = 11, TextWrapping = TextWrapping.WrapWholeWords };
     private readonly Button _wholeShow, _detach;
+    private readonly Button _pickProgram;
+    private readonly Image _frozen = new() { Stretch = Stretch.Uniform, Width = 320, Visibility = Visibility.Collapsed };
+    private readonly TextBlock _pickStatus = new() { FontSize = 11, TextWrapping = TextWrapping.WrapWholeWords, Visibility = Visibility.Collapsed };
+    private ColourSampleFrame? _frozenFrame;
+    private bool _picking;
     private GraphicsRgba _value = new(255, 255, 255), _staged;
     private string? _boundToken;
     private bool _loading, _choiceMade;
@@ -74,6 +84,13 @@ public sealed class CvColorField : UserControl
         body.Children.Add(_flyoutHex); body.Children.Add(channels);
         body.Children.Add(Caption("Palette")); body.Children.Add(_palette);
         body.Children.Add(Caption("Recent")); body.Children.Add(_recent);
+        _pickProgram = StudioBrushes.GhostButton("\u2316 Pick from Program");
+        ToolTipService.SetToolTip(_pickProgram, "Freeze the Program thumbnail, then click a pixel in it. Nothing on air changes.");
+        AutomationProperties.SetName(_pickProgram, "Pick from Program");
+        _pickProgram.Click += async (_, _) => await FreezeProgramAsync();
+        _frozen.PointerPressed += async (_, e) => await PickAtAsync(e.GetCurrentPoint(_frozen).Position);
+        AutomationProperties.SetName(_frozen, "Frozen Program frame");
+        body.Children.Add(_pickProgram); body.Children.Add(_frozen); body.Children.Add(_pickStatus);
         body.Children.Add(_flyoutWarnings);
         _wholeShow = StudioBrushes.AccentButton("Change for the whole show");
         _detach = StudioBrushes.GhostButton("Detach just this");
@@ -93,7 +110,8 @@ public sealed class CvColorField : UserControl
         _flyoutHex.LostFocus += (_, _) => { if (Parse(_flyoutHex.Text) is { } parsed) Stage(parsed); };
         _wholeShow.Click += (_, _) => { if (_boundToken is { } token) { _choiceMade = true; Raise(new(_staged.Format(true), token, true)); _flyout.Hide(); } };
         _detach.Click += (_, _) => { _choiceMade = true; CommitLiteral(_staged); _flyout.Hide(); };
-        _flyout.Opening += (_, _) => { _choiceMade = false; _staged = _value; RefreshFlyout(); };
+        _flyout.Opening += (_, _) => { _choiceMade = false; _staged = _value; _pickProgram.Visibility = Sampler is null ? Visibility.Collapsed : Visibility.Visible; RefreshFlyout(); };
+        _flyout.Closed += (_, _) => _ = ReleaseFrozenAsync();
         _flyout.Closed += (_, _) => {
             if (_choiceMade || _staged == _value) return;
             // A linked colour needs the operator's choice; closing without one keeps the link and its colour.
@@ -241,6 +259,47 @@ public sealed class CvColorField : UserControl
             }
             panel.Children.Add(line);
         }
+    }
+
+    // ---- eyedropper (slice 3) -----------------------------------------------------------
+    /// <summary>Freezes the core's Program thumbnail and shows exactly those bytes; a click picks from them.</summary>
+    private async Task FreezeProgramAsync()
+    {
+        if (Sampler is not { } sampler || _picking) return;
+        _picking = true; _pickProgram.IsEnabled = false;
+        try {
+            var (frame, reason) = await sampler.FreezeAsync();
+            _pickStatus.Text = reason; _pickStatus.Visibility = Visibility.Visible;
+            _frozenFrame = frame;
+            if (frame is null) { _frozen.Visibility = Visibility.Collapsed; return; }
+            var bitmap = new WriteableBitmap(frame.Width, frame.Height);
+            using (var stream = bitmap.PixelBuffer.AsStream()) stream.Write(frame.Bgra, 0, frame.Bgra.Length);
+            bitmap.Invalidate();
+            _frozen.Source = bitmap; _frozen.Height = 320.0 * frame.Height / frame.Width; _frozen.Visibility = Visibility.Visible;
+        } catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException or IOException) {
+            _pickStatus.Text = "Could not freeze Program: " + ex.Message; _pickStatus.Visibility = Visibility.Visible;
+        } finally { _picking = false; _pickProgram.IsEnabled = true; }
+    }
+
+    private async Task PickAtAsync(Windows.Foundation.Point at)
+    {
+        if (Sampler is not { } sampler || _frozenFrame is not { } frame || _picking || _frozen.ActualWidth <= 0 || _frozen.ActualHeight <= 0) return;
+        _picking = true;
+        try {
+            var (hex, reason) = await sampler.PickAsync(frame, Math.Clamp(at.X / _frozen.ActualWidth, 0, 1), Math.Clamp(at.Y / _frozen.ActualHeight, 0, 1));
+            _pickStatus.Text = reason;
+            if (hex is not null && Parse(hex) is { } picked) Stage(AllowAlpha ? picked with { A = _staged.A } : picked);
+        } catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException or IOException) {
+            _pickStatus.Text = "The pick failed: " + ex.Message;
+        } finally { _picking = false; }
+    }
+
+    private async Task ReleaseFrozenAsync()
+    {
+        _frozen.Visibility = Visibility.Collapsed; _frozen.Source = null; _pickStatus.Visibility = Visibility.Collapsed;
+        if (_frozenFrame is null || Sampler is not { } sampler) return;
+        _frozenFrame = null;
+        try { await sampler.ReleaseAsync(); } catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException or IOException) { /* The core drops it on restart. */ }
     }
 
     private static Brush Brush(GraphicsRgba value) => new SolidColorBrush(Windows.UI.Color.FromArgb(value.A, value.R, value.G, value.B));

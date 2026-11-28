@@ -384,6 +384,8 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreBrandKit? BrandKit { get; init; }
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
     public NativeGraphicsState? Graphics { get; init; }
+    /// <summary>The eyedropper's frozen Program thumbnail and last pick (graphics styles slice 3).</summary>
+    public NativeColourSampleState? ColourSample { get; init; }
     /// <summary>The core's deterministic director recommendation (snapshot node "autoProduction":
     /// ruleId, recommendedSceneId, confidence, rationale, slotBindings). #761: this was never bound,
     /// so Set &amp; Forget and Magic Scene only ever saw the shell's count-only fallback, whose

@@ -42,6 +42,7 @@ public sealed partial class OverlaysPage : UserControl
             // Every colour field's palette swatches show this show's resolved palette (graphics styles slice 2).
             var studio = _boundViewModel;
             Controls.CvColorField.PaletteProvider = () => studio.GraphicsLibrary.EffectivePalette.Resolve();
+            Controls.CvColorField.Sampler = studio.ColourSampler;
         }
     }
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)

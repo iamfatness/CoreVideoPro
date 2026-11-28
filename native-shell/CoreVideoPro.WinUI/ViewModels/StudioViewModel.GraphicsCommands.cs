@@ -30,6 +30,10 @@ public sealed partial class StudioViewModel
     }
     public GraphicsWorkspaceSession GraphicsWorkspace => _graphicsWorkspace ??= CreateGraphicsWorkspace();
     public GraphicsWorkspaceLibrary GraphicsLibrary => _graphicsLibrary ??= CreateGraphicsLibrary();
+    private GraphicsColourSampler? _colourSampler;
+    /// <summary>The colour fields' eyedropper over the core's colour-sample command (graphics styles slice 3).</summary>
+    public IColourSampler ColourSampler => _colourSampler ??= new GraphicsColourSampler(() => _bridge.Running,
+        (commands, cancellation) => _bridge.SyncAsync(commands, cancellationToken: cancellation));
 
     private GraphicsWorkspaceLibrary CreateGraphicsLibrary()
     {

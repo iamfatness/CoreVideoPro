@@ -73,6 +73,7 @@ class CoreStateCapture {
   int previewPlanLayerCount_ = 0;
   bool previewComposite_ = false;
   rpc::Json encodedPreview_;
+  rpc::Json colourSample_;
   rpc::Json graphicsState_;
   uint64_t previewSceneRevision_ = 0;
   modules::ProgramFrame lastProgramFrame_;

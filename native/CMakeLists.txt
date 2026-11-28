@@ -980,6 +980,7 @@ if(BUILD_TESTING)
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
     tests/GraphicsPreparationCacheTest.cpp
+    tests/ColourSampleTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GraphicsStylePrimitivesTest.cpp

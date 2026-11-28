@@ -56,7 +56,7 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
 // Contract view of the live MediaCore::applyCommandMutation branches. The
 // dispatcher itself decides admission; ContractParity checks this view and the
 // production builder against every branch in both directions.
-inline constexpr std::array<std::string_view, 66> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 67> kNativeMediaCoreCommandTypes = {
     "graphics-automation-configure",
     "graphics-automation-control",
     "graphics-authority-set",
@@ -77,6 +77,7 @@ inline constexpr std::array<std::string_view, 66> kNativeMediaCoreCommandTypes =
     "set-participant-transform",
     "set-overlay-asset",
     "set-color-grade",
+    "colour-sample",
     "set-grade-preview",
     "set-source-preview-demand",
     "set-zoom-thumbnail-demand",

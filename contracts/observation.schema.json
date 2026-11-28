@@ -360,6 +360,11 @@
       "typed": "omit",
       "qualification": "include",
       "control": "include"
+    },
+    "colourSample": {
+      "typed": "include",
+      "qualification": "omit",
+      "control": "omit"
     }
   }
 }

@@ -93,6 +93,7 @@ public sealed class CoreObservationModel
     public JsonElement? Graphics => Get("graphics");
     public JsonElement? SourceSheet => Get("sourceSheet");
     public JsonElement? PreviewFrame => Get("previewFrame");
+    public JsonElement? ColourSample => Get("colourSample");
     public string TypedJson() => Project(View.Typed);
     public string QualificationJson() => Project(View.Qualification);
     public string ControlJson() => Project(View.Control);
@@ -195,6 +196,7 @@ public sealed class CoreObservationModel
         "graphics" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "sourceSheet" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "previewFrame" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
+        "colourSample" => view switch { View.Typed => 1, View.Qualification => 0, _ => 0 },
         _ => 1
     };
 }
