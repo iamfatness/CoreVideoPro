@@ -234,6 +234,7 @@ $script:DrillPatchTypes = @{
   RecordingTargetFolder = 'string'; RecordingFilenamePrefix = 'string'; IsoRecordingEnabled = 'bool'
   IsoRecordingSourceIds = 'array'; StreamRtmpEnabled = 'bool'; StreamSrtEnabled = 'bool'
   StreamSrtMode = 'string'; StreamSrtHost = 'string'; StreamSrtPort = 'string'
+  VirtualCameraFramerEnabled = 'bool'
 }
 
 function Get-DrillJsonKind($Value) {
@@ -342,6 +343,11 @@ function Set-DrillPreferences {
     # No ISO source (a -NoWebcam local-only plan) turns ISO off rather than arming an empty list.
     IsoRecordingEnabled = (@($IsoSourceIds).Count -gt 0); IsoRecordingSourceIds = [object[]]@($IsoSourceIds | ForEach-Object { [string]$_ })
     StreamRtmpEnabled = $false
+    # The gate judges the CLEAN camera. The OH Framer (#839) composites its
+    # built-in frame graphic over the edges, where the identity pattern lives,
+    # so an owner's framer-on profile made every camera frame undecodable
+    # (2026-11-12, v1.0.0 soak: light cells 126 instead of 235).
+    VirtualCameraFramerEnabled = $false
   }
   if ($Stream) {
     if ($SrtPort -lt 1024 -or $SrtPort -gt 65535) { throw "Invalid SRT port $SrtPort" }
