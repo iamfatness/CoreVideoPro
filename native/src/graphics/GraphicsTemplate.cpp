@@ -527,6 +527,10 @@ class Layout {
     text.font = resolve(node.get("font"), "string").asString();
     need(!text.font.empty() && text.font.size() <= 128 && utf8(text.font), "template-crawl-font");
     text.fontSize = quantity(node, "fontSize", 1, std::min(512., base.box.height), 28);
+    // Crawl weight (slice 10): 400/500/600/700 like text layers; a ticker skin may set its own.
+    const auto crawlWeight = quantity(node, "fontWeight", 400, 700, 400);
+    need(crawlWeight == 400 || crawlWeight == 500 || crawlWeight == 600 || crawlWeight == 700, "template-font-weight");
+    text.fontWeight = int(crawlWeight);
     text.color = color(resolve(node.get("color"), "color").asString());
     text.align = "left";
     text.overflow = "clip";
@@ -633,7 +637,7 @@ class Layout {
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth", "shadow"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize", "letterSpacing", "fontStyle", "textTransform", "stagger"});
-    else if (type == "crawl") allowed.insert({"items", "font", "fontSize", "color", "speed", "gap", "direction", "mode"});
+    else if (type == "crawl") allowed.insert({"items", "font", "fontSize", "fontWeight", "color", "speed", "gap", "direction", "mode"});
     else if (type == "table") allowed.insert({"columns", "rows", "rowHeight", "font", "fontSize", "color", "headerFill", "rowFill", "alternateFill"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
     else need(false, "unsupported-template-node-type");

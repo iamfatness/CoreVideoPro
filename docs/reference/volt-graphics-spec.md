@@ -226,7 +226,7 @@ warning and prevents automatic airing until the operator accepts the fallback.
 Text style (graphics styles P1): `letterSpacing` in em, -0.25 to 1 (extra advance
 after every character, scaled with a `minFontSize` fit); `fontStyle` `normal` or
 `italic`; `textTransform` `none`, `uppercase` or `lowercase` (simple one-to-one
-case mapping, applied before measurement).
+case mapping, applied before measurement). A crawl takes `fontWeight` (400/500/600/700, default 400) too.
 Images use contain/cover plus alignment; transparent logos default to contain.
 Invalid/missing required assets block readiness. Optional assets may be omitted
 only with an explicit warning and the template's defined fallback.

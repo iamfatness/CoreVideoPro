@@ -70,6 +70,7 @@
    },
    "font": "Barlow Semi Condensed",
    "fontSize": 40,
+   "fontWeight": 600,
    "color": {
     "token": "brand.onPrimary"
    },
