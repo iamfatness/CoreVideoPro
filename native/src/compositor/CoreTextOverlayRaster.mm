@@ -381,13 +381,14 @@ constexpr double kWindowsTextGrayscaleContrast = 1.0;
 // holds for near-black text (#05070B, #14213D, #1E1B2E on light plates read
 // 8-14% heavy on the Mac with k = 1 and pass with these k), while mid and light
 // text (#5A6578, #D8DCE3 and every earlier fixture) matches k = 1 and reads
-// 8-10% light with a lower k. So k falls only for luma below 0.30, through
-// the two measured dark points.
+// 8-10% light with k near 0. #5A6578 (luma 0.39) sits between: +8.8% with
+// k = 1 and -9.6% with k = 0 on the webinar card. So k rises from the two
+// measured dark points to 1 at luma 0.45.
 double windowsTextContrastForColor(uint32_t argb) {
   const double r = ((argb >> 16) & 0xff) / 255.0, g = ((argb >> 8) & 0xff) / 255.0, b = (argb & 0xff) / 255.0;
   const double luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
   constexpr std::array<std::pair<double, double>, 4> points{{
-      {0.0, -0.54}, {0.127, -0.41}, {0.30, kWindowsTextGrayscaleContrast}, {1.0, kWindowsTextGrayscaleContrast}}};
+      {0.0, -0.54}, {0.127, -0.41}, {0.45, kWindowsTextGrayscaleContrast}, {1.0, kWindowsTextGrayscaleContrast}}};
   for (size_t i = 1; i < points.size(); ++i)
     if (luma <= points[i].first) {
       const double t = (luma - points[i - 1].first) / (points[i].first - points[i - 1].first);

@@ -253,7 +253,7 @@ def news():
                       [field('label', 'BREAKING', max_length=32), field('items', '["Polls close in the east at eight","Turnout up on last cycle","Live results all night"]', True, 4096)], [
         rect('band', 0, 0, 1920, 64, tok('surface')),
         rect('label-plate', 0, 0, 260, 64, tok('accent')),
-        node('crawl', 'crawl', 280, 10, 1620, 44, items=fld('items'), font=F, fontSize=38, color=tok('onPrimary'), speed=140, gap=96),
+        node('crawl', 'crawl', 280, 10, 1620, 44, items=fld('items'), font=F, fontSize=40, color=tok('onPrimary'), speed=140, gap=96),
         text('label-text', 0, 12, 260, 40, fld('label'), F, 32, 700, tok('onAccent'), align='center', textTransform='uppercase',
              letterSpacing=0.06)], BOTTOM)
     pack(p, 'News: Signal', 'news',
