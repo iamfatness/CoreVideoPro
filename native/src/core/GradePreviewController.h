@@ -332,8 +332,13 @@ class GradePreviewController {
   }
   // `authoring` (Designer timing) is the controller's stats plus the private
   // template compiler's last compile time, captured under coreMutex.
-  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes = 0, uint64_t eventsRefused = 0,
-                                  const Stats& stats = {}, double lastCompileMs = 0) {
+  // (An overload, not a `= {}` default: GCC and Clang refuse a default
+  // argument of a nested type with member initializers inside its class.)
+  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes = 0, uint64_t eventsRefused = 0) {
+    return diagnosticsFor(compositor, editors, eventBytes, eventsRefused, Stats{}, 0);
+  }
+  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes, uint64_t eventsRefused,
+                                  const Stats& stats, double lastCompileMs = 0) {
     const auto worker = compositor.gradePreviewDiagnostics();
     rpc::Json authoring = rpc::Json::Object{{"inFlightCadence", "render-tick"},
       {"inFlightBoundMs", double(std::chrono::milliseconds(InFlightBound).count())}, {"revisionsAdmitted", double(stats.admitted)}, {"revisionsReady", double(stats.ready)},
