@@ -253,7 +253,7 @@ def news():
                       [field('label', 'BREAKING', max_length=32), field('items', '["Polls close in the east at eight","Turnout up on last cycle","Live results all night"]', True, 4096)], [
         rect('band', 0, 0, 1920, 64, tok('surface')),
         rect('label-plate', 0, 0, 260, 64, tok('accent')),
-        node('crawl', 'crawl', 280, 10, 1620, 44, items=fld('items'), font=F, fontSize=34, color=tok('onPrimary'), speed=140, gap=96),
+        node('crawl', 'crawl', 280, 10, 1620, 44, items=fld('items'), font=F, fontSize=38, color=tok('onPrimary'), speed=140, gap=96),
         text('label-text', 0, 12, 260, 40, fld('label'), F, 32, 700, tok('onAccent'), align='center', textTransform='uppercase',
              letterSpacing=0.06)], BOTTOM)
     pack(p, 'News: Signal', 'news',
@@ -426,7 +426,7 @@ def worship():
         # palette surface (clear in the stock palettes), then a light veil of the
         # primary for text contrast. Opacity on the plate would dim the glass too.
         rect('glass', 0, 0, 1100, 170, tok('surface'), cornerRadius=16, backdrop={'blur': 24}),
-        rect('veil', 0, 0, 1100, 170, tok('primary'), cornerRadius=16, opacity=0.35),
+        rect('veil', 0, 0, 1100, 170, tok('primary'), cornerRadius=16, opacity=0.4),
         rise(text('name-text', 48, 22, 1004, 70, fld('name'), SERIF, 56, 600, tok('onPrimary')), 150),
         rise(rect('rule', 48, 100, 300, 2, tok('accent')), 0),
         rise(text('title-text', 48, 114, 1004, 38, fld('title'), SANS, 26, 400, tok('onPrimaryMuted'), textTransform='uppercase',

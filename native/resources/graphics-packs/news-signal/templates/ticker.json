@@ -69,7 +69,7 @@
     "field": "items"
    },
    "font": "Barlow Semi Condensed",
-   "fontSize": 34,
+   "fontSize": 38,
    "color": {
     "token": "brand.onPrimary"
    },

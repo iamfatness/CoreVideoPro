@@ -64,9 +64,9 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   layout judges `shadowClip` as its own tier 1 region (`<id>.shadow`).
   Text colour changes the coverage curve (slice 10, 2026-11-28): D2D's grayscale alpha correction
   follows the brush, so the same glyphs carry 0.876 of the white alpha in black and 0.90 in #14213D.
-  The Mac's `a*(k+1)/(a*k+1)` takes k from the text colour's Rec. 709 luma (black -0.54 ... white 1.0,
-  `windowsTextContrastForColor`, measured points in the comment); with one k, dark text on light
-  plates read 8-14% heavier on the Mac. Pack fonts on Windows are added to the private collection
+  The Mac's `a*(k+1)/(a*k+1)` lowers k only for near-black text (luma below 0.30: black -0.54,
+  #14213D -0.41, `windowsTextContrastForColor`); with k = 1, dark text on light plates read 8-14%
+  heavier on the Mac, while mid and light text matches k = 1 and must keep it. Pack fonts on Windows are added to the private collection
   under their pack.json family, weight and style (`AddFontFaceReference` with properties), never the
   file's own names: Barlow Semi Condensed Regular/Bold say typographic family "Barlow" and only its
   SemiBold says "Barlow Semi Condensed", so every Barlow weight drew SemiBold until slice 10's

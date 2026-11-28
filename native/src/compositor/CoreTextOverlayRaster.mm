@@ -373,20 +373,21 @@ constexpr double kWindowsTextGrayscaleContrast = 1.0;
 // the G4 reference (2026-11-27): with k = 1 the text-only fixtures' summed
 // alpha moves from 8-10% under Windows to 2-3.4% under.
 //
-// k depends on the text colour (slice 10, 2026-11-28). D2D's grayscale alpha
-// correction follows the brush: the same glyphs drawn on Windows in black
-// carry 0.876 of the white alpha, #14213D 0.900, #404040 0.919, #808080 0.962,
-// mid and bright colours 0.94-0.97, white 1.0 (Arial 700 28 px + Georgia
-// 26 px, build 26300). Fitting k per colour against the white curve gives
-// black -0.54, #14213D -0.41, #404040 -0.27, #808080 0.24, bright colours
-// -0.05..0.43, white 1. So k is interpolated over Rec. 709 luma through those
-// points; with one k for every colour, dark text on a light plate read 8-14%
-// heavier on the Mac than on Windows (the corporate, esports and talk packs).
+// Very dark text gets a lower k (slice 10, 2026-11-28). D2D's grayscale
+// alpha correction follows the brush: drawn alone on Windows (build 26300,
+// Arial 700 28 px + Georgia 26 px), black glyphs carry 0.876 of the white
+// alpha and #14213D 0.900, which fits k = -0.54 and -0.41 against the white
+// curve. On the parity fixtures, where text sits on an opaque plate, that
+// holds for near-black text (#05070B, #14213D, #1E1B2E on light plates read
+// 8-14% heavy on the Mac with k = 1 and pass with these k), while mid and light
+// text (#5A6578, #D8DCE3 and every earlier fixture) matches k = 1 and reads
+// 8-10% light with a lower k. So k falls only for luma below 0.30, through
+// the two measured dark points.
 double windowsTextContrastForColor(uint32_t argb) {
   const double r = ((argb >> 16) & 0xff) / 255.0, g = ((argb >> 8) & 0xff) / 255.0, b = (argb & 0xff) / 255.0;
   const double luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  constexpr std::array<std::pair<double, double>, 6> points{{
-      {0.0, -0.54}, {0.127, -0.41}, {0.25, -0.27}, {0.5, 0.20}, {0.75, 0.20}, {1.0, kWindowsTextGrayscaleContrast}}};
+  constexpr std::array<std::pair<double, double>, 4> points{{
+      {0.0, -0.54}, {0.127, -0.41}, {0.30, kWindowsTextGrayscaleContrast}, {1.0, kWindowsTextGrayscaleContrast}}};
   for (size_t i = 1; i < points.size(); ++i)
     if (luma <= points[i].first) {
       const double t = (luma - points[i - 1].first) / (points[i].first - points[i - 1].first);
