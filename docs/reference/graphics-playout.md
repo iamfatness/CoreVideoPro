@@ -129,8 +129,11 @@ upsert order) are unit-tested; the control is `GraphicsBuilderControl`, hosted b
 Spec: [graphics styles, colour system and packs](graphics-styles-color-lower-thirds-spec.md)
 sections 4.1 and 10 (owner rulings 2026-11-27).
 
-- **Where.** Graphics → Design → **Palette** (an expander above the builder;
-  `GraphicsPaletteControl`). Tokens: `brand.primary`, `brand.secondary`,
+- **Where.** Graphics → Design → **Palette**, a button beside the Operate | Design
+  toggle that opens a flyout (`GraphicsPaletteControl`). It is a flyout, not a
+  row above the builder, so the Design canvas keeps its height: the compiled
+  Graphics probe requires the builder preview to stay at least 630 px wide at
+  1360×768. Tokens: `brand.primary`, `brand.secondary`,
   `brand.accent`, `brand.surface`, `brand.onPrimary`, `brand.onPrimaryMuted`,
   `brand.onSecondary`, `brand.onAccent`, optional `brand.teamA` / `brand.teamB`.
   Values are `#RRGGBBAA`. The four on-colours may be `auto` (white or `#111111`,

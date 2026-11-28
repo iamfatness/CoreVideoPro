@@ -57,7 +57,7 @@ public sealed partial class OverlaysPage : UserControl
         var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         PlayoutModeButton.Background = design ? clear : accent; PlayoutModeButton.Foreground = design ? text : onAccent;
         DesignModeButton.Background = design ? accent : clear; DesignModeButton.Foreground = design ? onAccent : text;
-        PaletteExpander.Visibility = design ? Visibility.Visible : Visibility.Collapsed;
+        PaletteButton.Visibility = design ? Visibility.Visible : Visibility.Collapsed;
         if (design) ResumeWorkspacePreviewIfDesign(); else SuspendDesignPreviews();
     }
     private void SuspendDesignPreviews() { GraphicsWorkspace.SuspendPreview(); GraphicsBuilder.SuspendPreview(); GraphicsDesigner.SuspendPreview(); }
@@ -102,7 +102,8 @@ public sealed partial class OverlaysPage : UserControl
     {
         ExistingOverlayDrawer.IsPaneOpen = false;
         if (ViewModel is { } vm) vm.GraphicsMode = StudioViewModel.GraphicsModeDesign;
-        PaletteExpander.IsExpanded = true;
+        // Open after the drawer closes and Design is shown, so the flyout has a visible anchor.
+        DispatcherQueue.TryEnqueue(() => { if (PaletteButton.Visibility == Visibility.Visible) PaletteFlyout.ShowAt(PaletteButton); });
     }
 
     private void OnAddBrowserOverlayClick(object sender, RoutedEventArgs e)
