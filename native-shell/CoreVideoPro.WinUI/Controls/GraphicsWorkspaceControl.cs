@@ -257,10 +257,12 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
                 image.SelectionChanged += (_,_) => { if (!_loading && image.SelectedIndex >= 0) _session?.SetField(field.Id,JsonSerializer.SerializeToElement(ids[image.SelectedIndex])); }; _inspector.Children.Add(image);
                 _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id,out var current) == true && current.ValueKind == JsonValueKind.String) image.SelectedIndex = ids.IndexOf(current.GetString() ?? ""); });
             } else if (field.Type == "color") {
-                var picker = new ColorPicker { IsAlphaEnabled = field.MaxLength != 7, Color = FieldColor(value) };
-                picker.ColorChanged += (_,e) => { if (!_loading) _session?.SetField(field.Id,JsonSerializer.SerializeToElement(HexColor.ToHex(e.NewColor) + (picker.IsAlphaEnabled ? e.NewColor.A.ToString("X2") : ""))); };
-                _inspector.Children.Add(new Expander { Header = FieldLabel(field), Content = picker, HorizontalAlignment = HorizontalAlignment.Stretch });
-                _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id,out var current) == true) picker.Color = FieldColor(current); });
+                // The shared colour field (graphics styles slice 2); a 7-character field stores opaque #RRGGBB.
+                var picker = new CvColorField { Header = FieldLabel(field), AllowAlpha = field.MaxLength != 7, HorizontalAlignment = HorizontalAlignment.Stretch };
+                if (value.ValueKind == JsonValueKind.String) picker.SetValue(value.GetString() ?? "");
+                picker.Committed += (_, c) => { if (!_loading) _session?.SetField(field.Id, JsonSerializer.SerializeToElement(c.Value)); };
+                _inspector.Children.Add(picker);
+                _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id,out var current) == true && current.ValueKind == JsonValueKind.String) picker.SetValue(current.GetString() ?? ""); });
             } else if (field.Type == "boolean") {
                 var check = new CheckBox { Content = FieldLabel(field), IsChecked = value.ValueKind == JsonValueKind.True };
                 check.Click += (_, _) => _session?.SetField(field.Id, JsonSerializer.SerializeToElement(check.IsChecked == true)); _inspector.Children.Add(check);
@@ -388,11 +390,6 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     {
         if (node.ValueKind == JsonValueKind.Object) return (node.TryGetProperty(key,out var field) && field.ValueKind == JsonValueKind.String && field.GetString() == value) || node.EnumerateObject().Any(p => p.Name != "metadata" && HasReference(p.Value,key,value));
         return node.ValueKind == JsonValueKind.Array && node.EnumerateArray().Any(child => HasReference(child,key,value));
-    }
-    private static Windows.UI.Color FieldColor(JsonElement value)
-    {
-        var text = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
-        return GraphicsColor.Parse(text,Windows.UI.Color.FromArgb(255,255,255,255));
     }
     private static string FieldLabel(NativeGraphicsTemplateField field)
     {

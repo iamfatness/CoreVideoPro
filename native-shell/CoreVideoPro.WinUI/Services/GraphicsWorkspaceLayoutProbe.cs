@@ -150,7 +150,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             await Task.Delay(50);
             Require(studio.GraphicsWorkspace.Draft.Fields.GetRawText()==currentFields,"Retired Graphics editor changed the new sample");
             checks.Add("pending text survives model refresh and retired text callbacks cannot alter the next sample");
-            Descendants(workspace).OfType<TextBox>().Single(t=>t.Header as string=="Brand color").Text="#2873AA";
+            Descendants(workspace).OfType<CvColorField>().Single(t=>t.Header=="Brand color").CommitText("#2873AA");
             await Eventually(()=>studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA");
             Require(studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA","Shared branding did not update the private draft");
             studio.GraphicsWorkspace.SetField("name",System.Text.Json.JsonSerializer.SerializeToElement("My guest"));
@@ -304,6 +304,18 @@ internal static class GraphicsWorkspaceLayoutProbe
                 form.ChangeView(null, 0, null, true);
                 await Eventually(() => form.VerticalOffset <= 1, "The builder inspector did not return to its first fields.");
                 await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-populated-{suffix}.png"));
+                // Graphics styles slice 2: the four COLORS roles are CvColorFields whose swatch and hex box fit the inspector width.
+                var colourFields = Descendants(form).OfType<CvColorField>().ToArray();
+                Require(colourFields.Length >= 4, $"The builder COLORS section has {colourFields.Length} colour fields, expected 4.");
+                foreach (var field in colourFields)
+                {
+                    var hex = Descendants(field).OfType<TextBox>().First();
+                    var left = field.TransformToVisual(form).TransformPoint(new(0, 0));
+                    Require(field.ActualWidth > 0 && left.X >= 0 && left.X + field.ActualWidth <= form.ViewportWidth + 1,
+                        $"Colour field {field.Header} is clipped horizontally at {suffix}.");
+                    Require(hex.ActualWidth >= 80 && hex.Text.StartsWith('#'), $"Colour field {field.Header} hex box is {hex.ActualWidth:0} px or empty at {suffix}.");
+                }
+                checks.Add($"Builder COLORS at {suffix}: {colourFields.Length} colour fields fit the inspector with a readable hex value.");
                 Require(form.ScrollableHeight > 0, "The populated builder fixture did not exercise its bounded inspector scroll area.");
                 form.ChangeView(null, form.ScrollableHeight, null, true);
                 await Eventually(() => form.VerticalOffset >= form.ScrollableHeight - 1, "The builder inspector did not expose its final fields.");

@@ -38,6 +38,8 @@ public sealed partial class GraphicsDesignerControl
         var stroke = ContentText("Stroke colour", ReadString(node, "stroke", "#FFFFFF"));
         var width = ContentNumber("Stroke width", layer.Kind == "Line" ? 1 : 0, 4096,
             ReadNumber(node, "strokeWidth", layer.Kind == "Line" ? 4 : 0));
+        stroke.CheckContext = new GraphicsColorCheckContext { LineWidthPx = width.Value };
+        width.ValueChanged += (_, e) => { if (!double.IsNaN(e.NewValue)) stroke.CheckContext = new GraphicsColorCheckContext { LineWidthPx = e.NewValue }; };
         var panel = ContentOptions(stroke, width);
         ComboBox? direction = null;
         if (layer.Kind == "Line")
@@ -48,7 +50,7 @@ public sealed partial class GraphicsDesignerControl
             panel.Children.Add(direction);
         }
         AddContentApply(panel, "Apply stroke", () => Apply(s => GraphicsTemplateEditor.SetStroke(s, layer.Id,
-            stroke.Text, width.Value, direction?.SelectedIndex == 1 ? "up" : "down")));
+            stroke.Literal, width.Value, direction?.SelectedIndex == 1 ? "up" : "down")));
         _layerBody.Children.Add(new Expander { Header = "Shape stroke", Content = panel, HorizontalAlignment = HorizontalAlignment.Stretch });
     }
 
@@ -83,7 +85,7 @@ public sealed partial class GraphicsDesignerControl
         var blur = ContentNumber("Shadow blur", 0, 16, ReadNumber(shadow, "blur", 4));
         var panel = ContentOptions(minimum, outlineColour, outlineWidth, shadowEnabled, shadowColour, shadowX, shadowY, blur);
         AddContentApply(panel, "Apply text effects", () => Apply(s => GraphicsTemplateEditor.SetTextEffects(s, layer.Id,
-            minimum.Value, outlineColour.Text, outlineWidth.Value, shadowEnabled.IsChecked == true ? shadowColour.Text : null,
+            minimum.Value, outlineColour.Literal, outlineWidth.Value, shadowEnabled.IsChecked == true ? shadowColour.Literal : null,
             shadowX.Value, shadowY.Value, blur.Value)));
         _layerBody.Children.Add(new Expander { Header = "Text effects", Content = panel, HorizontalAlignment = HorizontalAlignment.Stretch });
     }
@@ -95,9 +97,11 @@ public sealed partial class GraphicsDesignerControl
         return panel;
     }
 
-    private TextBox ContentText(string label, string value)
+    /// <summary>A literal colour (stroke, outline, shadow) in the shared colour field (graphics styles slice 2).</summary>
+    private CvColorField ContentText(string label, string value)
     {
-        var field = new TextBox { Header = label, Text = value, MaxLength = 9 };
+        var field = new CvColorField { Header = label, AllowAlpha = true };
+        field.SetValue(value);
         AutomationProperties.SetName(field, label);
         _inspectorInputs.Add(field);
         return field;

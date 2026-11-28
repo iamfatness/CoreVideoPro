@@ -186,6 +186,51 @@ sections 4.1 and 10 (owner rulings 2026-11-27).
   `GraphicsShellVectorTests.PaletteVectors`) pins both. There is no Mac palette
   UI yet.
 
+## One colour field (graphics styles slice 2)
+
+`CvColorField` (`WinUI/Controls/CvColorField.cs`, model in
+`MediaCore/Models/GraphicsColorField.cs`) is the only colour control in
+Graphics. It replaces the seven entry points listed in spec 2.3 plus the
+Palette's own picker:
+
+- the builder COLORS roles and template colour fields;
+- the Designer Colour and Fill;
+- the Designer stroke, outline and shadow;
+- the Cues & automation colour fields;
+- the show-starter accent;
+- the legacy lower-third designer.
+
+The legacy brand kit is a link to the Palette (slice 1).
+
+- **Inline:** a swatch and a hex box. The hex box accepts `#RGB`, `#RRGGBB`
+  and `#RRGGBBAA`; Enter or leaving the box commits. Targets that store opaque
+  colours set `AllowAlpha=false` and always write `#RRGGBB`: row appearances,
+  the starter accent, 7-character template fields and the legacy designer.
+- **Picker (the swatch's flyout):** spectrum, hue and alpha; R, G, B and
+  Alpha % fields; a second hex box; the show palette's swatches
+  (`CvColorField.PaletteProvider`, set by `OverlaysPage`); and the last 12
+  colours (`GraphicsColorRecents`, in memory for the session). Picker edits are
+  staged and commit once when the flyout closes. A swatch click commits at once.
+- **Tokens:** where a target can link a token, a chip shows `● token` with a
+  menu to pick a token or **Detach (keep this colour)**. These targets are the
+  Designer Colour and Fill (all brand tokens, now including the palette
+  tokens) and the builder roles (their own palette token). Editing a linked
+  colour asks **Change for the whole show**, which saves the palette and
+  re-cues Preview, or **Detach just this**. Closing the picker without
+  choosing keeps the link.
+- **Checks (`GraphicsColorChecks`, never blocking):**
+  - Text below 4.5:1 against its plate. Hosts pass the plate.
+  - Plate-less text: "legibility depends on the video behind it".
+  - Saturated red or blue text under 28 px (chroma bleed after 4:2:0).
+  - Pure white over a large area, with a **Cap at 235** (`#EBEBEB`, alpha
+    kept) fix.
+  - Strokes under 2 px.
+- **Unchanged:** the Designer's stroke, outline and shadow still apply on
+  their Apply buttons.
+- **Probe:** the compiled Graphics probe checks that the builder's colour
+  fields fit the inspector.
+- **Not built:** the Mac `ColorField`.
+
 ## Local data crawls
 
 From Graphics → Design, select **Data crawl…** and open a local CSV or JSON file.
