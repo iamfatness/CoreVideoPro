@@ -1051,6 +1051,48 @@ void MediaCore::publishEncodedProgramPreview(rpc::Json preview) {
   // Old encoded bytes retire outside the cache publication mutex.
 }
 
+// colour-sample {action: freeze|pick|release, source: "program", x, y, frameNumber, requestId}
+// (graphics styles slice 3). Freeze copies the newest Program thumbnail the core
+// already reads back (the encoded preview while the preview pump runs, else the
+// last frame's preview); pick reads that frozen copy. Outcomes are reported in
+// the colourSample node's lastError.
+void MediaCore::applyColourSample(const rpc::Json& command) {
+  const auto action = command.getString("action");
+  std::string error;
+  if (action == "freeze") {
+    if (command.getString("source", "program") != "program") error = "colour-sample-source-unsupported";
+    else {
+      int width = 0, height = 0; uint64_t frameNumber = 0; std::vector<uint8_t> bgra;
+      {
+        std::lock_guard lock(encodedPreviewMutex_);
+        if (encodedPreview_.isObject()) {
+          width = int(encodedPreview_.getNumber("width", 0)); height = int(encodedPreview_.getNumber("height", 0));
+          frameNumber = uint64_t(encodedPreview_.getNumber("frameNumber", 0));
+          bgra = modules::base64Decode(encodedPreview_.getString("bgraBase64"));
+        }
+      }
+      if (bgra.empty() && !lastProgramFrame_.preview.bgra.empty()) {
+        width = lastProgramFrame_.preview.width; height = lastProgramFrame_.preview.height;
+        frameNumber = lastProgramFrame_.frameNumber; bgra = lastProgramFrame_.preview.bgra;
+      }
+      colourSample_.freeze("program", frameNumber, width, height, std::move(bgra),
+          [](const uint8_t* data, size_t size) { return modules::base64Encode(data, size); }, error);
+    }
+  } else if (action == "pick") {
+    const auto requestId = command.getString("requestId");
+    if (requestId.empty() || requestId.size() > 64) error = "colour-sample-request-id";
+    else colourSample_.pick(command.getNumber("x", -1), command.getNumber("y", -1),
+        uint64_t(command.getNumber("frameNumber", -1)), requestId, error);
+  } else if (action == "release") {
+    colourSample_.release();
+  } else error = "colour-sample-action";
+  if (!error.empty() && (error == "colour-sample-source-unsupported" || error == "colour-sample-action" || error == "colour-sample-request-id"))
+    colourSample_.refuse(error);
+  // Only a malformed command is a protocol failure; an empty Program or a changed frame is an
+  // ordinary outcome the shell reads from colourSample.lastError.
+  if (error == "colour-sample-action" || error == "colour-sample-request-id") commandProtocolFailures_.push_back(error);
+}
+
 void MediaCore::enqueueProgramSharedTextureEvent() {
   // Stable texture pixels update on the delivery thread. Emit only structural
   // changes, not a JSON message for every frame.
@@ -1292,6 +1334,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "colour-sample") {
+    applyColourSample(command);
   } else if (type == "set-source-preview-demand") {
     if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
   } else if (type == "set-zoom-thumbnail-demand") {

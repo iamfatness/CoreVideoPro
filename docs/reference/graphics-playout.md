@@ -231,6 +231,40 @@ The legacy brand kit is a link to the Palette (slice 1).
   fields fit the inspector.
 - **Not built:** the Mac `ColorField`.
 
+## Eyedropper (graphics styles slice 3)
+
+In any colour field's picker, **Pick from Program** freezes the Program
+thumbnail. This is the bounded BGRA preview, at most 320×180, that the core
+already reads back. The picker shows exactly those frozen bytes; click a pixel
+and its colour is staged, then committed when the picker closes, like any
+other picker edit. Nothing on air changes. There is no OS screen picker and no
+input injection.
+
+- **Core:** `colour-sample` with `action` `freeze` | `pick` | `release`.
+  - `freeze`: `source` must be `program`.
+  - `pick`: normalized `x`/`y` in 0..1, the frozen `frameNumber`, and a
+    `requestId`.
+  - Implemented by `core/ColourSample.h` and `MediaCore::applyColourSample`.
+  - Freeze copies the encoded preview when the preview pump runs, else the
+    last frame's preview, and encodes it once.
+  - The snapshot's `colourSample` node carries `state`, `revision`,
+    `frameNumber`, `width`, `height`, `lastPick` (`requestId`, `x`, `y`, `r`,
+    `g`, `b`, `hex`) and `lastError`. While frozen it also carries the frozen
+    `bgraBase64`.
+  - A pick refuses a different `frameNumber` (`colour-sample-frame-changed`).
+- **Shell:** `GraphicsColourSampler` (`IColourSampler`) sends the command and
+  trusts only the answering snapshot, correlated by `requestId` and frame.
+  `CvColorField.Sampler` is set by `OverlaysPage`. Closing the picker releases
+  the frozen copy.
+- **Limits:**
+  - The thumbnail is at most 320×180, so a pick is one thumbnail pixel
+    (nearest-neighbour downscale), not a full-resolution sample.
+  - The colour is the compositor's BGRA output. No limited-range check was done
+    (spec 4.2).
+  - **Pick from source…** is not built: sources have no CPU thumbnail; their
+    previews are GPU shared textures.
+  - There is no control-API action and no Mac eyedropper.
+
 ## Local data crawls
 
 From Graphics → Design, select **Data crawl…** and open a local CSV or JSON file.

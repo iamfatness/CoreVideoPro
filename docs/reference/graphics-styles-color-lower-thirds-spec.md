@@ -371,7 +371,10 @@ Status: slice 1 is implemented on Windows and as a Mac model (see
 Owner acceptance 2 (section 9) has not been performed. Slice 2 is implemented on
 Windows (`CvColorField`, see
 [graphics playout: One colour field](graphics-playout.md#one-colour-field-graphics-styles-slice-2));
-the Mac `ColorField` is not built.
+the Mac `ColorField` is not built. Slice 3 is implemented for Program on
+Windows (`colour-sample` freeze/pick on the 320×180 Program thumbnail, see
+[graphics playout: Eyedropper](graphics-playout.md#eyedropper-graphics-styles-slice-3));
+picking from a source and the Mac eyedropper are not built.
 
 Owner-visible milestones:
 - **After slice 3:** one picker everywhere, colours set once.

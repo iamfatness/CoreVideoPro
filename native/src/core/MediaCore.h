@@ -1,5 +1,6 @@
 #pragma once
 #include "core/ProgramBlackout.h"
+#include "core/ColourSample.h"
 #include "core/ResourceEventStaging.h"
 #include "graphics/GraphicsInstances.h"
 
@@ -1495,6 +1496,9 @@ class MediaCore {
   SnapshotDeferrer snapshotDeferrer_;
   rpc::Json encodedPreview_;
   mutable std::mutex encodedPreviewMutex_;
+  // Eyedropper (graphics styles slice 3): a frozen copy of the Program thumbnail and the last pick.
+  ColourSample colourSample_;
+  void applyColourSample(const rpc::Json& command);
   std::unique_ptr<modules::ProgramFrame> pendingProgramPreviewJob_;
   bool programPreviewPumpActive_ = false;
   mutable AudioObservationStore audioObservations_;

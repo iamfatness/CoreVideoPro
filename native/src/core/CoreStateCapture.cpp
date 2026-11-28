@@ -682,6 +682,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   if (core.audioWorkerActive_) {
     std::lock_guard lock(core.encodedPreviewMutex_); encodedPreview_ = core.encodedPreview_;
   } else encodedPreview_ = modules::programFramePreviewJson(core.lastProgramFrame_);
+  colourSample_ = core.colourSample_.snapshot();
   if (view_.payload) for (const auto& tap : view_.payload->value.busTaps) routedBusPcm_.emplace(tap.busId, tap);
   const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
   sourceStatuses_ = core.sourceBus_ ? core.sourceBus_->snapshot(nowNs) : std::vector<SourceBus::SourceStatus>{};
@@ -1112,6 +1113,7 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
   if (!preview.isNull()) {
     state.emplace("programFramePreview", preview);
   }
+  state.emplace("colourSample", colourSample_);
   const auto sharedTexture = modules::programSharedTextureJson(lastProgramFrame_);
   if (!sharedTexture.isNull()) {
     state.emplace("programSharedTexture", sharedTexture);
